@@ -1,0 +1,1 @@
+from .strategy_factory import get_application_strategy

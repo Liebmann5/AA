@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "aa-monorepo"
+version = "0.1.0"
+description = "Main monorepo for AA ecosystem"
+authors = ["Nicholas Liebmann <Liebmann.nicholas1@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+black = "^23.0.0"
+ruff = "^0.1.0"
+
+[tool.poetry.workspace]
+members = [
+    "packages/auto_apply",
+    "packages/PiServer"
+]

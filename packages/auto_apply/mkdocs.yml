@@ -1,0 +1,73 @@
+# -----------------------------------------------------------------------------
+# Site Information
+# -----------------------------------------------------------------------------
+site_name: Auto-Apply
+site_description: 'An autonomous agent for discovering, vetting, and applying for jobs.'
+site_author: 'Nicholas Liebmann'
+repo_url: 'https://github.com/Liebmann5/AA'
+
+# -----------------------------------------------------------------------------
+# Theme Configuration (Material for MkDocs)
+# -----------------------------------------------------------------------------
+theme:
+  name: material
+  logo: assets/logo.svg # (Optional) You can add a logo file later
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+
+# -----------------------------------------------------------------------------
+# Navigation Structure
+# -----------------------------------------------------------------------------
+nav:
+  - Home: index.md
+  - Getting Started:
+    - 'Installation': 01_getting_started/01_installation.md
+    - 'Configuration': 01_getting_started/02_configuration.md
+  - User Guide:
+    - 'index.md'
+    - 'Running a Job Hunt': 02_user_guide/01_running_a_job_hunt.md
+    - 'Understanding the Output': 02_user_guide/02_understanding_the_output.md
+  - Developer Guide:
+    - 'index.md'
+    - 'Contribution Workflow': 03_developer_guide/01_contribution_workflow.md
+    - 'Project Setup': 03_developer_guide/02_project_setup.md
+    - 'Running Tests': 03_developer_guide/03_running_tests.md
+  - Architecture Deep Dive:
+    - 'index.md'
+    - 'Overview': 04_architecture/index.md
+    - 'The Agent Lifecycle': 04_architecture/01_agent_lifecycle.md
+    - 'Core Abstractions': 04_architecture/02_core_abstractions.md
+    - 'Evasion Framework': 04_architecture/03_evasion_framework.md
+    - 'Discovery Strategies': 04_architecture/04_discovery_strategies.md
+    - 'Vetting Pipeline': 04_architecture/05_vetting_pipeline.md
+    - 'Application Engine': 04_architecture/06_application_engine.md
+  - API Reference: 05_api_reference.md
+
+# -----------------------------------------------------------------------------
+# Plugins
+# -----------------------------------------------------------------------------
+plugins:
+  - search # Built-in search plugin
+  - mkdocstrings:
+      # This tells the plugin to look for docstrings in your Python code
+      handlers:
+        python:
+          paths: [src/auto_apply]
+          # We tell it we used Google-style docstrings
+          options:
+            docstring_style: google
+            show_root_heading: yes
+            show_source: yes

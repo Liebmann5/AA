@@ -1,0 +1,76 @@
+# Python virtual environment (a.k.a. smells_like_updog)
+src/.venv/
+src/smells_like_updog/
+.venv/
+venv/
+ENV/
+env/
+virtualenv/
+
+# Build artifacts
+src/build/
+src/dist/
+src/auto_apply/*.egg-info
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# IDE / Editor folders
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Python cache | Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs and databases
+logs/
+*.log
+*.db
+*.sqlite3
+*.env
+
+# User-specific data (CRITICAL FOR SECURITY)
+.auto_apply/
+
+# Users' data
+src/profiles/default_profile.json
+
+# Local Notes
+.local/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+
+
+#---------------------------------------------
+/auto_apply/local_cache/
+/auto_apply/tmp/
+/tests/output/
+.env
+*.sqlite3

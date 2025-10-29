@@ -1,0 +1,41 @@
+# Global Git Ignore for Entire Monorepo
+
+# --- Python Environments ---
+.venv/
+env/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Build Artifacts ---
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# --- IDEs / Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Logs & Temporary Files ---
+*.log
+*.tmp
+*.bak
+*.orig
+
+# --- OS-Specific ---
+.DS_Store
+Thumbs.db
+
+# --- Local Notes / Artifacts ---
+.local/
+notes/
+*.secret
+
+.mypy_cache/
+.pytest_cache/

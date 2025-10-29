@@ -1,0 +1,11 @@
+# Auto-detect text files and ensure they use LF (Unix) line endings in the repo.
+* text=auto eol=lf
+
+# Explicitly declare files that will always have LF endings.
+# This is crucial for shell scripts to be executable on Linux/macOS.
+*.sh text eol=lf
+*.py text eol=lf
+
+# Explicitly declare files that will always have CRLF endings.
+# This is crucial for batch scripts to work on Windows.
+*.bat text eol=crlf

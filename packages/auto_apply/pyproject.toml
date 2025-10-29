@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "auto_apply"
+version = "0.1.0"
+description = "An automated tool for finding and applying to job postings."
+authors = [
+    { name = "Nicholas Liebmann", email = "Liebmann.nicholas1@gmail.com" },
+]
+readme = "README.md"
+requires-python = ">=3.9"
+
+
+dependencies = [
+    "setuptools",
+    "pydantic[dotenv,email]>=1.10.0,<2.0.0",
+    "selenium>=4.0.0",
+    "playwright>=1.30.0",
+    "beautifulsoup4>=4.10.0",
+    "undetected-chromedriver>=3.5.0",
+    "Appium-Python-Client>=2.0.0",
+    "requests", # For our IP address check
+
+    # --- NEW DEPENDENCIES FOR STATE-OF-THE-ART CAPTCHA SOLVING ---
+    "SpeechRecognition", # High-level library for various speech-to-text engines
+    "pydub",             # For audio format conversion (e.g., mp3 to wav)
+    "vosk"               # A high-quality, offline, free speech-to-text engine
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-mock>=3.10.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings-python>=1.8.0",
+]
+
+[project.scripts]
+auto-apply = "auto_apply.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["auto_apply*"]
+
+[tool.setuptools.package-data]
+auto_apply = ["profiles/*.json", "evasion/detection_config.json"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.black]
+line-length = 88
+target-version = ['py39']
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I", "UP", "PL", "T20"]
