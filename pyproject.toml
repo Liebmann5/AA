@@ -1,17 +1,104 @@
-[tool.poetry]
-name = "aa-monorepo"
-version = "0.1.0"
-description = "Main monorepo for AA ecosystem"
-authors = ["Nicholas Liebmann <Liebmann.nicholas1@gmail.com>"]
-readme = "README.md"
+# /AA/pyproject.toml
+# ─────────────────────────────────────────────────────────────────────────────
+#  AA Monorepo — Workspace Root
+#
+#  Tool: uv (https://docs.astral.sh/uv)
+#  Pattern: Virtual workspace root (no [project] table).
+#    The root is a pure coordinator: it cannot be installed, imported, or
+#    published. All real packages live under packages/.
+#
+#  One-time setup for any developer or contributor:
+#    pip install uv          # bootstrap — works on any Python ≥ 3.8
+#    uv sync                 # creates .venv + installs everything
+#    uv sync --extra nlp     # + SpaCy
+#    uv sync --extra ai      # + GPT4All
+#    uv sync --extra browser # + Playwright
+#    uv sync --extra all     # everything
+#
+#  Worst-case / library user:
+#    pip install auto_apply              # core only  (~30 MB)
+#    pip install "auto_apply[nlp]"       # + SpaCy
+#    pip install "auto_apply[browser]"   # + Playwright
+#    pip install "auto_apply[ai]"        # + GPT4All
+#    pip install "auto_apply[all]"       # everything
+#  ──────────────────────────────────────────────────────────────────────────
+#  NOTE: uv produces a single uv.lock for the entire workspace.  Every member
+#  package agrees on transitive dependency versions — no version drift between
+#  packages/auto_apply and packages/PiServer.
+# ─────────────────────────────────────────────────────────────────────────────
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.0.0"
-black = "^23.0.0"
-ruff = "^0.1.0"
+# ── Build System ─────────────────────────────────────────────────────────────
+# uv_build lets the IDE and uv itself understand the workspace structure.
+# Member packages can use any build backend (hatchling, setuptools, flit…).
+[build-system]
+requires      = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
 
-[tool.poetry.workspace]
-members = [
-    "packages/auto_apply",
-    "packages/PiServer"
+
+# ── Workspace Declaration ─────────────────────────────────────────────────────
+# Glob pattern picks up every directory under packages/ that contains a
+# pyproject.toml.  Adding a new sub-package is automatic — no need to touch
+# this file.
+[tool.uv.workspace]
+members = ["packages/*"]
+
+
+# ── Development Dependency Groups ─────────────────────────────────────────────
+# PEP 735 dependency groups: workspace-wide dev tooling that is NOT shipped
+# with any package.  Use `uv sync --group dev` or just `uv sync` (dev is
+# included by default in a workspace).
+[dependency-groups]
+dev = [
+    # Testing
+    "pytest>=7.4.0",
+    "pytest-mock>=3.11.0",
+    "pytest-cov>=4.1.0",
+    # Linting & formatting
+    "ruff>=0.9.0",
+    "black>=24.0.0",
+    # Type checking
+    "mypy>=1.8.0",
+    # Documentation
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings-python>=1.8.0",
+    # Research/data export (optional but present for all devs)
+    "hypothesis>=6.90.0",       # Property-based testing (P3-9)
 ]
+
+
+# ── Shared Tool Configuration ─────────────────────────────────────────────────
+# All workspace members inherit these tool settings when run via `uv run`.
+
+[tool.pytest.ini_options]
+minversion   = "7.0"
+testpaths    = ["packages/auto_apply/tests"]
+pythonpath   = ["packages/auto_apply/src"]
+addopts      = "--import-mode=importlib"          # required for uv monorepos
+markers      = [
+    "integration: tests that use a real SQLite DB or mock orchestrator",
+    "slow: smoke/e2e tests that may need a browser or network access",
+]
+
+[tool.black]
+line-length     = 88
+target-version  = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "PL", "T20"]
+ignore = [
+    "E501",     # Line-length: grandfathered pre-existing long lines
+    "PLR2004",  # Magic values: numerics in comparisons are clear as-is
+    "PLR0911",  # Too many return statements (pre-existing)
+    "PLR0912",  # Too many branches (pre-existing)
+    "PLR0913",  # Too many arguments (pre-existing)
+    "PLR0915",  # Too many statements (pre-existing)
+]
+
+[tool.mypy]
+python_version      = "3.10"
+strict              = false
+ignore_missing_imports = true

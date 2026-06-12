@@ -1,0 +1,34 @@
+name: lever
+description: >
+  Lever ATS — popular with high-growth startups and mid-sized tech companies.
+  Clean React-based forms, usually single-page. EU tenants use a separate domain.
+
+url_patterns:
+  - "jobs.lever.co/*/apply*"
+  - "jobs.eu.lever.co/*/apply*"
+  - "hire.lever.co/*/apply*"
+
+login_wall_signals:
+  - "sign in to apply"
+  - "log in to continue"
+  - "create an account"
+  - "you need an account"
+
+success_signals:
+  - "your application has been submitted"
+  - "application submitted"
+  - "we received your application"
+  - "thanks for applying"
+  - "you've applied"
+
+form_root_selector: ".application-form, form[data-qa='application-form'], main form"
+submit_button_selector: >
+  button[data-qa='btn-submit-application'],
+  button[type='submit'],
+  input[type='submit']
+multi_step: false
+
+notes: >
+  Lever forms are React SPAs. The submit button has a data-qa attribute in
+  most versions. Resume upload: input[type=file] inside .resume-upload.
+  Cover letter is a textarea with aria-label or placeholder containing "cover letter".

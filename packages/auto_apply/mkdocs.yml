@@ -34,27 +34,46 @@ theme:
 nav:
   - Home: index.md
   - Getting Started:
-    - 'Installation': 01_getting_started/01_installation.md
-    - 'Configuration': 01_getting_started/02_configuration.md
+    - Overview: getting_started/index.md
+    - Installation: getting_started/installation.md
+    - Quick Start: getting_started/quick_start.md
+    - Configuration: getting_started/configuration.md
   - User Guide:
-    - 'index.md'
-    - 'Running a Job Hunt': 02_user_guide/01_running_a_job_hunt.md
-    - 'Understanding the Output': 02_user_guide/02_understanding_the_output.md
+    - Overview: user_guide/index.md
+    - Running a Job Hunt: user_guide/running_a_job_hunt.md
+    - Understanding the Output: user_guide/understanding_output.md
+    - Profiles & Privacy: user_guide/profiles_and_privacy.md
+    - Admin Policy: user_guide/admin_policy.md
   - Developer Guide:
-    - 'index.md'
-    - 'Contribution Workflow': 03_developer_guide/01_contribution_workflow.md
-    - 'Project Setup': 03_developer_guide/02_project_setup.md
-    - 'Running Tests': 03_developer_guide/03_running_tests.md
+    - Overview: developer_guide/index.md
+    - Architecture Overview: developer_guide/architecture_overview.md
+    - Contribution Workflow: developer_guide/contribution_workflow.md
+    - Project Setup: developer_guide/project_setup.md
+    - Running Tests: developer_guide/running_tests.md
+    - Adding an ATS Platform: developer_guide/adding_an_ats_platform.md
   - Architecture Deep Dive:
-    - 'index.md'
-    - 'Overview': 04_architecture/index.md
-    - 'The Agent Lifecycle': 04_architecture/01_agent_lifecycle.md
-    - 'Core Abstractions': 04_architecture/02_core_abstractions.md
-    - 'Evasion Framework': 04_architecture/03_evasion_framework.md
-    - 'Discovery Strategies': 04_architecture/04_discovery_strategies.md
-    - 'Vetting Pipeline': 04_architecture/05_vetting_pipeline.md
-    - 'Application Engine': 04_architecture/06_application_engine.md
-  - API Reference: 05_api_reference.md
+    - Overview: architecture/index.md
+    - Agent Lifecycle: architecture/agent_lifecycle.md
+    - Core Abstractions: architecture/core_abstractions.md
+    - Browser Cascade: architecture/browser_cascade.md
+    - Evasion Framework: architecture/evasion_framework.md
+    - Discovery Strategies: architecture/discovery_strategies.md
+    - Vetting Pipeline: architecture/vetting_pipeline.md
+    - Application Engine: architecture/application_engine.md
+  - Architecture Decision Records:
+    - Overview: adr/index.md
+  - Deployment:
+    - Overview: deployment/index.md
+    - Docker: deployment/docker.md
+    - Enterprise Admin Policy: deployment/enterprise_admin_policy.md
+    - PyInstaller Portable Build: deployment/pyinstaller_portable.md
+  - Research Module:
+    - Overview: research_module/index.md
+    - Data Format: research_module/data_format.md
+    - Signals Taxonomy: research_module/signals_taxonomy.md
+  - API Reference: api_reference/index.md
+  - FAQ: faq.md
+  - Glossary: glossary.md
 
 # -----------------------------------------------------------------------------
 # Plugins

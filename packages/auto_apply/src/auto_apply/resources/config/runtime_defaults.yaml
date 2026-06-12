@@ -1,0 +1,120 @@
+# Runtime defaults — the lowest tier of AA's three-tier configuration hierarchy.
+#
+# Values here are the fallback when neither admin policy nor user settings have
+# specified something. All values must be conservative to protect worst-case
+# users (library computer, 2GB RAM, metered internet, no admin rights).
+#
+# Override hierarchy (later wins):
+#   runtime_defaults.yaml  →  UserSettings  →  AdminPolicy  →  LowResourceOverrides
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Browser behaviour
+# ─────────────────────────────────────────────────────────────────────────────
+headless_mode: false
+browser_timeout_seconds: 30
+page_load_timeout_seconds: 20
+preferred_browser_order:
+  - chrome
+  - firefox
+  - edge
+  - safari
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Session limits  (conservative — safe for low-resource users)
+# ─────────────────────────────────────────────────────────────────────────────
+max_applications_per_session: 50
+max_applications_per_company: 3
+max_discovery_results_per_query: 30
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resilience
+# ─────────────────────────────────────────────────────────────────────────────
+task_retry_limit: 3
+network_reconnect_timeout_seconds: 300
+checkpoint_interval_actions: 5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Evasion
+# ─────────────────────────────────────────────────────────────────────────────
+enable_human_timing: true
+enable_fingerprint_spoofing: true
+# Micro-timing (typing cadence, quick mouse movements)
+min_action_delay_ms: 500           # OG value 500 
+max_action_delay_ms: 2000          # OG value 2000
+# Macro-timing (Page load reading, transition thinking times)
+macro_pause_min_s: 2.5             # PageActionService default value 1.5s
+macro_pause_max_s: 5.0             # PageActionService default value 4.5s
+settle_min_s: 0.8
+settle_max_s: 1.5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Features
+# ─────────────────────────────────────────────────────────────────────────────
+# [IRB] Research data collection is opt-in only; must never be true by default.
+enable_research_collection: false
+enable_company_batching: true
+company_batch_threshold: 3
+# "live_browser" | "static_fetch" | "auto"
+discovery_strategy: live_browser
+# "math" | "dom" | "aom" | "heuristic" | "auto"
+perception_strategy: math
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data handling
+# ─────────────────────────────────────────────────────────────────────────────
+store_session_logs: true
+log_retention_days: 30
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vetting workflow tuning
+# ─────────────────────────────────────────────────────────────────────────────
+vetting:
+  # Minimum fraction of required skills the user must possess (0.0–1.0).
+  hard_skills_min_overlap: 0.5
+  # Minimum SpaCy cosine similarity between job title and desired titles.
+  role_alignment_threshold: 0.6
+  # Fit scores in this range trigger GPT4All borderline reasoning.
+  borderline_band: [0.45, 0.65]
+  # Weighted contribution of each filter to the overall fit score (must sum ~1.0).
+  filter_weights:
+    ThrottlingFilter: 0.10
+    SpatialLocationFilter: 0.15
+    LogicFilters: 0.15
+    ExperienceFilter: 0.15
+    HardSkillsFilter: 0.20
+    RoleAlignmentFilter: 0.25
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Discovery workflow tuning
+# ─────────────────────────────────────────────────────────────────────────────
+discovery:
+  # Maximum concurrent source fetches (ThreadPoolExecutor max_workers).
+  max_concurrent_sources: 1   #! MUST BE 1 when sharing a single live browser!
+  # Maximum pages to paginate through per search query.
+  max_pages_per_query: 5      #! Reduced to avoid Google dynamic noise.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Applications workflow tuning
+# ─────────────────────────────────────────────────────────────────────────────
+applications:
+  # Maximum form pages to navigate before aborting.
+  max_pages: 10
+  # Maximum interaction steps per page before aborting.
+  max_steps_per_page: 15
+  # Seconds to wait for DOM to stabilize after each navigation.
+  dom_stabilization_timeout_s: 3.0  #! 8.0
+  # Token budget for GPT4All custom-question answers.
+  custom_answer_max_tokens: 150
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GPT4All local LLM settings
+# ─────────────────────────────────────────────────────────────────────────────
+gpt4all:
+  # GGUF model filename — auto-downloaded to ~/.cache/gpt4all/ on first use.
+  model: "Meta-Llama-3-8B-Instruct.Q4_0.gguf"
+  # Default token budget per generation call.
+  max_tokens: 512
+  # Sampling temperature. Lower = more deterministic.
+  temperature: 0.7
+  # Inference device. "cpu" always works; "gpu" requires CUDA/Metal.
+  device: "cpu"

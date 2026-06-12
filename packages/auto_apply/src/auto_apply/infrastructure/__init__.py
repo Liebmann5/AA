@@ -1,0 +1,1 @@
+"""Infrastructure layer — wiring only."""

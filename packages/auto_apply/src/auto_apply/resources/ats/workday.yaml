@@ -1,0 +1,40 @@
+name: workday
+description: >
+  Workday HCM — enterprise ATS used by Fortune 500 companies.
+  Multi-step wizard, heavily JavaScript-dependent, requires a live browser.
+  Aggressively detects automation; use human-like timing.
+
+url_patterns:
+  - "*.myworkdayjobs.com/*/job/*"
+  - "*.wd1.myworkdayjobs.com/*/job/*"
+  - "*.wd3.myworkdayjobs.com/*/job/*"
+  - "*.wd5.myworkdayjobs.com/*/job/*"
+  - "*.myworkday.com/*/job/*"
+
+login_wall_signals:
+  - "you must sign in"
+  - "please sign in"
+  - "sign in or create account"
+  - "create a workday account"
+  - "sign in to workday"
+
+success_signals:
+  - "your application has been submitted"
+  - "application submitted"
+  - "submission saved"
+  - "you have successfully applied"
+  - "thank you for your interest"
+
+form_root_selector: "[data-automation-id='applicationForm'], .WGRO, main"
+submit_button_selector: >
+  [data-automation-id='pageFooterNextButton'],
+  [data-automation-id='wd-CommandButton_uic_nextButton'],
+  button[data-automation-id*='submit'],
+  button[data-automation-id*='next']
+multi_step: true
+
+notes: >
+  Workday forms typically have 3–7 steps: My Information, My Experience,
+  Application Questions, Voluntary Disclosures, and Review. Each step uses
+  data-automation-id attributes. The wizard tracks state via URL hash changes.
+  Requires account creation on first application for most employers.
