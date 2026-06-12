@@ -1,0 +1,41 @@
+name: taleo
+description: >
+  Oracle Taleo — legacy enterprise ATS still in wide use at large corporations
+  and government contractors. Multi-step wizard. Often requires account creation.
+  Server-rendered pages with minimal JavaScript.
+
+url_patterns:
+  - "*.taleo.net/careersection/*/jobapply.ftl*"
+  - "*.taleo.net/careersection/*/jobdetail.ftl*"
+  - "*.oraclecloud.com/hcmUI/CandidateExperience/*/apply*"
+  - "*.oraclecloud.com/hcmUI/CandidateExperience/*/job/*"
+
+login_wall_signals:
+  - "please sign in"
+  - "log in to continue"
+  - "create a candidate profile"
+  - "you must register"
+  - "existing user"
+  - "new user"
+
+success_signals:
+  - "application submitted"
+  - "your submission has been received"
+  - "your application is complete"
+  - "thank you for applying"
+  - "requisition successfully submitted"
+
+form_root_selector: "#applyForm, .ftjob-application-form, form[name='applyForm'], #candidateApplicationForm"
+submit_button_selector: >
+  input[type='submit'][value*='Submit'],
+  a.action-submit,
+  button.submit,
+  input[type='button'][value*='Next'],
+  button[id*='next']
+multi_step: true
+
+notes: >
+  Taleo uses a wizard pattern with "Next" buttons on each step.
+  The final step has a "Submit" action. Session timeouts are aggressive
+  (15-30 min). Requires JavaScript for navigation between steps despite
+  server-rendered content.

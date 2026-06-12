@@ -1,0 +1,29 @@
+{
+  "strategies": {
+    "default": {
+      "threshold": 60,
+      "weights": {
+        "url_keywords": 30,
+        "title_keywords": 30,
+        "iframe_keywords": 40,
+        "text_keywords": 40,
+        "js_variables": 0
+      },
+      "url_keywords": ["/sorry/", "/challenge/", "/verify/", "/human-challenge/"],
+      "title_keywords": ["verify you are human", "are you a robot", "checking your browser", "attention required"],
+      "iframe_keywords": ["recaptcha", "hcaptcha"],
+      "text_keywords": ["i'm not a robot", "unusual traffic", "prove you're human", "verify that you are not a robot"],
+      "js_variables": []
+    }
+  },
+  "heuristic_rules": {
+    "google": {
+      "required_link_substrings": ["/jobs/results/", "/jobs/listing/"],
+      "required_text_keywords": ["day ago", "days ago", "hour ago", "hours ago", "just posted", "today", "week ago", "weeks ago"]
+    },
+    "bing": {
+      "required_link_substrings": ["/jobs/search?jid="],
+      "required_text_keywords": ["posted", "day", "days", "hour", "hours", "week", "weeks"]
+    }
+  }
+}

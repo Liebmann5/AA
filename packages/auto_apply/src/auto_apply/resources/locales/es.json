@@ -1,0 +1,146 @@
+{
+  "app": {
+    "name": "AutoApply",
+    "tagline": "Automatización Gratuita de Solicitudes de Empleo para Todos",
+    "version_label": "Versión"
+  },
+  "session": {
+    "starting": "Iniciando sesión de búsqueda de empleo...",
+    "stopping": "Deteniendo sesión...",
+    "paused": "Sesión pausada",
+    "resumed": "Sesión reanudada",
+    "complete": "Sesión completada",
+    "jobs_found": "Se encontraron {count} empleos",
+    "jobs_vetted": "{passed} de {total} empleos aprobados",
+    "applications_submitted": "{count} solicitudes enviadas",
+    "applications_failed": "{count} solicitudes fallidas",
+    "duration": "Duración de la sesión: {duration}",
+    "checkpoint_saved": "Progreso guardado",
+    "checkpoint_restored": "Reanudando desde progreso guardado",
+    "no_checkpoint": "Iniciando sesión nueva"
+  },
+  "discovery": {
+    "starting": "Buscando oportunidades de empleo...",
+    "provider_executing": "Buscando en {provider}...",
+    "provider_failed": "Búsqueda en {provider} falló",
+    "found_count": "Se encontraron {count} nuevos listados en {provider}",
+    "complete": "Búsqueda completa — {count} empleos encontrados en total"
+  },
+  "vetting": {
+    "starting": "Evaluando compatibilidad de empleos...",
+    "passed": "Compatible: {title} en {company}",
+    "failed": "Filtrado: {title} — {reason}",
+    "complete": "Evaluación completa — {passed} de {total} aprobados"
+  },
+  "application": {
+    "starting": "Aplicando a {title} en {company}...",
+    "success": "Solicitud exitosa para {title} en {company}",
+    "failed": "Solicitud fallida para {title} en {company}",
+    "skipped_duplicate": "Ya aplicado — omitiendo {title}",
+    "batch_starting": "Aplicando a {count} posiciones en {company}...",
+    "form_filling": "Completando formulario de solicitud...",
+    "form_submitted": "Solicitud enviada",
+    "redirect_detected": "Redirigido a página de carreras — omitiendo"
+  },
+  "browser": {
+    "initializing": "Iniciando navegador...",
+    "cascade_trying": "Intentando {browser}...",
+    "cascade_failed": "No se pudo iniciar {browser}: {error}",
+    "cascade_exhausted": "No se pudo iniciar ningún navegador. Por favor instale Chrome, Firefox o Edge.",
+    "active": "Navegador listo ({browser})",
+    "closed": "Navegador cerrado",
+    "unhealthy": "El navegador dejó de responder — reiniciando..."
+  },
+  "network": {
+    "checking": "Verificando conexión a internet...",
+    "connected": "Conectado",
+    "disconnected": "Sin conexión a internet — esperando reconexión...",
+    "restored": "Conexión restaurada — reanudando",
+    "timeout": "No se pudo restaurar la conexión después de {seconds} segundos"
+  },
+  "wizard": {
+    "welcome": "¡Bienvenido a AutoApply!",
+    "welcome_subtitle": "Configuremos tu perfil para comenzar.",
+    "step_personal": "Información Personal",
+    "step_experience": "Experiencia Laboral",
+    "step_preferences": "Preferencias de Empleo",
+    "step_review": "Revisar y Confirmar",
+    "field_first_name": "Nombre",
+    "field_last_name": "Apellido",
+    "field_email": "Correo Electrónico",
+    "field_phone": "Número de Teléfono",
+    "field_resume": "Archivo de Currículum",
+    "field_location": "Ubicación Preferida",
+    "field_job_titles": "Títulos de Empleo Deseados",
+    "btn_next": "Siguiente",
+    "btn_back": "Atrás",
+    "btn_finish": "Comenzar a Aplicar",
+    "btn_browse": "Buscar..."
+  },
+  "settings": {
+    "title": "Configuración",
+    "language": "Idioma",
+    "currency": "Moneda",
+    "browser_preference": "Navegador Preferido",
+    "max_applications": "Máximo de Solicitudes por Sesión",
+    "max_per_company": "Máximo de Solicitudes por Empresa",
+    "headless_mode": "Ejecutar Navegador en Segundo Plano",
+    "human_timing": "Temporización Humana",
+    "respect_robots": "Respetar robots.txt",
+    "research_opt_in": "Contribuir Datos de Investigación Anónimos",
+    "save": "Guardar Configuración",
+    "saved": "Configuración guardada",
+    "reset": "Restablecer Valores Predeterminados",
+    "admin_locked": "Esta configuración está bloqueada por su administrador"
+  },
+  "dashboard": {
+    "title": "Panel de AutoApply",
+    "status": "Estado",
+    "discovered": "Empleos Encontrados",
+    "vetted": "Empleos Aprobados",
+    "applied": "Solicitudes Enviadas",
+    "failed": "Solicitudes Fallidas",
+    "elapsed": "Tiempo Transcurrido",
+    "btn_start": "Iniciar Búsqueda",
+    "btn_pause": "Pausar",
+    "btn_resume": "Reanudar",
+    "btn_stop": "Detener",
+    "btn_results": "Ver Resultados",
+    "run_again": "Ejecutar de Nuevo",
+    "switch_profile": "Cambiar Perfil"
+  },
+  "errors": {
+    "generic": "Ocurrió un error inesperado: {error}",
+    "no_browser": "No hay un navegador compatible instalado",
+    "no_profile": "No se encontró perfil de usuario",
+    "no_internet": "Sin conexión a internet",
+    "permission_denied": "Permiso denegado: {detail}",
+    "file_not_found": "Archivo no encontrado: {path}",
+    "database_error": "Error de base de datos: {error}"
+  },
+  "research": {
+    "consent_title": "Recolección de Datos de Investigación",
+    "consent_body": "AutoApply puede recopilar datos anónimos sobre su experiencia de búsqueda de empleo para ayudar a investigadores a estudiar y mejorar el mercado laboral. Nunca se incluye información personal. Puede desactivar esto en cualquier momento en Configuración.",
+    "consent_accept": "Sí, me gustaría contribuir",
+    "consent_decline": "No, gracias"
+  },
+  "gui": {
+    "wizard_title": "Configuración de Sesión",
+    "step_1_title": "Paso 1: Entradas y Criterios",
+    "step_2_title": "Paso 2: Validación y Seguridad",
+    "step_3_title": "Paso 3: Estrategia de Ejecución",
+    "lbl_job_titles": "Títulos de trabajo (separados por comas):",
+    "lbl_location": "Ubicación:",
+    "lbl_paste_links": "Pegar URLs de trabajo (una por línea):",
+    "chk_skip_applied": "Omitir trabajos ya aplicados",
+    "chk_min_salary": "Filtrar por salario mínimo",
+    "chk_throttling": "Verificar reglas de limitación",
+    "lbl_processing_mode": "Modo de Procesamiento:",
+    "opt_adaptive": "Adaptativo (Recomendado)",
+    "opt_collect": "Recolectar Todo → Procesar Lote",
+    "opt_stream": "Flujo (Procesar Inmediatamente)",
+    "stats_section_title": "Métricas de Sesión",
+    "log_section_title": "Actividad en Vivo",
+    "status_idle": "Listo para comenzar..."
+  }
+}

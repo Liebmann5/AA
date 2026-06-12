@@ -39,3 +39,6 @@ notes/
 
 .mypy_cache/
 .pytest_cache/
+
+.env
+output/

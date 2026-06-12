@@ -1,0 +1,35 @@
+name: ashby
+description: >
+  Ashby HQ — modern ATS popular with venture-backed startups.
+  Clean React-based single-page forms. Minimal friction for applicants.
+  No account creation required for most employers.
+
+url_patterns:
+  - "jobs.ashbyhq.com/*/apply*"
+  - "*.ashbyhq.com/*/apply*"
+  - "jobs.ashbyhq.com/*"
+
+login_wall_signals:
+  - "sign in to continue"
+  - "log in to apply"
+  - "create an account"
+
+success_signals:
+  - "application submitted"
+  - "we've received your application"
+  - "thanks for applying"
+  - "your application is complete"
+  - "successfully submitted"
+
+form_root_selector: "form[data-ash-form], .ashby-application-form, main form, form"
+submit_button_selector: >
+  button[data-ash-submit],
+  button[type='submit'],
+  button[aria-label*='submit'],
+  button[aria-label*='apply']
+multi_step: false
+
+notes: >
+  Ashby forms are typically one page with all fields visible. Resume upload
+  uses input[type=file] or a drag-and-drop zone. LinkedIn profile URL field
+  is common. Cover letter is usually an optional textarea.

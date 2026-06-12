@@ -1,68 +1,306 @@
+# /AA/packages/auto_apply/pyproject.toml
+# ─────────────────────────────────────────────────────────────────────────────
+#  AutoApply (auto_apply) — Package Manifest
+#
+#  Build backend: hatchling (PEP 517/518 compliant, no extra runtime deps,
+#  plays nicely with both `uv build` and `pip install`).
+#
+#  Install paths (all are equivalent from the user's perspective):
+#
+#    Developer / contributor
+#    ────────────────────────
+#    uv sync                          # core + dev tools
+#    uv sync --extra nlp              # + SpaCy
+#    uv sync --extra browser          # + Playwright
+#    uv sync --extra ai               # + GPT4All
+#    uv sync --extra all              # everything
+#
+#    Library / end-user (pip, worst-case)
+#    ─────────────────────────────────────
+#    pip install auto_apply                  # core only  (~30 MB)
+#    pip install "auto_apply[nlp]"           # + SpaCy  (~685 MB model dl separately)
+#    pip install "auto_apply[browser]"       # + Playwright
+#    pip install "auto_apply[ai]"            # + GPT4All (~4 GB model dl on first run)
+#    pip install "auto_apply[nlp,browser]"   # combine extras freely
+#    pip install "auto_apply[all]"           # full power-user install
+#
+#  Portability / USB-drive / frozen-app
+#  ─────────────────────────────────────
+#    For the IS_FROZEN / --portable path, build with PyInstaller:
+#      uv run pyinstaller auto_apply.spec
+#    PyInstaller bundles the CPython interpreter + all wheels into a single
+#    folder/exe that runs with ZERO host Python or pip required.
+#    See docs/portable.md for the full spec file and build pipeline.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Build System ─────────────────────────────────────────────────────────────
+# hatchling is the PSF/PyPA-recommended build backend.  It:
+#   • Reads all metadata from [project] (PEP 621) — no duplication.
+#   • Works with `pip install`, `uv build`, and `python -m build`.
+#   • Zero configuration for src/ layout (explicit in [tool.hatch.build] below).
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires      = ["hatchling>=1.21.0"]
+build-backend = "hatchling.build"
 
 
+# ── Core Metadata (PEP 621) ───────────────────────────────────────────────────
 [project]
-name = "auto_apply"
-version = "0.1.0"
-description = "An automated tool for finding and applying to job postings."
+name            = "auto_apply"
+version         = "0.1.0"
+description     = "Autonomous agent for discovering, vetting, and applying to job postings."
+readme          = "README.md"
+license         = { text = "MIT" }
+requires-python = ">=3.10"
+
 authors = [
     { name = "Nicholas Liebmann", email = "Liebmann.nicholas1@gmail.com" },
+    { name = "Antonio Corona-Sanchez", email = "coronasanchez.antonio@gmail.com" },
 ]
-readme = "README.md"
-requires-python = ">=3.9"
+
+keywords = ["job-search", "automation", "selenium", "playwright", "ai"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Office/Business",
+]
 
 
+# ── Default Stack (~30 MB) ────────────────────────────────────────────────────
+# Every dependency here MUST meet the Worst-Case User Contract (Section 1.1 of
+# the Architecture Bible): works on a 2 GB RAM library computer with no admin
+# rights, no API keys, and a system-installed browser.
+#
+# INTENTIONALLY EXCLUDED from core:
+#   - playwright     → optional[browser]   (requires separate binary download)
+#   - spacy          → optional[nlp]        (685 MB model is too large for default)
+#   - gpt4all        → optional[ai]         (4 GB model download on first run)
+#   - sentence-transformers → optional[nlp] (separate torch dependency)
+#   - SpeechRecognition / pydub / vosk      (CAPTCHA audio solver, opt-in only)
+#   - Appium-Python-Client                  (mobile automation, not in critical path)
+#   - undetected-chromedriver               (install via extras or manually)
+#
+# NOTE: `requests` is kept for IP-check / static fetches.  The full async HTTP
+# path (httpx) is wired in CapabilitiesRegistry when available — graceful upgrade.
 dependencies = [
-    "setuptools",
-    "pydantic[dotenv,email]>=1.10.0,<2.0.0",
-    "selenium>=4.0.0",
-    "playwright>=1.30.0",
-    "beautifulsoup4>=4.10.0",
-    "undetected-chromedriver>=3.5.0",
-    "Appium-Python-Client>=2.0.0",
-    "requests", # For our IP address check
+    # ── Validation & Config ───────────────────────────────────────────────────
+    # Pydantic v2: domain models, profile schema, settings.
+    "pydantic[email]>=2.5.0,<3.0.0",
+    "pydantic-settings>=2.2.0,<3.0.0",
 
-    # --- NEW DEPENDENCIES FOR STATE-OF-THE-ART CAPTCHA SOLVING ---
-    "SpeechRecognition", # High-level library for various speech-to-text engines
-    "pydub",             # For audio format conversion (e.g., mp3 to wav)
-    "vosk"               # A high-quality, offline, free speech-to-text engine
+    # ── Browser Automation (Default: Selenium) ────────────────────────────────
+    # Selenium drives OS-installed browsers — no binary download required.
+    # This is the Worst-Case path.  Playwright is opt-in via [browser] extra.
+    "selenium>=4.18.0,<5.0.0",
+
+    # ── Static HTML Parsing (Graceful Degradation) ────────────────────────────
+    "beautifulsoup4>=4.12.0,<5.0.0",
+    "soupsieve>=2.5.0",           # CSS selector engine used internally by BS4
+
+    # ── HTTP / Networking ─────────────────────────────────────────────────────
+    "requests>=2.31.0,<3.0.0",
+    "urllib3>=2.1.0,<3.0.0",
+    "certifi>=2024.1.0",
+
+    # ── Config / Data Files ───────────────────────────────────────────────────
+    "pyyaml>=6.0.1,<7.0.0",       # ATS registry, runtime_defaults.yaml
+
+    # ── Security: Profile Encryption ─────────────────────────────────────────
+    "cryptography>=42.0.0,<44.0.0",  # AES-256 PII encryption
+
+    # ── System Resource Awareness ─────────────────────────────────────────────
+    "psutil>=5.9.0,<7.0.0",       # RAM detection → graceful degradation
+
+    # ── Formal Logic Reasoning ────────────────────────────────────────────────
+    "clingo>=5.7.0",              # ASP / Answer Set Programming for form logic
+
+    # ── Data Validation (minimal) ─────────────────────────────────────────────
+    # click is required by spacy but we pull it in here so the CLI entry point
+    # works even without the [nlp] extra.
+    "click>=8.1.0,<9.0.0",
 ]
 
+
+# ── Optional Extras ───────────────────────────────────────────────────────────
+# Design principle from Architecture Bible (Section 1.1) and the user-supplied
+# extras note: do NOT bundle a custom download manager.  Use Python extras so
+# that pip/uv handles everything with proper hash verification.
+#
+# CapabilitiesRegistry detects what is installed at runtime and enables features
+# accordingly.  Nothing in the critical path ever imports these directly.
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-mock>=3.10.0",
-    "black>=23.0.0",
-    "ruff>=0.1.0",
+
+# ── NLP Tier (Tier 1 — recommended) ──────────────────────────────────────────
+# SpaCy en_core_web_lg model must be downloaded separately after install:
+#   python -m spacy download en_core_web_lg   # 685 MB, high accuracy
+#   python -m spacy download en_core_web_sm   # 12 MB, lower accuracy
+# The model download is intentionally NOT automated (binary security policy,
+# Architecture Bible Section 1.1 note on download managers).
+nlp = [
+    "spacy>=3.7.0,<4.0.0",
+    "click>=8.1.0,<9.0.0",         # spacy CLI dependency
 ]
 
+# ── Semantic NLP Tier (Tier 2 — opt-in, higher accuracy) ─────────────────────
+# sentence-transformers enables semantic role alignment in VettingWorkflow.
+# Requires torch, which is large (~2 GB).  Only activate if the user has
+# enough disk space and either GPU or patience.
+semantic = [
+    "sentence-transformers>=2.7.0,<4.0.0",
+]
+
+# ── Browser Power User (Playwright) ──────────────────────────────────────────
+# After installing, download browser binaries once:
+#   python -m playwright install firefox      # recommended (smaller, stealthier)
+#   python -m playwright install              # all browsers
+# Playwright is tried FIRST in BrowserCascade (better stealth), but is never
+# the hard requirement — Selenium always serves as the fallback.
+browser = [
+    "playwright>=1.43.0,<2.0.0",
+]
+
+# ── AI / LLM Tier (Local, Offline) ───────────────────────────────────────────
+# GPT4All downloads a GGUF model (~4–8 GB) on first use to ~/.cache/gpt4all/.
+# Only activates if applications.cover_letter_llm_tier = "local_llm".
+ai = [
+    "gpt4all>=2.8.0,<3.0.0",
+]
+
+# ── CAPTCHA Audio Solver ──────────────────────────────────────────────────────
+# Uses vosk (offline speech-to-text) to solve audio CAPTCHAs.
+# Vosk downloads a ~40 MB model on first use.
+captcha = [
+    "SpeechRecognition>=3.10.0",
+    "pydub>=0.25.0",
+    "vosk>=0.3.45",
+]
+
+# ── Stealth / Anti-Detection Upgrades ────────────────────────────────────────
+# undetected-chromedriver patches chromedriver to bypass bot detectors.
+# Optional because it requires a matching Chrome installation.
+stealth = [
+    "undetected-chromedriver>=3.5.5",
+]
+
+# ── Research / Data Export ────────────────────────────────────────────────────
+# Enables Parquet export for the Research Module (Section 18 of Bible).
+research = [
+    "pyarrow>=15.0.0",            # Parquet export
+    "pandas>=2.2.0,<3.0.0",       # DataFrame support for CSV export
+]
+
+# ── Full Power-User Install ───────────────────────────────────────────────────
+# pip install "auto_apply[all]"
+# Installs everything except the heaviest optional items (torch/GPT4All model
+# download still happens on first run, not at install time).
+all = [
+    "auto_apply[nlp,semantic,browser,ai,captcha,stealth,research]",
+]
+
+# ── Documentation Build ───────────────────────────────────────────────────────
 docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.5.0",
     "mkdocstrings-python>=1.8.0",
 ]
 
+
+# ── Entry Points ──────────────────────────────────────────────────────────────
 [project.scripts]
 auto-apply = "auto_apply.main:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["auto_apply*"]
 
-[tool.setuptools.package-data]
-auto_apply = ["profiles/*.json", "evasion/detection_config.json"]
+# ── URLs ──────────────────────────────────────────────────────────────────────
+[project.urls]
+"Homepage"    = "https://github.com/Liebman5/AA"
+"Bug Tracker" = "https://github.com/Liebman5/AA/issues"
+"Source"      = "https://github.com/Liebman5/AA/tree/main/packages/auto_apply"
+"Personal"    = "https://www.nicholasliebmann.dev/"
+
+
+# ── Hatchling Build Config ────────────────────────────────────────────────────
+# src/ layout: the importable package is at src/auto_apply/.
+# Static resources (YAML configs, JSON schemas) are included as package data.
+[tool.hatch.build.targets.wheel]
+packages = ["src/auto_apply"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+# Include runtime resources that auto_apply reads at startup.
+# All paths are relative to packages/auto_apply/.
+"src/auto_apply/resources/templates"    = "auto_apply/resources/templates"
+"src/auto_apply/resources/ats"          = "auto_apply/resources/ats"
+"src/auto_apply/resources/config"       = "auto_apply/resources/config"
+"src/auto_apply/adapters/secondary/evasion/detection_config.json" = "auto_apply/adapters/secondary/evasion/detection_config.json"
+
+
+# ── Package Data (non-Python files shipped inside the wheel) ─────────────────
+[tool.hatch.build]
+include = [
+    "src/auto_apply/resources/**/*.json",
+    "src/auto_apply/resources/**/*.yaml",
+    "src/auto_apply/adapters/secondary/evasion/detection_config.json",
+]
+
+
+# ── uv Source Overrides (workspace-local only; not published to PyPI) ─────────
+# This section is ignored by pip.  It tells uv that when resolving within the
+# AA workspace, auto_apply should be taken from disk, not from PyPI.
+# (Relevant once a second workspace member — e.g., PiServer — depends on
+# auto_apply as a library.)
+[tool.uv.sources]
+# auto_apply = { workspace = true }   # uncomment if another member needs it
+
+
+# ── PyInstaller / Frozen-App Integration ─────────────────────────────────────
+# PyInstaller is a DEV dependency only — never shipped in the wheel.
+# Add it with:  uv add --dev pyinstaller
+# Build the frozen app with:  uv run pyinstaller auto_apply.spec
+#
+# For the USB-drive / portable path (IS_FROZEN or --portable flag), AA:
+#   1. Detects sys.frozen == True at startup (set by PyInstaller bootloader)
+#   2. Redirects ALL data paths to the drive root (profiles, DB, logs, cache)
+#   3. Uses browser binaries bundled on the drive (portable Chromium/Firefox)
+#   4. Leaves zero files on the host system
+# See docs/portable.md for the complete spec file.
+
+
+# ── Per-Package Tool Config ───────────────────────────────────────────────────
+# Tool settings here override or extend the workspace-root settings for this
+# package specifically.
 
 [tool.pytest.ini_options]
-minversion = "7.0"
-testpaths = ["tests"]
-pythonpath = ["src"]
+minversion   = "7.0"
+testpaths    = ["tests"]
+pythonpath   = ["src"]
+addopts      = "--import-mode=importlib"
+markers      = [
+    "integration: tests that use a real SQLite DB or mock orchestrator",
+    "slow: smoke/e2e tests that may need a browser or network access",
+]
 
 [tool.black]
-line-length = 88
-target-version = ['py39']
+line-length    = 88
+target-version = ["py310", "py311", "py312"]
 
 [tool.ruff]
 line-length = 88
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "PL", "T20"]
+ignore = [
+    "E501",
+    "PLR2004",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+]

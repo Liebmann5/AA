@@ -1,0 +1,97 @@
+{
+  "personal_info": {
+    "first_name": "Bruce",
+    "middle_name": "Tavern",
+    "last_name": "Dickinson",
+    "suffix": "None",
+    "email": "BruceDickinson@gmail.com",
+    "phone_number": "911-555-1980",
+    "street_address": "123 Iron Maiden Ave",
+    "city": "London",
+    "state": "N/A",
+    "zip_code": "E10",
+    "country": "United Kingdom",
+    "pronouns": "None",
+    "citizenships": ["UK", "US"],
+    "resume_path": "C:\Users\SexySlowOldman\Documents\Resume.pdf",
+    "cover_letter": "Test 1 2 1 2"
+  },
+  "links": {
+    "linkedin": "https://www.linkedin.com/in/brucedickinson",
+    "github": "https://github.com/brucedickinson",
+    "portfolio": "https://www.ironmaiden.com"
+  },
+  "education": [
+    {
+      "school": "Queen Mary University of London",
+      "degree": "B.A.",
+      "discipline": "History",
+      "start_date": "1976",
+      "end_date": "1979",
+      "gpa": null
+    }
+  ],
+  "work_experience": [
+    {
+      "company": "Iron Maiden",
+      "title": "Lead Singer",
+      "start_date": "1981",
+      "end_date": "Present",
+      "is_current_job": true,
+      "description": "Fronted one of the world's most successful heavy metal bands. Also a commercial pilot, author, and fencer."
+    }
+  ],
+  "references": [
+    {
+      "name": "Steve Harris",
+      "job_title": "Bandmate",
+      "company": "Iron Maiden",
+      "email": "steve..harry.harris@hotmail.com",
+      "phone_number": "911-555-1234"
+    }
+  ],
+  "legal_info": {
+    "requires_sponsorship": "None",
+    "non_compete_agreements": "None",
+    "has_work_authorization": true,
+    "work_authorization_details": "Authorized",
+    "has_criminal_record": false,
+    "criminal_record_details": null
+  },
+  "career_summary": "Highly accomplished and multi-talented professional with a four-decade career demonstrating excellence in diverse fields including music, aviation, and writing. Proven ability to master complex skills, perform under extreme pressure, and engage global audiences. Seeking to leverage a unique background and a disciplined, creative mindset to solve new challenges in the technology sector.",
+  "eeo_info": {
+    "gender": "Male",
+    "race": "White (Not Hispanic or Latino)",
+    "veteran": false,
+    "disability": false
+  },
+  "search_preferences": {
+    "desired_job_titles": ["Software Engineer", "Backend Engineer"],
+    "preferred_locations": ["Remote", "London, UK"],
+    "employment_types": ["full-time", "contract"],
+    "workplace_types": ["remote", "hybrid"],
+    "experience_level": ["entry_level"],
+    "salaryExpectations": 120000,
+    "salary_currency": "USD",
+    "salary_format": "yearly"
+  },
+  "application_preferences": {
+    "earliest_start_date": "None",
+    "auto_fill_applications": true,
+    "customize_cover_letters": true,
+    "follow_up_emails": true,
+    "application_tracking": true
+  },
+  "app_config": {
+    "preferred_browser": "any",
+    "locale": "None",
+    "run_headless": false,
+    "use_proxies": false,
+    "daily_application_limit": 200,
+    "enable_behavior_humanization": true,
+    "human_review_checkpoints": true,
+  },
+  "politeness_settings": {
+    "respect_robots_txt": false
+  }
+}

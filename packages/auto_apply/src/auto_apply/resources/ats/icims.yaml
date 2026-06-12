@@ -1,0 +1,44 @@
+name: icims
+description: >
+  iCIMS Talent Cloud — mid-market and enterprise ATS. Multi-step application
+  wizard. The iCIMS platform has multiple UI versions (Classic, Connect, Apply);
+  selectors target all common variants.
+
+url_patterns:
+  - "*.icims.com/jobs/*/job*"
+  - "jobs.*.icims.com/*"
+  - "careers.*.com/jobs/*/job*"
+  - "*.icims.com/jobs/*/apply*"
+
+login_wall_signals:
+  - "please sign in"
+  - "log in to apply"
+  - "create an account"
+  - "register to apply"
+  - "sign in to your profile"
+
+success_signals:
+  - "application received"
+  - "your application has been submitted"
+  - "thank you for your submission"
+  - "your information has been submitted"
+  - "profile submitted"
+
+form_root_selector: >
+  #iCIMS_Content,
+  .iCIMS_ApplicationForm,
+  #iCIMS_MainContent,
+  [data-icims-section='application']
+submit_button_selector: >
+  #iCIMS_MainContent button[type='submit'],
+  input.iCIMS_Submit,
+  button.iCIMS-Button-Apply,
+  a.iCIMS-Button--block[data-action='submit'],
+  button[data-icims-action='next']
+multi_step: true
+
+notes: >
+  iCIMS Classic uses iframes for form steps; iCIMS Connect and Apply use
+  single-page rendering. Resume upload typically uses input[type=file]
+  inside a zone labeled "Resume / CV". The "Apply" button on job detail pages
+  leads to a separate application URL.

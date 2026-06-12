@@ -1,0 +1,184 @@
+{
+  "app": {
+    "name": "AutoApply",
+    "tagline": "Free Job Application Automation for Everyone",
+    "version_label": "Version"
+  },
+  "session": {
+    "starting": "Starting job hunt session...",
+    "stopping": "Stopping session...",
+    "paused": "Session paused",
+    "resumed": "Session resumed",
+    "complete": "Session complete",
+    "jobs_found": "Found {count} jobs",
+    "jobs_vetted": "{passed} of {total} jobs passed vetting",
+    "applications_submitted": "{count} applications submitted",
+    "applications_failed": "{count} applications failed",
+    "duration": "Session duration: {duration}",
+    "checkpoint_saved": "Progress saved",
+    "checkpoint_restored": "Resuming from saved progress",
+    "no_checkpoint": "Starting fresh session"
+  },
+  "discovery": {
+    "starting": "Searching for job opportunities...",
+    "provider_executing": "Searching {provider}...",
+    "provider_failed": "{provider} search failed",
+    "found_count": "Found {count} new listings from {provider}",
+    "complete": "Discovery complete — {count} total jobs found"
+  },
+  "vetting": {
+    "starting": "Evaluating job matches...",
+    "passed": "Match: {title} at {company}",
+    "failed": "Filtered out: {title} — {reason}",
+    "complete": "Vetting complete — {passed} of {total} approved"
+  },
+  "application": {
+    "starting": "Applying to {title} at {company}...",
+    "success": "Successfully applied to {title} at {company}",
+    "failed": "Application failed for {title} at {company}",
+    "skipped_duplicate": "Already applied — skipping {title}",
+    "batch_starting": "Applying to {count} positions at {company}...",
+    "form_filling": "Filling out application form...",
+    "form_submitted": "Application submitted",
+    "redirect_detected": "Redirected to careers page — skipping"
+  },
+  "browser": {
+    "initializing": "Starting browser...",
+    "cascade_trying": "Trying {browser}...",
+    "cascade_failed": "Could not start {browser}: {error}",
+    "cascade_exhausted": "No browser could be started. Please install Chrome, Firefox, or Edge.",
+    "active": "Browser ready ({browser})",
+    "closed": "Browser closed",
+    "unhealthy": "Browser stopped responding — restarting..."
+  },
+  "network": {
+    "checking": "Checking internet connection...",
+    "connected": "Connected",
+    "disconnected": "No internet connection — waiting to reconnect...",
+    "restored": "Internet connection restored — resuming",
+    "timeout": "Connection could not be restored after {seconds} seconds"
+  },
+  "captcha": {
+    "detected": "CAPTCHA detected",
+    "auto_solving": "Attempting automatic CAPTCHA resolution...",
+    "auto_solved": "CAPTCHA resolved automatically",
+    "manual_required": "Please solve the CAPTCHA in the browser window",
+    "resolved": "CAPTCHA resolved — continuing"
+  },
+  "profile": {
+    "loaded": "Profile loaded: {name}",
+    "not_found": "No profile found — starting setup wizard",
+    "created": "Profile created: {name}",
+    "import_success": "Profile imported successfully",
+    "export_success": "Profile exported to {path}"
+  },
+  "wizard": {
+    "welcome": "Welcome to AutoApply!",
+    "welcome_subtitle": "Let's set up your profile to get started.",
+    "step_personal": "Personal Information",
+    "step_experience": "Work Experience",
+    "step_preferences": "Job Preferences",
+    "step_review": "Review & Confirm",
+    "field_first_name": "First Name",
+    "field_last_name": "Last Name",
+    "field_email": "Email Address",
+    "field_phone": "Phone Number",
+    "field_resume": "Resume File",
+    "field_location": "Preferred Location",
+    "field_job_titles": "Desired Job Titles",
+    "btn_next": "Next",
+    "btn_back": "Back",
+    "btn_finish": "Start Applying",
+    "btn_browse": "Browse..."
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "currency": "Currency",
+    "browser_preference": "Preferred Browser",
+    "max_applications": "Max Applications Per Session",
+    "max_per_company": "Max Applications Per Company",
+    "headless_mode": "Run Browser in Background",
+    "human_timing": "Human-Like Timing",
+    "respect_robots": "Respect robots.txt",
+    "research_opt_in": "Contribute Anonymized Research Data",
+    "save": "Save Settings",
+    "saved": "Settings saved",
+    "reset": "Reset to Defaults",
+    "admin_locked": "This setting is locked by your administrator"
+  },
+  "dashboard": {
+    "title": "AutoApply Dashboard",
+    "status": "Status",
+    "discovered": "Jobs Found",
+    "vetted": "Jobs Approved",
+    "applied": "Applications Sent",
+    "failed": "Applications Failed",
+    "elapsed": "Time Elapsed",
+    "btn_start": "Start Job Hunt",
+    "btn_pause": "Pause",
+    "btn_resume": "Resume",
+    "btn_stop": "Stop",
+    "btn_results": "View Results",
+    "run_again": "Run Again",
+    "switch_profile": "Switch Profile"
+  },
+  "results": {
+    "title": "Session Results",
+    "summary": "Summary",
+    "jobs_discovered": "Jobs Discovered",
+    "jobs_vetted_pass": "Jobs Approved",
+    "jobs_vetted_fail": "Jobs Filtered Out",
+    "applications_sent": "Applications Submitted",
+    "applications_failed": "Applications Failed",
+    "success_rate": "Success Rate",
+    "duration": "Duration",
+    "top_rejection_reasons": "Top Rejection Reasons",
+    "applied_jobs_list": "Applied Jobs",
+    "export_csv": "Export to CSV",
+    "export_json": "Export to JSON"
+  },
+  "errors": {
+    "generic": "An unexpected error occurred: {error}",
+    "no_browser": "No supported browser is installed",
+    "no_profile": "No user profile found",
+    "no_internet": "No internet connection",
+    "permission_denied": "Permission denied: {detail}",
+    "file_not_found": "File not found: {path}",
+    "database_error": "Database error: {error}"
+  },
+  "research": {
+    "consent_title": "Research Data Collection",
+    "consent_body": "AutoApply can collect anonymized data about your job search experience to help researchers study and improve the hiring market. No personal information is ever included. You can opt out at any time in Settings.",
+    "consent_accept": "Yes, I'd like to contribute",
+    "consent_decline": "No thanks",
+    "data_exported": "Research data exported to {path}",
+    "opt_in_enabled": "Research data collection enabled",
+    "opt_in_disabled": "Research data collection disabled"
+  },
+  "accessibility": {
+    "screen_reader_mode": "Screen Reader Mode",
+    "high_contrast": "High Contrast Mode",
+    "font_size": "Font Size",
+    "keyboard_shortcuts": "Keyboard Shortcuts"
+  },
+  "gui": {
+    "wizard_title": "Session Configuration",
+    "step_1_title": "Step 1: Inputs & Criteria",
+    "step_2_title": "Step 2: Vetting & Safety",
+    "step_3_title": "Step 3: Execution Strategy",
+    "lbl_job_titles": "Job Titles (comma separated):",
+    "lbl_location": "Location:",
+    "lbl_paste_links": "Paste Job URLs (one per line):",
+    "chk_skip_applied": "Skip jobs I've already applied to",
+    "chk_min_salary": "Filter by minimum salary",
+    "chk_throttling": "Check company throttling rules",
+    "lbl_processing_mode": "Processing Mode:",
+    "opt_adaptive": "Adaptive (Recommended)",
+    "opt_collect": "Collect All → Process Batch",
+    "opt_stream": "Stream (Process Immediately)",
+    "stats_section_title": "Session Metrics",
+    "log_section_title": "Live Activity Feed",
+    "status_idle": "Ready to start..."
+  }
+}
