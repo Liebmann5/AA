@@ -1,0 +1,85 @@
+# Technology release years for QS-01 (experience impossibility detection).
+# Format: technology_name: release_year
+# Add new entries as technologies emerge. Never delete entries.
+
+# Languages
+python: 1991
+javascript: 1995
+typescript: 2012
+rust: 2015
+go: 2012
+kotlin: 2011
+swift: 2014
+dart: 2011
+
+# Frontend frameworks
+react: 2013
+angular: 2016
+vue: 2014
+svelte: 2016
+nextjs: 2016
+nuxt: 2016
+remix: 2021
+
+# Backend frameworks
+fastapi: 2018
+django: 2005
+flask: 2010
+fastify: 2016
+nestjs: 2017
+express: 2010
+laravel: 2011
+
+# Cloud platforms
+aws: 2006
+azure: 2010
+gcp: 2011
+
+# Containerization / Orchestration
+docker: 2013
+kubernetes: 2014
+helm: 2016
+istio: 2017
+argocd: 2018
+
+# Databases
+postgresql: 1996
+mysql: 1995
+mongodb: 2009
+redis: 2009
+cassandra: 2008
+cockroachdb: 2015
+planetscale: 2018
+supabase: 2020
+neon: 2022
+tidb: 2015
+
+# Data / ML platforms
+apache_spark: 2014
+kafka: 2011
+airflow: 2015
+dbt: 2016
+snowflake: 2012
+databricks: 2013
+mlflow: 2018
+ray: 2017
+pytorch: 2016
+tensorflow: 2015
+langchain: 2022
+llama: 2023
+gpt4all: 2023
+anthropic_claude: 2023
+
+# DevOps / CI
+github_actions: 2018
+gitlab_ci: 2012
+terraform: 2014
+ansible: 2012
+pulumi: 2017
+backstage: 2020
+
+# Observability
+datadog: 2010
+grafana: 2014
+prometheus: 2012
+opentelemetry: 2019

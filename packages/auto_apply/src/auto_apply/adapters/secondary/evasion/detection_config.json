@@ -9,12 +9,52 @@
         "text_keywords": 40,
         "js_variables": 0
       },
-      "url_keywords": ["/sorry/", "/challenge/", "/verify/", "/human-challenge/"],
-      "title_keywords": ["verify you are human", "are you a robot", "checking your browser", "attention required"],
-      "iframe_keywords": ["recaptcha", "hcaptcha"],
-      "text_keywords": ["i'm not a robot", "unusual traffic", "prove you're human", "verify that you are not a robot"],
+      "url_keywords": [
+        "/sorry/",
+        "/challenge/",
+        "/verify/",
+        "/human-challenge/",
+        "/cdn-cgi/",
+        "/checkpoint/",
+        "blocked",
+        "denied"
+      ],
+      "title_keywords": [
+        "verify you are human",
+        "are you a robot",
+        "checking your browser",
+        "attention required",
+        "access denied",
+        "bot verification",
+        "security check"
+      ],
+      "iframe_keywords": [
+        "recaptcha",
+        "hcaptcha",
+        "turnstile",
+        "funcaptcha",
+        "arkose"
+      ],
+      "text_keywords": [
+        "i'm not a robot",
+        "i am not a robot",
+        "unusual traffic",
+        "prove you're human",
+        "verify that you are not a robot",
+        "complete the security check",
+        "cloudflare",
+        "your ip has been flagged"
+      ],
       "js_variables": []
-    }
+    },
+    "confidence_weights": {
+      "url_keywords": 30,
+      "title_keywords": 30,
+      "iframe_keywords": 40,
+      "text_keywords": 40,
+      "js_variables": 0
+    },
+    "confidence_threshold": 70
   },
   "heuristic_rules": {
     "google": {
@@ -25,5 +65,6 @@
       "required_link_substrings": ["/jobs/search?jid="],
       "required_text_keywords": ["posted", "day", "days", "hour", "hours", "week", "weeks"]
     }
-  }
+  },
+   "_comment": "js_variables is intentionally empty. window.grecaptcha presence is NOT a CAPTCHA challenge — it is a login widget that nearly every modern job board loads. Only flag a challenge when multiple stronger signals agree (iframe + text, or URL + title). Confidence threshold: 70 points minimum."
 }

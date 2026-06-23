@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Apply: Senior Backend Engineer | TechCorp</title>
+</head>
+<body>
+  <div id="page-1" class="form-page active">
+    <h2>Step 1 of 3: Personal Information</h2>
+    <form id="step1">
+      <div><label for="legal_name">Legal Full Name *</label>
+        <input type="text" id="legal_name" name="legal_name" required></div>
+      <div><label for="email2">Email *</label>
+        <input type="email" id="email2" name="email" required></div>
+      <div><label for="phone2">Phone *</label>
+        <input type="tel" id="phone2" name="phone" required></div>
+      <div><label for="address">Street Address</label>
+        <input type="text" id="address" name="address"></div>
+      <div><label for="city">City *</label>
+        <input type="text" id="city" name="city" required></div>
+      <div><label for="state">State *</label>
+        <select id="state" name="state" required>
+          <option value="">Select state</option>
+          <option value="CA">California</option>
+          <option value="NY">New York</option>
+          <option value="TX">Texas</option>
+          <option value="WA">Washington</option>
+        </select>
+      </div>
+      <div><label for="zip">ZIP Code *</label>
+        <input type="text" id="zip" name="zip" required pattern="[0-9]{5}"></div>
+      <button type="button" id="next-1" onclick="showStep(2)">Next →</button>
+    </form>
+  </div>
+
+  <div id="page-2" class="form-page">
+    <h2>Step 2 of 3: Work Experience</h2>
+    <form id="step2">
+      <div><label for="resume2">Resume *</label>
+        <input type="file" id="resume2" name="resume" required accept=".pdf,.docx"></div>
+      <div><label for="years_exp">Years of Experience *</label>
+        <select id="years_exp" name="years_exp" required>
+          <option value="">Select...</option>
+          <option value="0-2">0-2 years</option>
+          <option value="3-5">3-5 years</option>
+          <option value="5-8">5-8 years</option>
+          <option value="8+">8+ years</option>
+        </select>
+      </div>
+      <div><label for="current_employer">Current Employer</label>
+        <input type="text" id="current_employer" name="current_employer"></div>
+      <div><label for="current_title">Current Title</label>
+        <input type="text" id="current_title" name="current_title"></div>
+      <div><label for="start_date">Start Date at Current Employer</label>
+        <input type="month" id="start_date" name="start_date"></div>
+      <div><label for="work_auth2">US Work Authorization *</label>
+        <select id="work_auth2" name="work_authorization" required>
+          <option value="">Select...</option>
+          <option value="citizen">US Citizen</option>
+          <option value="permanent">Permanent Resident</option>
+          <option value="visa">Visa Holder</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <button type="button" onclick="showStep(1)">← Back</button>
+      <button type="button" id="next-2" onclick="showStep(3)">Next →</button>
+    </form>
+  </div>
+
+  <div id="page-3" class="form-page">
+    <h2>Step 3 of 3: Additional Questions</h2>
+    <form id="step3">
+      <div><label for="salary_expectation">Expected Salary Range *</label>
+        <select id="salary_expectation" name="salary_expectation" required>
+          <option value="">Select...</option>
+          <option value="80-100k">$80,000 - $100,000</option>
+          <option value="100-130k">$100,000 - $130,000</option>
+          <option value="130-160k">$130,000 - $160,000</option>
+          <option value="160k+">$160,000+</option>
+        </select>
+      </div>
+      <div><label for="how_heard">How did you hear about this role? *</label>
+        <select id="how_heard" name="how_heard" required>
+          <option value="">Select...</option>
+          <option value="linkedin">LinkedIn</option>
+          <option value="indeed">Indeed</option>
+          <option value="referral">Employee Referral</option>
+          <option value="company_site">Company Website</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div><label for="essay_1">Why do you want to join TechCorp? (250 words max) *</label>
+        <textarea id="essay_1" name="essay_1" required maxlength="1500" rows="6"></textarea>
+      </div>
+      <div><label for="disability_status">Disability Status (voluntary)</label>
+        <select id="disability_status" name="disability_status">
+          <option value="">Prefer not to disclose</option>
+          <option value="no">No disability</option>
+          <option value="yes">Yes, I have a disability</option>
+        </select>
+      </div>
+      <div><label for="veteran_status">Veteran Status (voluntary)</label>
+        <select id="veteran_status" name="veteran_status">
+          <option value="">Prefer not to disclose</option>
+          <option value="no">Not a veteran</option>
+          <option value="yes">Protected veteran</option>
+        </select>
+      </div>
+      <button type="button" onclick="showStep(2)">← Back</button>
+      <button type="submit" id="final-submit">Submit Application</button>
+    </form>
+  </div>
+
+  <script>
+    function showStep(n) {
+      document.querySelectorAll('.form-page').forEach(p => p.style.display = 'none');
+      document.getElementById('page-' + n).style.display = 'block';
+    }
+  </script>
+</body>
+</html>

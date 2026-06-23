@@ -1,0 +1,98 @@
+# Obfuscation patterns for DP-02 (toxic culture obfuscation detector).
+# Each entry maps a recognizable phrase to its real meaning and a weight (0-1).
+# Weight = probability that this pattern indicates a harmful condition.
+
+- pattern: "work hard and play hard"
+  meaning: "Unpaid overtime culture normalized through vague 'play' compensation"
+  weight: 0.75
+  category: labor_exploitation
+
+- pattern: "wear many hats"
+  meaning: "Understaffed; one person doing multiple roles at one salary"
+  weight: 0.80
+  category: labor_exploitation
+
+- pattern: "unlimited pto"
+  meaning: "No accrued PTO; peer pressure effectively prevents use; no payout on departure"
+  weight: 0.70
+  category: benefits_deception
+
+- pattern: "fast-paced environment"
+  meaning: "Understaffed; unsustainable pace; high burnout rate"
+  weight: 0.65
+  category: labor_exploitation
+
+- pattern: "like a family"
+  meaning: "Interpersonal boundary violations; personal loyalty expected over professional norms"
+  weight: 0.72
+  category: psychological_harm
+
+- pattern: "self-starter"
+  meaning: "No onboarding, no support, no training provided"
+  weight: 0.60
+  category: employer_neglect
+
+- pattern: "competitive salary"
+  meaning: "Below-market; used specifically to avoid disclosing figures"
+  weight: 0.65
+  category: information_asymmetry
+
+- pattern: "equity opportunity"
+  meaning: "Likely worthless options at private company with no liquidity event timeline"
+  weight: 0.68
+  category: financial_deception
+
+- pattern: "passionate about our mission"
+  meaning: "Passion used as justification for below-market compensation"
+  weight: 0.72
+  category: labor_exploitation
+
+- pattern: "startup culture"
+  meaning: "Long hours, low stability, no processes, equity often not vested"
+  weight: 0.65
+  category: labor_exploitation
+
+- pattern: "results-only work environment"
+  meaning: "Labor protections may not be applied; outcome-based work can obscure wage theft"
+  weight: 0.70
+  category: legal_gray_area
+
+- pattern: "high-energy environment"
+  meaning: "Understaffed; unsustainable expectations"
+  weight: 0.68
+  category: labor_exploitation
+
+- pattern: "make a real impact"
+  meaning: "Often used to justify low pay with intangible 'mission' compensation"
+  weight: 0.55
+  category: labor_exploitation
+
+- pattern: "entrepreneurial spirit"
+  meaning: "Expected to work startup hours at non-startup pay"
+  weight: 0.62
+  category: labor_exploitation
+
+- pattern: "above and beyond"
+  meaning: "Explicit statement that standard hours are insufficient"
+  weight: 0.70
+  category: labor_exploitation
+
+- pattern: "scrappy team"
+  meaning: "Understaffed; limited resources; expected to compensate with personal time"
+  weight: 0.68
+  category: labor_exploitation
+
+- pattern: "roll up your sleeves"
+  meaning: "Overqualified candidates expected to do junior work without junior pay"
+  weight: 0.60
+  category: labor_exploitation
+
+- pattern: "flat organization"
+  meaning: "No promotion path; often means arbitrary authority without accountability"
+  weight: 0.55
+  category: employer_neglect
+
+- pattern: "unlimited growth potential"
+  meaning: "No defined growth path; often used to delay or deny actual raises"
+  weight: 0.60
+  category: financial_deception

@@ -1,0 +1,56 @@
+# Academic citation metadata for AutoApply.
+# Used by GitHub/Codeberg, Zenodo, and citation managers.
+# Standard: Citation File Format (CFF) v1.2.0
+# https://citation-file-format.github.io/
+
+cff-version: 1.2.0
+title: "AutoApply: An Open-Source Automated Job Application Platform
+        with Integrated Hiring System Dysfunction Detection"
+message: >
+  If you use AutoApply in academic research, please cite it using
+  the metadata from this file. If you use the research data collected
+  by the platform, please additionally cite the specific data release DOI.
+type: software
+authors:
+  - family-names: Liebmann
+    given-names: Nicholas
+    alias: "Liebmann5"
+    orcid: ""  # Register at https://orcid.org/ and add your ORCID here
+version: "1.0.0-alpha"
+date-released: "2026-06-10"
+license: AGPL-3.0-or-later
+repository-code: "https://codeberg.org/Liebmann5/AutoApply"
+url: "https://codeberg.org/Liebmann5/AutoApply"
+doi: ""  # Add after Zenodo release
+keywords:
+  - job application automation
+  - hiring discrimination
+  - ghost jobs
+  - salary transparency
+  - applicant tracking systems
+  - labor market research
+  - hiring dysfunction
+  - automated testing
+  - hexagonal architecture
+  - research software engineering
+abstract: >
+  AutoApply (AA) is an open-source automated job application platform that
+  simultaneously serves as a scientific research instrument for studying
+  hiring system dysfunction. AA operates from the candidate's perspective
+  across hundreds of Applicant Tracking System (ATS) platforms, detecting
+  ghost job postings, salary transparency law violations, discriminatory
+  language patterns, qualification inflation, and regulatory non-compliance.
+  The platform implements a hexagonal (Ports and Adapters) architecture with
+  a mathematical DOM perception subsystem, enabling reproducible, seeded
+  execution for research-grade data collection. AA produces publishable
+  datasets on hiring market dysfunction at scales previously impossible
+  through manual academic audit studies.
+preferred-citation:
+  type: software
+  title: "AutoApply: Automated Job Application Platform and Hiring Dysfunction Research Instrument"
+  authors:
+    - family-names: Liebmann
+      given-names: Nicholas
+  year: 2026
+  version: "1.0.0-alpha"
+  url: "https://codeberg.org/Liebmann5/AutoApply"

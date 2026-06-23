@@ -1,0 +1,61 @@
+# Market-norm thresholds for common ATS knockout (binary screening) questions.
+#
+# USED BY: AH-01 (ATS Knockout Question Pattern Detector)
+#
+# Each entry defines the 90th-percentile threshold observed across the
+# job market for a given knockout question type, and the "direction" that
+# determines what counts as "stricter than normal":
+#   - "higher_is_stricter": observed_value > p90 is unusually strict
+#       (e.g. requiring MORE years of experience than 90% of postings)
+#   - "lower_is_stricter": observed_value < p90 is unusually strict
+#       (e.g. a salary-expectation CEILING lower than 90% of postings,
+#        meaning the employer screens out anyone expecting a normal salary)
+#
+# IMPORTANT — DATA SOURCE NOTICE:
+# These p90 values are SEED ESTIMATES based on general labor market knowledge.
+# As AA's own corpus accumulates knockout_thresholds observations (which is
+# itself a novel data source — no other tool captures this), the
+# ResearchSignalAggregator should periodically recompute these p90 values
+# from the corpus itself (self-calibrating thresholds) rather than relying
+# on these static seed values indefinitely. See AA_RESEARCH_MODULE_SPEC.md
+# Section "Future Roadmap" for the self-calibration pipeline design.
+
+min_years_experience:
+  p90: 8
+  direction: higher_is_stricter
+  description: >
+    "Do you have at least N years of experience?" — N values above the
+    90th percentile (8 years) for a single knockout question are unusually
+    strict and may screen out otherwise-qualified candidates.
+
+min_salary_expectation_ceiling:
+  p90: 200000
+  direction: lower_is_stricter
+  description: >
+    "Is your salary expectation below $X?" — X values below the 90th
+    percentile in the OTHER direction (i.e. very low ceilings, $200k being
+    the high end) mean the employer is screening out candidates who expect
+    competitive compensation for senior roles.
+
+min_degree_level:
+  p90: 2
+  direction: higher_is_stricter
+  description: >
+    Encoded degree requirement: 0=none, 1=Bachelor's, 2=Master's, 3=PhD.
+    Requiring a Master's degree (2) or higher for a knockout question is
+    at the 90th percentile of strictness — most roles knockout at Bachelor's (1).
+
+min_certifications_required:
+  p90: 2
+  direction: higher_is_stricter
+  description: >
+    Number of professional certifications required as a knockout condition.
+    More than 2 required certifications for initial screening is unusually strict.
+
+max_commute_distance_miles:
+  p90: 10
+  direction: lower_is_stricter
+  description: >
+    "Are you within X miles of our office?" — X values below 10 miles for
+    a knockout (not preference) question may have disparate impact on
+    candidates without reliable transportation in that radius.

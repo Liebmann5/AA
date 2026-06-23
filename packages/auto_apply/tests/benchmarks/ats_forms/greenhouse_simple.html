@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Software Engineer - Apply | AcmeCo Careers</title>
+</head>
+<body>
+  <h1>Apply for Software Engineer</h1>
+  <p>AcmeCo | San Francisco, CA</p>
+  <form id="application-form" method="post" action="/apply/submit">
+
+    <div class="field-group">
+      <label for="first_name">First Name *</label>
+      <input type="text" id="first_name" name="first_name" required
+             placeholder="First name" autocomplete="given-name">
+    </div>
+
+    <div class="field-group">
+      <label for="last_name">Last Name *</label>
+      <input type="text" id="last_name" name="last_name" required
+             placeholder="Last name" autocomplete="family-name">
+    </div>
+
+    <div class="field-group">
+      <label for="email">Email Address *</label>
+      <input type="email" id="email" name="email" required
+             placeholder="you@example.com" autocomplete="email">
+    </div>
+
+    <div class="field-group">
+      <label for="phone">Phone Number</label>
+      <input type="tel" id="phone" name="phone"
+             placeholder="+1 (555) 000-0000" autocomplete="tel">
+    </div>
+
+    <div class="field-group">
+      <label for="resume">Resume / CV *</label>
+      <input type="file" id="resume" name="resume" required
+             accept=".pdf,.doc,.docx">
+    </div>
+
+    <div class="field-group">
+      <label for="linkedin">LinkedIn Profile URL</label>
+      <input type="url" id="linkedin" name="linkedin"
+             placeholder="https://www.linkedin.com/in/yourprofile">
+    </div>
+
+    <div class="field-group">
+      <label for="portfolio">Portfolio / GitHub URL</label>
+      <input type="url" id="portfolio" name="portfolio"
+             placeholder="https://github.com/yourusername">
+    </div>
+
+    <div class="field-group">
+      <label for="location">Current Location *</label>
+      <input type="text" id="location" name="location" required
+             placeholder="City, State">
+    </div>
+
+    <div class="field-group">
+      <label for="work_authorization">Are you authorized to work in the US? *</label>
+      <select id="work_authorization" name="work_authorization" required>
+        <option value="">Select...</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </select>
+    </div>
+
+    <div class="field-group">
+      <label for="sponsorship">Will you now or in the future require immigration sponsorship? *</label>
+      <select id="sponsorship" name="sponsorship" required>
+        <option value="">Select...</option>
+        <option value="no">No</option>
+        <option value="yes">Yes</option>
+      </select>
+    </div>
+
+    <!-- Honeypot field — should be detected and left blank by AA -->
+    <div class="field-group" style="display:none; visibility:hidden; height:0; overflow:hidden;">
+      <label for="website_url">Website</label>
+      <input type="text" id="website_url" name="website_url" tabindex="-1"
+             autocomplete="off">
+    </div>
+
+    <div class="field-group">
+      <label for="cover_letter">Cover Letter</label>
+      <textarea id="cover_letter" name="cover_letter" rows="8"
+                placeholder="Tell us why you're interested in this role..."></textarea>
+    </div>
+
+    <button type="submit" id="submit-btn">Submit Application</button>
+  </form>
+</body>
+</html>

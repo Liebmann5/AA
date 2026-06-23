@@ -1,0 +1,81 @@
+# Validated gender-coded word lists from Gaucher, Friesen & Kay (2011).
+# "Evidence That Gendered Wording in Job Advertisements Exists and Sustains Gender Inequality"
+# Journal of Personality and Social Psychology, 101(1), 109-128.
+# DOI: 10.1037/a0022530
+
+masculine_coded:
+  - competitive
+  - competition
+  - compete
+  - dominant
+  - dominate
+  - dominance
+  - independent
+  - independence
+  - outspoken
+  - ambitious
+  - ambition
+  - analytical
+  - decisive
+  - fearless
+  - headstrong
+  - self-reliant
+  - aggressive
+  - assertive
+  - adventurous
+  - confident
+  - driven
+  - champion
+  - ninja
+  - rockstar
+  - guru
+  - wizard
+  - warrior
+  - conquer
+  - superior
+  - exceptional
+  - elite
+  - hunter
+  - killer
+  - crush
+  - demolish
+  - disrupt
+  - bold
+  - autonomous
+  - individual
+  - outperform
+
+feminine_coded:
+  - collaborative
+  - cooperation
+  - cooperative
+  - interpersonal
+  - support
+  - nurturing
+  - committed
+  - dependable
+  - loyal
+  - responsive
+  - understanding
+  - caring
+  - empathetic
+  - warm
+  - sensitive
+  - gentle
+  - community
+  - inclusive
+  - together
+  - consensus
+  - share
+  - helping
+  - connect
+  - engage
+  - thoughtful
+  - balance
+  - flexible
+  - accommodate
+  - considerate
+  - relationships
+  - compassionate
+  - trust
+  - honest

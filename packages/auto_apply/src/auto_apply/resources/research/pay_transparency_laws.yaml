@@ -1,0 +1,110 @@
+# Active US pay transparency laws for ST-01 detector.
+# Add new laws as they are enacted. Source: DLA Piper 2026 tracker.
+
+CO:
+  jurisdiction_code: CO
+  jurisdiction_name: Colorado
+  effective_date: "2021-01-01"
+  threshold_employees: 1
+  requires_range: true
+  penalty_max_usd: 500
+  notes: Equal Pay for Equal Work Act. Most stringent — applies to all employers.
+
+NYC:
+  jurisdiction_code: NYC
+  jurisdiction_name: New York City
+  effective_date: "2022-11-01"
+  threshold_employees: 4
+  requires_range: true
+  penalty_max_usd: 250000
+  notes: NYC Local Law 32. Highest penalties in the country.
+
+WA:
+  jurisdiction_code: WA
+  jurisdiction_name: Washington State
+  effective_date: "2023-01-01"
+  threshold_employees: 15
+  requires_range: true
+  penalty_max_usd: 1000
+  notes: Washington Equal Pay and Opportunities Act amendment.
+
+CA:
+  jurisdiction_code: CA
+  jurisdiction_name: California
+  effective_date: "2023-01-01"
+  threshold_employees: 15
+  requires_range: true
+  penalty_max_usd: 10000
+  notes: SB 1162. Also requires median pay reporting by race/gender for 100+ employee cos.
+
+IL:
+  jurisdiction_code: IL
+  jurisdiction_name: Illinois
+  effective_date: "2025-01-01"
+  threshold_employees: 15
+  requires_range: true
+  penalty_max_usd: 10000
+  notes: Illinois Equal Pay Act amendment.
+
+MN:
+  jurisdiction_code: MN
+  jurisdiction_name: Minnesota
+  effective_date: "2025-01-01"
+  threshold_employees: 30
+  requires_range: true
+  penalty_max_usd: null
+  notes: Minnesota Pay Transparency Act. Does not apply to remote-only postings.
+
+NJ:
+  jurisdiction_code: NJ
+  jurisdiction_name: New Jersey
+  effective_date: "2025-06-01"
+  threshold_employees: 10
+  requires_range: true
+  penalty_max_usd: 1000
+  notes: New Jersey Pay Transparency Act.
+
+MA:
+  jurisdiction_code: MA
+  jurisdiction_name: Massachusetts
+  effective_date: "2025-10-29"
+  threshold_employees: 25
+  requires_range: true
+  penalty_max_usd: 25000
+  notes: Massachusetts Pay Transparency Act. Includes remote jobs posted by MA employers.
+
+HI:
+  jurisdiction_code: HI
+  jurisdiction_name: Hawaii
+  effective_date: "2024-01-01"
+  threshold_employees: 50
+  requires_range: true
+  penalty_max_usd: null
+  notes: Hawaii SB 1057.
+
+DC:
+  jurisdiction_code: DC
+  jurisdiction_name: Washington DC
+  effective_date: "2024-06-30"
+  threshold_employees: 1
+  requires_range: true
+  penalty_max_usd: null
+  notes: Wage Transparency Omnibus Amendment Act. Applies to ALL employers including solo.
+
+MD:
+  jurisdiction_code: MD
+  jurisdiction_name: Maryland
+  effective_date: "2024-10-01"
+  threshold_employees: 15
+  requires_range: true
+  penalty_max_usd: null
+  notes: Maryland Equal Pay for Equal Work Act amendment.
+
+RI:
+  jurisdiction_code: RI
+  jurisdiction_name: Rhode Island
+  effective_date: "2023-01-01"
+  threshold_employees: 1
+  requires_range: false
+  penalty_max_usd: null
+  notes: Requires pay range upon request, not proactive disclosure. Weaker law.
