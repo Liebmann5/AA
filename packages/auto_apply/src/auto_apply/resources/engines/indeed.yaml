@@ -1,0 +1,76 @@
+# Indeed Search Engine — selector definitions for toolbar interactions.
+#
+# User override path: <USER_DATA_DIR>/engines/indeed.yaml
+
+engine: indeed
+homepage_url: "https://www.indeed.com"
+
+search_bar_selectors:
+  - "input[name='q']"
+  - "input[id*='text-input']"
+  - "input[aria-label*='what' i]"
+  - "input[aria-label*='job' i]"
+  - "input[type='search']"
+
+toolbar:
+  date_filter:
+    # ── Step 1: click the date‑filter dropdown trigger ─────────────────────
+    open_button:
+      selectors:
+        - type: css
+          value: "button[data-testid='date-filter']"
+        - type: css
+          value: "button[aria-label*='date' i]"
+        - type: css
+          value: "div[class*='date'] button"
+        - type: css
+          value: "button#filter-date-button"
+        - type: css
+          value: "button[class*='filter'][class*='date']"
+      fallback:
+        tag: "button"
+        role: "button"
+        aria_label_contains: ["date", "filter", "posted"]
+
+    # ── Step 2: click the specific date option ─────────────────────────────
+    date_options:
+      past_day:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Last 24 hours')]"
+          - type: xpath
+            value: "//li[contains(normalize-space(), 'Last 24 hours')]"
+          - type: xpath
+            value: "//button[contains(normalize-space(), 'Last 24 hours')]"
+        fallback:
+          text_contains: ["last 24 hours", "past 24 hours", "past day"]
+      past_week:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Last 7 days')]"
+          - type: xpath
+            value: "//li[contains(normalize-space(), 'Last 7 days')]"
+          - type: xpath
+            value: "//button[contains(normalize-space(), 'Last 7 days')]"
+        fallback:
+          text_contains: ["last 7 days", "past week", "last week"]
+      past_month:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Last 30 days')]"
+          - type: xpath
+            value: "//li[contains(normalize-space(), 'Last 30 days')]"
+          - type: xpath
+            value: "//button[contains(normalize-space(), 'Last 30 days')]"
+        fallback:
+          text_contains: ["last 30 days", "past month", "last month"]
+      past_year:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Last year')]"
+          - type: xpath
+            value: "//li[contains(normalize-space(), 'Last year')]"
+          - type: xpath
+            value: "//button[contains(normalize-space(), 'Last year')]"
+        fallback:
+          text_contains: ["last year", "past year"]

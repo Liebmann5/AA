@@ -20,13 +20,16 @@ logger = logging.getLogger(__name__)
 class FingerprintMasker:
     """Applies anti-fingerprinting patches to a running browser instance."""
 
-    def __init__(self, browser_interface):
+    def __init__(self, browser_interface, rng: random.Random | None = None):
         """Initializes the masker.
 
         Args:
             browser_interface: The AutoApply BrowserInterface adapter.
+            rng: Optional seeded random.Random instance for deterministic execution.
+                 If None, a new unseeded random.Random() is used.
         """
         self.browser = browser_interface
+        self._rng = rng if rng is not None else random.Random()
 
     def apply_static_evasion(self) -> None:
         """Applies modifications to the browser environment.
@@ -72,7 +75,7 @@ class FingerprintMasker:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})  # noqa: E501
 
         # 2. Hardware Concurrency Spoofing
-        cores = random.choice([4, 8, 12, 16])
+        cores = self._rng.choice([4, 8, 12, 16])  # deterministic when rng is seeded
         script = f"Object.defineProperty(navigator, 'hardwareConcurrency', {{get: () => {cores}}})"  # noqa: E501
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})  # noqa: E501
 

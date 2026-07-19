@@ -189,4 +189,3 @@ class CLIDashboard:
 
         print(sep)  # noqa: T201
         print(" Ctrl+C to stop\n")  # noqa: T201
-

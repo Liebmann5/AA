@@ -1,0 +1,76 @@
+# Bing Search Engine — selector definitions for toolbar interactions.
+#
+# User override path: <USER_DATA_DIR>/engines/bing.yaml
+
+engine: bing
+homepage_url: "https://www.bing.com"
+
+search_bar_selectors:
+  - "input[name='q']"
+  - "textarea[name='q']"
+  - "input[id*='sb_form_q']"
+  - "input[type='search']"
+  - "[aria-label*='search' i]"
+
+toolbar:
+  date_filter:
+    # ── Step 1: click the "Date posted" dropdown trigger ───────────────────
+    open_button:
+      selectors:
+        - type: css
+          value: "div[aria-label*='Date posted']"
+        - type: css
+          value: "span[aria-label*='date' i]"
+        - type: css
+          value: "div.ftrB > div"
+        - type: css
+          value: "a[title*='date' i]"
+        - type: css
+          value: "button[aria-label*='date' i]"
+      fallback:
+        tag: "div"
+        role: "button"
+        aria_label_contains: ["date", "posted", "time"]
+
+    # ── Step 2: choose the specific date range (Bing combines open + select) ─
+    date_options:
+      past_day:
+        selectors:
+          - type: xpath
+            value: "//span[contains(normalize-space(), 'Past 24 hours')]"
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past 24 hours')]"
+          - type: css
+            value: "span[aria-label*='Past 24 hours']"
+        fallback:
+          text_contains: ["past 24 hours", "last 24 hours", "past day"]
+      past_week:
+        selectors:
+          - type: xpath
+            value: "//span[contains(normalize-space(), 'Past week')]"
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past week')]"
+          - type: css
+            value: "span[aria-label*='Past week']"
+        fallback:
+          text_contains: ["past week", "last week", "last 7 days"]
+      past_month:
+        selectors:
+          - type: xpath
+            value: "//span[contains(normalize-space(), 'Past month')]"
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past month')]"
+          - type: css
+            value: "span[aria-label*='Past month']"
+        fallback:
+          text_contains: ["past month", "last month", "last 30 days"]
+      past_year:
+        selectors:
+          - type: xpath
+            value: "//span[contains(normalize-space(), 'Past year')]"
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past year')]"
+          - type: css
+            value: "span[aria-label*='Past year']"
+        fallback:
+          text_contains: ["past year", "last year"]

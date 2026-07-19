@@ -38,7 +38,7 @@ from auto_apply.domain.constants import (
 from auto_apply.domain.services.research_statistics import (
     flesch_kincaid_grade,
     gunning_fog_index,
-    jaccard_similarity,
+    overlap_coefficient,
     role_keywords,
 )
 from auto_apply.domain.services.signal_detectors.base import (
@@ -165,22 +165,33 @@ class GeographicPayDiscriminationDetector:
 class TitleDescriptionMismatchDetector:
     """DP-01: Detects when the job title doesn't match the described role.
 
-    Tier 0 implementation: Jaccard similarity over role-defining keyword sets
-    extracted from title vs. description (zero dependency, works on worst-case
-    hardware). If a TextSimilarityPort (SpaCy/sentence-transformers) is
-    available, inject a richer similarity_fn for Tier 1/2 accuracy — the
+    Tier 0 implementation: overlap-coefficient similarity over role-defining
+    keyword sets extracted from title vs. description (zero dependency,
+    works on worst-case hardware). Overlap coefficient — |A∩B| / min(|A|,|B|)
+    — is used rather than plain Jaccard similarity because titles are
+    inherently short (2-4 words) while descriptions are much longer; Jaccard's
+    union-based denominator would structurally suppress the score for any
+    long, detailed (i.e. good) description regardless of how well it actually
+    matches the title. If a TextSimilarityPort (SpaCy/sentence-transformers)
+    is available, inject a richer similarity_fn for Tier 1/2 accuracy — the
     detection logic and threshold are identical either way.
 
     Args:
         similarity_fn: Optional callable(set[str], set[str]) -> float in [0,1].
-            Defaults to Jaccard similarity (Tier 0, zero dependency).
+            Defaults to the overlap coefficient (Tier 0, zero dependency).
     """
     signal_type = SIG_DP_01
     _SIMILARITY_THRESHOLD: float = 0.15  # Below this = likely bait-and-switch
-    _MIN_KEYWORDS: int = 2  # Need at least this many keywords on each side
+    _MIN_TITLE_KEYWORDS: int = 2  # Titles are inherently short (2-4 words).
+    _MIN_DESC_KEYWORDS: int = 5  # A description with only a couple of
+    # keywords (e.g. "Competitive salary.") is too sparse to make a
+    # reliable title/description comparison at all — it isn't really
+    # describing a role, so treating its near-zero overlap with the title
+    # as a "mismatch" would be a false positive, not a real signal. Titles
+    # don't get held to this same floor since they're expected to be short.
 
     def __init__(self, similarity_fn=None) -> None:
-        self._similarity_fn = similarity_fn or jaccard_similarity
+        self._similarity_fn = similarity_fn or overlap_coefficient
 
     def detect(self, ctx: DetectionContext) -> list[ResearchSignal]:
         title_kw = role_keywords(ctx.job_title)
@@ -189,7 +200,10 @@ class TitleDescriptionMismatchDetector:
         first_chunk = " ".join(ctx.job_description.split()[:150])
         desc_kw = role_keywords(first_chunk)
 
-        if len(title_kw) < self._MIN_KEYWORDS or len(desc_kw) < self._MIN_KEYWORDS:
+        if (
+            len(title_kw) < self._MIN_TITLE_KEYWORDS
+            or len(desc_kw) < self._MIN_DESC_KEYWORDS
+        ):
             return []
 
         similarity = self._similarity_fn(title_kw, desc_kw)

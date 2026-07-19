@@ -38,7 +38,7 @@ def _get_z_index(node: DOMNode) -> int:
 
     Returns 0 for 'auto', missing, or unparseable values.
     """
-    style = node.attributes.get("style", "")
+    style = node.get_attribute("style", "")
     z_str = _parse_style_value(style, "z-index")
     if not z_str or z_str == "auto":
         return 0
@@ -50,13 +50,13 @@ def _get_z_index(node: DOMNode) -> int:
 
 def _is_pointer_events_none(node: DOMNode) -> bool:
     """Return True if the node has ``pointer-events: none`` in its inline style."""
-    style = node.attributes.get("style", "")
+    style = node.get_attribute("style", "")
     return _parse_style_value(style, "pointer-events").lower() == "none"
 
 
 def _is_opacity_zero(node: DOMNode) -> bool:
     """Return True if the node's inline opacity is effectively zero (< 0.05)."""
-    style = node.attributes.get("style", "")
+    style = node.get_attribute("style", "")
     value = _parse_style_value(style, "opacity")
     if not value:
         return False

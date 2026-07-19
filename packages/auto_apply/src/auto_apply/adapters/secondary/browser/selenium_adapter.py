@@ -222,14 +222,16 @@ class SeleniumElementAdapter(ElementInterface):
 class SeleniumAdapter(BrowserInterface):
     """Wraps a Selenium WebDriver instance to conform to the BrowserInterface."""
 
-    def __init__(self, driver: WebDriver):
+    def __init__(self, driver: WebDriver, rng: random.Random | None = None):
         """Initializes the adapter with a raw Selenium WebDriver instance.
 
         Args:
             driver (WebDriver): The underlying Selenium WebDriver to be managed.
+            rng: Optional seeded random.Random for deterministic behaviour.
         """
         _ensure_selenium()
         self._driver = driver
+        self._rng = rng if rng is not None else random.Random()
 
     @property
     def framework_name(self) -> str:
@@ -477,8 +479,8 @@ class SeleniumAdapter(BrowserInterface):
 
     def perform_mouse_fidget(self) -> None:
         """Performs a small, random mouse movement to simulate human 'jitter'."""
-        x_move = random.randint(-5, 5)
-        y_move = random.randint(-5, 5)
+        x_move = self._rng.randint(-5, 5)
+        y_move = self._rng.randint(-5, 5)
         try:
             _ActionChains(self._driver).move_by_offset(x_move, y_move).perform()
             # Move back slightly to avoid drifting off screen over time

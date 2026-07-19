@@ -1,20 +1,26 @@
-# File: adapters/discovery/strategies/navigators.py
-
 """Provides strategies for navigating to search results.
 
 This module implements the Strategy Pattern for browser navigation. It decouples
 the 'Provider' (Google/Bing) from the 'Method' (Direct URL vs Typing), and
 provides a composite 'ResilientNavigator' to handle automatic fallbacks.
+
+The navigator now receives a ``SearchEngineStrategy`` + ``SearchInstruction``
+instead of a pre‑built URL.  This lets each navigation strategy use the
+engine‑specific knowledge (homepage URL, search bar selectors) encapsulated
+in the strategy, while the provider remains a pure scraping executor.
 """
 
 import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from urllib.parse import urlparse
 
+from auto_apply.adapters.secondary.discovery.strategies.engine_strategies import (
+    SearchEngineStrategy,
+)
 from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.application.services.navigation.interruption import InterruptionHandler
+from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.types import Keys, Locator
 
@@ -22,9 +28,16 @@ logger = logging.getLogger(__name__)
 
 
 class NavigationStrategy(ABC):
-    """Abstract base class for navigation behaviors."""
+    """Abstract base class for navigation behaviors.
 
-    def __init__(self, browser: BrowserInterface):
+    Each concrete strategy receives a ``SearchEngineStrategy`` (which knows
+    engine‑specific details like homepage URL and search bar selectors) and a
+    ``SearchInstruction`` (the user's query parameters).  The strategy returns
+    ``True`` if the technical navigation succeeded (page loaded or search
+    submitted).
+    """
+
+    def __init__(self, browser: BrowserInterface) -> None:
         self.browser = browser
 
     @property
@@ -32,15 +45,22 @@ class NavigationStrategy(ABC):
         return self.__class__.__name__
 
     @abstractmethod
-    def navigate(self, url: str, context_data: dict = None) -> bool:
-        """Executes the navigation logic.
+    def navigate(
+        self,
+        engine_strategy: SearchEngineStrategy,
+        instruction: SearchInstruction,
+    ) -> bool:
+        """Execute the navigation logic.
 
         Args:
-            url (str): The target URL.
-            context_data (dict, optional): Extra data needed for human emulation.
+            engine_strategy: The search‑engine‑specific strategy (Google, Bing,
+                Indeed) that provides ``homepage_url``, ``build_search_url()``,
+                and ``search_bar_selectors``.
+            instruction: The typed search instruction (title, location,
+                date_range, etc.).
 
         Returns:
-            bool: True if technical navigation succeeded (page loaded), False otherwise.
+            ``True`` if navigation succeeded, ``False`` otherwise.
         """
         ...
 
@@ -48,53 +68,52 @@ class NavigationStrategy(ABC):
 class DirectURLNavigation(NavigationStrategy):
     """Navigates directly to a constructed URL (Fastest, High Detectability)."""
 
-    def navigate(self, url: str, context_data: dict = None) -> bool:
-        logger.info(f"Navigating via {self.name}: {url}")
+    def navigate(
+        self,
+        engine_strategy: SearchEngineStrategy,
+        instruction: SearchInstruction,
+    ) -> bool:
+        url = engine_strategy.build_search_url(instruction)
+        logger.info("Navigating via %s: %s", self.name, url)
         try:
             self.browser.get(url)
             return True
-        except Exception as e:
-            logger.error(f"{self.name} failed: {e}")
+        except Exception as exc:
+            logger.error("%s failed: %s", self.name, exc)
             return False
 
 
 class HumanSearchNavigation(NavigationStrategy):
-    """Navigates to homepage, types query, and clicks search (Slowest, Low Detectability)."""  # noqa: E501
+    """Navigates to homepage, types query, and clicks search (Slowest, Low Detectability).
 
-    def navigate(self, url: str, context_data: dict = None) -> bool:
-        if not context_data or 'query' not in context_data:
-            logger.warning(f"{self.name} requires 'query' in context_data.")
-            return False
+    Uses the engine strategy's ``homepage_url`` and ``search_bar_selectors``
+    so that no engine‑specific knowledge is hardcoded here.
+    """
 
-        # Extract homepage from full URL (e.g. https://google.com)
-        parsed = urlparse(url)
-        homepage = f"{parsed.scheme}://{parsed.netloc}"
+    def navigate(
+        self,
+        engine_strategy: SearchEngineStrategy,
+        instruction: SearchInstruction,
+    ) -> bool:
+        homepage = engine_strategy.homepage_url
 
-        logger.info(f"Navigating via {self.name} to homepage: {homepage}")
+        logger.info(
+            "Navigating via %s to homepage: %s", self.name, homepage
+        )
         self.browser.get(homepage)
         time.sleep(2)
 
-        # FIX: Clear cookie banners BEFORE trying to find/type in search bar
+        # Clear cookie banners BEFORE trying to find/type in search bar.
         InterruptionHandler(self.browser).handle_interruptions()
 
         try:
-            # FIX: Bing/Google specific search bar heuristics
-            # We look for inputs that are visible
-            selectors = [
-                "input[id*='search' i]",
-                "input[name*='search' i]",
-                "input[placeholder*='search' i]",
-                "input[placeholder*='job' i]",
-                "input[name*='keyword' i]",
-                "input[name='q']",
-                "input[type='search']",
-                "textarea[name='q']",
-                "[aria-label*='search' i]",
-            ]
-
+            selectors = engine_strategy.search_bar_selectors
             search_input = None
+
             for sel in selectors:
-                candidates = self.browser.find_elements(Locator.CSS_SELECTOR, sel)
+                candidates = self.browser.find_elements(
+                    Locator.CSS_SELECTOR, sel
+                )
                 for cand in candidates:
                     try:
                         w, h = cand.get_size()
@@ -107,11 +126,11 @@ class HumanSearchNavigation(NavigationStrategy):
                     break
 
             if search_input:
-                query_text = context_data.get('query')
-                if 'location' in context_data:
-                    query_text += f" in {context_data['location']}"
+                query_text = instruction.effective_query
+                if instruction.location:
+                    query_text += f" in {instruction.location}"
 
-                logger.info(f"Typing query: {query_text}")
+                logger.info("Typing query: %s", query_text)
 
                 # Click to focus
                 search_input.click()
@@ -122,10 +141,14 @@ class HumanSearchNavigation(NavigationStrategy):
                 search_input.send_keys(Keys.ENTER)
                 return True
             else:
-                logger.warning("Could not find a visible search bar on the homepage.")
+                logger.warning(
+                    "Could not find a visible search bar on the homepage "
+                    "for engine=%s",
+                    engine_strategy.engine_name,
+                )
 
-        except Exception as e:
-            logger.warning(f"{self.name} failed: {e}")
+        except Exception as exc:
+            logger.warning("%s failed: %s", self.name, exc)
 
         return False
 
@@ -134,68 +157,94 @@ class ResilientNavigator:
     """A composite navigator that attempts multiple strategies in sequence.
 
     This class implements the 'Fallback Pattern'. It attempts the fastest
-    strategy first. If the resulting page fails a validation check (e.g. is blocked),
-    it resets the browser state (clearing cookies) and tries the next strategy.
+    strategy first. If the resulting page fails a validation check (e.g. is
+    blocked), it resets the browser state (clearing cookies) and tries the
+    next strategy.
+
+    The navigator now receives a ``SearchEngineStrategy`` + ``SearchInstruction``
+    instead of a pre‑built URL.  This eliminates URL‑construction logic from
+    providers and makes toolbar interactions a separate, post‑navigation step.
     """
 
-    def __init__(self, browser: BrowserInterface, strategies: list[NavigationStrategy]):
+    def __init__(
+        self,
+        browser: BrowserInterface,
+        strategies: list[NavigationStrategy],
+    ) -> None:
         """Initializes the resilient navigator.
 
         Args:
-            browser (BrowserInterface): The active browser.
-            strategies (List[NavigationStrategy]): A prioritized list of strategies to try.
-        """  # noqa: E501
+            browser: The active browser.
+            strategies: A prioritized list of strategies to try.
+        """
         self.browser = browser
         self.strategies = strategies
 
     def navigate_with_fallback(
         self,
-        url: str,
-        context_data: dict,
-        validator: Callable[[], bool]
+        engine_strategy: SearchEngineStrategy,
+        instruction: SearchInstruction,
+        validator: Callable[[], bool],
     ) -> bool:
         """Attempts navigation using the defined strategies until one yields a valid page.
 
         Args:
-            url (str): The target URL.
-            context_data (dict): Context for human search (query, location).
-            validator (Callable[[], bool]): A function that returns True if the
-                page is healthy/safe, and False if blocked/broken.
+            engine_strategy: The search‑engine‑specific strategy that provides
+                URL construction, homepage URL, and toolbar interactions.
+            instruction: The typed search instruction.
+            validator: A function that returns ``True`` if the page is
+                healthy/safe, and ``False`` if blocked/broken.
 
         Returns:
-            bool: True if a valid page was loaded, False if all strategies failed.
-        """  # noqa: E501
+            ``True`` if a valid page was loaded, ``False`` if all strategies
+            failed.
+        """
         for i, strategy in enumerate(self.strategies):
             attempt_num = i + 1
-            logger.info(f"ResilientNavigation: Attempt {attempt_num}/{len(self.strategies)} using {strategy.name}")  # noqa: E501
+            logger.info(
+                "ResilientNavigation: Attempt %d/%d using %s",
+                attempt_num,
+                len(self.strategies),
+                strategy.name,
+            )
 
             # 1. Attempt Navigation
-            success = strategy.navigate(url, context_data)
+            success = strategy.navigate(engine_strategy, instruction)
 
-            # 2. If navigation command worked, check if the page is actually valid (not blocked)  # noqa: E501
+            # 2. If navigation command worked, check if the page is actually
+            #    valid (not blocked).
             if success:
-                # Give it a moment to settle/render before validation
+                # Give it a moment to settle/render before validation.
                 time.sleep(2)
 
                 if validator():
-                    logger.info(f"ResilientNavigation: {strategy.name} successful and validated.")  # noqa: E501
+                    logger.info(
+                        "ResilientNavigation: %s successful and validated.",
+                        strategy.name,
+                    )
                     return True
 
-                logger.warning(f"ResilientNavigation: {strategy.name} resulted in a blocked or invalid page.")  # noqa: E501
+                logger.warning(
+                    "ResilientNavigation: %s resulted in a blocked or invalid page.",
+                    strategy.name,
+                )
 
             # 3. FAILURE RECOVERY
-            # If we failed and have more strategies to try, we must reset the environment.  # noqa: E501
+            # If we failed and have more strategies to try, reset the
+            # environment.
             if attempt_num < len(self.strategies):
-                logger.info("ResilientNavigation: Resetting browser state (Cookies/Storage) before next attempt...")  # noqa: E501
+                logger.info(
+                    "ResilientNavigation: Resetting browser state "
+                    "(Cookies/Storage) before next attempt..."
+                )
                 try:
                     self.browser.get("about:blank")
-                    # Note: Not all drivers support deleting cookies perfectly, but we try  # noqa: E501
-                    # self.browser.delete_all_cookies()
-                    # If using SeleniumAdapter, we can add delete_all_cookies to interface later  # noqa: E501
-                except Exception as e:
-                    logger.debug(f"Reset warning: {e}")
+                except Exception as exc:
+                    logger.debug("Reset warning: %s", exc)
 
                 time.sleep(1)
 
-        logger.error("ResilientNavigation: All strategies exhausted. Query failed.")
+        logger.error(
+            "ResilientNavigation: All strategies exhausted. Query failed."
+        )
         return False

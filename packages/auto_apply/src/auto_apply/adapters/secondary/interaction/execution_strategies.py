@@ -15,6 +15,7 @@ via structural subtyping — no explicit inheritance required.
 import logging
 import random
 import time
+from typing import Optional
 
 from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
@@ -35,12 +36,19 @@ class StealthHumanStrategy:
     Args:
         base_inter_action_delay: Seconds between plan steps before jitter is
             applied.  Defaults to 0.5 s; minimum enforced at 0.1 s.
+        rng: Optional seeded random.Random instance for deterministic behaviour.
+            If None, a fresh unseeded random.Random() is used.
     """
 
     DEFAULT_INTER_ACTION_DELAY: float = 0.5
 
-    def __init__(self, base_inter_action_delay: float = DEFAULT_INTER_ACTION_DELAY) -> None:
+    def __init__(
+        self,
+        base_inter_action_delay: float = DEFAULT_INTER_ACTION_DELAY,
+        rng: Optional[random.Random] = None,
+    ) -> None:
         self._base_delay = max(base_inter_action_delay, 0.1)
+        self._rng = rng if rng is not None else random.Random()
 
     def click(self, browser: BrowserInterface, element: ElementInterface) -> None:
         """Clicks via a curved mouse path with pre-click hesitation.
@@ -53,7 +61,7 @@ class StealthHumanStrategy:
             browser: Active browser driver needed for low-level mouse actions.
             element: Target DOM element to click.
         """
-        behavior.human_like_click(browser, element)
+        behavior.human_like_click(browser, element, rng=self._rng)
 
     def type_text(self, element: ElementInterface, text: str) -> None:
         """Types text character-by-character with parabolic inter-key delays.
@@ -62,7 +70,7 @@ class StealthHumanStrategy:
             element: Target input element.
             text: String to type.
         """
-        behavior.human_like_typing(element, text)
+        behavior.human_like_typing(element, text, rng=self._rng)
 
     def hover(self, browser: BrowserInterface, element: ElementInterface) -> None:
         """Moves the mouse to the element with a small random offset and pause.
@@ -73,10 +81,10 @@ class StealthHumanStrategy:
         """
         browser.move_mouse_to_element(
             element,
-            offset_x=random.randint(-8, 8),
-            offset_y=random.randint(-8, 8),
+            offset_x=self._rng.randint(-8, 8),
+            offset_y=self._rng.randint(-8, 8),
         )
-        time.sleep(behavior.parabolic_delay(peak_time=0.15, randomness=0.3))
+        time.sleep(behavior.parabolic_delay(peak_time=0.15, randomness=0.3, rng=self._rng))
 
     def inter_action_delay(self) -> None:
         """Pauses between plan steps with ±20 % random jitter.
@@ -84,7 +92,7 @@ class StealthHumanStrategy:
         Jitter prevents the constant-interval signature that bot detectors
         flag as machine-generated timing.
         """
-        jitter = random.uniform(0.8, 1.2)
+        jitter = self._rng.uniform(0.8, 1.2)
         time.sleep(self._base_delay * jitter)
 
 
@@ -97,7 +105,14 @@ class InstantHeadlessStrategy:
     - Any context where anti-bot evasion is not required.
 
     Every method issues the minimal driver call and returns immediately.
+
+    Args:
+        rng: Unused in this strategy; accepted for interface parity.
     """
+
+    def __init__(self, rng: Optional[random.Random] = None) -> None:
+        # Not used, but stored to satisfy interface consistency.
+        self._rng = rng if rng is not None else random.Random()
 
     def click(self, browser: BrowserInterface, element: ElementInterface) -> None:
         """Clicks the element directly without mouse movement.

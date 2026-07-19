@@ -15,6 +15,20 @@ from auto_apply.domain.ports.browser_port import ElementInterface
 
 logger = logging.getLogger(__name__)
 
+# ── Value normalisation ───────────────────────────────────────────────────────
+# When the SemanticFiller provides a string value (e.g. "Yes", "Authorized"),
+# these sets determine whether the checkbox/radio should be checked.
+
+_AFFIRMATIVE: frozenset[str] = frozenset({
+    "yes", "true", "1", "agree", "i agree", "authorized",
+    "eligible", "accept", "confirm", "checked", "on",
+})
+
+_NEGATIVE: frozenset[str] = frozenset({
+    "no", "false", "0", "disagree", "not authorized",
+    "ineligible", "decline", "uncheck", "off",
+})
+
 
 class CheckableInputHandler(BaseInputHandler):
     """Handles interaction with <input type='checkbox'> and <input type='radio'> elements."""  # noqa: E501
@@ -63,13 +77,32 @@ class CheckableInputHandler(BaseInputHandler):
             self._click_safely(element)
 
     def _evaluate_truthiness(self, value: Any) -> bool:
-        """Normalizes various input types into a boolean."""
+        """Normalizes various input types into a boolean.
+
+        Booleans are passed through directly.  Strings are compared against the
+        AFFIRMATIVE and NEGATIVE keyword sets so that profile values like
+        ``"Authorized"`` correctly check the box.
+
+        Args:
+            value: The raw value from the profile (bool, str, int, etc.).
+
+        Returns:
+            True if the checkbox/radio should be in a checked state.
+        """
         if isinstance(value, bool):
             return value
 
         if isinstance(value, str):
             normalized = value.lower().strip()
-            return normalized in ["true", "yes", "1", "on", "checked"]
+
+            if normalized in _AFFIRMATIVE:
+                return True
+            if normalized in _NEGATIVE:
+                return False
+
+            # For unrecognised strings, fall back to Python's truthiness
+            # (non‑empty string → True).
+            return bool(normalized)
 
         return bool(value)
 
@@ -78,8 +111,8 @@ class CheckableInputHandler(BaseInputHandler):
         try:
             behavior.human_like_click(self.browser, element)
         except Exception as e:
-            logger.debug(f"Human-like click failed on checkable: {e}. Attempting JS fallback.")  # noqa: E501
+            logger.debug("Human-like click failed on checkable: %s. Attempting JS fallback.", e)  # noqa: E501
             try:
                 self.browser.execute_script("arguments[0].click();", element)
             except Exception as js_e:
-                logger.error(f"Failed to toggle checkable element: {js_e}")
+                logger.error("Failed to toggle checkable element: %s", js_e)

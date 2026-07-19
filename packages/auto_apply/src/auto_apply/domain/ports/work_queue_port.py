@@ -47,3 +47,11 @@ class WorkQueuePort(ABC):
         Called once at orchestrator startup to ensure work is never lost
         due to an unclean shutdown.
         """
+
+    @abstractmethod
+    def get_queue_stats(self) -> dict:
+        """Returns a summary of work queue status counts.
+
+        Returns:
+            Dict with keys: pending, in_progress, completed, failed, skipped.
+        """

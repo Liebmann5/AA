@@ -45,7 +45,7 @@ Two-Timescale Human Behavior Model:
     tasks. Domain engines call `macro_pause()` explicitly at task boundaries.
 
 Configuration:
-    All timing parameters come from CapabilitiesRegistry._effective_config,
+    All timing parameters come from CapabilitiesRegistry.get_all_effective_config(),
     which has already applied low-resource overrides. The service reads the
     resolved values at construction; low-resource mode simply widens the delays
     and disables mouse-movement fingerprinting automatically.
@@ -66,15 +66,14 @@ Usage:
 import logging
 import random
 import time
-from typing import TYPE_CHECKING
+from typing import Callable
 
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 from auto_apply.domain.types import (  # FIXED: was `from core.types import Keys, Locator`  # noqa: E501
     Locator,
 )
 
-if TYPE_CHECKING:
-    from auto_apply.infrastructure.composition_root import CapabilitiesRegistry
+from auto_apply.domain.ports.registry_port import RegistryPort
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +127,8 @@ class PageActionService:
         browser: The active BrowserInterface (Selenium or Playwright adapter).
         registry: The session CapabilitiesRegistry. Timing config is read
             from its resolved effective_config at construction time.
+        rng: Optional seeded random.Random for deterministic behaviour.
+            If None, a fresh unseeded random.Random() is used.
 
     Example:
         >>> page = PageActionService(browser=driver, registry=registry)
@@ -141,12 +142,14 @@ class PageActionService:
     def __init__(
         self,
         browser: BrowserInterface,
-        registry: "CapabilitiesRegistry",
+        registry: RegistryPort,
+        rng: random.Random | None = None,
     ) -> None:
         self._browser = browser
+        self._rng = rng if rng is not None else random.Random()
 
         # Resolved from registry — already low-resource-adjusted.
-        cfg = registry._effective_config
+        cfg = registry.get_all_effective_config()
 
         # MICRO timing: intra-task delays (keystrokes, between micro-actions).
         self._micro_peak_ms: float = float(cfg.get("micro_timing_peak_ms", 80.0))
@@ -163,6 +166,11 @@ class PageActionService:
         self._human_timing:  bool = bool(cfg.get("enable_human_timing",        True))
         self._fingerprint:   bool = bool(cfg.get("enable_fingerprint_spoofing", True))
 
+        # NAVIGATION resilience: bounded retry count for failed page loads.
+        # This is a navigation *policy* (how many attempts before giving up),
+        # not a human-timing value. See navigate() and its traversal-graph note.
+        self._navigation_retries: int = max(1, int(cfg.get("navigation_retries", 3)))
+
         logger.debug(
             "PageActionService ready | micro_peak=%.0fms "
             "macro=[%.1f–%.1fs] fingerprint=%s",
@@ -175,31 +183,86 @@ class PageActionService:
     # NAVIGATION
     # =========================================================================
 
-    def navigate(self, url: str) -> ActionResult:
-        """Navigates to a URL and waits for the page to settle.
+    def navigate(
+        self,
+        url: str,
+        *,
+        next_candidate: "Callable[[str, int], str | None] | None" = None,
+    ) -> ActionResult:
+        """Navigates to a URL, retrying up to ``navigation_retries`` times.
 
-        The settle pause is a MACRO pause — it models the time a human
-        spends visually orienting to a newly loaded page before acting.
-        Domain engines should NOT add their own sleep after calling this.
+        A failed load is retried, bounded by the resolved ``navigation_retries``
+        config value, so a genuinely dead URL is abandoned instead of hanging
+        the session — the "give up after N tries" limit. A successful load
+        returns immediately (a single attempt); the count is a ceiling, not a
+        quota.
+
+        The settle pause is a MACRO pause — it models the time a human spends
+        visually orienting to a newly loaded page before acting. Domain engines
+        should NOT add their own sleep after calling this.
 
         Args:
             url: The fully qualified URL to load.
+            next_candidate: [TRAVERSAL-GRAPH SEAM — see NOTE below] Optional
+                callable ``(failed_target, attempt_number) -> next_target |
+                None``. Its return value becomes the target for the next
+                attempt; returning ``None`` gives up early. When omitted
+                (today's default) every retry re-attempts the SAME url.
 
         Returns:
-            ActionResult. success=True if load completed without exception.
+            ActionResult. success=True if a load completed without exception;
+            on failure, reason holds the last error encountered.
+
+        NOTE — Application Traversal Graph integration (planned, not yet built):
+            ``navigation_retries`` is meant to bound a *search* for a working
+            target, not blind repetition of one URL. ``next_candidate`` is the
+            single seam for that search, and it is deliberately the only thing
+            the future graph needs to touch:
+
+              * This loop already bounds attempts at ``navigation_retries`` and
+                reports give-up cleanly, so the graph never has to own the
+                budget or the stop condition.
+              * When the graph lands, the composition root injects a
+                ``next_candidate`` backed by a graph walk: on each failed
+                attempt it returns the next candidate link/path/url. No change
+                to this method's control flow is required — only the injected
+                callable. Keep this seam and its signature intact.
+
+            Until then, leaving ``next_candidate=None`` preserves today's
+            behaviour exactly (retry the same url), so wiring the graph later is
+            purely additive.
 
         Example:
             >>> if not page.navigate("https://lever.co/company/job-abc"):
-            ...     return  # Navigation failed; abort this job
+            ...     return  # Navigation failed after retries; abort this job
         """
-        try:
-            logger.debug("navigate | url=%s", url)
-            self._browser.get(url)
-            self.macro_pause()   # Simulate reading the freshly loaded page.
-            return ActionResult(True)
-        except Exception as exc:
-            logger.warning("navigate failed | url=%s error=%s", url, exc)
-            return ActionResult(False, reason=str(exc))
+        attempts = max(1, self._navigation_retries)
+        target = url
+        last_reason = "navigation not attempted"
+        for attempt in range(1, attempts + 1):
+            try:
+                logger.debug("navigate | attempt=%d/%d url=%s", attempt, attempts, target)
+                self._browser.get(target)
+                self.macro_pause()   # Simulate reading the freshly loaded page.
+                return ActionResult(True)
+            except Exception as exc:
+                last_reason = str(exc)
+                logger.warning(
+                    "navigate failed | attempt=%d/%d url=%s error=%s",
+                    attempt, attempts, target, exc,
+                )
+                if attempt < attempts:
+                    # TRAVERSAL-GRAPH SEAM: choose the next target to try. Today
+                    # this repeats the same url; the graph will supply the next
+                    # candidate here. See the NOTE in this method's docstring.
+                    if next_candidate is not None:
+                        proposed = next_candidate(target, attempt)
+                        if proposed is None:
+                            break
+                        target = proposed
+                    self._settle_pause()   # brief backoff before retrying
+        return ActionResult(False, reason=last_reason)
+
 
     def navigate_back(self) -> ActionResult:
         """Navigates back one step using the interface's back() method.
@@ -371,8 +434,8 @@ class PageActionService:
             if self._fingerprint:
                 self._browser.move_mouse_to_element(
                     element,
-                    offset_x=random.randint(-9, 9),
-                    offset_y=random.randint(-9, 9),
+                    offset_x=self._rng.randint(-9, 9),
+                    offset_y=self._rng.randint(-9, 9),
                 )
                 time.sleep(self._micro_delay(peak_ms=250))
                 self._browser.move_mouse_to_element(element)
@@ -600,7 +663,7 @@ class PageActionService:
                 loc = element.get_location()
                 if loc:
                     target_y = loc[1]
-                    steps = random.randint(3, 6)
+                    steps = self._rng.randint(3, 6)
                     increment = max(1, target_y // max(1, steps))
                     for _ in range(steps):
                         self._browser.scroll_by_offset(0, increment)
@@ -624,7 +687,7 @@ class PageActionService:
         steps = 0
         try:
             for _ in range(max_scrolls):
-                self._browser.scroll_by_offset(0, random.randint(280, 680))
+                self._browser.scroll_by_offset(0, self._rng.randint(280, 680))
                 steps += 1
 
                 pause = (
@@ -649,8 +712,8 @@ class PageActionService:
                         logger.debug("scroll_page: bottom reached | steps=%d", steps)
                         break
 
-                if random.random() > 0.82:
-                    self._browser.scroll_by_offset(0, -random.randint(60, 180))
+                if self._rng.random() > 0.82:
+                    self._browser.scroll_by_offset(0, -self._rng.randint(60, 180))
                     time.sleep(self._micro_delay(peak_ms=400))
 
         except Exception as exc:
@@ -686,10 +749,10 @@ class PageActionService:
             time.sleep(lo)
             return
 
-        if random.random() < 0.70:
-            duration = random.uniform(lo, lo + (hi - lo) * 0.5)
+        if self._rng.random() < 0.70:
+            duration = self._rng.uniform(lo, lo + (hi - lo) * 0.5)
         else:
-            duration = random.uniform(lo + (hi - lo) * 0.4, hi)
+            duration = self._rng.uniform(lo + (hi - lo) * 0.4, hi)
 
         if self._fingerprint:
             self._idle_with_fidgets(duration)
@@ -705,9 +768,9 @@ class PageActionService:
         if not self._human_timing:
             return max(0.02, (peak_ms / 1000.0) * 0.4)
 
-        x = random.uniform(-1.0, 1.0)
+        x = self._rng.uniform(-1.0, 1.0)
         base = (-x * x + 1.0) * (peak_ms / 1000.0)
-        factor = random.uniform(1.0 - randomness, 1.0 + randomness)
+        factor = self._rng.uniform(1.0 - randomness, 1.0 + randomness)
         return max(0.01, abs(base * factor))
 
     def _settle_pause(self) -> None:
@@ -715,7 +778,7 @@ class PageActionService:
         if not self._human_timing:
             time.sleep(self._settle_min_s)
             return
-        time.sleep(random.uniform(self._settle_min_s, self._settle_max_s))
+        time.sleep(self._rng.uniform(self._settle_min_s, self._settle_max_s))
 
     def _idle_with_fidgets(self, duration: float) -> None:
         """Sleeps for `duration` seconds with random mouse micro-movements."""
@@ -725,7 +788,7 @@ class PageActionService:
                 self._browser.perform_mouse_fidget()
             except Exception:
                 pass
-            time.sleep(random.uniform(0.2, 0.7))
+            time.sleep(self._rng.uniform(0.2, 0.7))
 
     # =========================================================================
     # ESCAPE HATCH

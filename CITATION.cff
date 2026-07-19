@@ -2,6 +2,11 @@
 # Used by GitHub/Codeberg, Zenodo, and citation managers.
 # Standard: Citation File Format (CFF) v1.2.0
 # https://citation-file-format.github.io/
+#
+# FAIR4RS compliance: This file provides the "Findable" and "Reusable"
+# metadata required by the FAIR for Research Software principles.
+# For reproducibility instructions, see:
+#   packages/auto_apply/docs/REPRODUCIBILITY.md
 
 cff-version: 1.2.0
 title: "AutoApply: An Open-Source Automated Job Application Platform
@@ -15,13 +20,13 @@ authors:
   - family-names: Liebmann
     given-names: Nicholas
     alias: "Liebmann5"
-    orcid: ""  # Register at https://orcid.org/ and add your ORCID here
+    orcid: ""  # TODO: Register at https://orcid.org/ and add your ORCID here
 version: "1.0.0-alpha"
 date-released: "2026-06-10"
-license: AGPL-3.0-or-later
+license: MIT
 repository-code: "https://codeberg.org/Liebmann5/AutoApply"
 url: "https://codeberg.org/Liebmann5/AutoApply"
-doi: ""  # Add after Zenodo release
+doi: ""  # TODO: Add after Zenodo release — see https://docs.github.com/en/repositories/archiving-a-github-repository/referencing-and-citing-content
 keywords:
   - job application automation
   - hiring discrimination
@@ -33,6 +38,8 @@ keywords:
   - automated testing
   - hexagonal architecture
   - research software engineering
+  - reproducible research
+  - FAIR4RS
 abstract: >
   AutoApply (AA) is an open-source automated job application platform that
   simultaneously serves as a scientific research instrument for studying

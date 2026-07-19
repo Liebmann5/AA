@@ -57,6 +57,7 @@
     "earliest_start_date": "Immediate"
   },
   "app_config": {
+    "enable_research_collection": true,
     "preferred_browser": "any",
     "locale": "None",
     "run_headless": false,

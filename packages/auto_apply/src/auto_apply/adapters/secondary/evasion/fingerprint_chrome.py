@@ -9,21 +9,36 @@ browsers.
 The core technique used is the CDP command `Page.addScriptToEvaluateOnNewDocument`,
 which ensures our spoofing scripts are executed before any scripts on the
 webpage, making them highly effective.
+
+For deterministic reproducibility, rng parameters accept a random.Random instance
+created via BehaviorParameters.make_rng() with namespace=("evasion","fingerprint_chrome").
 """
 import logging
 import random
-from typing import Literal
+from typing import Literal, Optional
 
 from selenium.webdriver.remote.webdriver import WebDriver
 
 logger = logging.getLogger(__name__)
 
 COMMON_WEBGL_RENDERERS = [
-    "NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 3080", "NVIDIA GeForce RTX 2060",
-    "AMD Radeon RX 7900 XTX", "AMD Radeon RX 6800", "Apple M2 Pro", "Apple M1",
-    "Intel(R) Iris(TM) Xe Graphics", "Intel HD Graphics 620"
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA GeForce RTX 3080",
+    "NVIDIA GeForce RTX 2060",
+    "AMD Radeon RX 7900 XTX",
+    "AMD Radeon RX 6800",
+    "Apple M2 Pro",
+    "Apple M1",
+    "Intel(R) Iris(TM) Xe Graphics",
+    "Intel HD Graphics 620",
 ]
-COMMON_WEBGL_VENDORS = ["Google Inc. (NVIDIA)", "Google Inc. (AMD)", "Apple Inc.", "Google Inc. (Intel)"]  # noqa: E501
+COMMON_WEBGL_VENDORS = [
+    "Google Inc. (NVIDIA)",
+    "Google Inc. (AMD)",
+    "Apple Inc.",
+    "Google Inc. (Intel)",
+]
+
 
 def _execute_cdp_script_on_new_document(driver: WebDriver, script: str) -> None:
     """A centralized helper to inject scripts using the Chrome DevTools Protocol.
@@ -38,9 +53,12 @@ def _execute_cdp_script_on_new_document(driver: WebDriver, script: str) -> None:
         script: The JavaScript source code to inject.
     """
     try:
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})  # noqa: E501
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument", {"source": script}
+        )
     except Exception as e:
         logger.error(f"Failed to execute CDP script: {e}")
+
 
 def remove_automation_artifacts(driver: WebDriver) -> None:
     """Removes JavaScript variables and properties that identify ChromeDriver.
@@ -71,7 +89,14 @@ def remove_automation_artifacts(driver: WebDriver) -> None:
     """
     _execute_cdp_script_on_new_document(driver, script)
 
-def spoof_webgl(driver: WebDriver, strategy: Literal["random", "custom"], vendor: str, renderer: str) -> None:  # noqa: E501
+
+def spoof_webgl(
+    driver: WebDriver,
+    strategy: Literal["random", "custom"],
+    vendor: str,
+    renderer: str,
+    rng: Optional[random.Random] = None,
+) -> None:
     """Spoofs the WebGL vendor and renderer strings.
 
     The combination of WebGL vendor and renderer is a highly unique identifier
@@ -84,10 +109,13 @@ def spoof_webgl(driver: WebDriver, strategy: Literal["random", "custom"], vendor
         strategy: 'random' to pick from a list of common GPUs, or 'custom'.
         vendor: The custom vendor string to use if strategy is 'custom'.
         renderer: The custom renderer string to use if strategy is 'custom'.
+        rng: Optional seeded random.Random for reproducibility.
     """
+    _rng = rng if rng is not None else random.Random()
+
     if strategy == "random":
-        vendor = random.choice(COMMON_WEBGL_VENDORS)
-        renderer = random.choice(COMMON_WEBGL_RENDERERS)
+        vendor = _rng.choice(COMMON_WEBGL_VENDORS)
+        renderer = _rng.choice(COMMON_WEBGL_RENDERERS)
     logger.info(f"Spoofing WebGL with Vendor: '{vendor}', Renderer: '{renderer}'")
     script = f"""
     (() => {{
@@ -102,6 +130,7 @@ def spoof_webgl(driver: WebDriver, strategy: Literal["random", "custom"], vendor
     }})();
     """
     _execute_cdp_script_on_new_document(driver, script)
+
 
 def spoof_canvas(driver: WebDriver, strategy: Literal["noise", "random"]) -> None:
     """Defeats canvas fingerprinting by adding random noise to the image data.
@@ -137,6 +166,7 @@ def spoof_canvas(driver: WebDriver, strategy: Literal["noise", "random"]) -> Non
     """
     _execute_cdp_script_on_new_document(driver, script)
 
+
 def spoof_hardware(driver: WebDriver, cores: int) -> None:
     """Injects JS to override the reported number of CPU cores.
 
@@ -150,8 +180,9 @@ def spoof_hardware(driver: WebDriver, cores: int) -> None:
         cores: The number of cores to report (e.g., 4, 8, 16).
     """
     logger.info(f"Spoofing hardwareConcurrency to: {cores}")
-    script = f"Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {cores} }});"  # noqa: E501
+    script = f"Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {cores} }});"
     _execute_cdp_script_on_new_document(driver, script)
+
 
 def spoof_timezone(driver: WebDriver, timezone: str = "America/New_York") -> None:
     """Spoofs the browser's timezone using a CDP command.
@@ -167,9 +198,10 @@ def spoof_timezone(driver: WebDriver, timezone: str = "America/New_York") -> Non
     """
     logger.info(f"Spoofing timezone to: {timezone}")
     try:
-        driver.execute_cdp_cmd("Emulation.setTimezoneOverride", {"timezoneId": timezone})  # noqa: E501
+        driver.execute_cdp_cmd("Emulation.setTimezoneOverride", {"timezoneId": timezone})
     except Exception as e:
         logger.error(f"Failed to spoof timezone: {e}")
+
 
 def harden_permissions_api(driver: WebDriver) -> None:
     """Makes the Permissions API less revealing by masking notification state.
@@ -195,6 +227,7 @@ def harden_permissions_api(driver: WebDriver) -> None:
     })();
     """
     _execute_cdp_script_on_new_document(driver, script)
+
 
 def spoof_audio_context(driver: WebDriver) -> None:
     """Defeats AudioContext fingerprinting by adding random noise.
@@ -222,6 +255,7 @@ def spoof_audio_context(driver: WebDriver) -> None:
     })();
     """
     _execute_cdp_script_on_new_document(driver, script)
+
 
 def standardize_fonts(driver: WebDriver) -> None:
     """Defeats font fingerprinting by adding random jitter to font metrics.

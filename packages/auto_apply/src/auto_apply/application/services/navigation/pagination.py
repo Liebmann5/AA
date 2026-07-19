@@ -4,8 +4,7 @@ This module contains strategies for finding and clicking 'Next Page' controls.
 It is robust against different website styles (Infinite Scroll, Numbered Lists,
 Arrow Buttons) and integrates with InteractionPort to click naturally.
 """
-# Layer: application
-# Depends on: domain
+
 
 import logging
 import time

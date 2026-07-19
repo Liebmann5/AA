@@ -285,6 +285,7 @@ addopts      = "--import-mode=importlib"
 markers      = [
     "integration: tests that use a real SQLite DB or mock orchestrator",
     "slow: smoke/e2e tests that may need a browser or network access",
+    "browser: tests that require a real browser (skipped in CI)",
 ]
 
 [tool.black]

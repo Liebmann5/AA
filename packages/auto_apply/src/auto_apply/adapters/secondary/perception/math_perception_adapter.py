@@ -119,8 +119,6 @@ class MathPerceptionAdapter(PerceptionPort):
             if any(kw in page_text for kw in keywords):
                 return state
 
-        # Structural: modal/dialog open — must check before redirect detection
-        # because modals can appear on top of listing pages.
         try:
             modals = self._browser.find_elements("css selector", _MODAL_SELECTOR)
             if modals:
@@ -128,7 +126,6 @@ class MathPerceptionAdapter(PerceptionPort):
         except Exception:
             pass
 
-        # Structural: many apply-style cards → job listing page, not a single form.
         try:
             cards = self._browser.find_elements("css selector", _APPLY_BUTTON_SELECTOR)
             if len(cards) > 3:
@@ -136,7 +133,6 @@ class MathPerceptionAdapter(PerceptionPort):
         except Exception:
             pass
 
-        # Fallback: active form inputs present → generic form step.
         try:
             inputs = self._browser.find_elements(
                 "css selector", "input:not([type='hidden']), textarea"
@@ -149,11 +145,6 @@ class MathPerceptionAdapter(PerceptionPort):
         return ApplicationState.UNKNOWN
 
     def get_page_text(self) -> str:
-        """Returns the live page's visible text via ``document.body.innerText``.
-
-        Returns an empty string if the browser cannot be queried (e.g. no body
-        yet, or a script execution error). Never raises.
-        """
         try:
             raw = self._browser.execute_script("return document.body.innerText")
         except Exception as exc:
@@ -186,20 +177,20 @@ def _is_visible(node: DOMNode) -> bool:
 def _is_interactable(node: DOMNode) -> bool:
     if node.tag in _INTERACTABLE_TAGS:
         return True
-    return node.attributes.get("role", "") in _INTERACTABLE_ROLES
+    return node.get_attribute("role", "") in _INTERACTABLE_ROLES
 
 
 def _to_ui_element(node: DOMNode) -> UIElement | None:
     try:
         el_type = _classify_node(node)
         name = (
-            node.attributes.get("name")
-            or node.attributes.get("id")
+            node.get_attribute("name")
+            or node.get_attribute("id")
             or node.tag
         )
         label = (
-            node.attributes.get("aria-label")
-            or node.attributes.get("title")
+            node.get_attribute("aria-label")
+            or node.get_attribute("title")
             or node.text
             or None
         )
@@ -208,9 +199,9 @@ def _to_ui_element(node: DOMNode) -> UIElement | None:
             element_type=el_type,
             name=name,
             label=label,
-            placeholder=node.attributes.get("placeholder"),
-            is_required="required" in node.attributes,
-            validation_pattern=node.attributes.get("pattern"),
+            placeholder=node.get_attribute("placeholder"),
+            is_required=node.get_attribute("required") is not None,
+            validation_pattern=node.get_attribute("pattern"),
         )
     except Exception as exc:
         logger.debug("Failed to convert DOMNode to UIElement: %s", exc)
@@ -219,8 +210,8 @@ def _to_ui_element(node: DOMNode) -> UIElement | None:
 
 def _classify_node(node: DOMNode) -> UIElementType:
     tag = node.tag
-    role = node.attributes.get("role", "")
-    input_type = node.attributes.get("type", "").lower()
+    role = node.get_attribute("role", "")
+    input_type = node.get_attribute("type", "").lower()
 
     if tag == "select" or role == "listbox":
         return UIElementType.SELECT

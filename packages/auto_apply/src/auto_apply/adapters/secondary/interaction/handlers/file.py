@@ -8,6 +8,7 @@ the file exists locally before attempting interaction to prevent browser hangs.
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ class FileInputHandler(BaseInputHandler):
         3. If the target is a styled wrapper (div/span), locate the associated hidden input.
         4. If hidden, force visibility via JavaScript to allow interaction.
         5. Send the file path via `send_keys`.
+        6. Wait briefly for the upload to begin processing.
 
         Args:
             element (ElementInterface): The target element (input or wrapper).
@@ -65,11 +67,14 @@ class FileInputHandler(BaseInputHandler):
             # We must 'unhide' it temporarily.
             self._force_visibility(target_input)
 
-            logger.info(f"Uploading file: {abs_path}")
+            logger.info("Uploading file: %s", abs_path)
             target_input.send_keys(abs_path)
 
+            # Wait for the upload to begin processing (file validation, preview, etc.)
+            time.sleep(1.0)
+
         except Exception as e:
-            logger.error(f"File upload interaction failed: {e}")
+            logger.error("File upload interaction failed: %s", e)
 
     def _find_associated_file_input(self, wrapper: ElementInterface) -> Any:
         """Heuristics to find the actual input when clicked on a wrapper."""
@@ -113,4 +118,4 @@ class FileInputHandler(BaseInputHandler):
         try:
             self.browser.execute_script(script, element)
         except Exception as e:
-            logger.debug(f"Failed to force visibility on file input: {e}")
+            logger.debug("Failed to force visibility on file input: %s", e)

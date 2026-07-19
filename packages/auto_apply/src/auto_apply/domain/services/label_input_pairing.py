@@ -14,10 +14,7 @@ import math
 
 from auto_apply.domain.models.math_dom import DOMNode
 
-# Penalty for dummy (padding) cells in the square cost matrix. Must be a large
-# *finite* value: +inf makes an all-dummy row (when there are more labels than
-# inputs) loop forever in the potentials-based solver. Being constant across
-# every perfect matching, it cancels out and never affects real pairings.
+# Penalty for dummy (padding) cells in the square cost matrix.
 _DUMMY_PAIR_COST: float = 1e9
 
 
@@ -47,7 +44,6 @@ def hungarian_assign(cost_matrix: list[list[float]]) -> tuple[list[int], list[in
     if n == 0:
         return [], []
 
-    # u and v are potentials; p stores the matching; way stores augmenting path
     u = [0] * (n + 1)
     v = [0] * (n + 1)
     p = [0] * (n + 1)
@@ -123,17 +119,14 @@ def pairing_cost(
     Returns:
         A non‑negative cost; lower is better.
     """
-    # Spatial distance
     spatial_cost = max_distance
     if input_node.geometry and label_node.geometry:
         dist = input_node.geometry.distance_to(label_node.geometry)
         spatial_cost = min(dist, max_distance)
 
-    # DOM distance penalty
     dom_cost = 0.0
     if parent_map is not None:
         dom_dist = tree_distance(input_node, label_node, parent_map)
-        # Use log to dampen large distances
         dom_cost = math.log1p(dom_dist) * dom_penalty_weight
 
     return spatial_cost + dom_cost
@@ -147,7 +140,8 @@ def tree_distance(
     """Compute the distance between two nodes in the DOM tree.
 
     Distance is defined as the number of edges on the path between the nodes.
-    This is equivalent to `depth(a) + depth(b) - 2 * depth(lca(a, b))`.
+    This implementation uses a depth‑equalization approach that correctly
+    handles cousin nodes.
 
     Args:
         node_a: First node.
@@ -157,32 +151,34 @@ def tree_distance(
     Returns:
         Integer distance (≥ 0). If nodes are not in the same tree, returns a large value.
     """
-    # Build path from node_a to root
-    path_a: set[DOMNode] = set()
-    curr = node_a
-    while curr is not None:
-        path_a.add(curr)
-        curr = parent_map.get(curr)
-
-    # Find LCA by walking up from node_b
-    curr = node_b
-    lca = None
-    while curr is not None:
-        if curr in path_a:
-            lca = curr
-            break
-        curr = parent_map.get(curr)
-
-    if lca is None:
-        # Not in the same tree (should not happen)
-        return 1_000_000
-
-    # Compute depths
+    # Compute depth of each node
     depth_a = _node_depth(node_a, parent_map)
     depth_b = _node_depth(node_b, parent_map)
-    depth_lca = _node_depth(lca, parent_map)
 
-    return depth_a + depth_b - 2 * depth_lca
+    # Equalize depths: move the deeper node up
+    if depth_a > depth_b:
+        distance = depth_a - depth_b
+        up_a = node_a
+        for _ in range(distance):
+            up_a = parent_map[up_a]
+        up_b = node_b
+    else:
+        distance = depth_b - depth_a
+        up_b = node_b
+        for _ in range(distance):
+            up_b = parent_map[up_b]
+        up_a = node_a
+
+    # Move both up together until they meet
+    while up_a is not up_b:
+        if parent_map[up_a] is None or parent_map[up_b] is None:
+            # Not in the same tree – shouldn't happen
+            return 1_000_000
+        up_a = parent_map[up_a]
+        up_b = parent_map[up_b]
+        distance += 2
+
+    return distance
 
 
 def _node_depth(node: DOMNode, parent_map: dict[DOMNode, DOMNode | None]) -> int:
@@ -244,15 +240,11 @@ def assign_labels_to_inputs(
     if n_labels == 0:
         return [(inp, None) for inp in inputs]
 
-    # Build cost matrix (n_inputs x n_labels)
     cost = [[0.0] * n_labels for _ in range(n_inputs)]
     for i, inp in enumerate(inputs):
         for j, lbl in enumerate(label_candidates):
             cost[i][j] = pairing_cost(inp, lbl, max_distance, parent_map=parent_map)
 
-    # Pad to square matrix with a large *finite* penalty (not +inf, which would
-    # make an all-dummy row loop forever in hungarian_assign). The constant
-    # cancels across perfect matchings, so real pairings are unaffected.
     size = max(n_inputs, n_labels)
     square_cost = [[_DUMMY_PAIR_COST] * size for _ in range(size)]
     for i in range(n_inputs):
@@ -261,18 +253,15 @@ def assign_labels_to_inputs(
 
     row_ind, col_ind = hungarian_assign(square_cost)
 
-    # Build result
     result: list[tuple[DOMNode, DOMNode | None]] = []
     assigned_inputs: set[int] = set()
 
     for i, j in zip(row_ind, col_ind):
         if i < n_inputs and j < n_labels:
-            # Only accept assignment if cost is not absurdly high
             if cost[i][j] < max_distance * 2:
                 result.append((inputs[i], label_candidates[j]))
                 assigned_inputs.add(i)
 
-    # Add unassigned inputs with None label
     for i, inp in enumerate(inputs):
         if i not in assigned_inputs:
             result.append((inp, None))

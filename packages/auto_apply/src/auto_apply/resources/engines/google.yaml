@@ -1,0 +1,120 @@
+# Google Search Engine — selector definitions for toolbar interactions.
+#
+# This file is the single source of truth for all Google-specific DOM selectors.
+# Users may override it by placing a modified copy at:
+#   <USER_DATA_DIR>/engines/google.yaml
+# User selectors are tried BEFORE the bundled ones (prepend semantics).
+#
+# Schema:
+#   engine                     — canonical engine name (must match file name stem)
+#   homepage_url               — used by HumanSearchNavigation fallback
+#   search_bar_selectors       — CSS selectors for the homepage search input
+#   toolbar.<filter>           — multi‑step toolbar interaction definitions
+#     <step>.selectors         — ordered list of {type, value} pairs (CSS/XPath)
+#     <step>.fallback          — Math‑DOM descriptors used when all selectors fail
+#       tag                    — fallback HTML tag name
+#       role                   — ARIA role (e.g. "button", "menu", "menuitem")
+#       aria_label_contains    — substrings the element's aria‑label must contain
+#       text_contains          — substrings the element's visible text must contain
+#     date_options.<range>     — per‑range selectors + fallback for the final click
+
+engine: google
+homepage_url: "https://www.google.com"
+
+search_bar_selectors:
+  - "input[name='q']"
+  - "textarea[name='q']"
+  - "input[type='search']"
+  - "input[id*='search' i]"
+  - "[aria-label*='search' i]"
+
+toolbar:
+  date_filter:
+    # ── Step 1: reveal the filter bar ──────────────────────────────────────
+    open_button:
+      selectors:
+        - type: css
+          value: "div#hdtb-tls"
+        - type: css
+          value: "div[aria-label='Search tools']"
+        - type: css
+          value: "a[aria-label='Tools']"
+        - type: css
+          value: "div.hdtb-tl-sel"
+        - type: css
+          value: "div.hdtb-tl-sel div"
+      fallback:
+        tag: "div"
+        role: "button"
+        aria_label_contains: ["tools", "search tools"]
+
+    # ── Step 2: open the time‑range dropdown ───────────────────────────────
+    time_menu:
+      selectors:
+        - type: css
+          value: "div[aria-label='Any time']"
+        - type: css
+          value: "div.hdtb-mn-hd"
+        - type: css
+          value: "g-menu[role='menu']"
+        - type: css
+          value: "div[aria-label*='time' i]"
+        - type: css
+          value: "div[aria-label*='Time' i]"
+      fallback:
+        tag: "div"
+        role: "menu"
+        aria_label_contains: ["time", "date", "any time", "anytime"]
+
+    # ── Step 3: choose the specific date range ─────────────────────────────
+    date_options:
+      past_hour:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past hour')]"
+          - type: xpath
+            value: "//g-menu-item[contains(., 'Past hour')]"
+          - type: css
+            value: "a[href*='qdr:h']"
+        fallback:
+          text_contains: ["past hour", "last hour"]
+      past_day:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past 24 hours')]"
+          - type: xpath
+            value: "//g-menu-item[contains(., 'Past 24 hours')]"
+          - type: css
+            value: "a[href*='qdr:d']"
+        fallback:
+          text_contains: ["past 24 hours", "last 24 hours", "past day"]
+      past_week:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past week')]"
+          - type: xpath
+            value: "//g-menu-item[contains(., 'Past week')]"
+          - type: css
+            value: "a[href*='qdr:w']"
+        fallback:
+          text_contains: ["past week", "last week", "last 7 days"]
+      past_month:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past month')]"
+          - type: xpath
+            value: "//g-menu-item[contains(., 'Past month')]"
+          - type: css
+            value: "a[href*='qdr:m']"
+        fallback:
+          text_contains: ["past month", "last month", "last 30 days"]
+      past_year:
+        selectors:
+          - type: xpath
+            value: "//a[contains(normalize-space(), 'Past year')]"
+          - type: xpath
+            value: "//g-menu-item[contains(., 'Past year')]"
+          - type: css
+            value: "a[href*='qdr:y']"
+        fallback:
+          text_contains: ["past year", "last year"]

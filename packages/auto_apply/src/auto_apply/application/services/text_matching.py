@@ -20,7 +20,6 @@ Without SpaCy, the system falls back to difflib (reduced accuracy, fully functio
 """
 from __future__ import annotations
 
-import importlib.util
 import logging
 import re
 from difflib import SequenceMatcher
@@ -30,10 +29,8 @@ logger = logging.getLogger(__name__)
 
 try:
     import spacy as _spacy  # noqa: PLC0415
-    _SPACY_AVAILABLE = True
 except ImportError:
     _spacy = None  # type: ignore[assignment]
-    _SPACY_AVAILABLE = False
 
 
 class TextMatcher:
@@ -44,21 +41,33 @@ class TextMatcher:
     knowing whether SpaCy or difflib is active.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, prefer_small: bool = False) -> None:
         self._engine_type: str = "basic"
         self._nlp: Any = None
         self._phrase_matcher: Any = None
-        self._initialize_engine()
+        self._initialize_engine(prefer_small=prefer_small)
 
-    def _initialize_engine(self) -> None:
-        """Load the best available SpaCy model; fall back to difflib."""
-        if not _SPACY_AVAILABLE:
+    def _initialize_engine(self, prefer_small: bool = False) -> None:
+        """Load the best available SpaCy model; fall back to difflib.
+
+        Args:
+            prefer_small: If True, try smaller models first to reduce memory pressure
+                on low‑resource hardware.
+        """
+        if _spacy is None:
             logger.info(
                 "TextMatcher: SpaCy unavailable, initialized with stdlib difflib (Tier 2)"
             )
             return
 
-        for model_name in ("en_core_web_lg", "en_core_web_md", "en_core_web_sm"):
+        # Order reversed when we want a lightweight model.
+        model_order = (
+            ("en_core_web_sm", "en_core_web_md", "en_core_web_lg")
+            if prefer_small
+            else ("en_core_web_lg", "en_core_web_md", "en_core_web_sm")
+        )
+
+        for model_name in model_order:
             try:
                 self._nlp = _spacy.load(model_name)
                 self._engine_type = f"spacy_{model_name.split('_')[-1]}"
@@ -207,7 +216,9 @@ class TextMatcher:
                     Example: ['Python', 'SQL', 'Docker', 'React', 'AWS']
         """
         if self._nlp is None:
-            logger.debug("TextMatcher.load_skills_vocabulary: SpaCy unavailable, no-op.")
+            logger.debug(
+                "TextMatcher.load_skills_vocabulary: SpaCy unavailable, no-op."
+            )
             return
 
         if not skills:
@@ -215,6 +226,7 @@ class TextMatcher:
 
         try:
             from spacy.matcher import PhraseMatcher  # noqa: PLC0415
+
             self._phrase_matcher = PhraseMatcher(self._nlp.vocab, attr="LOWER")
             patterns = [self._nlp.make_doc(skill) for skill in skills]
             self._phrase_matcher.add("SKILLS", patterns)

@@ -13,6 +13,8 @@
 headless_mode: false
 browser_timeout_seconds: 30
 page_load_timeout_seconds: 20
+# Max navigation attempts before giving up on a URL (bounded-retry).
+navigation_retries: 3
 preferred_browser_order:
   - chrome
   - firefox
@@ -24,6 +26,7 @@ preferred_browser_order:
 # ─────────────────────────────────────────────────────────────────────────────
 max_applications_per_session: 50
 max_applications_per_company: 3
+cooldown_days_default: 180
 max_discovery_results_per_query: 30
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,13 +42,13 @@ checkpoint_interval_actions: 5
 enable_human_timing: true
 enable_fingerprint_spoofing: true
 # Micro-timing (typing cadence, quick mouse movements)
-min_action_delay_ms: 500           # OG value 500 
-max_action_delay_ms: 2000          # OG value 2000
+min_action_delay_ms: 500           # floor for action pacing
+max_action_delay_ms: 2000          # ceiling for action pacing
 # Macro-timing (Page load reading, transition thinking times)
-macro_pause_min_s: 2.5             # PageActionService default value 1.5s
-macro_pause_max_s: 5.0             # PageActionService default value 4.5s
-settle_min_s: 0.8
-settle_max_s: 1.5
+macro_pause_min_s: 1.2             # ↓ 2.5 → 1.2 — faster page-scan reading
+macro_pause_max_s: 2.5             # ↓ 5.0 → 2.5 — no long stares
+settle_min_s: 0.4                  # ↓ 0.8 → 0.4 — quicker post‑action settle
+settle_max_s: 0.8                  # ↓ 1.5 → 0.8
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Features
@@ -92,6 +95,9 @@ discovery:
   max_concurrent_sources: 1   #! MUST BE 1 when sharing a single live browser!
   # Maximum pages to paginate through per search query.
   max_pages_per_query: 5      #! Reduced to avoid Google dynamic noise.
+  # Pause between switching search providers (faster engine switching).
+  between_provider_pause_min: 1.0   # ↓ 2.0 → 1.0
+  between_provider_pause_max: 2.0   # ↓ 5.0 → 2.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Applications workflow tuning
@@ -105,6 +111,30 @@ applications:
   dom_stabilization_timeout_s: 3.0  #! 8.0
   # Token budget for GPT4All custom-question answers.
   custom_answer_max_tokens: 150
+
+  # ── Human-like interaction timing (BehaviorParameters / TimingProfile) ──
+  # These feed BehaviorParameters.from_config() → TimingProfile.
+  # Defaults shown are the *old* values; new values are ~50‑70% faster.
+
+  inter_action_delay_ms: 400        # ↓ 1200 → 400 — faster field switching
+  macro_pause_min_seconds: 0.4      # ↓ 0.8 → 0.4 — shorter reading time
+  macro_pause_max_seconds: 1.2      # ↓ 2.5 → 1.2 — no long stares
+  micro_delay_peak_ms: 30           # ↓ 50 → 30 — faster typing, ~80 WPM
+  typing_wpm: 80                    # ↑ 60 → 80 — young professional speed
+  typing_jitter_fraction: 0.15      # ↓ 0.20 → 0.15 — less wobble, still natural
+  thinking_pause_probability: 0.05  # ↓ 1/15 ≈ 0.067 → 1/20 — fewer long pauses
+  thinking_pause_min: 0.2           # ↓ 0.3 → 0.2
+  thinking_pause_max: 0.6           # ↓ 0.8 → 0.6
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Browser mouse & navigation (BehaviorParameters / TimingProfile)
+# ─────────────────────────────────────────────────────────────────────────────
+browser:
+  mouse_move_steps: 4               # ↓ 5 → 4 — slightly fewer micro‑moves
+  mouse_offset_min_px: 30           # ↓ 50 → 30 — tighter movements
+  mouse_offset_max_px: 150          # ↓ 200 → 150
+  mouse_step_delay_min: 0.05        # ↓ 0.2 → 0.05
+  mouse_step_delay_max: 0.2         # ↓ 0.8 → 0.2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GPT4All local LLM settings

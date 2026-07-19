@@ -130,6 +130,24 @@ class ProvenanceSigner:
         clean_payload["_signature"] = signature.hex()
         return clean_payload
 
+    def sign_hex(self, content_hash: str) -> str:
+        """Sign a hex-encoded content hash and return the hex-encoded signature.
+
+        Used by ResearchSignalAggregator to attach Ed25519 provenance to every
+        research signal written to the database.  The signature proves that a
+        signal originated from this specific AA installation without revealing
+        the installation's identity (the public key is stored separately).
+
+        Args:
+            content_hash: A SHA-256 hex digest of the signal's content fields.
+
+        Returns:
+            Hex-encoded Ed25519 signature over the content hash bytes.
+        """
+        data = content_hash.encode("utf-8")
+        signature = self.private_key.sign(data)
+        return signature.hex()
+
 
 # =====================================================================
 # 3. CODEBASE INTEGRITY (Your Idea)

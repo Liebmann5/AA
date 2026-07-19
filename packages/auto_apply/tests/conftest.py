@@ -2,27 +2,22 @@
 
 NodeMap
 -------
-DOMNode is @dataclass(frozen=True) but its ``attributes: dict`` and
-``children: list`` fields make it unhashable at runtime.  Production
-functions that accept a ``parent_map: dict[DOMNode, DOMNode | None]``
-only need ``parent_map.get(node)`` / ``parent_map[node]`` — they never
-require Python to hash the node as a standard dict key.
-
-NodeMap satisfies that interface using ``id()`` for key lookups, so
-tests can build meaningful parent relationships without hitting the
-unhashable-DOMNode bug.
+DOMNode is now fully hashable (attributes and children are immutable tuples).
+The ``NodeMap`` helper is retained for cases where identity‑based mapping is
+still needed, but most tests can now use plain ``dict`` with DOMNode keys.
 """
 
 import pytest
 
 from auto_apply.domain.models.math_dom import DOMNode, Geometry
+from auto_apply.domain.models.profile import UserProfile
 
 
 class NodeMap:
-    """Identity-keyed mapping usable wherever ``dict[DOMNode, ...]`` is expected.
+    """Identity‑keyed mapping usable wherever ``dict[DOMNode, ...]`` is expected.
 
-    Uses ``id(node)`` internally so unhashable DOMNode objects can serve
-    as logical keys without triggering ``TypeError: unhashable type: 'dict'``.
+    Uses ``id(node)`` internally so even structurally identical nodes can be
+    treated as distinct keys (important for parent‑map tests).
     """
 
     def __init__(self, pairs=()):
@@ -69,7 +64,7 @@ def offscreen_geometry():
 def input_node():
     return DOMNode(
         tag="input",
-        attributes={"type": "text", "name": "first_name", "placeholder": "First Name"},
+        attributes=(("type", "text"), ("name", "first_name"), ("placeholder", "First Name")),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=2,
     )
@@ -96,8 +91,46 @@ def simple_form_root():
     )
     inp = DOMNode(
         tag="input",
-        attributes={"type": "text", "name": "email", "placeholder": "Email"},
+        attributes=(("type", "text"), ("name", "email"), ("placeholder", "Email")),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=1,
     )
-    return DOMNode(tag="form", depth=0, children=[lbl, inp])
+    return DOMNode(tag="form", depth=0, children=(lbl, inp))
+
+
+# ── Shared, reusable valid‑profile fixture for test stability ────────────────
+@pytest.fixture
+def minimal_valid_profile() -> UserProfile:
+    """Return a minimal but valid `UserProfile` suitable for any test.
+
+    The career_summary is long enough to satisfy Pydantic’s minimum‑length
+    constraint (now relaxed to 1 character) while also exceeding the soft
+    warning threshold (≥ 50) that `profile_validator` advises.
+    """
+    return UserProfile.model_validate({
+        "profile_name": "test-profile",
+        "personal_info": {
+            "first_name": "Test",
+            "last_name": "User",
+            "email": "test@example.com",
+            "phone_number": "000-000-0000",
+            "street_address": "123 Test St",
+            "city": "Testville",
+            "state": "TS",
+            "zip_code": "00000",
+            "country": "United States",
+        },
+        "links": {},
+        "career_summary": "Professional engineer with extensive experience building scalable systems, open-source tools, and test automation frameworks.",
+        "search_preferences": {
+            "desired_job_titles": ["Software Engineer"],
+            "preferred_locations": ["Remote"],
+        },
+        "politeness_settings": {},
+        "app_config": {
+            "preferred_browser": "any",
+            "run_headless": False,
+            "daily_application_limit": 10,
+            "enable_behavior_humanization": True,
+        },
+    })

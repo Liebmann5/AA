@@ -94,7 +94,7 @@ class HoneypotDetector:
 
     def honeypot_score(self, input_node: DOMNode, all_nodes: list[DOMNode], parent_map: dict) -> tuple[float, str]:
         # ── 1. The Entropy Check ──────────────────────────────────────────
-        name_val = input_node.attributes.get("name") or input_node.attributes.get("id") or ""
+        name_val = input_node.get_attribute("name") or input_node.get_attribute("id") or ""
         if is_randomized_trap_string(name_val):
             return self._WEIGHT_ENTROPY_TRAP, f"High entropy (randomized) string detected: {name_val}"
 
@@ -130,9 +130,8 @@ class HoneypotDetector:
 
     def _check_suspicious_names(self, node: DOMNode) -> str:
         """Return reason if name/id/class contains suspicious substrings."""
-        attributes = node.attributes
         for attr in ("name", "id", "class"):
-            value = attributes.get(attr, "").lower()
+            value = node.get_attribute(attr, "").lower()
             for pattern in self.SUSPICIOUS_NAME_PATTERNS:
                 if pattern in value:
                     return f"suspicious {attr} contains '{pattern}'"
@@ -163,10 +162,10 @@ class HoneypotDetector:
     def _has_no_visible_label(self, input_node: DOMNode) -> bool:
         """Return True if the input lacks any visible label or placeholder."""
         # Placeholder is a weak label but often sufficient.
-        if input_node.attributes.get("placeholder", "").strip():
+        if input_node.get_attribute("placeholder", "").strip():
             return False
         # ARIA label
-        if input_node.attributes.get("aria-label", "").strip():
+        if input_node.get_attribute("aria-label", "").strip():
             return False
         # We cannot check associated <label> without DOM traversal,
         # but the pairing service will provide that context.

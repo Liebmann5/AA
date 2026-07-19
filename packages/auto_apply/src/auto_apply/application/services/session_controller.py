@@ -49,12 +49,13 @@ import logging
 import threading
 import uuid
 from typing import Any
+from pathlib import Path
 
-from auto_apply.adapters.secondary.persistence.database import DatabaseManager
 from auto_apply.application.agent.orchestrator import AgentOrchestrator
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.ports.registry_port import RegistryPort
+from auto_apply.domain.ports.work_queue_port import WorkQueuePort
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class SessionController:
         2. Work queue seeding from wizard configuration.
         3. Orchestrator thread lifecycle (start/stop/poll).
         4. Crash recovery (interrupted task reset on startup).
+        5. Network health pre-check before seeding tasks (Wave J3).
 
     The controller is stateful — one instance per session. When the session
     ends, discard the controller and create a new one for the next session.
@@ -80,7 +82,7 @@ class SessionController:
     def __init__(
         self,
         registry: RegistryPort,
-        db: DatabaseManager,
+        db: WorkQueuePort,
         orchestrator: AgentOrchestrator,
     ) -> None:
         """Stores pre-built dependencies.
@@ -90,7 +92,7 @@ class SessionController:
 
         Args:
             registry: A RegistryPort — the fully resolved session config.
-            db: The DatabaseManager for work queue operations.
+            db: The WorkQueuePort for task queue operations.
             orchestrator: The AgentOrchestrator, ready to run.
         """
         self.registry = registry
@@ -98,7 +100,9 @@ class SessionController:
         self.orchestrator = orchestrator
         self._agent_thread: threading.Thread | None = None
         # HITL: maps context_id → (gate_event, chosen_value_holder)
-        self._pending_approvals: dict[str, tuple[threading.Event, list[str]]] = {}
+        self._pending_approvals: dict[
+            str, tuple[threading.Event, list[str]]
+        ] = {}
         self._approvals_lock = threading.Lock()
 
         logger.info("SessionController initialized")
@@ -111,6 +115,51 @@ class SessionController:
     # centralized in infrastructure/composition_root.py ← the Composition Root.
 
     # =========================================================================
+    # NETWORK HEALTH PRE-CHECK (Wave J3)
+    # =========================================================================
+
+    def _check_network_connectivity(self) -> bool:
+        """Quick connectivity check before seeding tasks.
+
+        Tries to reach known stable endpoints. Logs a warning if unreachable
+        but does not block the session (static mode works offline).
+
+        Returns:
+            True if at least one test URL is reachable.
+        """
+        import urllib.request
+
+        test_urls = [
+            "https://www.google.com",
+            "https://httpbin.org/status/200",
+            "https://www.bing.com",
+        ]
+        for url in test_urls:
+            try:
+                req = urllib.request.Request(
+                    url,
+                    method="HEAD",
+                    headers={
+                        "User-Agent": "connectivity-check/1.0",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=5):
+                    pass
+                logger.debug(
+                    "Network check: connectivity OK via %s", url
+                )
+                return True
+            except Exception:
+                continue
+
+        logger.warning(
+            "Network check: cannot reach internet. "
+            "Discovery will likely fail. "
+            "Static mode may still work for local data operations."
+        )
+        return False
+
+    # =========================================================================
     # SESSION INITIALIZATION (translates wizard config → WorkUnits)
     # =========================================================================
 
@@ -119,6 +168,10 @@ class SessionController:
 
         The registry is immutable after boot. This method does NOT modify
         any configuration — it only creates WorkUnits in the database queue.
+
+        Before seeding any tasks:
+            1. Network connectivity is checked (Wave J3).
+            2. The active profile is validated for completeness.
 
         Supported modes:
             - "discovery": Comma-separated keywords to search for jobs.
@@ -135,16 +188,71 @@ class SessionController:
             The number of tasks queued.
 
         Raises:
-            ValueError: If the mode is not recognized.
+            ValueError: If the mode is not recognized, or if the profile
+                fails completeness validation (see
+                :func:`auto_apply.application.services.profile_validator.validate_profile`).
         """
+        # ── Network health pre-check (Wave J3) ──────────────────────────
+        is_online = self._check_network_connectivity()
+        if not is_online:
+            # Check if the capability profile has a live browser — if so,
+            # discovery will definitely fail. Warn the user.
+            profile = self.registry.get_active_profile()
+            if profile is not None:
+                print(  # noqa: T201 — intentional user-facing CLI output
+                    "\n  \u26a0\ufe0f  Warning: Cannot reach the internet.\n"
+                    "     Job discovery requires internet access.\n"
+                    "     Check your connection and try again, or use static mode.\n"
+                )
+
+        # ── Profile completeness check ─────────────────────────────────────
+        try:
+            from auto_apply.application.services.profile_validator import (
+                validate_profile,
+            )
+
+            profile = self.registry.get_active_profile()
+            if profile is not None:
+                mode = ui_config.get("mode", "discovery")
+                validation = validate_profile(profile, mode=mode)
+
+                if (
+                    validation.warnings
+                    or validation.errors
+                    or validation.missing_for_gpt4all
+                ):
+                    print(  # noqa: T201 — intentional user-facing CLI output
+                        "\n  Profile Check:"
+                    )
+                    print(validation.format_for_cli())  # noqa: T201
+                    print()  # noqa: T201
+
+                if not validation.is_valid:
+                    raise ValueError(
+                        "Profile validation failed. Fix the issues above "
+                        "before starting a session.\n"
+                        f"Errors: {'; '.join(validation.errors)}"
+                    )
+        except ImportError:
+            # profile_validator module not available — skip validation
+            # (graceful degradation for worst-case environments)
+            pass
+        except ValueError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Profile validation skipped due to unexpected error: %s", exc
+            )
+
+        # ── Existing task seeding ────────────────────────────────────────
         mode = ui_config.get("mode", "discovery")
         raw_input = ui_config.get("input", "")
 
         dispatch = {
             "discovery": self._seed_discovery_tasks,
-            "direct":    self._seed_direct_apply_tasks,
-            "vet":       self._seed_vet_tasks,
-            "company":   self._seed_company_tasks,
+            "direct": self._seed_direct_apply_tasks,
+            "vet": self._seed_vet_tasks,
+            "company": self._seed_company_tasks,
         }
 
         handler = dispatch.get(mode)
@@ -158,7 +266,8 @@ class SessionController:
 
         logger.info(
             "Session initialized | mode=%s tasks_queued=%d",
-            mode, task_count,
+            mode,
+            task_count,
         )
         return task_count
 
@@ -174,40 +283,45 @@ class SessionController:
         Returns:
             Number of tasks queued.
         """
-        keywords = [k.strip() for k in raw_input.split(",") if k.strip()]
-
-        # Fall back to profile's desired job titles if no input.
-        if not keywords:
+        # ── 1. Resolve titles from input or profile ────────────────────────
+        titles: list[str] = [t.strip() for t in raw_input.split(",") if t.strip()]
+        if not titles:
             profile = self.registry.get_active_profile()
             search_prefs = getattr(profile, "search_preferences", None)
             if search_prefs and hasattr(search_prefs, "desired_job_titles"):
-                keywords = list(search_prefs.desired_job_titles or [])
-
-        if not keywords:
-            logger.warning("No discovery keywords provided and none in profile")
+                titles = list(search_prefs.desired_job_titles or [])
+        if not titles:
             return 0
 
-        location = self._resolve_default_location()
+        # ── 2. Resolve locations from profile or fallback ──────────────────
+        profile = self.registry.get_active_profile()
+        search_prefs = getattr(profile, "search_preferences", None)
+        locations: list[str] = getattr(search_prefs, "preferred_locations", []) or []
+        if not locations:
+            locations = ["Remote"]
 
+        # ── 3. Seed one WorkUnit per (title, location) pair ────────────────
         count = 0
-        for keyword in keywords:
-            task = WorkUnit(
-                priority=5,
-                task_type=TaskType.DISCOVER,
-                payload={"query": keyword, "location": location},
-                source="user_discovery_input",
-            )
-            self.db.queue_task(task)
-            count += 1
-
-        logger.info("Queued %d discovery tasks", count)
+        for title in titles:
+            for location in locations:
+                task = WorkUnit(
+                    priority=5,
+                    task_type=TaskType.DISCOVER,
+                    payload={"query": title, "location": location},
+                    source="user_discovery_input",
+                    context_data={"title": title, "location": location},
+                )
+                self.db.queue_task(task)
+                count += 1
         return count
 
     def _seed_direct_apply_tasks(self, raw_input: str) -> int:
-        """Creates APPLY tasks from newline-separated URLs.
+        """Creates RESOLVE_JOB_URL tasks from newline-separated URLs.
 
-        Direct-apply tasks skip discovery and vetting entirely. The user
-        has explicitly chosen these jobs.
+        Direct-apply URLs flow through RESOLVE_JOB_URL first so the
+        orchestrator can navigate to the URL, extract a proper Job object,
+        and then queue the APPLY task.  This prevents the AttributeError
+        that occurs when _buffer_application receives a raw string.
 
         Args:
             raw_input: Newline-separated job application URLs.
@@ -221,22 +335,28 @@ class SessionController:
         for link in links:
             task = WorkUnit(
                 priority=1,
-                task_type=TaskType.APPLY,
-                payload=link,
+                task_type=TaskType.RESOLVE_JOB_URL,
+                payload={
+                    "url": link,
+                    "next_task": "APPLY",
+                    "skip_vetting": True,
+                },
                 source="user_direct_input",
                 context_data={"skip_vetting": True},
             )
             self.db.queue_task(task)
             count += 1
 
-        logger.info("Queued %d direct-apply tasks", count)
+        logger.info(
+            "Queued %d direct-apply tasks (via URL resolution)", count
+        )
         return count
 
     def _seed_vet_tasks(self, raw_input: str) -> int:
-        """Creates VET tasks from newline-separated URLs.
+        """Creates RESOLVE_JOB_URL tasks from newline-separated URLs.
 
-        These jobs will go through vetting. If they pass, they become
-        APPLY tasks automatically via the orchestrator.
+        These jobs will go through URL resolution first, then vetting.
+        If they pass, they become APPLY tasks automatically via the orchestrator.
 
         Args:
             raw_input: Newline-separated job listing URLs.
@@ -250,14 +370,18 @@ class SessionController:
         for link in links:
             task = WorkUnit(
                 priority=3,
-                task_type=TaskType.VET,
-                payload=link,
+                task_type=TaskType.RESOLVE_JOB_URL,
+                payload={
+                    "url": link,
+                    "next_task": "VET",
+                    "skip_vetting": False,
+                },
                 source="user_vet_input",
             )
             self.db.queue_task(task)
             count += 1
 
-        logger.info("Queued %d vet tasks", count)
+        logger.info("Queued %d vet tasks (via URL resolution)", count)
         return count
 
     def _seed_company_tasks(self, raw_input: str) -> int:
@@ -280,7 +404,10 @@ class SessionController:
             task = WorkUnit(
                 priority=4,
                 task_type=TaskType.DISCOVER_COMPANY,
-                payload={"careers_url": link, "company_name": "Unknown"},
+                payload={
+                    "careers_url": link,
+                    "company_name": "Unknown",
+                },
                 source="user_company_input",
             )
             self.db.queue_task(task)
@@ -303,7 +430,9 @@ class SessionController:
         (it logs a warning and returns).
         """
         if self._agent_thread and self._agent_thread.is_alive():
-            logger.warning("Agent is already running — ignoring duplicate start()")
+            logger.warning(
+                "Agent is already running — ignoring duplicate start()"
+            )
             return
 
         logger.info("Spawning Agent Orchestrator thread...")
@@ -349,14 +478,17 @@ class SessionController:
         """Returns a thread-safe snapshot of session statistics.
 
         Safe to call from any thread (Tkinter main thread, CLI poll loop).
-        The underlying stats are protected by a lock in ExecutionContext.
+        Delegates to the SessionReport attached to the orchestrator, which
+        accumulates application records incrementally during the session.
 
         Returns:
-            Dict with keys: jobs_discovered, jobs_vetted,
-            applications_submitted, applications_failed,
-            applications_skipped, duration_str, success_rate.
+            Dict with keys: jobs_found, jobs_vetted, jobs_passed_vetting,
+            applications_attempted, applications_submitted, applications_failed,
+            session_duration_seconds, submitted_job_urls, submitted_companies,
+            success_rate, and backward-compatible keys (jobs_discovered,
+            duration_str, report_path).
         """
-        return self.orchestrator.context.stats.to_dict()
+        return self.orchestrator._session_report.get_stats()
 
     def get_current_state(self) -> str:
         """Returns the current agent state as a string.
@@ -411,7 +543,11 @@ class SessionController:
         Returns:
             A cleaned list of non-empty URLs.
         """
-        return [link.strip() for link in raw_input.split("\n") if link.strip()]
+        return [
+            link.strip()
+            for link in raw_input.split("\n")
+            if link.strip()
+        ]
 
     # =========================================================================
     # HUMAN-IN-THE-LOOP APPROVAL GATE
@@ -447,7 +583,9 @@ class SessionController:
 
         context_id = str(uuid.uuid4())
         gate = threading.Event()
-        choice_holder: list[str] = []  # mutable container so the grant side can write
+        choice_holder: list[str] = (
+            []
+        )  # mutable container so the grant side can write
 
         with self._approvals_lock:
             self._pending_approvals[context_id] = (gate, choice_holder)
@@ -460,9 +598,13 @@ class SessionController:
         }
 
         try:
-            self.orchestrator.event_bus.publish(Event.HUMAN_APPROVAL_REQUESTED, payload)
+            self.orchestrator.event_bus.publish(
+                Event.HUMAN_APPROVAL_REQUESTED, payload
+            )
         except Exception as exc:
-            logger.warning("SessionController: could not publish HITL event | %s", exc)
+            logger.warning(
+                "SessionController: could not publish HITL event | %s", exc
+            )
 
         logger.info(
             "SessionController: HITL gate open | context_id=%s question=%r",
@@ -476,7 +618,8 @@ class SessionController:
 
         if not responded:
             logger.warning(
-                "SessionController: HITL timeout after %.0fs | context_id=%s — skipping",
+                "SessionController: HITL timeout after %.0fs | "
+                "context_id=%s — skipping",
                 timeout,
                 context_id,
             )
@@ -508,7 +651,8 @@ class SessionController:
 
         if entry is None:
             logger.warning(
-                "SessionController.provide_approval: unknown context_id=%s", context_id
+                "SessionController.provide_approval: unknown context_id=%s",
+                context_id,
             )
             return False
 
@@ -525,7 +669,8 @@ class SessionController:
             )
         except Exception as exc:
             logger.warning(
-                "SessionController: could not publish HITL granted event | %s", exc
+                "SessionController: could not publish HITL granted event | %s",
+                exc,
             )
 
         choice_holder.append(choice)
@@ -544,12 +689,19 @@ class SessionController:
         try:
             workflows = getattr(self.orchestrator, "_workflows", {})
             app_workflow = workflows.get("ApplicationsWorkflow")
-            if app_workflow is not None and hasattr(app_workflow, "set_approval_gate"):
+            if app_workflow is not None and hasattr(
+                app_workflow, "set_approval_gate"
+            ):
                 app_workflow.set_approval_gate(self.request_approval)
-                logger.info("SessionController: approval gate wired into ApplicationsWorkflow")
+                logger.info(
+                    "SessionController: approval gate wired into "
+                    "ApplicationsWorkflow"
+                )
         except Exception as exc:
             logger.warning(
-                "SessionController: could not wire approval gate | %s — HITL disabled", exc
+                "SessionController: could not wire approval gate | %s "
+                "— HITL disabled",
+                exc,
             )
 
     # =========================================================================

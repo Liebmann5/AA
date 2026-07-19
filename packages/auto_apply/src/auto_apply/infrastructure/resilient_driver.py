@@ -23,7 +23,12 @@ class ResilientDriver(BrowserInterface):
     3. Tab Management (Focus control).
     4. Health Checks (404/Login detection).
     5. Context manager support (forwarded to wrapped driver).
+    6. Navigation timeout recovery with exponential backoff.
     """
+
+    # ── Navigation timeout recovery constants ────────────────────────────────
+    _NAV_TIMEOUT_SECONDS: int = 30
+    _NAV_MAX_RETRIES: int = 2
 
     def __init__(self, driver: BrowserInterface):
         # Serializes command dispatch to the wrapped (non-thread-safe) driver.
@@ -92,6 +97,84 @@ class ResilientDriver(BrowserInterface):
                 logger.error("Navigation failed: %s", e)
                 self.save_screenshot(str(LOG_DIR / f"error_nav_{int(time.time())}.png"))
                 raise e
+
+    def navigate_with_timeout_recovery(
+        self,
+        url: str,
+        timeout_seconds: int | None = None,
+        max_retries: int | None = None,
+    ) -> bool:
+        """Navigate to a URL with timeout recovery and retry.
+
+        Unlike ``get()``, this method never raises a TimeoutException to the
+        caller.  On transient failures it retries up to *max_retries* times;
+        on permanent failure it returns ``False`` so the caller can skip the
+        URL gracefully instead of crashing the session.
+
+        Args:
+            url: The URL to navigate to.
+            timeout_seconds: Page load timeout in seconds.
+                             Defaults to ``_NAV_TIMEOUT_SECONDS`` (30 s).
+            max_retries: How many times to retry before giving up.
+                         Defaults to ``_NAV_MAX_RETRIES`` (2).
+
+        Returns:
+            ``True`` if navigation succeeded, ``False`` on permanent failure.
+        """
+        timeout = timeout_seconds if timeout_seconds is not None else self._NAV_TIMEOUT_SECONDS
+        retries = max_retries if max_retries is not None else self._NAV_MAX_RETRIES
+
+        for attempt in range(1, retries + 1):
+            try:
+                # Try setting page load timeout if the underlying driver supports it.
+                try:
+                    self._driver.set_page_load_timeout(timeout)
+                except AttributeError:
+                    pass   # Playwright handles timeouts differently; ignore.
+
+                self._driver.get(url)
+                return True
+
+            except Exception as exc:
+                err_str = str(exc).lower()
+
+                # ── Permanent failures: bad URL, DNS failure, etc. ──────────
+                permanent = any(kw in err_str for kw in (
+                    "net::err_name_not_resolved",
+                    "invalid url",
+                    "net::err_connection_refused",
+                    "net::err_connection_closed",
+                    "net::err_cert_",
+                    "err_aborted",
+                ))
+                if permanent:
+                    logger.warning(
+                        "Navigation permanent failure | attempt=%d/%d url=%s — %s",
+                        attempt, retries, url[:60], exc,
+                    )
+                    return False
+
+                # ── Transient failure (timeout, etc.) — retry ──────────────
+                logger.warning(
+                    "Navigation error | attempt=%d/%d url=%s — %s",
+                    attempt, retries, url[:60], exc,
+                )
+
+                if attempt < retries:
+                    # Stop any hung page load so the next attempt starts clean.
+                    try:
+                        self._driver.execute_script("window.stop();")
+                    except Exception:
+                        pass
+                    time.sleep(2.0)
+                else:
+                    logger.error(
+                        "Navigation permanently failed after %d attempts | url=%s",
+                        retries, url[:60],
+                    )
+                    return False
+
+        return False
 
     def back(self) -> None:
         with self._command_lock:

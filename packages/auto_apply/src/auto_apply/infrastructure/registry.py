@@ -1,6 +1,3 @@
-# This class implements the RegistryPort protocol defined in
-# auto_apply/domain/ports/registry_port.py.
-
 """Runtime environment registry — single source of truth for capabilities and config.
 
 This module provides CapabilitiesRegistry: the single authoritative answer to
@@ -38,6 +35,7 @@ Example:
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+import uuid
 from typing import Any
 
 from auto_apply.adapters.secondary.os.detectors import BrowserDetector, ToolDetector
@@ -47,9 +45,11 @@ from auto_apply.adapters.secondary.persistence.policy_manager import PolicyManag
 from auto_apply.domain.config import DB_PATH
 from auto_apply.domain.models.policy import AdminPolicy
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.effective_config import EffectiveConfig
 from auto_apply.domain.models.resources import RuntimeProfile
-from auto_apply.domain.models.session import SessionPlan
-from auto_apply.infrastructure.candidates import (
+from auto_apply.domain.models.session_plan import SessionPlan
+from auto_apply.domain.models.timing import BehaviorParameters
+from auto_apply.domain.models.browser_candidates import (
     AutomationCandidate,
     CANDIDATE_PRIORITY,
     build_filtered_candidates,
@@ -67,8 +67,7 @@ _LOW_RESOURCE_MIN_DISK_MB: int = 512
 
 # Path to the runtime defaults YAML — loaded once at module import.
 _DEFAULTS_YAML: Path = (
-    Path(__file__).resolve().parent   # infrastructure/
-    .parent                            # auto_apply/
+    Path(__file__).resolve().parent.parent  # infrastructure/  # auto_apply/
     / "resources"
     / "config"
     / "runtime_defaults.yaml"
@@ -79,13 +78,30 @@ _DEFAULTS_YAML: Path = (
 # pyyaml is not installed or the file is missing/malformed.
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _new_session_id() -> str:
+    """Mint the one identity for this run.
+
+    Must be a UUID, not a clock reading. ``SessionPlan`` is frozen, so whatever
+    is assigned here is permanent for the whole session, and CheckpointManager
+    keys checkpoints by it — a collision restores another session's state.
+
+    A wall-clock id collides for any two sessions inside the same second, and
+    collides *permanently* on a machine with a dead RTC, which reports the same
+    epoch on every boot. Those machines are AA's target hardware, not an edge
+    case. uuid4 is also opaque, so it leaks no run time into research exports.
+    """
+    return str(uuid.uuid4())
+
+
 _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "headless_mode": False,
     "browser_timeout_seconds": 30,
     "page_load_timeout_seconds": 20,
+    "navigation_retries": 3,
     "preferred_browser_order": ["chrome", "firefox", "edge", "safari"],
     "max_applications_per_session": 50,
     "max_applications_per_company": 3,
+    "cooldown_days_default": 180,
     "max_discovery_results_per_query": 30,
     "task_retry_limit": 3,
     "network_reconnect_timeout_seconds": 300,
@@ -94,6 +110,10 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "enable_fingerprint_spoofing": True,
     "min_action_delay_ms": 500,
     "max_action_delay_ms": 2000,
+    "macro_pause_min_s": 1.2,
+    "macro_pause_max_s": 2.5,
+    "settle_min_s": 0.4,
+    "settle_max_s": 0.8,
     "enable_research_collection": False,
     "enable_company_batching": True,
     "company_batch_threshold": 3,
@@ -101,6 +121,53 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "perception_strategy": "math",
     "store_session_logs": True,
     "log_retention_days": 30,
+    "vetting": {
+        "hard_skills_min_overlap": 0.5,
+        "role_alignment_threshold": 0.6,
+        "borderline_band": [0.45, 0.65],
+        "filter_weights": {
+            "ThrottlingFilter": 0.1,
+            "SpatialLocationFilter": 0.15,
+            "LogicFilters": 0.15,
+            "ExperienceFilter": 0.15,
+            "HardSkillsFilter": 0.2,
+            "RoleAlignmentFilter": 0.25,
+        },
+    },
+    "discovery": {
+        "max_concurrent_sources": 1,
+        "max_pages_per_query": 5,
+        "between_provider_pause_min": 1.0,
+        "between_provider_pause_max": 2.0,
+    },
+    "applications": {
+        "max_pages": 10,
+        "max_steps_per_page": 15,
+        "dom_stabilization_timeout_s": 3.0,
+        "custom_answer_max_tokens": 150,
+        "inter_action_delay_ms": 400,
+        "macro_pause_min_seconds": 0.4,
+        "macro_pause_max_seconds": 1.2,
+        "micro_delay_peak_ms": 30,
+        "typing_wpm": 80,
+        "typing_jitter_fraction": 0.15,
+        "thinking_pause_probability": 0.05,
+        "thinking_pause_min": 0.2,
+        "thinking_pause_max": 0.6,
+    },
+    "browser": {
+        "mouse_move_steps": 4,
+        "mouse_offset_min_px": 30,
+        "mouse_offset_max_px": 150,
+        "mouse_step_delay_min": 0.05,
+        "mouse_step_delay_max": 0.2,
+    },
+    "gpt4all": {
+        "model": "Meta-Llama-3-8B-Instruct.Q4_0.gguf",
+        "max_tokens": 512,
+        "temperature": 0.7,
+        "device": "cpu",
+    },
 }
 
 
@@ -161,6 +228,7 @@ class EnvironmentCapabilities:
             When True, the registry automatically applies conservative config
             overrides to protect session stability.
     """
+
     available_browsers: list[str] = field(default_factory=list)
     available_tools: list[str] = field(default_factory=list)
     os_name: str = "unknown"
@@ -286,32 +354,16 @@ class CapabilitiesRegistry:
             is_low_resource=is_low_resource,
         )
 
-        # Construct the SessionPlan
-        discovery_cfg = effective_config.get("discovery", {})
-        applications_cfg = effective_config.get("applications", {})
-        session_cfg = effective_config.get("session", {})
-        providers_list = discovery_cfg.get("providers", ["google", "bing", "indeed"])
-        linear_mode_platforms = set(effective_config.get("linear_mode_platforms", []))
+        # Construct BehaviorParameters from the merged config
+        behavior_params = BehaviorParameters.from_config(effective_config)
 
-        plan = SessionPlan(
-            session_id="unset",  # will be overwritten by the orchestrator
-            max_concurrency=discovery_cfg.get("max_concurrent_sources", 1),
-            max_results_per_query=effective_config.get("max_discovery_results_per_query", 30),
-            max_applications_per_session=applications_cfg.get("max_applications_per_session", 50),
-            max_applications_per_company=applications_cfg.get("max_applications_per_company", 3),
-            max_queries_per_session=discovery_cfg.get("max_queries_per_session", 20),
-            enable_company_page_mining=discovery_cfg.get("enable_company_page_mining", False),
-            use_ats_site_search=discovery_cfg.get("use_ats_site_search", False),
-            date_range=effective_config.get("date_range"),
-            providers=providers_list,
-            linear_mode_platforms=linear_mode_platforms,
-            research_enabled=effective_config.get("enable_research_collection", False),
-            random_seed=session_cfg.get("random_seed"),
+        # Construct the SessionPlan using the canonical factory
+        plan = SessionPlan.from_config(
+            session_id=_new_session_id(),
+            config=effective_config,
+            behavior=behavior_params,
             nlp_tier=effective_config.get("nlp_tier", "basic"),
             browser_framework=effective_config.get("browser_framework", "selenium"),
-            headless=effective_config.get("headless_mode", True),
-            stealth_mode=effective_config.get("stealth_mode", True),
-            has_live_browser=effective_config.get("discovery_strategy", "live_browser") != "static_fetch",
         )
 
         registry = cls(
@@ -325,6 +377,7 @@ class CapabilitiesRegistry:
         from auto_apply.adapters.secondary.security.policy_enforcement import (  # noqa: PLC0415
             PolicyEnforcement,
         )
+
         PolicyEnforcement(registry).enforce()
 
         logger.info(
@@ -348,6 +401,20 @@ class CapabilitiesRegistry:
         merged = dict(runtime_defaults)
         merged.update(user_settings)
 
+        # Browser preference reconciliation (input -> resolution -> resolved state).
+        # The profile carries the user's single pick as a declarative input
+        # (preferred_browser); the cascade reads the resolved fallback order
+        # (preferred_browser_order). Fold the pick to the FRONT of that order so a
+        # user choosing firefox tries firefox first and still falls back through the
+        # rest. Without this the pick was a dead-write: written, merged, read by none.
+        browser_pick = merged.get("preferred_browser")
+        merged.pop("preferred_browser", None)
+        if browser_pick and browser_pick != "any":
+            order = list(merged.get("preferred_browser_order", []))
+            merged["preferred_browser_order"] = [browser_pick] + [
+                b for b in order if b != browser_pick
+            ]
+
         if admin_policy:
             for key, value in admin_policy.config_overrides.items():
                 merged[key] = value
@@ -361,9 +428,7 @@ class CapabilitiesRegistry:
                 "max_discovery_results_per_query": min(
                     merged.get("max_discovery_results_per_query", 30), 15
                 ),
-                "min_action_delay_ms": max(
-                    merged.get("min_action_delay_ms", 500), 800
-                ),
+                "min_action_delay_ms": max(merged.get("min_action_delay_ms", 500), 800),
                 "discovery_strategy": "static_fetch",
                 "enable_fingerprint_spoofing": False,
             }
@@ -407,8 +472,10 @@ class CapabilitiesRegistry:
 
     def discovery_requires_live_browser(self) -> bool:
         """Returns True if the active discovery strategy requires a live browser."""
-        strategy = self._effective_config.get("discovery_strategy", "live_browser")
-        return strategy != "static_fetch"
+        return (
+            self._effective_config.get("discovery_strategy", "live_browser")
+            != "static_fetch"
+        )
 
     # =========================================================================
     # NEW: FRAMEWORK NATIVE BROWSERS MAP
@@ -442,7 +509,8 @@ class CapabilitiesRegistry:
         The "static" fallback is always included as the last resort.
         """
         available_frameworks = [
-            tool for tool in ("playwright", "selenium", "camoufox")
+            tool
+            for tool in ("playwright", "selenium", "camoufox")
             if self.is_tool_available(tool)
         ]
         os_browsers = self.get_allowed_browsers()
@@ -475,6 +543,16 @@ class CapabilitiesRegistry:
         """Returns a copy of the full resolved configuration dict."""
         return dict(self._effective_config)
 
+    def get_effective_settings(self) -> EffectiveConfig:
+        """Returns the resolved configuration as a typed, frozen object.
+
+        Same data as ``get_all_effective_config``, read through one typed
+        name per concept. A missing key raises at construction instead of
+        defaulting silently; a consumer migrating onto this cannot misread
+        a key the way ``dict.get(key, default)`` allowed.
+        """
+        return EffectiveConfig.from_mapping(self._effective_config)
+
     # =========================================================================
     # PROFILE AND POLICY ACCESSORS
     # =========================================================================
@@ -484,24 +562,67 @@ class CapabilitiesRegistry:
         return self._profile
 
     def get_runtime_profile(self) -> RuntimeProfile:
-        """Returns a RuntimeProfile built from the detected capabilities."""
-        browsers = self._capabilities.available_browsers
-        browser_name = browsers[0] if browsers else "chrome"
-        # Framework selection is now handled by BrowserCascade.
-        browser_framework: str = "unresolved"
+        """Returns a RuntimeProfile built from detected capabilities.
+
+        The profile reflects hardware‑based resource scaling, capped by the
+        session plan's explicitly configured limits so it never contradicts the
+        user/admin‑controlled concurrency ceiling.
+
+        NLP tier and AI flags are set by detecting optional tools (SpaCy,
+        sentence‑transformers); behaviour‑humanisation and stealth‑driver
+        flags are also factored in.
+        """
+        caps = self._capabilities
+        plan = self.get_session_plan()
+        config = self._effective_config
+
+        # ── Browser identity ────────────────────────────────────────────────
+        browser_name = (
+            caps.available_browsers[0] if caps.available_browsers else "chrome"
+        )
+
+        # ── Max concurrency ──────────────────────────────────────────────────
+        # Hardware‑derived, then capped by the session plan's safety ceiling.
+        if caps.is_low_resource:
+            hw_concurrency = 1
+        else:
+            if caps.cpu_cores >= 4:
+                # Originally from SessionResourcesManager.negotiate():
+                #   concurrency = min(4, int((ram_mb / 1024) / 2))
+                hw_concurrency = max(1, min(4, int((caps.ram_mb / 1024.0) / 2.0)))
+            else:
+                hw_concurrency = 1
+        concurrency = min(hw_concurrency, plan.max_concurrency)
+
+        # ── NLP / AI availability ───────────────────────────────────────────
+        nlp_engine = "basic"
+        ai_enabled = False
+        if not caps.is_low_resource:
+            if self.is_tool_available("sentence_transformers"):
+                nlp_engine = "transformer"
+                ai_enabled = True
+            elif self.is_tool_available("spacy"):
+                nlp_engine = "spacy"
+                ai_enabled = True
+
+        # ── Stealth driver eligibility ──────────────────────────────────────
+        enable_humanization = bool(config.get("enable_behavior_humanization", True))
+        use_stealth_driver = (
+            not caps.is_low_resource
+            and "undetected_chromedriver" in caps.available_tools
+            and enable_humanization
+            and browser_name in ("chrome", "chromium")
+        )
+
         return RuntimeProfile(
             browser_name=browser_name,
-            browser_framework=browser_framework,
-            headless=bool(self._effective_config.get("headless_mode", True)),
-            use_stealth=bool(
-                self._effective_config.get("enable_fingerprint_spoofing", True)
-            ),
-            use_stealth_driver=(
-                "undetected_chromedriver" in self._capabilities.available_tools
-            ),
-            max_concurrency=1 if self._capabilities.is_low_resource else 2,
-            ai_enabled=False,
-            nlp_engine="basic",
+            browser_framework="unresolved",  # resolved later by BrowserCascade
+            headless=bool(config.get("headless_mode", True)),
+            use_stealth=bool(config.get("enable_fingerprint_spoofing", True)),
+            use_stealth_driver=use_stealth_driver,
+            max_concurrency=concurrency,
+            ai_enabled=ai_enabled,
+            nlp_engine=nlp_engine,
         )
 
     def get_admin_policy(self) -> AdminPolicy | None:
@@ -544,6 +665,65 @@ class CapabilitiesRegistry:
     def is_research_enabled(self) -> bool:
         """Returns True if the user has opted into research data collection."""
         return self.is_feature_enabled("research_collection")
+
+    # =========================================================================
+    # CAPABILITY PROFILE
+    # =========================================================================
+
+    def build_capability_profile(
+        self, driver_available: bool
+    ) -> "ResolvedCapabilityProfile":
+        """Build the frozen capability profile for this session.
+
+        Called once in build_orchestrator() after the driver is (or isn't) created.
+        The result is injected into the orchestrator and never changes.
+
+        Args:
+            driver_available: Whether a live browser driver was successfully created.
+
+        Returns:
+            A frozen ResolvedCapabilityProfile.
+        """
+        from auto_apply.domain.models.capability_profile import (
+            ResolvedCapabilityProfile,
+        )
+
+        has_spacy = False
+        try:
+            import spacy  # noqa: F401
+
+            has_spacy = True
+        except ImportError:
+            pass
+
+        has_gpt4all = False
+        try:
+            from gpt4all import GPT4All  # noqa: F401
+
+            has_gpt4all = True
+        except ImportError:
+            pass
+
+        max_workers = self.get_effective_config("discovery.max_concurrent_sources", 1)
+        if not driver_available:
+            max_workers = 0  # No browser = no browser-based discovery
+
+        return ResolvedCapabilityProfile(
+            has_browser=driver_available,
+            browser_framework="selenium" if driver_available else None,
+            max_browser_workers=max(1, int(max_workers)),
+            has_spacy=has_spacy,
+            has_gpt4all=has_gpt4all,
+            has_research_consent=self.is_research_enabled(),
+            research_signals_active=self.is_research_enabled(),
+            is_low_resource=self.is_low_resource_environment(),
+            max_applications_per_session=self.get_effective_config(
+                "session.max_applications", None
+            ),
+            max_concurrent_sources=max(
+                1, int(self.get_effective_config("discovery.max_concurrent_sources", 1))
+            ),
+        )
 
     # =========================================================================
     # SESSION PLAN ACCESSOR

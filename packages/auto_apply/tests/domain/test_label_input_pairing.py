@@ -145,19 +145,19 @@ def test_build_parent_map_root_is_none():
 
 def test_build_parent_map_children_point_to_parent():
     child = DOMNode(tag="input", depth=1)
-    root = DOMNode(tag="form", depth=0, children=[child])
+    root = DOMNode(tag="form", depth=0, children=(child,))
     pm = build_parent_map(root)
-    assert pm[child] is root
+    assert pm.get(child) == root
 
 
 def test_build_parent_map_deep_tree():
     grandchild = DOMNode(tag="input", depth=2)
-    child = DOMNode(tag="div", depth=1, children=[grandchild])
-    root = DOMNode(tag="form", depth=0, children=[child])
+    child = DOMNode(tag="div", depth=1, children=(grandchild,))
+    root = DOMNode(tag="form", depth=0, children=(child,))
     pm = build_parent_map(root)
-    assert pm[grandchild] is child
-    assert pm[child] is root
-    assert pm[root] is None
+    assert pm.get(grandchild) == child
+    assert pm.get(child) == root
+    assert pm.get(root) is None
 
 
 # ── assign_labels_to_inputs ───────────────────────────────────────────────────
@@ -190,7 +190,7 @@ def test_assign_more_labels_than_inputs_terminates_and_pairs_nearest():
     spin the solver forever. With a finite penalty it terminates and the input
     is paired to its nearest label.
     """
-    inp = DOMNode(tag="input", attributes={"name": "q"}, geometry=Geometry(60, 0, 100, 20))
+    inp = DOMNode(tag="input", attributes=(("name", "q"),), geometry=Geometry(60, 0, 100, 20))
     near = DOMNode(tag="label", text="Email", geometry=Geometry(0, 0, 50, 20))
     far1 = DOMNode(tag="label", text="Phone", geometry=Geometry(0, 200, 50, 20))
     far2 = DOMNode(tag="label", text="Name", geometry=Geometry(0, 400, 50, 20))

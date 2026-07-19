@@ -425,9 +425,9 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         label_text = label_node.text.strip() if label_node.text else ""
         # Use placeholder or aria-label as fallback
         if not label_text:
-            label_text = input_node.attributes.get("placeholder", "")
+            label_text = input_node.get_attribute("placeholder", "")
         if not label_text:
-            label_text = input_node.attributes.get("aria-label", "")
+            label_text = input_node.get_attribute("aria-label", "")
 
         field_type = self._infer_field_type(input_node, label_text)
         is_required = self._is_required(input_node)
@@ -450,8 +450,8 @@ class MathFormUnderstandingService(FormUnderstandingPort):
     def _create_unlabeled_field(self, input_node: DOMNode) -> LabeledField:
         """Create a LabeledField without an associated label node."""
         label_text = (
-            input_node.attributes.get("placeholder", "")
-            or input_node.attributes.get("aria-label", "")
+            input_node.get_attribute("placeholder", "")
+            or input_node.get_attribute("aria-label", "")
             or ""
         )
         field_type = self._infer_field_type(input_node, label_text)
@@ -513,11 +513,11 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         scores: dict[FieldType, int] = defaultdict(int)
 
         # Attributes
-        type_attr = input_node.attributes.get("type", "").lower()
-        name_attr = input_node.attributes.get("name", "").lower()
-        id_attr = input_node.attributes.get("id", "").lower()
-        placeholder = input_node.attributes.get("placeholder", "").lower()
-        autocomplete = input_node.attributes.get("autocomplete", "").lower()
+        type_attr = input_node.get_attribute("type", "").lower()
+        name_attr = input_node.get_attribute("name", "").lower()
+        id_attr = input_node.get_attribute("id", "").lower()
+        placeholder = input_node.get_attribute("placeholder", "").lower()
+        autocomplete = input_node.get_attribute("autocomplete", "").lower()
 
         combined = f"{label_text} {name_attr} {id_attr} {placeholder} {autocomplete}".lower()
 
@@ -593,8 +593,8 @@ class MathFormUnderstandingService(FormUnderstandingPort):
     def _is_required(input_node: DOMNode) -> bool:
         """Check for 'required' attribute or aria-required."""
         return (
-            input_node.attributes.get("required") is not None
-            or input_node.attributes.get("aria-required", "").lower() == "true"
+            input_node.get_attribute("required") is not None
+            or input_node.get_attribute("aria-required", "").lower() == "true"
         )
 
     # ======================================================================
@@ -613,13 +613,13 @@ class MathFormUnderstandingService(FormUnderstandingPort):
                 return True
 
         # Suspicious name patterns
-        name = input_node.attributes.get("name", "").lower()
+        name = input_node.get_attribute("name", "").lower()
         suspicious = {"fax", "confirm_email", "extra", "hidden", "url2", "email2"}
         if any(bad in name for bad in suspicious):
             return True
 
         # No label and no placeholder
-        if not input_node.attributes.get("placeholder") and not self._has_associated_label(input_node):
+        if not input_node.get_attribute("placeholder") and not self._has_associated_label(input_node):
             return True
 
         return False
@@ -745,10 +745,10 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         """Check for known CAPTCHA indicators."""
         for node in root.iter_nodes():
             if node.tag == "iframe":
-                src = node.attributes.get("src", "").lower()
+                src = node.get_attribute("src", "").lower()
                 if "recaptcha" in src or "hcaptcha" in src:
                     return True
-            classes = node.attributes.get("class", "").lower()
+            classes = node.get_attribute("class", "").lower()
             if "g-recaptcha" in classes:
                 return True
         return False
@@ -760,7 +760,7 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         password_count = 0
         login_button = False
         for node in root.iter_nodes():
-            if node.tag == "input" and node.attributes.get("type") == "password":
+            if node.tag == "input" and node.get_attribute("type") == "password":
                 password_count += 1
             if node.tag == "button":
                 text = node.text.lower()

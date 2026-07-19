@@ -51,8 +51,10 @@ from auto_apply.domain.events import Event
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.parsed_job_description import ParsedJobDescription
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.session_plan import SessionExecutionMode
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.types import JobStatus
+from auto_apply.domain.ports.research_port import NullResearchObserver, ResearchObserverPort
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,7 @@ class VettingWorkflow:
         config: dict | None = None,
         borderline_band: tuple[float, float] = (0.45, 0.65),
         weights: dict[str, float] | None = None,
+        research_observer: ResearchObserverPort | None = None,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -106,10 +109,11 @@ class VettingWorkflow:
             text_matcher: TextMatcher — NLP entity extraction and similarity.
             text_generation_port: TextGenerationPort | None — GPT4All or None.
             perception_port: PerceptionPort | None — for fetching job descriptions.
-            research_collector: ResearchCollector | None — anonymized telemetry.
+            research_collector: ResearchCollector | None — anonymized telemetry (deprecated).
             config: Effective config dict from registry.
             borderline_band: Fit scores in this range trigger GPT4All reasoning.
             weights: Per-filter weight overrides. Defaults to DEFAULT_WEIGHTS.
+            research_observer: ResearchObserverPort — research data collector (optional).
         """
         self._profile = profile
         self._filters = filters
@@ -119,10 +123,11 @@ class VettingWorkflow:
         self._text_matcher = text_matcher
         self._text_generation_port = text_generation_port
         self._perception_port = perception_port
-        self._research_collector = research_collector
+        self._research_collector = research_collector  # kept for backward compat, unused
         self._config = config or {}
         self._borderline_band = borderline_band
         self._weights = weights or self.DEFAULT_WEIGHTS
+        self._research_observer = research_observer or NullResearchObserver()
 
     def _cfg(self, key: str, default: Any) -> Any:
         """Read a dot-path config key from self._config with a default fallback."""
@@ -422,21 +427,30 @@ class VettingWorkflow:
         except Exception as exc:
             logger.debug("VettingWorkflow: telemetry signal failed: %s", exc)
 
-    def run(self, job: Job) -> bool:
+    def run(
+        self,
+        job: Job,
+        execution_mode: SessionExecutionMode | None = None,
+    ) -> bool:
         """Vet a single job against the user's profile.
 
         Executes the 8-step vetting pipeline in order, short-circuiting on first
-        filter failure. Enqueues an APPLY WorkUnit for approved jobs.
+        filter failure. Enqueues an APPLY WorkUnit for approved jobs ONLY if
+        the execution mode includes application.
 
         Args:
             job: The Job to evaluate. Must have job.url set.
+            execution_mode: Optional override for the session's execution mode.
+                Defaults to FULL_PIPELINE if not provided.
 
         Returns:
-            True if the job passed all filters and an APPLY WorkUnit was enqueued.
-            False if the job was rejected at any filter.
+            True if the job passed all filters and (if applicable) an APPLY
+            WorkUnit was enqueued. False if the job was rejected at any filter.
         """
+        mode = execution_mode if execution_mode is not None else SessionExecutionMode.FULL_PIPELINE
         logger.debug(
-            "VettingWorkflow.run() | job=%s company=%s", job.title, job.company
+            "VettingWorkflow.run() | job=%s company=%s mode=%s",
+            job.title, job.company, mode.value,
         )
 
         description = self._fetch_job_description(job)
@@ -450,10 +464,16 @@ class VettingWorkflow:
         self._emit_vetting_telemetry(job, partial_scores, reason)
 
         if passed:
-            self._enqueue_apply_task(job)
-            logger.info(
-                "VettingWorkflow: PASS | job=%s fit_score=%.2f gpt4all=%s",
-                job.title, fit_score, gpt4all_note,
-            )
+            if mode.includes_application:
+                self._enqueue_apply_task(job)
+                logger.info(
+                    "VettingWorkflow: PASS | job=%s fit_score=%.2f gpt4all=%s",
+                    job.title, fit_score, gpt4all_note,
+                )
+            else:
+                logger.info(
+                    "VettingWorkflow: PASS (apply skipped by mode=%s) | job=%s fit_score=%.2f",
+                    mode.value, job.title, fit_score,
+                )
 
         return passed

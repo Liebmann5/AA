@@ -5,14 +5,17 @@ Covers:
     - Navigation failure: run() returns False when browser navigation fails.
     - CAPTCHA detection: workflow enqueues a CAPTCHA WorkUnit and returns False.
     - Graceful degradation: no browser, no perception port, no optional components.
+    - Browser lease is acquired when provided.
 """
 import pytest
 from unittest.mock import MagicMock, patch
 
+from auto_apply.domain.models.session_plan import SessionPlan
 from auto_apply.application.workflows.applications_workflow import ApplicationsWorkflow
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.work_unit import TaskType
+from auto_apply.domain.models.application_evidence import ApplicationEvidence
 
 
 def _make_workflow(
@@ -25,6 +28,7 @@ def _make_workflow(
     perception_port=None,
     interaction_port=None,
     interrupt_policy=None,
+    browser_lease=None,
 ) -> ApplicationsWorkflow:
     if interrupt_policy is None:
         interrupt_policy = MagicMock()
@@ -48,6 +52,8 @@ def _make_workflow(
         event_bus=event_bus,
         interrupt_policy=interrupt_policy,
         text_generation_port=None,
+        browser_lease=browser_lease,
+        plan=SessionPlan(session_id="test"),
     )
 
 
@@ -79,10 +85,14 @@ def test_run_returns_true_on_submission(
     )
 
     # Patch _submit_application to simulate a successful submit
-    with patch.object(wf, "_submit_application", return_value=True):
+    fake_evidence = ApplicationEvidence(outcome="SUBMITTED", confidence=0.95)
+    with patch.object(wf, "_submit_application", return_value=fake_evidence):
         result = wf.run(sample_job)
 
-    assert result is True
+    # run() returns a structured ApplicationEvidence; truthiness delegates to
+    # is_likely_success (see ApplicationEvidence.__bool__).
+    assert bool(result) is True
+    assert result.outcome == "SUBMITTED"
 
     published_events = [e for e, _ in mock_event_bus.published_events]
     assert Event.APPLICATION_SUBMITTED in published_events
@@ -106,11 +116,22 @@ def test_run_returns_false_on_navigation_failure(
         browser=None,   # no browser → navigation will fail
     )
 
-    # Patch _navigate_to_application to simulate failure
-    with patch.object(wf, "_navigate_to_application", return_value=False):
+    # _navigate_to_application returns an ApplicationEvidence (see _apply_single,
+    # which reads evidence.outcome on the return value) — patch it to simulate a
+    # failed navigation the same way the real method would report one.
+    failed_evidence = ApplicationEvidence(
+        pre_submit_url=sample_job.url,
+        page_title_before=sample_job.title,
+        outcome="FAILED_NAVIGATION",
+        confidence=0.95,
+    )
+    with patch.object(wf, "_navigate_to_application", return_value=failed_evidence):
         result = wf.run(sample_job)
 
-    assert result is False
+    # run() returns a structured ApplicationEvidence; truthiness delegates to
+    # is_likely_success (see ApplicationEvidence.__bool__).
+    assert bool(result) is False
+    assert result.outcome == "FAILED_NAVIGATION"
 
     published_events = [e for e, _ in mock_event_bus.published_events]
     assert Event.APPLICATION_FAILED in published_events
@@ -148,7 +169,10 @@ def test_run_handles_captcha_by_enqueuing_task(
 
     result = wf.run(sample_job)
 
-    assert result is False
+    # run() returns a structured ApplicationEvidence; truthiness delegates to
+    # is_likely_success (see ApplicationEvidence.__bool__).
+    assert bool(result) is False
+    assert result.outcome == "CAPTCHA_BLOCKED"
 
     # A HANDLE_CAPTCHA WorkUnit should have been enqueued by _handle_interruptions
     enqueued_tasks = [
@@ -186,9 +210,52 @@ def test_handles_missing_optional_dependency_gracefully(
         event_bus=mock_event_bus,
         interrupt_policy=MagicMock(should_pause=MagicMock(return_value=False)),
         text_generation_port=None,
+        plan=SessionPlan(session_id="test"),
     )
 
-    # Must not raise — degrades gracefully to APPLICATION_FAILED
+    # Must not raise — degrades gracefully to a structured failure evidence,
+    # not a crash. run() returns ApplicationEvidence (see its docstring); the
+    # graceful-degradation contract is "produces a valid, falsy evidence
+    # object", not "produces a bool".
     result = wf.run(sample_job)
 
-    assert isinstance(result, bool)
+    assert isinstance(result, ApplicationEvidence)
+    assert bool(result) is False
+
+
+def test_browser_lease_is_acquired_during_run(
+    mock_profile,
+    sample_job,
+    mock_event_bus,
+    mock_job_repo,
+    mock_task_queue,
+    mock_text_matcher,
+    mock_browser,
+    mock_perception_port,
+    mock_interaction_port,
+):
+    """When browser_lease is supplied, its acquire() context is entered during run()."""
+    mock_lease = MagicMock()
+    # Configure acquire() to return a context manager mock
+    mock_lease.acquire.return_value.__enter__ = MagicMock()
+    mock_lease.acquire.return_value.__exit__ = MagicMock()
+
+    wf = _make_workflow(
+        profile=mock_profile,
+        event_bus=mock_event_bus,
+        job_repo=mock_job_repo,
+        task_queue=mock_task_queue,
+        text_matcher=mock_text_matcher,
+        browser=mock_browser,
+        perception_port=mock_perception_port,
+        interaction_port=mock_interaction_port,
+        browser_lease=mock_lease,
+    )
+
+    # Stub the submission step so the full run path executes
+    fake_evidence = ApplicationEvidence(outcome="SUBMITTED", confidence=0.95)
+    with patch.object(wf, "_submit_application", return_value=fake_evidence):
+        wf.run(sample_job)
+
+    # The lease should have been used to wrap the core logic
+    assert mock_lease.acquire.called, "Browser lease was not acquired during run()"

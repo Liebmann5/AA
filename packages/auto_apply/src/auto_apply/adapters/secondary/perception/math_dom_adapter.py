@@ -6,6 +6,11 @@ collect tag names, attributes, visible text, and bounding boxes. The result is
 a complete, immutable `DOMNode` tree suitable for deterministic analysis.
 
 Works with both Selenium and Playwright backends.
+
+Additionally provides `MathPageUnderstandingAdapter` which implements
+`PageUnderstandingPort` using pure mathematical DOM analysis.  This
+adapter is wired into the composition root so that discovery providers
+can benefit from the math subsystem without importing it directly.
 """
 
 from __future__ import annotations
@@ -13,11 +18,22 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import urljoin
 
 from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
 from auto_apply.domain.models.math_dom import DOMNode, Geometry
+from auto_apply.domain.models.math_webpage import WebpageStructure, FieldType
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.math_perception_port import MathematicalPerceptionPort
+from auto_apply.domain.ports.page_understanding_port import (
+    PageContext,
+    SERPStructure,
+    FormStructure,
+    JobListingStructure,
+    JobCardInfo,
+    FormFieldInfo,
+)
+from auto_apply.domain.services.dom_segmentation import MathFormUnderstandingService
 
 # Sentinel type alias used only in _graft_iframes signature.
 _Expansions = dict[int, DOMNode]
@@ -227,10 +243,10 @@ class MathDOMAdapter(MathematicalPerceptionPort):
                 width=node.geometry.width,
                 height=node.geometry.height,
             )
-        new_children = [self._offset_geometry(c, dx, dy) for c in node.children]
+        new_children = tuple(self._offset_geometry(c, dx, dy) for c in node.children)
         return DOMNode(
             tag=node.tag,
-            attributes=dict(node.attributes),
+            attributes=node.attributes,
             text=node.text,
             geometry=new_geom,
             children=new_children,
@@ -251,22 +267,22 @@ class MathDOMAdapter(MathematicalPerceptionPort):
             inner = expansions[id(node)]
             return DOMNode(
                 tag=node.tag,
-                attributes=dict(node.attributes),
+                attributes=node.attributes,
                 text=node.text,
                 geometry=node.geometry,
-                children=list(inner.children),
+                children=inner.children,
                 depth=node.depth,
             )
 
-        new_children = [self._graft_iframes(c, expansions) for c in node.children]
+        new_children = tuple(self._graft_iframes(c, expansions) for c in node.children)
 
         # Avoid allocating a new node when nothing changed.
-        if new_children == list(node.children):
+        if new_children == node.children:
             return node
 
         return DOMNode(
             tag=node.tag,
-            attributes=dict(node.attributes),
+            attributes=node.attributes,
             text=node.text,
             geometry=node.geometry,
             children=new_children,
@@ -283,6 +299,10 @@ class MathDOMAdapter(MathematicalPerceptionPort):
         Returns:
             An immutable DOMNode instance.
         """
+        # Convert the attributes dict to a sorted tuple of tuples for immutability.
+        attrs_dict = data.get("attributes", {})
+        sorted_attrs = tuple(sorted((name, str(val)) for name, val in attrs_dict.items()))
+
         geom = None
         if data.get("geometry"):
             g = data["geometry"]
@@ -293,24 +313,14 @@ class MathDOMAdapter(MathematicalPerceptionPort):
                 height=float(g.get("height", 0.0)),
             )
 
-        children = [
+        children = tuple(
             self._build_dom_node(child, depth + 1)
             for child in data.get("children", [])
-        ]
+        )
 
-        # return DOMNode(
-        #     tag=data.get("tag", "div"),
-        #     attributes=data.get("attributes", {}),
-        #     text=data.get("text", "").strip(),
-        #     geometry=geom,
-        #     children=children,
-        #     depth=depth,
-        #     # structural_hash is computed automatically in __post_init__
-        # )
-        #! temporary
         node = DOMNode(
             tag=data.get("tag", "div"),
-            attributes=data.get("attributes", {}),
+            attributes=sorted_attrs,
             text=data.get("text", "").strip(),
             geometry=geom,
             children=children,
@@ -335,3 +345,320 @@ class MathDOMAdapter(MathematicalPerceptionPort):
             return self._browser.title or ""
         except Exception:
             return ""
+
+
+# ----------------------------------------------------------------------
+# PageUnderstandingPort implementation
+# ----------------------------------------------------------------------
+
+
+class MathPageUnderstandingAdapter:
+    """Implements ``PageUnderstandingPort`` using mathematical DOM analysis.
+
+    This adapter receives a ``MathDOMAdapter`` (for DOM extraction) and
+    a ``MathFormUnderstandingService`` (for segmentation & pairing), both
+    injected at construction time.  It converts the raw ``DOMNode`` tree
+    into the structured outputs expected by the ``PageUnderstandingPort``
+    contract.
+
+    All public methods never raise — they log errors and return empty
+    structures on any failure, satisfying AA's worst‑case‑first contract.
+
+    Args:
+        dom_adapter:  ``MathDOMAdapter`` — must be able to call
+                      ``extract_full_dom_tree()``.
+        form_service: ``MathFormUnderstandingService`` — provides
+                      ``analyze(dom_root, ...) → WebpageStructure``.
+    """
+
+    def __init__(
+        self,
+        dom_adapter: MathDOMAdapter,
+        form_service: MathFormUnderstandingService,
+    ) -> None:
+        self._dom_adapter = dom_adapter
+        self._form_service = form_service
+
+    # ------------------------------------------------------------------
+    # PageUnderstandingPort methods
+    # ------------------------------------------------------------------
+
+    def analyze_serp(self, context: PageContext) -> SERPStructure:
+        """Analyse the page as a SERP and extract job card information.
+
+        Args:
+            context: Page metadata (URL, title, raw HTML, viewport).
+
+        Returns:
+            A ``SERPStructure``; on failure, all fields are empty and
+            ``job_cards`` is an empty tuple.
+        """
+        try:
+            root = self._dom_adapter.extract_full_dom_tree()
+            if root is None:
+                return SERPStructure()
+
+            structure = self._form_service.analyze(
+                root,
+                url=context.url,
+                title=context.page_title,
+            )
+            cards = self._extract_job_cards(
+                structure.job_listings, context.url
+            )
+            return SERPStructure(
+                job_cards=tuple(cards),
+                pagination_present=False,
+                total_results_text="",
+                captcha_detected=structure.is_captcha_present,
+            )
+
+        except Exception as exc:
+            logger.warning(
+                "MathPageUnderstandingAdapter.analyze_serp failed: %s", exc,
+                exc_info=True,
+            )
+            return SERPStructure()
+
+    def analyze_form(self, context: PageContext) -> FormStructure:
+        """Analyse the page as a job application form.
+
+        Args:
+            context: Page metadata.
+
+        Returns:
+            A ``FormStructure`` describing all detected fields.
+        """
+        try:
+            root = self._dom_adapter.extract_full_dom_tree()
+            if root is None:
+                return FormStructure(confidence=0.0)
+
+            structure = self._form_service.analyze(
+                root,
+                url=context.url,
+                title=context.page_title,
+            )
+            return self._build_form_structure(structure)
+
+        except Exception as exc:
+            logger.warning(
+                "MathPageUnderstandingAdapter.analyze_form failed: %s", exc,
+                exc_info=True,
+            )
+            return FormStructure(confidence=0.0)
+
+    def analyze_job_listing(self, context: PageContext) -> JobListingStructure:
+        """Analyse a single job listing page and extract structured details.
+
+        Args:
+            context: Page metadata.
+
+        Returns:
+            A ``JobListingStructure``.
+        """
+        try:
+            root = self._dom_adapter.extract_full_dom_tree()
+            if root is None:
+                return JobListingStructure()
+
+            structure = self._form_service.analyze(
+                root,
+                url=context.url,
+                title=context.page_title,
+            )
+            return self._build_job_listing_structure(
+                structure, context.url, context.page_title
+            )
+
+        except Exception as exc:
+            logger.warning(
+                "MathPageUnderstandingAdapter.analyze_job_listing failed: %s",
+                exc,
+                exc_info=True,
+            )
+            return JobListingStructure()
+
+    # ------------------------------------------------------------------
+    # Internal extraction helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_job_cards(
+        listings: list[DOMNode],
+        page_url: str,
+    ) -> list[JobCardInfo]:
+        """Convert a list of DOMNode job cards into ``JobCardInfo`` objects.
+
+        Uses simple heuristics: the first heading as title, the first
+        text node after the heading as company, and the first ``<a>``
+        tag's ``href`` as URL.  Falls back gracefully when data is missing.
+
+        Args:
+            listings: Nodes flagged as job cards by ``MathFormUnderstandingService``.
+            page_url:   The URL of the page (used to resolve relative links).
+
+        Returns:
+            List of ``JobCardInfo``, one per card.
+        """
+        results: list[JobCardInfo] = []
+        for card in listings:
+            title = ""
+            company = ""
+            url = ""
+            location = ""
+            snippet = ""
+
+            # Collect text nodes and links in document order
+            text_nodes: list[str] = []
+            link_url = ""
+            for node in card.iter_nodes():
+                if node.tag in {"h1", "h2", "h3", "h4", "h5", "h6"} and not title:
+                    title = node.text.strip()
+                elif node.tag == "a" and not link_url:
+                    href = (node.get_attribute("href") or "").strip()
+                    if href and not href.startswith(("#", "javascript")):
+                        resolved = urljoin(page_url, href)
+                        link_url = resolved
+                elif node.text.strip() and node.tag not in {"script", "style"}:
+                    text_nodes.append(node.text.strip())
+
+            # Use the first heading as title (already captured above).
+            # The next non‑title text is likely the company name.
+            if title:
+                # Remove title text from text_nodes so we don't double‑count
+                text_nodes = [t for t in text_nodes if t != title]
+
+            if text_nodes:
+                company = text_nodes[0]
+                if len(text_nodes) > 1:
+                    location = text_nodes[1]
+
+            # Fallback: if we still don't have a URL, try any link in the card.
+            if not link_url:
+                for node in card.iter_nodes():
+                    if node.tag == "a":
+                        href = node.get_attribute("href") or ""
+                        if href and not href.startswith(("#", "javascript")):
+                            link_url = urljoin(page_url, href)
+                            break
+
+            results.append(
+                JobCardInfo(
+                    title=title or "Unknown",
+                    company=company or "Unknown",
+                    url=link_url or "",
+                    location=location or "",
+                    snippet=snippet or "",
+                    confidence=1.0 if title else 0.5,
+                )
+            )
+        return results
+
+    @staticmethod
+    def _build_form_structure(structure: WebpageStructure) -> FormStructure:
+        """Convert a ``WebpageStructure`` (form analysis) into a ``FormStructure``.
+
+        Args:
+            structure: The output of ``MathFormUnderstandingService.analyze()``.
+
+        Returns:
+            Populated ``FormStructure`` with fields from the main form.
+        """
+        all_fields: list[FormFieldInfo] = []
+        main_form = structure.get_main_form()
+        if main_form is None and structure.forms:
+            # Use any available form for field extraction
+            main_form = structure.forms[0]
+
+        if main_form is not None:
+            for field in main_form.all_fields:
+                options = tuple(field.options) if hasattr(field, "options") else ()
+                all_fields.append(
+                    FormFieldInfo(
+                        field_id=field.input_id,
+                        label_text=field.label_text,
+                        field_type=field.inferred_type.name.lower(),
+                        name=field.input_node.get_attribute("name", ""),
+                        placeholder=field.input_node.get_attribute("placeholder", ""),
+                        is_required=field.is_required,
+                        is_honeypot=field.is_honeypot,
+                        options=options,
+                    )
+                )
+
+        return FormStructure(
+            fields=tuple(all_fields),
+            page_count=len(structure.forms),
+            has_file_upload=any(
+                f.inferred_type == FieldType.RESUME_UPLOAD
+                for form in structure.forms
+                for f in form.all_fields
+            ),
+            has_cover_letter_field=any(
+                f.inferred_type in (FieldType.COVER_LETTER_UPLOAD,)
+                for form in structure.forms
+                for f in form.all_fields
+            ),
+            wcag_violations=(),   # not extracted in this version
+            has_salary_history_field=False,
+            confidence=0.9 if all_fields else 0.0,
+        )
+
+    @staticmethod
+    def _build_job_listing_structure(
+        structure: WebpageStructure,
+        page_url: str,
+        page_title: str,
+    ) -> JobListingStructure:
+        """Convert a ``WebpageStructure`` into a ``JobListingStructure``.
+
+        This is a best‑effort extraction; for a single listing page it
+        uses the entire visible text as the description.
+
+        Args:
+            structure:   Analysis result.
+            page_url:    URL of the page.
+            page_title:  Title of the page.
+
+        Returns:
+            Populated ``JobListingStructure``.
+        """
+        desc_text = ""
+        if structure.dom_root is not None:
+            desc_text = " ".join(
+                n.text.strip()
+                for n in structure.dom_root.iter_nodes()
+                if n.text.strip()
+            )
+
+        # Heuristics for title and company from the job cards in the structure
+        # (there is usually one card for a single listing page).
+        title = page_title
+        company = "Unknown"
+        location = ""
+        apply_url = ""
+
+        if structure.job_listings:
+            card = structure.job_listings[0]
+            # Re‑use the same extraction logic
+            card_info = MathPageUnderstandingAdapter._extract_job_cards(
+                [card], page_url
+            )
+            if card_info:
+                info = card_info[0]
+                title = info.title or page_title
+                company = info.company or "Unknown"
+                location = info.location or ""
+                apply_url = info.url or ""
+
+        return JobListingStructure(
+            full_text=desc_text,
+            title=title,
+            company=company,
+            location=location,
+            salary_text="",
+            requirements_text="",
+            apply_button_present=bool(apply_url),
+            apply_url=apply_url,
+        )

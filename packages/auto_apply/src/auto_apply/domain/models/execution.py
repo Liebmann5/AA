@@ -1,6 +1,6 @@
 """Execution mode and configuration models.
 
-This module defines the ExecutionMode enum and ExecutionConfiguration
+This module defines the SchedulingMode enum and ExecutionConfiguration
 dataclass, which together describe HOW a session is configured to run.
 
 These models are consumed by CapabilitiesRegistry during config merging
@@ -8,17 +8,17 @@ and by the orchestrator when deciding execution behavior (e.g., whether
 to use batch processing, what concurrency level to target).
 
 Design Note:
-    ExecutionMode is NOT the same as a domain strategy. ExecutionMode
+    SchedulingMode is NOT the same as a domain strategy. SchedulingMode
     describes the session-level execution approach (sequential, batched,
     parallel). Domain strategies (stream vs batch for discovery, field-by-field
     vs full-page for applications) are separate abstractions that live in
     their respective domain strategy directories.
 
 Example:
-    >>> from core.models.execution import ExecutionMode, ExecutionConfiguration
+    >>> from core.models.execution import SchedulingMode, ExecutionConfiguration
     >>>
     >>> config = ExecutionConfiguration(
-    ...     mode=ExecutionMode.SEQUENTIAL,
+    ...     mode=SchedulingMode.SEQUENTIAL,
     ...     max_concurrent_tasks=1,
     ...     enable_company_batching=True,
     ... )
@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 
-class ExecutionMode(Enum):
+class SchedulingMode(Enum):
     """Defines the session-level execution approach.
 
     The mode is selected during session initialization based on hardware
@@ -81,7 +81,7 @@ class ExecutionConfiguration:
         max_discovery_results_per_query: Discovery result limit per provider.
     """
 
-    mode: ExecutionMode = ExecutionMode.SEQUENTIAL
+    mode: SchedulingMode = SchedulingMode.SEQUENTIAL
     max_concurrent_tasks: int = 1
     enable_company_batching: bool = True
     company_batch_threshold: int = 3
@@ -92,7 +92,7 @@ class ExecutionConfiguration:
 
     def __post_init__(self) -> None:
         """Validates configuration invariants after construction."""
-        if self.mode == ExecutionMode.SEQUENTIAL and self.max_concurrent_tasks != 1:
+        if self.mode == SchedulingMode.SEQUENTIAL and self.max_concurrent_tasks != 1:
             # Use object.__setattr__ because frozen=True prevents normal assignment.
             object.__setattr__(self, "max_concurrent_tasks", 1)
 

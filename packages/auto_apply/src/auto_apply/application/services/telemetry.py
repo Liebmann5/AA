@@ -6,8 +6,6 @@ and failure rates of specific DOM locators and strategies per domain, allowing
 the agent to 'learn' when a website updates its layout.
 """
 
-# Layer: application
-# Depends on: domain
 
 import json
 import logging

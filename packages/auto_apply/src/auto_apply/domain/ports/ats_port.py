@@ -14,6 +14,18 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 
+@runtime_checkable
+class ATSRegistryPort(Protocol):
+    """Contract for the ATS registry collection (as opposed to ATSPort,
+    which describes a single platform). Concrete implementation: ATSRegistry
+    in adapters/secondary/discovery/ats_registry.py.
+    """
+
+    def match(self, url: str) -> ATSDescriptor | None:
+        """Return the ATSDescriptor whose url_patterns match *url*, if any."""
+        ...
+
+
 @dataclass(frozen=True)
 class ATSDescriptor:
     """Immutable description of a single ATS platform.

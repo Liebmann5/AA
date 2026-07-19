@@ -14,7 +14,7 @@ Dependencies:
     - domain.services.field_type_inference.FieldTypeClassifier
     - domain.services.label_input_pairing (assign_labels_to_inputs, build_parent_map)
     - domain.services.convex_hull (compute_convex_hull, hull_distance)
-    - adapters.secondary.perception.math_dom_adapter.MathDOMAdapter
+    - domain.ports.math_perception_port.MathematicalPerceptionPort
     - domain.models.job.Job
     - domain.models.parsed_job_description.ParsedJobDescription
 """
@@ -30,7 +30,6 @@ from typing import Any, Optional
 from urllib.parse import urljoin, quote_plus
 
 from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
-from auto_apply.adapters.secondary.perception.math_dom_adapter import MathDOMAdapter
 from auto_apply.domain.models.math_dom import DOMNode, Geometry
 from auto_apply.domain.models.math_webpage import WebpageStructure
 from auto_apply.domain.models.job import Job
@@ -46,7 +45,7 @@ from auto_apply.domain.services.label_input_pairing import (
     build_parent_map,
 )
 from auto_apply.domain.services.convex_hull import compute_convex_hull
-from auto_apply.domain.ports.browser_port import BrowserInterface
+from auto_apply.domain.ports.math_perception_port import MathematicalPerceptionPort
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +85,7 @@ class AnalyzerConfig:
 class MathematicalWebAnalyzer:
     """Deterministic, zero‑dependency webpage deconstruction service.
 
-    Accepts a BrowserInterface and provides methods to:
+    Accepts a MathematicalPerceptionPort and provides methods to:
         - Extract job listings from any SERP or careers page
         - Parse a job description page into structured data
         - Analyze a form page for automatic filling
@@ -96,13 +95,12 @@ class MathematicalWebAnalyzer:
     selectors.
 
     Args:
-        browser: An initialized BrowserInterface already navigated to
-            the page to be analyzed.
+        perception_port: A MathematicalPerceptionPort that provides
+            DOM tree extraction and page metadata.
     """
 
-    def __init__(self, browser: BrowserInterface) -> None:
-        self._browser = browser
-        self._dom_adapter = MathDOMAdapter(browser)
+    def __init__(self, perception_port: MathematicalPerceptionPort) -> None:
+        self._perception_port = perception_port
         self._form_analyzer = MathFormUnderstandingService()
 
     def draw_visual_debug_boxes(self, nodes: list[DOMNode], color: str = "red", label: str = "") -> None:
@@ -139,7 +137,11 @@ class MathematicalWebAnalyzer:
 
                 document.body.appendChild(div);
             """
-        self._browser.execute_script(script)
+        # drawing requires a live browser — this method is not reachable
+        # when perception_port is a plain DOM extractor without execute_script,
+        # so we guard with a hasattr check.
+        if hasattr(self._perception_port, 'execute_script'):
+            self._perception_port.execute_script(script)
 
     def extract_job_listings(self) -> list[Job]:
         """Discover all job listings on the current page.
@@ -151,7 +153,7 @@ class MathematicalWebAnalyzer:
         Returns:
             List of Job objects found on the page.
         """
-        dom_root = self._dom_adapter.extract_full_dom_tree()
+        dom_root = self._perception_port.extract_full_dom_tree()
         if dom_root is None:
             return []
 
@@ -173,7 +175,7 @@ class MathematicalWebAnalyzer:
         Returns:
             A ParsedJobDescription with all detected fields.
         """
-        dom_root = self._dom_adapter.extract_full_dom_tree()
+        dom_root = self._perception_port.extract_full_dom_tree()
         if dom_root is None:
             return ParsedJobDescription()
 
@@ -228,11 +230,11 @@ class MathematicalWebAnalyzer:
         Returns:
             WebpageStructure containing forms, fields, labels, and metadata.
         """
-        dom_root = self._dom_adapter.extract_full_dom_tree()
+        dom_root = self._perception_port.extract_full_dom_tree()
         if dom_root is None:
             return WebpageStructure(
-                url=self._browser.current_url,
-                title=self._browser.title,
+                url=self._perception_port.get_current_url(),
+                title=self._perception_port.get_page_title(),
                 dom_root=None,
                 forms=[],
                 job_listings=[],
@@ -241,8 +243,8 @@ class MathematicalWebAnalyzer:
             )
         return self._form_analyzer.analyze(
             dom_root,
-            url=self._browser.current_url,
-            title=self._browser.title,
+            url=self._perception_port.get_current_url(),
+            title=self._perception_port.get_page_title(),
         )
 
     # ------------------------------------------------------------------
@@ -258,7 +260,11 @@ class MathematicalWebAnalyzer:
         rows — so without the geometry/link/text guard those surface as bogus
         "jobs" (2-D false positives).
         """
-        patterns = find_repeated_patterns(root, min_occurrences=2)
+        patterns = find_repeated_patterns(
+            root,
+            min_occurrences=2,
+            audit_hook=DiscoveryMathAuditor.audit_structural_hash_groups,
+        )
         # Flatten all card nodes, keeping only card-like containers.
 
         DiscoveryMathAuditor.audit_structural_hash_groups(
@@ -281,91 +287,19 @@ class MathematicalWebAnalyzer:
         return unique_cards
 
     def _extract_job_from_card(self, card: DOMNode, root: DOMNode) -> dict[str, Any] | None:
-        # """Extract structured job fields from a card node.
-
-        # Uses geometric clustering to group text elements and infer types
-        # based on label proximity and keyword matching.
-        # """
-        # # Collect all text-containing descendants
-        # text_nodes = [
-        #     node for node in card.iter_nodes()
-        #     if node.text.strip() and (node.geometry and node.geometry.is_visible())
-        # ]
-        # if not text_nodes:
-        #     return None
-
-        # # Cluster text nodes by vertical position using convex hull?
-        # # Simple: sort by y, then group by y intervals
-        # text_nodes.sort(key=lambda n: n.geometry.y)
-        # clusters = []
-        # cluster = [text_nodes[0]]
-        # for i in range(1, len(text_nodes)):
-        #     if text_nodes[i].geometry.y - cluster[-1].geometry.y < 25.0:  # threshold
-        #         cluster.append(text_nodes[i])                      #20
-        #     else:
-        #         clusters.append(cluster)
-        #         cluster = [text_nodes[i]]
-        # clusters.append(cluster)
-
-        # job_data = {}
-        # # Assume first cluster is title, second is company, etc.
-        # # More robust: use FieldTypeClassifier on each cluster's combined text
-        # classifier = FieldTypeClassifier()
-        # for cl in clusters:
-        #     combined_text = " ".join(n.text.strip() for n in cl)
-        #     # Guess field type based on text content
-        #     if not job_data.get("title") and self._is_likely_title(combined_text):
-        #         job_data["title"] = combined_text
-        #     elif not job_data.get("company"):
-        #         job_data["company"] = combined_text
-        #     # URL: look for anchor nodes in the card
-        # # Extract URL from anchor elements and securely resolve relative URLs
-        # anchors = card.find_by_tag("a")
-        # for anchor in anchors:
-        #     href = anchor.attributes.get("href", "")
-        #     if href and not href.startswith(("#", "javascript")):
-        #         # job_data["url"] = href
-        #         current_url = self._get_current_url()
-        #         job_data["url"] = urljoin(current_url, href)
-        #         break
-
-        # # Set default source
-        # job_data["source"] = "MathematicalAnalyzer"
-        # # Require at least a title
-        # if "title" not in job_data or not job_data["title"]:
-        #     DiscoveryMathAuditor.audit_text_extraction(card, '', 'Math')
-        #     DiscoveryMathAuditor.audit_geometry_cluster([n.text for n in text_nodes][:5], self._get_page_title())
-        #     DiscoveryMathAuditor.audit_extraction_attempt(job_data, False, 'no_title_fallback')
-        #     return None
-        # # Set company to "Unknown" if missing
-        # job_data.setdefault("company", "Unknown")
-
-        # if not job_data.get("url"):
-        #     # job_data["url"] = self._get_current_url() + "#fallback_job_url_missing"
-        #     # DiscoveryMathAuditor.audit_extraction_attempt(job_data, False, 'missing_url')
-        #     # Construct a Google Jobs URL that targets this specific job
-            
-        #     # --- NEW: GENERATE UNIQUE SEARCH URL FOR SPAs ---
-        #     search_query = f"{job_data['title']} {job_data['company']}"
-        #     job_data["url"] = f"https://www.google.com/search?q={quote_plus(search_query)}&ibp=htl;jobs"
-        #     DiscoveryMathAuditor.audit_extraction_attempt(job_data, True, 'generated_unique_url')
-        # else:
-        #     DiscoveryMathAuditor.audit_extraction_attempt(job_data, True)
-
-        # return job_data
         """Extract structured job fields from a card node."""
         job_data = {}
         
         # 1. Smarter URL Extraction (Prioritize href, then data-share-url)
         url = None
         for node in card.iter_nodes():
-            href = node.attributes.get("href", "")
+            href = node.get_attribute("href", "")
             if href and not href.startswith(("#", "javascript")):
-                url = urljoin(self._get_current_url(), href)
+                url = urljoin(self._perception_port.get_current_url(), href)
                 break
             
             # Google Jobs often hides the real URL in data-share-url
-            share_url = node.attributes.get("data-share-url")
+            share_url = node.get_attribute("data-share-url")
             if share_url:
                 url = share_url
                 break
@@ -413,7 +347,6 @@ class MathematicalWebAnalyzer:
 
         DiscoveryMathAuditor.audit_extraction_attempt(job_data, True)
         return job_data
-    #! REVISIT
 
     def _is_likely_title(self, text: str) -> bool:
         """Heuristic to guess if a text block is a job title."""
@@ -434,16 +367,3 @@ class MathematicalWebAnalyzer:
                     max_text = node.text
                     best_node = node
         return best_node
-
-# Metadata Helpers duplicated safely
-    def _get_current_url(self) -> str:
-        try:
-            return self._browser.current_url or ""
-        except Exception:
-            return ""
-
-    def _get_page_title(self) -> str:
-        try:
-            return self._browser.title or ""
-        except Exception:
-            return ""

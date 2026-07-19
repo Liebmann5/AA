@@ -10,6 +10,7 @@ CSS selectors.
 from __future__ import annotations
 
 import hashlib
+from typing import Callable
 
 from auto_apply.domain.models.math_dom import DOMNode
 
@@ -102,7 +103,9 @@ def group_by_structural_hash(nodes: list[DOMNode]) -> dict:
 
 
 def find_repeated_patterns(
-    root: DOMNode, min_occurrences: int = 2
+    root: DOMNode,
+    min_occurrences: int = 2,
+    audit_hook: "Callable[[dict, str], None] | None" = None,
 ) -> list[list[DOMNode]]:
     """Find subtrees that appear multiple times in the DOM.
 
@@ -113,6 +116,14 @@ def find_repeated_patterns(
     Args:
         root: The root of the DOM tree to search.
         min_occurrences: Minimum number of identical subtrees to consider a pattern.
+        audit_hook: Optional callback ``(groups, stage_name) -> None`` invoked
+            at each grouping stage, for callers that want to record/audit
+            intermediate structural-hash groupings (e.g. the application
+            layer's DiscoveryMathAuditor). Domain code stays decoupled from
+            any specific application-layer auditor — pass the hook in from
+            the caller instead of importing one here. Errors raised by the
+            hook are swallowed (best-effort auditing must never break the
+            actual pattern-finding computation).
 
     Returns:
         A list of groups, where each group is a list of nodes that are
@@ -131,11 +142,11 @@ def find_repeated_patterns(
         sh = compute_structural_hash_shallow(node)
         shallow_groups.setdefault(sh, []).append(node)
 
-    try:
-        from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
-        DiscoveryMathAuditor.audit_structural_hash_groups(shallow_groups, 'find_repeated_patterns_shallow')
-    except ImportError:
-        pass
+    if audit_hook is not None:
+        try:
+            audit_hook(shallow_groups, "find_repeated_patterns_shallow")
+        except Exception:
+            pass
 
     patterns = []
     for nodes in shallow_groups.values():
@@ -147,13 +158,14 @@ def find_repeated_patterns(
             if len(group_nodes) >= min_occurrences:
                 patterns.append(group_nodes)
 
-    try:
-        from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
-        DiscoveryMathAuditor.audit_structural_hash_groups(
-            {gp[0].structural_hash: gp for gp in patterns}, 'find_repeated_patterns_full'
-        )
-    except ImportError:
-        pass
+    if audit_hook is not None:
+        try:
+            audit_hook(
+                {gp[0].structural_hash: gp for gp in patterns},
+                "find_repeated_patterns_full",
+            )
+        except Exception:
+            pass
 
     return patterns
 

@@ -46,25 +46,25 @@ class FieldTypeClassifier:
         scores: dict[FieldType, float] = defaultdict(float)
 
         # 1. Type attribute
-        type_attr = input_node.attributes.get("type", "").lower()
+        type_attr = input_node.get_attribute("type", "").lower()
         self._score_type_attribute(type_attr, scores)
 
         # 2. Autocomplete
-        autocomplete = input_node.attributes.get("autocomplete", "").lower()
+        autocomplete = input_node.get_attribute("autocomplete", "").lower()
         self._score_text(autocomplete, self.WEIGHT_AUTOCOMPLETE, scores)
 
         # 3. Name and ID
-        name = input_node.attributes.get("name", "").lower()
-        id_attr = input_node.attributes.get("id", "").lower()
+        name = input_node.get_attribute("name", "").lower()
+        id_attr = input_node.get_attribute("id", "").lower()
         self._score_text(name, self.WEIGHT_NAME_ID, scores)
         self._score_text(id_attr, self.WEIGHT_NAME_ID, scores)
 
         # 4. Placeholder
-        placeholder = input_node.attributes.get("placeholder", "").lower()
+        placeholder = input_node.get_attribute("placeholder", "").lower()
         self._score_text(placeholder, self.WEIGHT_LABEL, scores)
 
         # 5. ARIA label
-        aria_label = input_node.attributes.get("aria-label", "").lower()
+        aria_label = input_node.get_attribute("aria-label", "").lower()
         self._score_text(aria_label, self.WEIGHT_ARIA, scores)
 
         # 6. Provided label text

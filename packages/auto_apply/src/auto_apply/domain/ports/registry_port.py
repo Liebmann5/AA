@@ -33,6 +33,14 @@ class RegistryPort(Protocol):
         """Return a copy of the fully merged configuration dictionary."""
         ...
 
+    def get_effective_config(self, key: str, default: object = None) -> object:
+        """Return a single effective-config value by key."""
+        ...
+
     def is_research_enabled(self) -> bool:
         """Return True if the user opted into research data collection."""
+        ...
+
+    def discovery_requires_live_browser(self) -> bool:
+        """Return True if the active PageAccessStrategy requires a live browser."""
         ...

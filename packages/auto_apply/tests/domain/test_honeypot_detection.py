@@ -14,7 +14,7 @@ def detector():
 def _visible_input(name="first_name", placeholder="First Name"):
     return DOMNode(
         tag="input",
-        attributes={"name": name, "placeholder": placeholder},
+        attributes=(("name", name), ("placeholder", placeholder)),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=2,
     )
@@ -25,7 +25,7 @@ def _visible_input(name="first_name", placeholder="First Name"):
 def test_zero_width_is_honeypot(detector):
     node = DOMNode(
         tag="input",
-        attributes={"name": "email"},
+        attributes=(("name", "email"),),
         geometry=Geometry(x=100, y=100, width=0, height=40),
         depth=2,
     )
@@ -37,7 +37,7 @@ def test_zero_width_is_honeypot(detector):
 def test_zero_height_is_honeypot(detector):
     node = DOMNode(
         tag="input",
-        attributes={"name": "email"},
+        attributes=(("name", "email"),),
         geometry=Geometry(x=100, y=100, width=200, height=0),
         depth=2,
     )
@@ -49,7 +49,7 @@ def test_zero_height_is_honeypot(detector):
 def test_very_small_area_is_honeypot(detector):
     node = DOMNode(
         tag="input",
-        attributes={"name": "email"},
+        attributes=(("name", "email"),),
         geometry=Geometry(x=100, y=100, width=1, height=1),
         depth=2,
     )
@@ -61,7 +61,7 @@ def test_very_small_area_is_honeypot(detector):
 def test_offscreen_negative_x_is_honeypot(detector):
     node = DOMNode(
         tag="input",
-        attributes={"name": "email", "placeholder": "Email"},
+        attributes=(("name", "email"), ("placeholder", "Email")),
         geometry=Geometry(x=-9999, y=100, width=200, height=40),
         depth=2,
     )
@@ -73,7 +73,7 @@ def test_offscreen_negative_x_is_honeypot(detector):
 def test_offscreen_negative_y_is_honeypot(detector):
     node = DOMNode(
         tag="input",
-        attributes={"name": "email", "placeholder": "Email"},
+        attributes=(("name", "email"), ("placeholder", "Email")),
         geometry=Geometry(x=100, y=-9999, width=200, height=40),
         depth=2,
     )
@@ -86,7 +86,7 @@ def test_no_geometry_with_placeholder_not_honeypot(detector):
     # No geometry → geometry check skips; "email" not in suspicious set; has placeholder
     node = DOMNode(
         tag="input",
-        attributes={"name": "email", "placeholder": "Email"},
+        attributes=(("name", "email"), ("placeholder", "Email")),
         depth=2,
     )
     is_hp, _ = detector.is_honeypot(node)
@@ -103,7 +103,7 @@ def test_no_geometry_with_placeholder_not_honeypot(detector):
 def test_suspicious_name_is_honeypot(detector, name):
     node = DOMNode(
         tag="input",
-        attributes={"name": name, "placeholder": "Fill me in"},
+        attributes=(("name", name), ("placeholder", "Fill me in")),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=2,
     )
@@ -115,7 +115,7 @@ def test_suspicious_name_is_honeypot(detector, name):
 def test_suspicious_id_attribute(detector):
     node = DOMNode(
         tag="input",
-        attributes={"id": "email2", "placeholder": "Email"},
+        attributes=(("id", "email2"), ("placeholder", "Email")),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=2,
     )
@@ -127,7 +127,7 @@ def test_suspicious_id_attribute(detector):
 def test_suspicious_class_attribute(detector):
     node = DOMNode(
         tag="input",
-        attributes={"class": "hidden_trap", "placeholder": "Fill"},
+        attributes=(("class", "hidden_trap"), ("placeholder", "Fill")),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=2,
     )
@@ -141,7 +141,7 @@ def test_suspicious_class_attribute(detector):
 def test_no_label_no_placeholder_is_honeypot(detector):
     node = DOMNode(
         tag="input",
-        attributes={"name": "username"},
+        attributes=(("name", "username"),),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=2,
     )
@@ -159,7 +159,7 @@ def test_placeholder_satisfies_label(detector):
 def test_aria_label_satisfies_label(detector):
     node = DOMNode(
         tag="input",
-        attributes={"name": "username", "aria-label": "Username"},
+        attributes=(("name", "username"), ("aria-label", "Username")),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=2,
     )
@@ -173,13 +173,13 @@ def test_hidden_ancestor_is_honeypot(detector):
     """An input whose parent has zero geometry is flagged as a honeypot."""
     parent = DOMNode(
         tag="div",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=0, height=0),
         depth=1,
     )
     child = DOMNode(
         tag="input",
-        attributes={"name": "username", "placeholder": "Username"},
+        attributes=(("name", "username"), ("placeholder", "Username")),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=2,
     )
@@ -195,7 +195,7 @@ def test_detect_honeypots_returns_only_bad_nodes():
     good = _visible_input(name="first_name", placeholder="First Name")
     bad_geometry = DOMNode(
         tag="input",
-        attributes={"name": "fax"},
+        attributes=(("name", "fax"),),
         geometry=Geometry(x=100, y=100, width=0, height=0),
         depth=2,
     )
