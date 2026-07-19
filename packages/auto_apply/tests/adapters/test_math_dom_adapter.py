@@ -88,8 +88,8 @@ def test_extract_preserves_attributes():
     adapter = MathDOMAdapter(browser, max_depth=10)
     root = adapter.extract_full_dom_tree()
     input_node = root.children[0].children[0]
-    assert input_node.attributes["type"] == "text"
-    assert input_node.attributes["name"] == "email"
+    assert input_node.get_attribute("type") == "text"
+    assert input_node.get_attribute("name") == "email"
 
 
 def test_extract_geometry_set_correctly():
@@ -142,18 +142,16 @@ def test_extract_calls_execute_script_once():
 # ── _stitch_iframes — ordering guard ──────────────────────────────────────────
 
 def test_stitch_iframes_skips_on_count_mismatch():
-    """A tree/live iframe count mismatch skips stitching (no wrong-frame graft)."""
     browser = _make_browser()
-    # Two live iframes but only one in the tree → positional pairing is unsafe.
     browser.find_elements.return_value = [MagicMock(), MagicMock()]
     adapter = MathDOMAdapter(browser)
 
     iframe_node = DOMNode(tag="iframe", geometry=Geometry(0, 0, 300, 200), depth=1)
-    root = DOMNode(tag="body", depth=0, children=[iframe_node])
+    root = DOMNode(tag="body", depth=0, children=(iframe_node,))
 
     result = adapter._stitch_iframes(root)
 
-    assert result is root  # returned unchanged
+    assert result is root
     browser.switch_to_iframe.assert_not_called()
 
 

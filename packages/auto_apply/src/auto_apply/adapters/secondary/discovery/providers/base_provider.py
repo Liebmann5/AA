@@ -4,17 +4,12 @@ This module provides the `BaseSearchProvider` abstract base class. All concrete
 providers (Google, Bing, LinkedIn) must implement this interface. This ensures
 the Discovery Engine can treat all sources uniformly, regardless of their
 underlying complexity.
-
-Refactoring Note:
-    Providers are now 'Pure Logic' components. They receive an active
-    BrowserInterface via dependency injection and must NOT close it.
 """
 
 from abc import abstractmethod
-from typing import Any
 
-from auto_apply.application.agent.context import ExecutionContext
 from auto_apply.domain.models.job import Job
+from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.discovery_port import DiscoveryProviderPort
 
@@ -27,34 +22,18 @@ class BaseSearchProvider(DiscoveryProviderPort):
     heavy lifting of scraping to reusable Strategies.
     """
 
-    def __init__(self, browser: BrowserInterface, context: ExecutionContext):
-        """Initializes the provider with the shared context.
+    def __init__(self, browser: BrowserInterface) -> None:
+        """Initializes the provider with the browser only.
 
         Args:
             browser: The active browser instance.
-            context: The shared session state (UserProfile + RuntimeProfile).
+
+        Note:
+            The provider no longer receives ``ExecutionContext`` or
+            ``UserProfile``.  It is a stateless executor that receives
+            exactly one :class:`SearchInstruction` per :meth:`run` call.
         """
         self.browser = browser
-        self.context = context
-
-        # Expose search preferences directly so subclasses can write
-        # ``self.prefs.desired_job_titles`` instead of the full navigation
-        # chain ``self.context.profile.search_preferences.desired_job_titles``.
-        self.prefs = getattr(
-            getattr(context, "profile", None), "search_preferences", None
-        )
-
-        # Rate limiter — controls per-domain request cadence.
-        # Initialized to None for graceful degradation on low-resource
-        # environments where the evasion infrastructure may not be present.
-        # Assign a concrete DomainThrottler instance here or in a subclass
-        # __init__ when available. See adapters/secondary/evasion/throttler.py.
-        self.throttler: Any | None = None
-
-        # Page safety checker — detects CAPTCHAs and bot-detection walls.
-        # Same graceful-degradation contract as throttler above.
-        # See adapters/secondary/evasion/detection.py.
-        self.evasion: Any | None = None
 
     @property
     def name(self) -> str:
@@ -71,12 +50,12 @@ class BaseSearchProvider(DiscoveryProviderPort):
         return True
 
     @abstractmethod
-    def run(self, override_criteria: dict | None = None) -> list[Job]:
+    def run(self, instruction: SearchInstruction) -> list[Job]:
         """Executes the search and extraction workflow for this provider.
 
         Args:
-            override_criteria: Optional search parameters that supersede
-                provider defaults. Recognised keys: ``'query'``, ``'location'``.
+            instruction: A single, typed search instruction.  The provider
+                must NOT build its own query matrix or read the user profile.
 
         Returns:
             List of unique Job objects discovered. May be empty; never None.
@@ -87,14 +66,14 @@ class BaseSearchProvider(DiscoveryProviderPort):
         """Navigates to a URL with built-in safety checks.
 
         Enforces rate limiting and page-safety validation when the relevant
-        services are available. Degrades gracefully when they are not — the
-        navigation itself still proceeds, but without rate-limit enforcement
-        or CAPTCHA detection. This matches the project's worst-case-first
-        deployment philosophy.
+        services are available.  Degrades gracefully when they are not —
+        the navigation itself still proceeds, but without rate-limit
+        enforcement or CAPTCHA detection.  This matches the project's
+        worst‑case‑first deployment philosophy.
 
         Graceful degradation contract:
-            - If ``self.throttler`` is None, rate-limit checks are skipped.
-            - If ``self.evasion`` is None, page-safety checks are skipped.
+            - If rate‑limit enforcement is unavailable, checks are skipped.
+            - If evasion checking is unavailable, page‑safety checks are skipped.
 
         Args:
             url: The target URL.
@@ -105,23 +84,10 @@ class BaseSearchProvider(DiscoveryProviderPort):
             False if rate limiting blocked the request, navigation raised
             an exception, or the safety check flagged the page.
         """
-        # ── 1. Rate limiting ──────────────────────────────────────────────
-        # Skip gracefully when throttler is not wired. Providers on
-        # low-resource environments may not have evasion infrastructure.
-        if self.throttler is not None:
-            if not self.throttler.is_allowed(url):
-                return False
-            self.throttler.wait_for_domain(url)
-
-        # ── 2. Navigate ───────────────────────────────────────────────────
+        # ── 1. Navigate ───────────────────────────────────────────────────
         try:
             self.browser.get(url)
         except Exception:
-            return False
-
-        # ── 3. Page safety check ──────────────────────────────────────────
-        # Skip gracefully when evasion checker is not wired.
-        if self.evasion is not None and not self.evasion.check_page_safety():
             return False
 
         return True

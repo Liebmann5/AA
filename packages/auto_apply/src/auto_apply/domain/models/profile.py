@@ -19,6 +19,7 @@ from typing import Any, Literal
 from auto_apply.domain.config import CHECKPOINTS_DIR
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     EmailStr,
@@ -74,8 +75,17 @@ class PersonalInfo(BaseModel):
     pronouns: str | None = Field(None, description="Optional: e.g., 'he/him', 'she/her', 'they/them'")  # noqa: E501
     citizenships: list[str] = Field(default_factory=list, description="List of 2-letter country codes, e.g., ['US', 'DE']")  # noqa: E501
 
-    resume_path: Path | None = None
-    cover_letter: Path | str | None = Field(None, description="A path to a cover letter file or a raw string.")  # noqa: E501
+    resume_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to the resume file. Accepts:\n"
+            "  - Absolute path: /home/nick/resume.pdf\n"
+            "  - Relative path: resume.pdf  (resolved against PROFILES_DIR)\n"
+            "  - Relative with subfolder: documents/resume.pdf\n"
+            "Using a relative path ensures portability across machines and USB drives."
+        ),
+    )
+    cover_letter: str | None = Field(None, description="A path to a cover letter file or a raw string.")  # noqa: E501
 
     @property
     def full_address(self) -> str:
@@ -86,25 +96,6 @@ class PersonalInfo(BaseModel):
         """
         return f"{self.street_address}, {self.city}, {self.state} {self.zip_code}"
 
-    # @field_validator('resume_path', mode='before')
-    # @classmethod
-    # def validate_resume_exists(cls, v: Any) -> Any:
-    #     """Strict validation for Resume: Must be a file that exists."""
-    #     if isinstance(v, (str, Path)):
-    #         try:
-    #             # Expand ~user and resolve absolute path
-    #             path = Path(str(v)).expanduser().resolve()
-
-    #             if not path.exists():
-    #                 raise ValueError(f"Resume file not found at: {path}")
-    #             if not path.is_file():
-    #                 raise ValueError(f"Resume path is not a file: {path}")
-
-    #             # CRITICAL FIX: Return string so Pydantic V2 parses it cleanly
-    #             return str(path)
-    #         except OSError as e:
-    #             raise ValueError(f"Invalid resume path format: {e}")
-    #     return v
     @field_validator('resume_path', mode='before')
     @classmethod
     def validate_resume_exists(cls, v: Any) -> Any:
@@ -122,6 +113,42 @@ class PersonalInfo(BaseModel):
         if isinstance(v, (str, Path)) and str(v).strip():
             return str(Path(str(v)).expanduser())
         return v
+
+    def get_resolved_resume_path(self) -> Path | None:
+        """Returns the absolute path to the resume file.
+
+        Resolves relative paths against PROFILES_DIR from domain/config.
+        Returns None if resume_path is not set or the file does not exist.
+
+        This is the portable alternative to accessing ``resume_path`` directly.
+        On a USB drive where the drive letter may change between machines,
+        storing a relative path like ``"resume.pdf"`` and resolving it at
+        runtime ensures the file is always found.
+
+        Returns:
+            Absolute Path to the resume file, or None if the path is not set
+            or the file cannot be found.
+
+        Example:
+            >>> info = PersonalInfo(first_name="N", last_name="L", email="n@e.com",
+            ...                     resume_path="resume.pdf")
+            >>> resolved = info.get_resolved_resume_path()
+            >>> # resolved is PROFILES_DIR / "resume.pdf" if that file exists
+        """
+        if not self.resume_path:
+            return None
+
+        from auto_apply.domain.config import PROFILES_DIR
+
+        candidate = Path(self.resume_path)
+
+        # If absolute and exists, use it directly
+        if candidate.is_absolute():
+            return candidate if candidate.exists() else None
+
+        # If relative, resolve against PROFILES_DIR
+        resolved = PROFILES_DIR / candidate
+        return resolved if resolved.exists() else None
 
 
 class ProfessionalLinks(BaseModel):
@@ -172,6 +199,25 @@ class Reference(BaseModel):
     phone_number: str
 
 
+class ClearanceDeclaration(BaseModel):
+    """A security clearance the user declares they hold.
+
+    Deliberately minimal. ``jurisdiction`` says whose clearance system this
+    belongs to; ``level`` is the user's own words for it. AA does not enumerate
+    or validate clearance levels — a fixed ``Literal[...]`` of levels would be a
+    second source of truth about every country's clearance system, wrong for the
+    190 jurisdictions not enumerated and drifting for the ones that are. A
+    free-text level the user fills in themselves cannot be wrong about their own
+    clearance. A per-jurisdiction picker is a future UX nicety, not a
+    correctness requirement, and nothing here forecloses it.
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    jurisdiction: str = Field(description="ISO 3166-1 alpha-2 country whose clearance system this is, e.g. 'US', 'GB'.")  # noqa: E501
+    level: str = Field(description="The clearance as the user describes it, in their own words.")  # noqa: E501
+
+
 class LegalInfo(BaseModel):
     """Optional legal declarations."""
     model_config = ConfigDict(validate_assignment=True)
@@ -180,6 +226,10 @@ class LegalInfo(BaseModel):
     requires_sponsorship: bool = False
     has_work_authorization: bool = True
     non_compete_agreements: list[str] = Field(default_factory=list, description="List of company names the user has a non-compete with.")  # noqa: E501
+    # None means "not declared" — an honest absence. It is never coerced to
+    # False, because "the user did not tell us" and "the user has no clearance"
+    # are different facts, and only the user may assert the second.
+    security_clearance: "ClearanceDeclaration | None" = Field(default=None, description="The user's declared security clearance, or None if not declared.")  # noqa: E501
     #TODO: Add more fields as needed
     # "has_work_authorization": true,
     # "work_authorization_details": "Authorized",
@@ -274,14 +324,42 @@ class ApplicationConfig(BaseModel):
     This separates the 'Human' data from the 'Bot' configuration, allowing
     different runtime strategies for the same person.
     """
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, populate_by_name=True)
 
     preferred_browser: BrowserType = Field("any", description="The browser engine to use.")  # noqa: E501
-    run_headless: bool = Field(False, description="Run without GUI for performance.")
+    headless_mode: bool = Field(
+        False,
+        validation_alias=AliasChoices("headless_mode", "run_headless"),
+        description="Run the browser without a visible window (performance / headless hosts).",
+    )
     locale: str | None = Field(None, description="Browser locale override.")
     use_proxies: bool = False
+    # The proxy endpoint traffic is routed through when use_proxies is on. None
+    # means no proxy configured. This is an opt-in advanced feature (paid proxy
+    # service, or an advanced/researcher user's own endpoint), off by default.
+    # When use_proxies is on and this is None, AA must refuse to launch rather
+    # than connect directly — see BrowserCascade._build_config.
+    proxy_server: str | None = None
     daily_application_limit: int = 1000
     enable_behavior_humanization: bool = False
+    rotate_user_agent: bool = Field(
+        False,
+        description=(
+            "Pick a random user-agent from the built-in pool on each launch. "
+            "Consumed by selenium_provider._get_user_agent via the browser "
+            "cascade provider config."
+        ),
+    )
+    user_agent: str | None = Field(
+        None,
+        description=(
+            "Fixed user-agent override. When set (and rotate_user_agent is off), "
+            "the browser presents this exact UA string. None = use the default."
+        ),
+    )
+    # TODO(future feature): when True, AA should self-tune runtime performance
+    # (concurrency, delays, strategy) to the host machine. Intentionally not yet
+    # wired to a consumer — planned, not dead. Do not delete.
     auto_optimize_performance: bool = Field(False, description="Let AA figure out how to keep things running efficiently.")  # noqa: E501
     human_review_checkpoints: list[str] | None = Field(
         None,
@@ -290,6 +368,51 @@ class ApplicationConfig(BaseModel):
             "Valid values: AFTER_VETTING, BEFORE_FORM_SUBMIT, "
             "ON_AMBIGUOUS_SUBMISSION, ON_SUSPICIOUS_REDIRECT, ON_LOW_CONFIDENCE_FIELD. "
             "Defaults to [BEFORE_FORM_SUBMIT, ON_SUSPICIOUS_REDIRECT] when null."
+        ),
+    )
+
+
+class CustomAnswerTemplate(BaseModel):
+    """A pre-authored answer for a specific type of application question.
+
+    When ApplicationsWorkflow encounters a custom question, it checks
+    ``custom_answer_templates`` for a matching keyword before invoking
+    GPT4All.  Keyword matching is fuzzy (SpaCy similarity), so
+    ``"why this role"`` will match ``"Why are you interested in this position?"``.
+
+    Attributes:
+        keywords: Keywords or phrases this answer applies to.  AA uses
+            similarity matching, not exact matching.  Examples:
+            ``["why this role", "why this company", "career goals"]``.
+        answer: Your pre-written answer.  Keep under 500 characters for
+            form compatibility.
+        max_length: Truncation limit.  AA will not paste more than this
+            many characters into a form field.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    keywords: list[str] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Keywords or phrases this answer applies to. "
+            "AA uses similarity matching, not exact matching. "
+            "Examples: ['why this role', 'why this company', 'career goals']"
+        ),
+    )
+    answer: str = Field(
+        ...,
+        min_length=20,
+        description=(
+            "Your pre-written answer. Keep under 500 characters for form "
+            "compatibility."
+        ),
+    )
+    max_length: int = Field(
+        default=500,
+        description=(
+            "Truncation limit. AA will not paste more than this many "
+            "characters into a form field."
         ),
     )
 
@@ -315,8 +438,8 @@ class UserProfile(BaseModel):
     legal_info: LegalInfo = Field(default_factory=LegalInfo)
     career_summary: str = Field(
         ...,  # The `...` ellipsis here explicitly means "this field is required"
-        min_length=50,
-        description="A detailed summary of the user's career for AI-powered question answering. Minimum 50 characters."  # noqa: E501
+        min_length=1,
+        description="A summary of the user's career.  Longer summaries (at least 50 characters) produce better AI-powered answers, but a short summary is accepted for worst-case users."
     )
 
     eeo_info: EEOInfo = Field(default_factory=EEOInfo)
@@ -330,6 +453,16 @@ class UserProfile(BaseModel):
 
     # --- Map the JSON key 'politeness_settings' to this field ---
     politeness: PolitenessConfig = Field(default_factory=PolitenessConfig, alias="politeness_settings")  # noqa: E501
+
+    # --- Custom answer templates (pre-authored answers checked before GPT4All) ---
+    custom_answer_templates: list[CustomAnswerTemplate] = Field(
+        default_factory=list,
+        description=(
+            "Pre-authored answers for common custom questions. "
+            "AA checks these before invoking GPT4All. "
+            "See docs/user_guide/profile_guide.md for examples."
+        ),
+    )
 
     def to_json(self) -> str:
         """Serializes(V2) the profile to a JSON string.
@@ -380,7 +513,7 @@ class UserProfile(BaseModel):
 
     @property
     def initials(self) -> str:
-        """A derived property to get the users' initials.
+        """A derived property to get the users' initial characters.
 
         Returns:
             str: A string value of the users' initial characters for their first
@@ -411,7 +544,7 @@ class UserProfile(BaseModel):
             ac = self.app_config
             if ac.preferred_browser and ac.preferred_browser != "any":
                 result["preferred_browser"] = ac.preferred_browser
-            result["run_headless"] = ac.run_headless
+            result["headless_mode"] = ac.headless_mode
             result["max_applications_per_session"] = ac.daily_application_limit
             result["enable_behavior_humanization"] = ac.enable_behavior_humanization
             result["auto_optimize_performance"] = ac.auto_optimize_performance

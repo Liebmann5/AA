@@ -29,6 +29,11 @@ Menu Bar:
     File -> Settings opens the SettingsEditor modal.
     File -> Exit triggers graceful shutdown.
     Settings is disabled until the registry is successfully built.
+
+Profile Override:
+    When ``profile_override`` is provided (from the ``--profile`` CLI flag),
+    the bootstrap skips onboarding and profile selection, loading the named
+    profile directly.
 """
 
 import logging
@@ -70,6 +75,14 @@ class AutoApplyApp(tk.Tk):
 
     The only backend dependency is SessionController. All orchestrator
     interaction happens through the controller.
+
+    Args:
+        build_registry: Factory for CapabilitiesRegistry from a UserProfile.
+        create_controller: Factory for SessionController from a UserProfile.
+        profile_repo: ProfileRepository for loading/saving profiles.
+        profile_override: Optional profile name or path to load directly,
+            skipping the onboarding and profile selection flows.  Set by
+            the ``--profile`` CLI flag in ``main.py``.
     """
 
     POLL_INTERVAL_MS: int = 500
@@ -79,12 +92,14 @@ class AutoApplyApp(tk.Tk):
         build_registry: "Callable[[UserProfile], CapabilitiesRegistry]",
         create_controller: "Callable[[UserProfile], SessionController]",
         profile_repo: "ProfileRepository",
+        profile_override: str | None = None,
     ) -> None:
         super().__init__()
 
         self._build_registry = build_registry
         self._create_controller = create_controller
         self._repo = profile_repo
+        self._profile_override = profile_override
         self._strings = get_strings()
 
         self.profile: UserProfile | None = None
@@ -137,7 +152,20 @@ class AutoApplyApp(tk.Tk):
     # =====================================================================
 
     def _bootstrap(self) -> None:
-        """Determines the startup state (first run vs. returning user)."""
+        """Determines the startup state (first run vs. returning user).
+
+        When ``_profile_override`` is set, attempts to load that profile
+        directly and skips the onboarding / selection flow entirely.
+        """
+        # ── Profile override path (--profile flag) ──────────────────────
+        if self._profile_override:
+            logger.info(
+                "Profile override active — loading directly | raw=%s",
+                self._profile_override,
+            )
+            self._load_and_start(self._profile_override)
+            return
+
         try:
             profiles = self._repo.list_profiles()
             user_profiles = [p for p in profiles if p != "default_profile"]

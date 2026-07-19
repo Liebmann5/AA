@@ -19,11 +19,28 @@ class BrowserLeaseManager:
     exclusion lock that prevents overlapping driver commands from different
     threads / workers.
 
+    **Important design note — single shared driver**  
+    The current AA architecture shares exactly one browser driver (Selenium
+    or Playwright) across all providers, engines, and the health monitor.
+    This lease serialises access to that shared instance.  Both Selenium
+    and Playwright's core objects (WebDriver, Page) are **not** thread‑safe,
+    so serialisation is required for correctness.
+
+    **True parallel execution is a future capability**  
+    Running multiple providers concurrently with separate Playwright
+    ``BrowserContext`` objects (or multiple Selenium windows) would require
+    each worker to hold a *separate* driver instance, not just a lease on a
+    shared one.  The current ``BrowserLeaseManager`` does **not** enable
+    that — a single driver with max_concurrent=1 will always serialise.
+    A multi‑driver architecture is a separate feature and is not a gap
+    in this implementation of single‑driver concurrency safety.
+
     Args:
         driver: The active BrowserInterface.  May be None when no browser
             is available (static-fallback mode).
         max_concurrent: Maximum number of leases that may be held
-            simultaneously.  Default 1.
+            simultaneously.  Default 1.  **Must be 1 for single‑driver
+            sessions.**
     """
 
     def __init__(

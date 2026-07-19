@@ -224,18 +224,26 @@ class PlaywrightElementAdapter(ElementInterface):
 class PlaywrightAdapter(BrowserInterface):
     """Wraps a Playwright Page instance to conform to the BrowserInterface."""
 
-    def __init__(self, page: Page, browser: Browser, playwright: Playwright):
+    def __init__(
+        self,
+        page: Page,
+        browser: Browser,
+        playwright: Playwright,
+        rng: random.Random | None = None,
+    ):
         """Initializes the adapter with Playwright objects.
 
         Args:
             page (Page): The active Playwright Page.
             browser (Browser): The Browser instance.
             playwright (Playwright): The root Playwright object (for cleanup).
+            rng: Optional seeded random.Random for deterministic behaviour.
         """
         _ensure_playwright()
         self._page = page
         self._browser = browser
         self._playwright = playwright
+        self._rng = rng if rng is not None else random.Random()
 
     @property
     def framework_name(self) -> str:
@@ -449,8 +457,8 @@ class PlaywrightAdapter(BrowserInterface):
 
     def perform_mouse_fidget(self) -> None:
         """Performs a small, random mouse movement."""
-        x = random.randint(100, 500)
-        y = random.randint(100, 500)
+        x = self._rng.randint(100, 500)
+        y = self._rng.randint(100, 500)
         self._page.mouse.move(x, y)
 
     def save_screenshot(self, filepath: str) -> None:

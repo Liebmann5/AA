@@ -237,11 +237,18 @@ class LogicEngine:
         if not requires_clearance:
             return True
 
-        # 2. Check user profile (Assuming legal_info has this field, or we default to False)  # noqa: E501
-        # Note: If 'security_clearance' isn't in LegalInfo yet, we assume False.
-        user_has_clearance = getattr(self.profile.legal_info, "has_security_clearance", False)  # noqa: E501
+        # 2. Read the user's declared clearance. None means "not declared" — we
+        # never coerce that to "has none", because only the user may assert they
+        # hold no clearance. A user who declared one is not auto-rejected here:
+        # AA cannot verify a free-text level against a job's requirement without
+        # a taxonomy it deliberately does not keep, so it lets the application
+        # proceed and leaves the actual clearance question to the human review
+        # gate at form-fill time rather than answering it here.
+        declared = self.profile.legal_info.security_clearance
 
-        if requires_clearance and not user_has_clearance:
+        if declared is None:
+            # No clearance declared and the job hard-requires one: nothing to
+            # offer. This reads a real absence, not a fabricated False.
             return False
 
         return True

@@ -36,20 +36,45 @@ _STOPWORDS: frozenset[str] = frozenset({
 })
 
 
+def _normalize_suffix(token: str) -> str:
+    """Strip a small set of common English suffixes so morphological
+    variants of the same root compare equal (e.g. "engineer" and
+    "engineering" both normalize to "engineer"; "solution" and "solutions"
+    both normalize to "solution").
+
+    Deliberately conservative and zero-dependency (no real stemmer/lemmatizer
+    — that's a Tier-1+ upgrade path via TextSimilarityPort). Only strips a
+    suffix when the remaining stem is long enough to still be meaningful,
+    to avoid collapsing unrelated short words together.
+    """
+    if token.endswith("ing") and len(token) - 3 >= 4:
+        return token[:-3]
+    if token.endswith("ies") and len(token) - 3 >= 3:
+        return token[:-3] + "y"
+    if token.endswith("es") and len(token) - 2 >= 4:
+        return token[:-2]
+    if token.endswith("s") and not token.endswith("ss") and len(token) - 1 >= 4:
+        return token[:-1]
+    return token
+
+
 def role_keywords(text: str, min_length: int = 3) -> set[str]:
     """Extract role-defining keywords from a title or description.
 
-    Lowercases, strips punctuation, removes stopwords and short tokens.
-    This is the Tier-0 (zero-dependency) keyword extraction used by DP-01.
-    A Tier-1 implementation could substitute SpaCy noun-chunk extraction
-    while keeping the same return type (set[str]).
+    Lowercases, strips punctuation, removes stopwords and short tokens, and
+    normalizes common suffixes (see :func:`_normalize_suffix`) so that
+    morphological variants of the same root (e.g. "engineer" /
+    "engineering") are treated as the same keyword. This is the Tier-0
+    (zero-dependency) keyword extraction used by DP-01. A Tier-1
+    implementation could substitute SpaCy noun-chunk extraction while
+    keeping the same return type (set[str]).
 
     Args:
         text: Raw text (title or description excerpt).
         min_length: Minimum token length to keep.
 
     Returns:
-        Set of lowercase keyword tokens.
+        Set of lowercase, suffix-normalized keyword tokens.
 
     Example:
         >>> role_keywords("Senior Software Engineer - Backend")
@@ -57,9 +82,39 @@ def role_keywords(text: str, min_length: int = 3) -> set[str]:
     """
     tokens = re.findall(r"[a-zA-Z][a-zA-Z\-]*", text.lower())
     return {
-        t for t in tokens
+        _normalize_suffix(t) for t in tokens
         if len(t) >= min_length and t not in _STOPWORDS
     }
+
+
+def overlap_coefficient(set_a: set[str], set_b: set[str]) -> float:
+    """Compute the overlap coefficient (Szymkiewicz–Simpson coefficient).
+
+    overlap(A,B) = |A ∩ B| / min(|A|, |B|)
+
+    Unlike Jaccard similarity, this is NOT biased by a large size
+    difference between the two sets — appropriate for comparing a short
+    set (e.g. keywords from a 2-4 word job title) against a much longer
+    one (keywords from a full paragraph description), where Jaccard's
+    union-based denominator would structurally suppress the score
+    regardless of how well the short set is actually contained in the
+    long one.
+
+    Args:
+        set_a: First set of tokens.
+        set_b: Second set of tokens.
+
+    Returns:
+        Similarity in [0.0, 1.0]: what fraction of the SMALLER set's
+        tokens also appear in the larger set. Returns 0.0 if either set
+        is empty (treated as no overlap, not undefined — avoids NaN
+        propagation).
+    """
+    if not set_a or not set_b:
+        return 0.0
+    intersection = set_a & set_b
+    smaller = min(len(set_a), len(set_b))
+    return len(intersection) / smaller
 
 
 def jaccard_similarity(set_a: set[str], set_b: set[str]) -> float:

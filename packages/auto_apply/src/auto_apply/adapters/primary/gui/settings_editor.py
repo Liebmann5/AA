@@ -121,9 +121,9 @@ class SettingsEditor(tk.Toplevel):
         headless_locked = self.admin_policy.force_headless is not None
         headless_state = tk.DISABLED if headless_locked else tk.NORMAL
         headless_label = self._lock_label("Run Headless (Invisible)", headless_locked)
-        headless_val = self.admin_policy.force_headless if headless_locked else config.run_headless  # noqa: E501
+        headless_val = self.admin_policy.force_headless if headless_locked else config.headless_mode  # noqa: E501
 
-        self._add_checkbox(frame, headless_label, "run_headless", headless_val, state=headless_state)  # noqa: E501
+        self._add_checkbox(frame, headless_label, "headless_mode", headless_val, state=headless_state)  # noqa: E501
         self._add_note(frame, "Faster, but you cannot see the browser actions.")
 
         # 2. Preferred Browser (Admin Filterable)
@@ -361,7 +361,7 @@ class SettingsEditor(tk.Toplevel):
         try:
             # -- Browser tab (skip admin-locked fields) --------------------
             if not self.admin_policy.is_field_locked("force_headless"):
-                self.profile.app_config.run_headless = self._vars["run_headless"].get()
+                self.profile.app_config.headless_mode = self._vars["headless_mode"].get()
 
             self.profile.app_config.preferred_browser = self._vars["preferred_browser"].get()  # noqa: E501
 

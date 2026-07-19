@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from auto_apply.application.workflows.discovery_workflow import DiscoveryWorkflow
 from auto_apply.domain.models.job import Job
+from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.events import Event
 
 
@@ -68,9 +69,8 @@ def test_run_returns_enqueued_count(
         text_matcher=mock_text_matcher,
     )
 
-    # override_criteria forces exactly 1 query, so the provider is called once
-    # and returns 2 jobs → 2 unique VET tasks enqueued.
-    count = wf.run(override_criteria={"title": "SWE", "location": "Remote"})
+    # Provide a single SearchInstruction so DiscoveryWorkflow doesn't derive from the profile.
+    count = wf.run(instructions=[SearchInstruction(title="SWE", location="Remote")])
 
     assert count == 2
     assert mock_task_queue.queue_task.call_count == 2
@@ -100,8 +100,8 @@ def test_deduplication_drops_seen_jobs(
         dedup=dedup,
     )
 
-    # override_criteria forces exactly 1 query → provider called once → 2 jobs
-    count = wf.run(override_criteria={"title": "SWE", "location": "Remote"})
+    # Provide a single SearchInstruction to force exactly one query.
+    count = wf.run(instructions=[SearchInstruction(title="SWE", location="Remote")])
 
     # Only 1 job should be enqueued; duplicate was dropped
     assert count == 1
@@ -133,8 +133,8 @@ def test_provider_failure_does_not_abort_siblings(
         text_matcher=mock_text_matcher,
     )
 
-    # override_criteria forces exactly 1 query → both providers called once
-    count = wf.run(override_criteria={"title": "SWE", "location": "Remote"})
+    # Provide a single SearchInstruction to force exactly one query.
+    count = wf.run(instructions=[SearchInstruction(title="SWE", location="Remote")])
 
     # The good provider's job should still be enqueued despite the sibling failing
     assert count == 1
@@ -155,7 +155,7 @@ def test_handles_missing_optional_dependency_gracefully(
         ats_registry=None,
     )
 
+    # No SearchInstructions and no providers → 0 enqueued, no crash.
     count = wf.run()
 
-    # No providers → no jobs → 0 enqueued, no crash
     assert count == 0

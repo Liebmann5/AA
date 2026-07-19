@@ -1,5 +1,3 @@
-# File: adapters/discovery/providers/linkedin.py
-
 """Provides the advanced FSM strategy for LinkedIn Easy Apply.
 
 This module implements a Finite State Machine to navigate the non-linear,

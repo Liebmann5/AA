@@ -40,3 +40,13 @@ class MathematicalPerceptionPort(ABC):
             PerceptionError: If a critical, unrecoverable error occurs.
         """
         pass
+
+    @abstractmethod
+    def get_current_url(self) -> str:
+        """Return the current page URL, if available."""
+        ...
+
+    @abstractmethod
+    def get_page_title(self) -> str:
+        """Return the current page title, if available."""
+        ...

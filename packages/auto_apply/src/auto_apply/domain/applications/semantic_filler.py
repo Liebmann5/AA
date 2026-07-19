@@ -24,7 +24,12 @@ _DIRECT_MAPPINGS = {
     FieldType.LINKEDIN: lambda p: str(p.links.linkedin_url),
     FieldType.GITHUB: lambda p: str(p.links.github_url),
     FieldType.PORTFOLIO: lambda p: str(p.links.portfolio_url),
-    FieldType.RESUME: lambda p: str(p.personal_info.resume_path),
+    # Use get_resolved_resume_path() — resolves relative paths against
+    # PROFILES_DIR for USB portability (drive letter independence).
+    FieldType.RESUME: lambda p: (
+        str(resolved) if (resolved := p.personal_info.get_resolved_resume_path()) is not None
+        else None
+    ),
 }
 
 

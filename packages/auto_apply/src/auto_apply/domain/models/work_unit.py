@@ -1,75 +1,82 @@
 """Defines the atomic unit of work for the Agent's execution cycle.
 
-This module provides the `WorkUnit` class and `TaskType` enumeration.
-These structures act as the universal currency within the system, allowing
-heterogeneous tasks (e.g., "Scrape Google" and "Apply to LinkedIn URL")
-to coexist in the same priority queue and database table.
+The WorkUnit is the Typed Task Runtime Kernel's central data structure.
+Every discrete action AA takes — discover, vet, apply, handle CAPTCHA —
+is represented as a WorkUnit flowing through the priority queue.
+
+Pydantic v2 with frozen=True gives us:
+  - Immutable instances after construction (no accidental mutation)
+  - Validated fields at construction time
+  - Clean JSON serialization via model_dump_json() for SQLite persistence
+  - Safe concurrent access (immutability means no shared-state races)
+
+Phase 1 adds RESOLVE_JOB_URL as the bridge between raw URL input and
+typed Job objects — preventing the AttributeError that occurs when
+VET/APPLY handlers receive a URL string instead of a Job.
 """
 
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 
 class TaskType(Enum):
     """Categorizes the nature of the work required."""
-    DISCOVER = "discover"           # Search for new jobs
+    DISCOVER = "discover"               # Search for new jobs
     DISCOVER_COMPANY = "discover_company" # Scrape a specific careers page
-    VET = "vet"                     # Analyze job against profile
-    APPLY = "apply"                 # Execute application logic
+    RESOLVE_JOB_URL = "resolve_job_url"  # Bridge: raw URL → typed Job object
+    VET = "vet"                           # Analyze job against profile
+    APPLY = "apply"                       # Execute application logic
     HANDLE_CAPTCHA = "handle_captcha"     # High priority interrupt
 
-@dataclass(order=True)
-class WorkUnit:
-    """Represents a discrete, transactional task for the Agent.
 
-    This class is designed to be serialized into the SQLite database.
-    It supports comparison based solely on `priority` to facilitate
-    efficient heap/queue sorting.
+class WorkUnit(BaseModel):
+    """Immutable, schema-validated task for the Agent's priority queue.
 
-    Attributes:
-        priority (int): The execution urgency (Lower number = Higher priority).
-                        e.g., 1=User Action, 10=Background Scrape.
-        task_type (TaskType): The category of operation to perform.
-        payload (Any): The data required to execute the task (e.g., URL string,
-                       Job object, or SearchCriteria dict).
-        source (str): The origin of the task (e.g., "user_input", "scraper").
-        context_data (Dict): Metadata for the execution engine (e.g.,
-                             "batch_id", "retry_count").
-        id (str): A unique UUIDv4 string for database tracking.
-        created_at (datetime): Timestamp for aging and reporting.
+    Pydantic v2 ensures:
+    - Payload type is validated at construction (programming errors surface early)
+    - SQLite round-trip is safe via json.dumps(model_dump()) / model_validate()
+    - Immutability prevents accidental mutation during concurrent access
+
+    Implements __lt__ for heapq/priority queue ordering by priority.
+    Lower priority number = higher urgency (1 = user action, 10 = background).
     """
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     priority: int
-    task_type: TaskType = field(compare=False)
-
-    # Payload is excluded from comparison to prevent errors with complex objects
-    payload: Any = field(compare=False)
-
-    # "user_input" or "scraper_auto"
-    source: str = field(compare=False)
-
-    # Metadata context is mutable and excluded from comparison
-    context_data: dict[str, Any] = field(default_factory=dict, compare=False)
-
-    # Auto-generated identifiers
-    id: str = field(default_factory=lambda: uuid.uuid4().hex, compare=False)
-    created_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc), compare=False
+    task_type: TaskType
+    payload: Any
+    source: str
+    context_data: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
     )
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serializes the WorkUnit for logging or inspection.
+    @model_validator(mode="after")
+    def _validate_payload_contract(self) -> "WorkUnit":
+        """Enforces the TTK payload contract: no raw strings for VET/APPLY."""
+        try:
+            from auto_apply.domain.models.task_payloads import validate_work_unit_payload
+            validate_work_unit_payload(self.task_type.value, self.payload)
+        except ImportError:
+            pass  # task_payloads not yet available (e.g., during initial setup)
+        return self
 
-        Returns:
-            Dict[str, Any]: A dictionary representation of the task.
-        """
+    def __lt__(self, other: "WorkUnit") -> bool:
+        """Priority queue ordering: lower number = higher urgency."""
+        return self.priority < other.priority
+
+    def to_dict(self) -> dict[str, Any]:
+        """Returns a summary dict for logging. NOT the serialized form."""
         return {
             "id": self.id,
             "type": self.task_type.value,
             "priority": self.priority,
             "source": self.source,
             "created_at": self.created_at.isoformat(),
-            "payload_summary": str(self.payload)[:50] # Truncate for logs
+            "payload_summary": str(self.payload)[:80],
         }

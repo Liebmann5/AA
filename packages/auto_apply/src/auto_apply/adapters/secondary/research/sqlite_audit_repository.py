@@ -1,170 +1,194 @@
 """
-ParquetExporter — exports research data for academic analysis.
+SqliteAuditRepository — persistence backend for AuditCoordinator.
 
-Supports three export formats:
-  - CSV  : Universal, no dependencies
-  - JSON : Structured, for API consumers
-  - Parquet: Columnar, optimal for academic analysis (requires pyarrow, optional)
+Implements AuditRepositoryPort from domain/ports/audit_port.py.
+Stores paired-submission records in SQLite with WAL mode.
 
-Export produces anonymized, analysis-ready datasets. No PII ever exported.
-Schema version is embedded in exported files for longitudinal compatibility.
+All data is fully anonymized — company identifiers are already hashed and
+profile labels are "A" / "B" only.  No PII is ever stored in this database.
 """
 from __future__ import annotations
 
-import csv
-import json
 import logging
 import sqlite3
-from datetime import datetime
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+
+from auto_apply.domain.ports.audit_port import (
+    AuditRepositoryPort,
+    AuditSubmissionRecord,
+)
 
 logger = logging.getLogger(__name__)
 
-ExportFormat = Literal["csv", "json", "parquet"]
+_SCHEMA_SQL = """
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS audit_submissions (
+    pair_id                   TEXT NOT NULL,
+    job_fingerprint           TEXT NOT NULL,
+    job_url                   TEXT NOT NULL,
+    company_id                TEXT,
+    platform                  TEXT,
+    profile_a_submitted_at    TEXT,
+    profile_b_submitted_at    TEXT,
+    profile_a_callback        INTEGER,   -- 0/1/NULL
+    profile_b_callback        INTEGER,
+    profile_a_interview_offered INTEGER DEFAULT 0,
+    profile_b_interview_offered INTEGER DEFAULT 0,
+    withdrawn                 INTEGER DEFAULT 0,
+    PRIMARY KEY (pair_id, job_fingerprint)
+);
+"""
 
 
-class ParquetExporter:
-    """Exports research data from SQLite to analysis-ready files.
+class SqliteAuditRepository:
+    """SQLite-backed repository for correspondence audit submission records.
+
+    Implements AuditRepositoryPort so that AuditCoordinator can persist
+    and query paired application records.
 
     Args:
-        db_path: Path to the research SQLite database.
-        export_dir: Directory to write exported files into.
+        db_path: Path to the SQLite database file.  The parent directory is
+            created automatically if it does not exist.
     """
 
-    def __init__(self, db_path: Path, export_dir: Path) -> None:
+    def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
-        self._export_dir = export_dir
-        self._export_dir.mkdir(parents=True, exist_ok=True)
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._get_connection() as conn:
+            conn.executescript(_SCHEMA_SQL)
+        logger.info("SqliteAuditRepository | DB initialized at %s", self._db_path)
 
-    def export_signals(self, fmt: ExportFormat = "csv") -> Path:
-        """Export all research signals to file.
-
-        Args:
-            fmt: Output format — 'csv', 'json', or 'parquet'.
-
-        Returns:
-            Path to the exported file.
-
-        Raises:
-            ImportError: If 'parquet' is requested but pyarrow is not installed.
-        """
-        rows = self._query_signals()
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        filename = f"aa_research_signals_{timestamp}.{fmt}"
-        out_path = self._export_dir / filename
-
-        if fmt == "csv":
-            self._write_csv(rows, out_path)
-        elif fmt == "json":
-            self._write_json(rows, out_path)
-        elif fmt == "parquet":
-            self._write_parquet(rows, out_path)
-        else:
-            raise ValueError(f"Unsupported format: {fmt}")
-
-        logger.info("ResearchExport | %d signals exported to %s", len(rows), out_path)
-        return out_path
-
-    def export_salary_corpus(self, fmt: ExportFormat = "csv") -> Path:
-        """Export salary observations for market benchmarking analysis.
-
-        Args:
-            fmt: Output format.
-
-        Returns:
-            Path to the exported file.
-        """
-        rows = self._query_salary()
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        filename = f"aa_salary_corpus_{timestamp}.{fmt}"
-        out_path = self._export_dir / filename
-
-        if fmt == "csv":
-            self._write_csv(rows, out_path)
-        elif fmt == "json":
-            self._write_json(rows, out_path)
-        elif fmt == "parquet":
-            self._write_parquet(rows, out_path)
-
-        logger.info("ResearchExport | %d salary rows exported to %s", len(rows), out_path)
-        return out_path
-
-    def export_form_observations(self, fmt: ExportFormat = "csv") -> Path:
-        """Export ATS form complexity observations.
-
-        Args:
-            fmt: Output format.
-
-        Returns:
-            Path to the exported file.
-        """
-        rows = self._query_forms()
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        filename = f"aa_form_observations_{timestamp}.{fmt}"
-        out_path = self._export_dir / filename
-
-        if fmt == "csv":
-            self._write_csv(rows, out_path)
-        elif fmt == "json":
-            self._write_json(rows, out_path)
-        elif fmt == "parquet":
-            self._write_parquet(rows, out_path)
-
-        logger.info("ResearchExport | %d form rows exported to %s", len(rows), out_path)
-        return out_path
-
-    # ── Private query methods ──────────────────────────────────────────────────
-
-    def _query_signals(self) -> list[dict]:
-        return self._query("SELECT * FROM research_signals ORDER BY detected_date")
-
-    def _query_salary(self) -> list[dict]:
-        return self._query("SELECT * FROM salary_observations ORDER BY posted_date")
-
-    def _query_forms(self) -> list[dict]:
-        return self._query("SELECT * FROM form_observations ORDER BY observed_date")
-
-    def _query(self, sql: str) -> list[dict]:
+    @contextmanager
+    def _get_connection(self):
+        conn = sqlite3.connect(str(self._db_path), timeout=10.0)
+        conn.row_factory = sqlite3.Row
         try:
-            conn = sqlite3.connect(str(self._db_path))
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(sql)
-            rows = [dict(r) for r in cursor.fetchall()]
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
             conn.close()
-            return rows
+
+    # ----------------------------------------------------------------
+    # AuditRepositoryPort implementation
+    # ----------------------------------------------------------------
+
+    def save_submission(self, record: AuditSubmissionRecord) -> None:
+        """Insert or update a paired submission record.
+
+        If a record with the same (pair_id, job_fingerprint) already exists,
+        it is updated.
+        """
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """INSERT INTO audit_submissions
+                       (pair_id, job_fingerprint, job_url, company_id, platform,
+                        profile_a_submitted_at, profile_b_submitted_at,
+                        profile_a_callback, profile_b_callback,
+                        profile_a_interview_offered, profile_b_interview_offered,
+                        withdrawn)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(pair_id, job_fingerprint) DO UPDATE SET
+                         job_url=excluded.job_url,
+                         company_id=excluded.company_id,
+                         platform=excluded.platform,
+                         profile_a_submitted_at=excluded.profile_a_submitted_at,
+                         profile_b_submitted_at=excluded.profile_b_submitted_at,
+                         profile_a_callback=excluded.profile_a_callback,
+                         profile_b_callback=excluded.profile_b_callback,
+                         profile_a_interview_offered=excluded.profile_a_interview_offered,
+                         profile_b_interview_offered=excluded.profile_b_interview_offered,
+                         withdrawn=excluded.withdrawn""",
+                    (
+                        record.pair_id,
+                        record.job_fingerprint,
+                        record.job_url,
+                        record.company_id,
+                        record.platform,
+                        record.profile_a_submitted_at.isoformat() if record.profile_a_submitted_at else None,
+                        record.profile_b_submitted_at.isoformat() if record.profile_b_submitted_at else None,
+                        _bool_to_int(record.profile_a_callback),
+                        _bool_to_int(record.profile_b_callback),
+                        int(record.profile_a_interview_offered),
+                        int(record.profile_b_interview_offered),
+                        int(record.withdrawn),
+                    ),
+                )
         except Exception as exc:
-            logger.error("ResearchExport | Query failed: %s", exc)
+            logger.error("SqliteAuditRepository | save_submission failed: %s", exc)
+
+    def load_submissions(self, pair_id: str) -> list[AuditSubmissionRecord]:
+        """Load all submission records for a given audit pair."""
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM audit_submissions WHERE pair_id = ?",
+                    (pair_id,),
+                ).fetchall()
+            return [_row_to_record(r) for r in rows]
+        except Exception as exc:
+            logger.error("SqliteAuditRepository | load_submissions failed: %s", exc)
             return []
 
-    # ── Writer implementations ────────────────────────────────────────────────
-
-    def _write_csv(self, rows: list[dict], path: Path) -> None:
-        if not rows:
-            path.write_text("")
-            return
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-            writer.writeheader()
-            writer.writerows(rows)
-
-    def _write_json(self, rows: list[dict], path: Path) -> None:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"schema_version": 2, "records": rows}, f, indent=2, default=str)
-
-    def _write_parquet(self, rows: list[dict], path: Path) -> None:
+    def find_submission(
+        self, pair_id: str, job_fingerprint: str
+    ) -> AuditSubmissionRecord | None:
+        """Return a single submission record if it exists, otherwise None."""
         try:
-            import pyarrow as pa
-            import pyarrow.parquet as pq
-        except ImportError as exc:
-            raise ImportError(
-                "pyarrow is required for Parquet export. "
-                "Install it with: pip install pyarrow\n"
-                "Note: pyarrow is an optional dependency — use CSV for worst-case environments."
-            ) from exc
+            with self._get_connection() as conn:
+                row = conn.execute(
+                    "SELECT * FROM audit_submissions WHERE pair_id = ? AND job_fingerprint = ?",
+                    (pair_id, job_fingerprint),
+                ).fetchone()
+            if row is None:
+                return None
+            return _row_to_record(row)
+        except Exception as exc:
+            logger.error("SqliteAuditRepository | find_submission failed: %s", exc)
+            return None
 
-        if not rows:
-            logger.warning("ResearchExport | No rows to export as Parquet")
-            return
-        table = pa.Table.from_pylist(rows)
-        pq.write_table(table, str(path), compression="snappy")
+
+# ----------------------------------------------------------------------
+# internal helpers
+# ----------------------------------------------------------------------
+
+def _bool_to_int(value: bool | None) -> int | None:
+    if value is None:
+        return None
+    return 1 if value else 0
+
+
+def _int_to_bool(value: int | None) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _row_to_record(row: sqlite3.Row) -> AuditSubmissionRecord:
+    """Convert a sqlite3.Row back into an AuditSubmissionRecord."""
+    from datetime import datetime
+
+    def _parse_ts(text: str | None) -> datetime | None:
+        if not text:
+            return None
+        return datetime.fromisoformat(text)
+
+    return AuditSubmissionRecord(
+        pair_id=row["pair_id"],
+        job_fingerprint=row["job_fingerprint"],
+        job_url=row["job_url"],
+        company_id=row["company_id"],
+        platform=row["platform"],
+        profile_a_submitted_at=_parse_ts(row["profile_a_submitted_at"]),
+        profile_b_submitted_at=_parse_ts(row["profile_b_submitted_at"]),
+        profile_a_callback=_int_to_bool(row["profile_a_callback"]),
+        profile_b_callback=_int_to_bool(row["profile_b_callback"]),
+        profile_a_interview_offered=bool(row["profile_a_interview_offered"]),
+        profile_b_interview_offered=bool(row["profile_b_interview_offered"]),
+        withdrawn=bool(row["withdrawn"]),
+    )

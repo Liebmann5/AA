@@ -5,9 +5,6 @@ This module inspects the active browser to ensure that evasion techniques
 and detectable within the JavaScript environment.
 """
 
-# Layer: application
-# Depends on: domain
-
 import logging
 from typing import Any
 

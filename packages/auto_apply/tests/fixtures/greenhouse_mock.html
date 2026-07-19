@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Senior Software Engineer — Apply | Acme Corp (Mock)</title>
+    <meta charset="UTF-8">
+</head>
+<body>
+    <h1>Apply: Senior Software Engineer — Acme Corp</h1>
+
+    <form id="application-form" action="/submit" method="post">
+        <!-- Standard fields -->
+        <div class="field">
+            <label for="first_name">First Name *</label>
+            <input type="text" id="first_name" name="first_name" required>
+        </div>
+
+        <div class="field">
+            <label for="last_name">Last Name *</label>
+            <input type="text" id="last_name" name="last_name" required>
+        </div>
+
+        <div class="field">
+            <label for="email">Email Address *</label>
+            <input type="email" id="email" name="email" required>
+        </div>
+
+        <div class="field">
+            <label for="phone">Phone Number</label>
+            <input type="tel" id="phone" name="phone">
+        </div>
+
+        <!-- File upload -->
+        <div class="field">
+            <label for="resume">Resume / CV *</label>
+            <input type="file" id="resume" name="resume" accept=".pdf,.doc,.docx">
+        </div>
+
+        <!-- LinkedIn -->
+        <div class="field">
+            <label for="linkedin">LinkedIn Profile URL</label>
+            <input type="url" id="linkedin" name="linkedin">
+        </div>
+
+        <!-- Dropdown -->
+        <div class="field">
+            <label for="experience_years">Years of experience with Python</label>
+            <select id="experience_years" name="experience_years">
+                <option value="">-- Select --</option>
+                <option value="0-1">Less than 1 year</option>
+                <option value="1-3">1–3 years</option>
+                <option value="3-5">3–5 years</option>
+                <option value="5+">5+ years</option>
+            </select>
+        </div>
+
+        <!-- Checkbox -->
+        <div class="field">
+            <label>
+                <input type="checkbox" id="authorized" name="authorized">
+                I am authorized to work in the United States
+            </label>
+        </div>
+
+        <!-- Custom open-ended question -->
+        <div class="field">
+            <label for="why_role">Why are you interested in this role? *</label>
+            <textarea id="why_role" name="why_role" rows="4" maxlength="500"></textarea>
+        </div>
+
+        <!-- Date (start availability) -->
+        <div class="field">
+            <label for="available_date">Earliest available start date</label>
+            <input type="date" id="available_date" name="available_date">
+        </div>
+
+        <!-- Submit -->
+        <div class="field">
+            <button type="submit" id="submit_btn">Submit Application</button>
+        </div>
+    </form>
+
+    <!-- Confirmation (hidden initially) -->
+    <div id="confirmation" style="display:none;">
+        <h2>Thank you for applying!</h2>
+        <p>We've received your application and will be in touch shortly.</p>
+    </div>
+
+    <script>
+        document.getElementById('application-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            this.style.display = 'none';
+            document.getElementById('confirmation').style.display = 'block';
+            // Update URL to simulate a redirect (testable by checking current_url)
+            window.history.pushState({}, '', '/applications/confirmation/mock-123');
+        });
+    </script>
+</body>
+</html>

@@ -14,10 +14,18 @@ Example:
     >>> orchestrator.run()
 """
 
-import logging
-import time
-from typing import TYPE_CHECKING
+from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+from auto_apply.application.services.i18n import configure_locale
+from auto_apply.application.services.mathematical_web_analyzer import MathematicalWebAnalyzer
+from auto_apply.domain.config import (
+    DB_PATH,
+    IS_FROZEN,
+    USER_DATA_DIR,
+)
+from auto_apply.domain.models.timing import BehaviorParameters
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.infrastructure.registry import (
     CapabilitiesRegistry,
@@ -25,18 +33,35 @@ from auto_apply.infrastructure.registry import (
 )
 from auto_apply.infrastructure.browser_cascade import BrowserCascade
 from auto_apply.infrastructure.driver_registry import DriverRegistry
-from auto_apply.infrastructure.providers.selenium_provider import SeleniumProvider
-from auto_apply.infrastructure.providers.playwright_provider import PlaywrightProvider
-from auto_apply.application.services.mathematical_web_analyzer import MathematicalWebAnalyzer
+from auto_apply.infrastructure.browser_lease_manager import BrowserLeaseManager
+from auto_apply.adapters.secondary.browser.selenium_provider import SeleniumProvider
+from auto_apply.adapters.secondary.browser.playwright_provider import PlaywrightProvider
 
 if TYPE_CHECKING:
     from auto_apply.application.agent.orchestrator import AgentOrchestrator
+    #from auto_apply.application.agent.task_kernel import TaskKernel
+    from auto_apply.domain.models.profile import UserProfile
+    from auto_apply.application.services.session_controller import SessionController
 
 # Re-export so existing callers don't break.
 __all__ = ["CapabilitiesRegistry", "build_orchestrator", "build_session", "build_session_controller"]
 
 logger = logging.getLogger(__name__)
 
+# --------------------------------------------------------------------------
+# CONSTANTS
+# --------------------------------------------------------------------------
+
+# BrowserLeaseManager MUST always be created with max_concurrent=1.
+# The lease wraps a SINGLE shared browser driver instance.  Any value above 1
+# permits concurrent access to the same instance, which is the exact bug the
+# lease exists to prevent.  Never derive this from config or session plan.
+_MAX_LEASES_PER_SHARED_DRIVER = 1
+
+
+# --------------------------------------------------------------------------
+# MAIN WIRING FUNCTION
+# --------------------------------------------------------------------------
 
 def build_orchestrator(  # noqa: PLR0914
     registry: CapabilitiesRegistry,
@@ -51,12 +76,14 @@ def build_orchestrator(  # noqa: PLR0914
     ready to call ``.run()``.
 
     Wiring order:
+        0. Browser cascade → driver or None
         1. Persistence adapters — DatabaseManager, JobRepository, GeoDatabaseRepository
         2. Domain filters       — ThrottlingFilter, SpatialLocationFilter, logic filters
         3. Shared ports         — perception, interaction, reasoning, interrupt policy
         4. Discovery providers  — GoogleProvider, BingProvider, IndeedProvider
         4b. Workflows           — DiscoveryWorkflow, VettingWorkflow, ApplicationsWorkflow
-        5. AgentOrchestrator    — dispatches each TaskType to its workflow
+        5. Capability profile   — built from registry + driver status, injected into DB
+        6. AgentOrchestrator    — dispatches each TaskType to its workflow
 
     Args:
         registry: A fully initialised CapabilitiesRegistry for this environment.
@@ -74,6 +101,11 @@ def build_orchestrator(  # noqa: PLR0914
         SeleniumAdapter,
     )
 
+    # Build BehaviorParameters early so we can seed randomness for providers
+    # and adapters — must happen before any browser instance is created.
+    _effective_config = registry.get_all_effective_config()
+    behavior_params = BehaviorParameters.from_config(_effective_config)
+
     _cascade_skipped = driver is not ...
     if _cascade_skipped:
         # Caller supplied a driver (or explicit None) — skip the cascade.
@@ -90,13 +122,31 @@ def build_orchestrator(  # noqa: PLR0914
             logger.warning("build_orchestrator: PlaywrightProvider registration failed: %s", _exc)
 
         adapter_map = {
-            "selenium": lambda raw: SeleniumAdapter(raw),
+            "selenium": lambda raw: SeleniumAdapter(
+                raw,
+                rng=behavior_params.make_rng("selenium.adapter"),
+            ),
             "playwright": lambda raw: PlaywrightAdapter(
                 page=raw,
                 browser=raw._pw_browser,
                 playwright=raw._pw_playwright,
+                rng=behavior_params.make_rng("playwright.adapter"),
             ),
         }
+
+        # Re-register providers with seeded RNG instances
+        try:
+            driver_registry.register(
+                SeleniumProvider(rng=behavior_params.make_rng("selenium.provider"))
+            )
+        except Exception as _exc:
+            logger.warning("build_orchestrator: SeleniumProvider registration failed: %s", _exc)
+        try:
+            driver_registry.register(
+                PlaywrightProvider()  # PlaywrightProvider does not use randomness yet
+            )
+        except Exception as _exc:
+            logger.warning("build_orchestrator: PlaywrightProvider registration failed: %s", _exc)
 
         cascade = BrowserCascade(registry, driver_registry=driver_registry, adapter_map=adapter_map)
         driver = cascade.acquire_driver()
@@ -109,8 +159,17 @@ def build_orchestrator(  # noqa: PLR0914
     # ── Retrieve the frozen SessionPlan ──────────────────────────────────────
     plan = registry.get_session_plan()
 
+    # ── Build the mathematical perception adapter (only when a live browser exists) ──
+    math_perception_port = None
+    if driver is not None:
+        try:
+            from auto_apply.adapters.secondary.perception.math_dom_adapter import MathDOMAdapter  # noqa: PLC0415
+            math_perception_port = MathDOMAdapter(browser=driver)
+        except Exception as _exc:
+            logger.debug("build_orchestrator: MathDOMAdapter unavailable: %s", _exc)
+
     # ── Shared MathematicalWebAnalyzer (injected into engines) ─────────────────
-    math_analyzer = MathematicalWebAnalyzer(browser=driver) if driver is not None else None
+    math_analyzer = MathematicalWebAnalyzer(perception_port=math_perception_port) if math_perception_port is not None else None
 
     # ── 1. Persistence adapters ───────────────────────────────────────────────
     from auto_apply.adapters.secondary.persistence.database import (  # noqa: PLC0415
@@ -141,10 +200,28 @@ def build_orchestrator(  # noqa: PLR0914
     )
 
     profile = registry.get_active_profile()
+
+    # ── Activate the session locale ──────────────────────────────────────────
+    # The i18n subsystem defaults to en/US/USD until configured. The GUI wires
+    # this for its own labels, but a headless or CLI session never does, so
+    # every non-GUI run ignored ApplicationConfig.locale and es.json was never
+    # loaded. Read the profile's locale here and let None fall through to
+    # detect_locale() -- which is exactly what configure_locale already does.
+    # This keeps the user's reading language separate from any job jurisdiction:
+    # only the interface language is set here.
+    _app_config = getattr(profile, "app_config", None)
+    _profile_locale = getattr(_app_config, "locale", None)
+    configure_locale(language=_profile_locale)
     resources = registry.get_runtime_profile()
 
     filter_pipeline = [
-        ThrottlingFilter(profile, job_repo),
+        ThrottlingFilter(
+            profile,
+            job_repo,
+            cooldown_days_default=registry.get_effective_config(
+                "cooldown_days_default", 180
+            ),
+        ),
         SpatialLocationFilter(profile, geo_db),
         LocationLogicFilter(profile),
         CompanyBlacklistFilter(profile),
@@ -154,7 +231,7 @@ def build_orchestrator(  # noqa: PLR0914
     # ── 2b. NLP text matching — one shared instance across all workflows ───────
     from auto_apply.application.services.text_matching import TextMatcher  # noqa: PLC0415
 
-    text_matcher = TextMatcher()
+    text_matcher = TextMatcher(prefer_small=registry.is_low_resource_environment())
     _search_prefs = getattr(profile, "search_preferences", None)
     _profile_skills = getattr(_search_prefs, "skills", []) or []
     if _profile_skills:
@@ -165,7 +242,7 @@ def build_orchestrator(  # noqa: PLR0914
         GPT4AllAdapter,
     )
 
-    gpt4all_adapter = GPT4AllAdapter()
+    gpt4all_adapter = None if registry.is_low_resource_environment() else GPT4AllAdapter()
 
     # ── 2d. NLP-powered vetting filters (ordered cheapest→most expensive) ──────
     from auto_apply.domain.vetting.experience_filter import ExperienceFilter  # noqa: PLC0415
@@ -252,11 +329,21 @@ def build_orchestrator(  # noqa: PLR0914
             from auto_apply.domain.services.dom_segmentation import (  # noqa: PLC0415
                 MathFormUnderstandingService,
             )
-            math_dom = MathDOMAdapter(browser=driver)
+            # Reuse the same MathDOMAdapter instance we already created for
+            # math_perception_port, or build a new one if we didn't create it
+            # above (should not happen, but be safe).
+            math_dom = math_perception_port if math_perception_port is not None else MathDOMAdapter(browser=driver)
             form_svc = MathFormUnderstandingService()
             page_understanding_port = MathPageUnderstandingAdapter(math_dom, form_svc)
         except Exception as _exc:
             logger.debug("build_orchestrator: MathPageUnderstandingAdapter unavailable: %s", _exc)
+            from auto_apply.domain.ports.page_understanding_port import NullPageUnderstandingAdapter
+            page_understanding_port = NullPageUnderstandingAdapter()
+
+    # Always provide a valid port — never None.
+    if page_understanding_port is None:
+        from auto_apply.domain.ports.page_understanding_port import NullPageUnderstandingAdapter
+        page_understanding_port = NullPageUnderstandingAdapter()
 
     # ── 4. Discovery providers ────────────────────────────────────────────────
     providers = []
@@ -271,31 +358,29 @@ def build_orchestrator(  # noqa: PLR0914
         from auto_apply.adapters.secondary.discovery.providers.indeed import (  # noqa: PLC0415
             IndeedProvider,
         )
-        from auto_apply.application.agent.context import (  # noqa: PLC0415
-            ExecutionContext,
+        from auto_apply.adapters.secondary.evasion.manager import (  # noqa: PLC0415
+            EvasionManager,
         )
 
-        provider_context = ExecutionContext(
-            profile=profile,
-            session_id=f"session_{int(time.time())}",
-        )
-
-        search_prefs = getattr(profile, "search_preferences", None)
+        try:
+            _indeed_evasion_manager = EvasionManager(driver)
+        except Exception as _exc:
+            logger.warning(
+                "build_orchestrator: EvasionManager construction failed for "
+                "IndeedProvider — proceeding without evasion checking: %s",
+                _exc,
+            )
+            _indeed_evasion_manager = None
 
         providers = [
             GoogleProvider(
                 browser=driver,
-                context=provider_context,
                 ats_registry=_ats_registry,
                 page_understanding_port=page_understanding_port,
             ),
-            BingProvider(browser=driver, context=provider_context),
+            BingProvider(browser=driver),
+            IndeedProvider(browser=driver, evasion_manager=_indeed_evasion_manager),
         ]
-
-        if search_prefs is not None:
-            providers.append(
-                IndeedProvider(browser=driver, search_prefs=search_prefs)
-            )
 
     from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (  # noqa: PLC0415
         GenericSERPStrategy,
@@ -319,6 +404,68 @@ def build_orchestrator(  # noqa: PLR0914
             driver.get(careers_url)
             return math_analyzer.extract_job_listings()
 
+    # ── Browser lease for single shared driver ────────────────────────────────
+    # Must use a hardcoded capacity of 1, never derived from any config or
+    # session-plan value — see the constant definition at the top of this file.
+    browser_lease = None
+    if driver is not None:
+        browser_lease = BrowserLeaseManager(driver, max_concurrent=_MAX_LEASES_PER_SHARED_DRIVER)
+
+    # ── Research observer (consent-gated) ─────────────────────────────────────
+    from auto_apply.domain.ports.research_port import NullResearchObserver  # noqa: PLC0415
+
+    research_observer = NullResearchObserver()
+
+    if registry.is_research_enabled():
+        try:
+            from auto_apply.adapters.secondary.research.sqlite_consent_repository import (  # noqa: PLC0415
+                SqliteConsentRepository,
+            )
+            from auto_apply.application.services.research_consent import (  # noqa: PLC0415
+                ResearchConsentManager,
+            )
+
+            _consent_db = USER_DATA_DIR / "research_consent.db"
+            _signals_db = USER_DATA_DIR / "research_signals.db"
+
+            _consent_repo = SqliteConsentRepository(
+                consent_db_path=_consent_db,
+                research_db_path=_signals_db,
+            )
+            _consent_mgr = ResearchConsentManager(_consent_repo)
+
+            if _consent_mgr.is_active():
+                from auto_apply.adapters.secondary.research.signal_aggregator import (  # noqa: PLC0415
+                    ResearchSignalAggregator,
+                )
+                _aggregator = ResearchSignalAggregator(
+                    db_path=_signals_db,
+                    consent_version=_consent_mgr.consent_version,
+                )
+                _aggregator.start()
+                research_observer = _aggregator
+                logger.info(
+                    "Research pipeline active (consent granted, version=%s)",
+                    _consent_mgr.consent_version,
+                )
+            else:
+                logger.info("Research disabled: consent not granted by user")
+        except Exception as _exc:
+            logger.warning(
+                "Research observer failed to initialize — using NullResearchObserver: %s",
+                _exc,
+            )
+
+    # ── 5. Capability profile — gates task types based on driver availability ──
+    _capability_profile = registry.build_capability_profile(driver is not None)
+    db_manager.set_capability_profile(_capability_profile)
+    logger.info(
+        "Capability profile active | mode=%s browser=%s workers=%d",
+        _capability_profile.mode_name,
+        _capability_profile.browser_framework or "none",
+        _capability_profile.max_browser_workers,
+    )
+
     # ── 4b. Workflow orchestrators ────────────────────────────────────────────
     from auto_apply.application.services.data_processing.deduplication_manager import (  # noqa: PLC0415
         DeduplicationManager,
@@ -331,18 +478,40 @@ def build_orchestrator(  # noqa: PLR0914
 
     dedup = DeduplicationManager()
 
-    _effective_config = registry.get_all_effective_config()
+    # ── Deterministic RNG streams ──────────────────────────────────────────────
+    # BehaviorParameters is already constructed above (see cascade section).
+    apps_workflow_rng = behavior_params.make_rng("applications_workflow")
 
-    # ── Research collector (wired into ApplicationsWorkflow) ────────────────
-    from auto_apply.application.services.research.collector import ResearchCollector  # noqa: PLC0415
+    # ── Page feedback service (learning loop) ────────────────────────────────
+    from auto_apply.application.services.page_analysis_router import PageAnalysisRouter
 
-    research_collector = ResearchCollector(
-        enabled=registry.is_research_enabled(),
-        event_bus=event_bus,
-        session_id="build_orchestrator",
+    page_feedback_repo = None
+    page_feedback_service = None
+    try:
+        from auto_apply.adapters.secondary.persistence.page_feedback_repository import (
+            PageFeedbackRepository,
+        )
+        from auto_apply.application.services.page_feedback_service import (
+            PageFeedbackService,
+        )
+
+        _feedback_db_path = USER_DATA_DIR / "page_feedback.db"
+        page_feedback_repo = PageFeedbackRepository(_feedback_db_path)
+        page_feedback_service = PageFeedbackService(page_feedback_repo)
+        logger.info("build_orchestrator: page feedback service initialized")
+    except Exception as _exc:
+        logger.debug(
+            "build_orchestrator: page feedback service unavailable — "
+            "PageAnalysisRouter will use static rules only (error: %s)",
+            _exc,
+        )
+
+    # ── PageAnalysisRouter with optional feedback ───────────────────────────
+    page_analysis_router = PageAnalysisRouter(
+        ats_registry=_ats_registry,
+        feedback_service=page_feedback_service,
     )
 
-    # ** DiscoveryWorkflow now receives the SessionPlan instead of the raw config dict **
     discovery_workflow = DiscoveryWorkflow(
         profile=profile,
         providers=providers,
@@ -354,6 +523,8 @@ def build_orchestrator(  # noqa: PLR0914
         company_page_miner=_company_page_miner,
         company_page_scraper=_company_page_scraper,
         plan=plan,
+        browser_lease=browser_lease,
+        research_observer=research_observer,
     )
 
     vetting_workflow = VettingWorkflow(
@@ -366,6 +537,7 @@ def build_orchestrator(  # noqa: PLR0914
         text_generation_port=gpt4all_adapter,
         perception_port=perception_port,
         config=_effective_config,
+        research_observer=research_observer,
     )
 
     # ApplicationsWorkflow — try to construct each optional component.
@@ -449,10 +621,14 @@ def build_orchestrator(  # noqa: PLR0914
         interrupt_policy=interrupt_policy,
         text_generation_port=gpt4all_adapter,
         config=_effective_config,
-        research_collector=research_collector,
+        research_observer=research_observer,
+        browser_lease=browser_lease,       # enforce concurrency safety
+        rng=apps_workflow_rng,
+        page_analysis_router=page_analysis_router,  # <<< NEW
+        plan=plan,
     )
 
-    # ── 5. Orchestrator — all dependencies injected ───────────────────────────
+    # ── 6. Orchestrator — all dependencies injected ───────────────────────────
     from auto_apply.application.agent.orchestrator import AgentOrchestrator  # noqa: PLC0415
     from auto_apply.domain.config import CHECKPOINTS_DIR  # noqa: PLC0415
     from auto_apply.adapters.secondary.resolution.captcha_adapter import (  # noqa: PLC0415
@@ -482,6 +658,28 @@ def build_orchestrator(  # noqa: PLR0914
 
     CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # ── Job posting resolver (RESOLVE_JOB_URL) ────────────────────────────────
+    from auto_apply.application.services.job_posting_resolver import (  # noqa: PLC0415
+        JobPostingResolver,
+    )
+    from auto_apply.adapters.secondary.evasion.components.behavior import (  # noqa: PLC0415
+        simulate_idle_time,
+    )
+    job_posting_resolver = JobPostingResolver(idle_simulator=simulate_idle_time)
+
+    # ── Optional CLI progress display (Wave M — Session Observability) ────────
+    # Constructed here, not by the orchestrator itself, since composition_root
+    # is the only layer allowed to import the concrete CLI adapter. Missing
+    # TTY / piped output / library computer all degrade gracefully to None —
+    # progress display is a convenience, not a requirement.
+    try:
+        from auto_apply.adapters.primary.cli.progress import (  # noqa: PLC0415
+            SessionProgressDisplay,
+        )
+        progress_display = SessionProgressDisplay()
+    except ImportError:
+        progress_display = None
+
     orchestrator = AgentOrchestrator(
         profile=profile,
         resources=resources,
@@ -493,6 +691,8 @@ def build_orchestrator(  # noqa: PLR0914
         captcha_resolver=captcha_resolver,
         browser_monitor=browser_monitor,
         network_monitor=network_monitor,
+        job_posting_resolver=job_posting_resolver,
+        progress=progress_display,
     )
 
     orchestrator._workflows = {  # type: ignore[attr-defined]
@@ -504,10 +704,9 @@ def build_orchestrator(  # noqa: PLR0914
     # ── Attach SessionPlan ────────────────────────────────────────────────────
     orchestrator.session_plan = plan
 
-    # ── 5b. Build BehaviorParameters for timing (already present) ─────────────
-    from auto_apply.domain.models.timing import BehaviorParameters  # noqa: PLC0415
-
-    behavior_params = BehaviorParameters.from_config(_effective_config)
+    # ── 5b. Attach BehaviorParameters for timing (built once, at the top of
+    # this function, so every RNG consumer and this reference share the exact
+    # same instance rather than risking two independently-constructed copies).
     orchestrator.behavior_parameters = behavior_params
 
     logger.info(

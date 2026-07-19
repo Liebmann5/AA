@@ -33,14 +33,14 @@ def test_no_overlapping_sibling_not_occluded():
     """A sibling that does not cover the target's centre → no occlusion."""
     target = DOMNode(
         tag="input",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=100, height=50),
         depth=1,
     )
     # Center of target = (50, 25). Sibling is far away.
     sibling = DOMNode(
         tag="div",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=500, y=500, width=100, height=50),
         depth=1,
     )
@@ -55,13 +55,13 @@ def test_pointer_events_none_not_occluded():
     ancestor check — no parent_map access needed."""
     target = DOMNode(
         tag="input",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=100, height=50),
         depth=1,
     )
     overlay = DOMNode(
         tag="div",
-        attributes={"style": "z-index: 99; pointer-events: none"},
+        attributes=(("style", "z-index: 99; pointer-events: none"),),
         geometry=Geometry(x=0, y=0, width=200, height=100),
         depth=1,
     )
@@ -74,13 +74,13 @@ def test_zero_area_overlay_ignored():
     """A zero-area element is filtered out before the ancestor check."""
     target = DOMNode(
         tag="input",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=100, height=50),
         depth=1,
     )
     zero_node = DOMNode(
         tag="div",
-        attributes={"style": "z-index: 99"},
+        attributes=(("style", "z-index: 99"),),
         geometry=Geometry(x=0, y=0, width=0, height=0),
         depth=1,
     )
@@ -96,13 +96,13 @@ def test_higher_z_index_overlay_occluded():
     ancestor check passes without hashing DOMNode objects."""
     target = DOMNode(
         tag="input",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=100, height=50),
         depth=1,
     )
     overlay = DOMNode(
         tag="div",
-        attributes={"style": "z-index: 10"},
+        attributes=(("style", "z-index: 10"),),
         geometry=Geometry(x=0, y=0, width=200, height=100),
         depth=1,
     )
@@ -117,13 +117,13 @@ def test_transparent_overlay_trap_detected():
     overlay trap."""
     target = DOMNode(
         tag="input",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=100, height=50),
         depth=1,
     )
     overlay = DOMNode(
         tag="div",
-        attributes={"style": "z-index: 10; opacity: 0.01"},
+        attributes=(("style", "z-index: 10; opacity: 0.01"),),
         geometry=Geometry(x=0, y=0, width=200, height=100),
         depth=1,
     )
@@ -138,13 +138,13 @@ def test_child_element_not_occluded():
     the candidate is skipped and the parent is NOT reported as occluded."""
     parent = DOMNode(
         tag="button",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=200, height=80),
         depth=1,
     )
     child_icon = DOMNode(
         tag="i",
-        attributes={"style": "z-index: 5"},
+        attributes=(("style", "z-index: 5"),),
         geometry=Geometry(x=50, y=15, width=100, height=50),
         depth=2,
     )
@@ -160,13 +160,13 @@ def test_later_dom_order_sibling_occluded():
     earlier one by DOM order."""
     earlier = DOMNode(
         tag="input",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=100, height=50),
         depth=1,
     )
     later = DOMNode(
         tag="div",
-        attributes={},
+        attributes=(),
         geometry=Geometry(x=0, y=0, width=100, height=50),
         depth=1,
     )

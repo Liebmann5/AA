@@ -4,10 +4,12 @@ This module contains the `GenericSERPStrategy`. It implements a high-level
 algorithm: "Find the list container, iterate through items, parse details."
 It relies on dependency injection for the specific finding and parsing logic,
 making it adaptable to almost any list-based website (Google, Bing, Indeed).
-"""  # noqa: E501
+"""
 
+import json
 import logging
 import time
+from typing import Optional
 
 # Components
 from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
@@ -46,31 +48,23 @@ class GenericSERPStrategy:
         title_parser: BaseExtractor | None = None,
         company_parser: BaseExtractor | None = None,
         url_parser: BaseExtractor | None = None,
+        max_results: int = 30,
     ):
-        """Initializes the strategy with specific parsing tools.
-
-        Args:
-            browser (BrowserInterface): The active browser.
-            search_prefs (JobSearchPreferences): User settings.
-            source_tag (str): The name to tag jobs with (e.g., "Google").
-            title_parser (BaseExtractor): Tool to extract job titles.
-            company_parser (BaseExtractor): Tool to extract company names.
-            url_parser (BaseExtractor): Tool to extract job links.
-        """
+        """Initializes the strategy with specific parsing tools."""
         self.browser = browser
         self.prefs = search_prefs
         self.source_tag = source_tag
+        # Resolved per-query result cap (from SearchInstruction.max_results,
+        # which the workflow fills from the low-resource-clamped session plan).
+        self.max_results = max_results
 
-        #self.health_check = PageHealth(browser)
         self.interruption_handler = InterruptionHandler(browser)
         self.auditor = AuditReporter(browser)
 
-        # Configure Extractors (Default to Smart Extractors if not provided)
         self.title_parser = title_parser or SmartTextExtractor()
-        self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])  # noqa: E501
+        self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])
         self.url_parser = url_parser or SmartURLExtractor()
 
-        # Initialize the Miner (The component that actually touches the DOM)
         self.miner = SemanticMiner(
             browser=browser,
             title_parser=self.title_parser,
@@ -79,7 +73,7 @@ class GenericSERPStrategy:
         )
 
     def execute(self) -> list[Job]:
-        """Executes the scraping logic: Audit -> Clean -> Scroll -> Mine.
+        """Executes the scraping logic: Audit → Clean → Check JSON‑LD → Scroll → Mine.
 
         Returns:
             List[Job]: A list of unique, valid jobs found.
@@ -87,7 +81,6 @@ class GenericSERPStrategy:
         # 1. Audit & Health Check
         self.auditor.log_state(f"{self.source_tag} - Pre-Scrape")
 
-        # Instantiate the classifier with a real detection strategy and the pre-built miner.
         classifier = PageClassifier(
             self.browser,
             DefaultDetectionStrategy(self.browser),
@@ -96,24 +89,33 @@ class GenericSERPStrategy:
 
         page_type = classifier.classify()
 
-        if page_type in {PageType.CAPTCHA_BLOCK, PageType.LOGIN_REQUIRED, PageType.ERROR_404}:  # noqa: E501
-            logger.warning(f"{self.source_tag}: Page failed health check ({page_type.name}). Aborting strategy.")  # noqa: E501
+        if page_type in {PageType.CAPTCHA_BLOCK, PageType.LOGIN_REQUIRED, PageType.ERROR_404}:
+            logger.warning(f"{self.source_tag}: Page failed health check ({page_type.name}). Aborting strategy.")
             return []
 
         # 2. Clear Interruptions (Cookies/Popups)
         self.interruption_handler.handle_interruptions()
 
+        # ── 2a. Fast path: JSON‑LD structured data ───────────────────────────
+        json_ld_jobs = self._try_extract_json_ld()
+        if json_ld_jobs:
+            logger.info(
+                "%s: Extracted %d jobs via JSON‑LD — skipping scroll+mine.",
+                self.source_tag,
+                len(json_ld_jobs),
+            )
+            DiscoveryMathAuditor.audit_final_job_list(json_ld_jobs, self.source_tag)
+            return json_ld_jobs
+
         # 3. The Extraction Loop (Scroll & Mine)
-        # We delegate scrolling to the InfiniteScrollStrategy
         scroller = InfiniteScrollStrategy(self.browser)
 
         unique_jobs = {}
-        max_scroll_attempts = 5  # Safety cap to prevent infinite loops
+        max_scroll_attempts = 5
 
         logger.info(f"{self.source_tag}: Starting Scroll & Mine Loop...")
 
         for i in range(max_scroll_attempts):
-            # A. Mine visible jobs
             batch = self.miner.mine_jobs(source_name=self.source_tag)
 
             new_count = 0
@@ -122,14 +124,12 @@ class GenericSERPStrategy:
                     unique_jobs[job.url] = job
                     new_count += 1
 
-            logger.info(f"  Loop {i+1}: Found {len(batch)} visible items ({new_count} new).")  # noqa: E501
+            logger.info(f"  Loop {i+1}: Found {len(batch)} visible items ({new_count} new).")
 
-            # B. Stop Conditions
-            if len(unique_jobs) >= 50: # Cap per query to keep it fast
+            if len(unique_jobs) >= 50:
                 logger.info("  Cap reached. Stopping.")
                 break
 
-            # C. Scroll
             if not scroller.next_page():
                 logger.info("  Infinite Scroll hit bottom (Page did not expand).")
                 break
@@ -138,75 +138,139 @@ class GenericSERPStrategy:
         DiscoveryMathAuditor.audit_final_job_list(results, self.source_tag)
         if not results:
             DiscoveryMathAuditor.audit_candidate_containers([], self.source_tag)
-        logger.info(f"{self.source_tag}: Strategy complete. Total unique jobs: {len(results)}")  # noqa: E501
+        logger.info(f"{self.source_tag}: Strategy complete. Total unique jobs: {len(results)}")
         return results
 
     def run(self) -> list[Job]:
         """Executes the scraping logic using 'Harvest-Then-Scroll'."""
 
-        # 1. Setup
         scroller = InfiniteScrollStrategy(self.browser)
-        unique_jobs_map = {} # Key: Hash of (Title + Company), Value: Job Object
-
-        # Safety circuit breakers
+        unique_jobs_map = {}
         consecutive_scrolls_without_new_data = 0
-        MAX_DRY_SCROLLS = 3  # If we scroll 3 times and find nothing new, stop.
-        # FIXED attribute reference error here
-        MAX_TOTAL_JOBS = getattr(self.prefs, "max_search_results", 30)
+        MAX_DRY_SCROLLS = 3
+        MAX_TOTAL_JOBS = self.max_results
 
         logger.info(f"{self.source_tag}: Starting robust infinite scroll extraction...")
 
+        # ── Fast path: JSON‑LD ───────────────────────────────────────────────
+        json_ld_jobs = self._try_extract_json_ld()
+        if json_ld_jobs:
+            logger.info(
+                "%s: Extracted %d jobs via JSON‑LD — skipping scroll.",
+                self.source_tag,
+                len(json_ld_jobs),
+            )
+            DiscoveryMathAuditor.audit_final_job_list(json_ld_jobs, self.source_tag)
+            return json_ld_jobs
+
         while True:
             # --- PHASE A: HARVEST ---
-            # Extract everything currently visible on screen.
-            # CRITICAL: We extract DATA now. We do not store Element References.
             visible_jobs = self.miner.mine_jobs(source_name=self.source_tag)
-
             new_items_in_this_batch = 0
 
             for job in visible_jobs:
-                # Create a stable fingerprint for the job
-                # We use URL if available, otherwise Title+Company
                 job_hash = job.url if job.url else f"{job.title}|{job.company}"
-
                 if job_hash not in unique_jobs_map:
                     unique_jobs_map[job_hash] = job
                     new_items_in_this_batch += 1
 
-            logger.info(f"  Batch: Found {len(visible_jobs)} visible, {new_items_in_this_batch} new.")  # noqa: E501
+            logger.info(f"  Batch: Found {len(visible_jobs)} visible, {new_items_in_this_batch} new.")
 
             # --- PHASE B: EVALUATE PROGRESS ---
-
-            # Check User Limit
             if len(unique_jobs_map) >= MAX_TOTAL_JOBS:
                 logger.info("  User defined job limit reached. Stopping.")
                 break
 
-            # Check for "Dry Spells" (The fix for Virtualization)
             if new_items_in_this_batch == 0:
                 consecutive_scrolls_without_new_data += 1
-                logger.debug(f"  No new items found. Dry scroll count: {consecutive_scrolls_without_new_data}")  # noqa: E501
+                logger.debug(f"  No new items found. Dry scroll count: {consecutive_scrolls_without_new_data}")
             else:
-                # Reset counter if we found something, because there might be more
                 consecutive_scrolls_without_new_data = 0
 
             if consecutive_scrolls_without_new_data >= MAX_DRY_SCROLLS:
-                logger.info("  Infinite scroll appears exhausted (multiple dry scrolls). Stopping.")  # noqa: E501
+                logger.info("  Infinite scroll appears exhausted (multiple dry scrolls). Stopping.")
                 break
 
-            # --- PHASE C: SCROLL ---
-            # We attempt to scroll. If the SCROLLER fails (physically can't move), we also stop.  # noqa: E501
             if not scroller.next_page():
                 logger.info("  Scroller reports end of page/feed.")
                 break
 
-            # Evasion pause is handled inside scroller.next_page() usually,
-            # but ensure we wait for network stability here.
             time.sleep(2.0)
 
-        # return list(unique_jobs_map.values())
         jobs = list(unique_jobs_map.values())
         DiscoveryMathAuditor.audit_final_job_list(jobs, self.source_tag)
         if not jobs:
             DiscoveryMathAuditor.audit_candidate_containers([], self.source_tag)
+        return jobs
+
+    # ------------------------------------------------------------------
+    # JSON‑LD fast‑path extraction
+    # ------------------------------------------------------------------
+
+    def _try_extract_json_ld(self) -> list[Job]:
+        """Try to extract job postings from ``application/ld+json`` blocks.
+
+        Uses BeautifulSoup to parse the page source and run the JSON‑LD logic
+        without needing the live browser's JavaScript execution.
+
+        Returns:
+            List of Job objects; empty list if no JSON‑LD found or parsing fails.
+        """
+        page_source = ""
+        try:
+            page_source = getattr(self.browser, "page_source", "") or ""
+        except Exception:
+            return []
+
+        if 'application/ld+json' not in page_source:
+            return []
+
+        try:
+            from bs4 import BeautifulSoup  # noqa: PLC0415
+        except ImportError:
+            logger.debug("BeautifulSoup not available — cannot parse JSON‑LD statically")
+            return []
+
+        soup = BeautifulSoup(page_source, "html.parser")
+        jobs: list[Job] = []
+
+        for script in soup.find_all("script", type="application/ld+json"):
+            content = script.string
+            if not content:
+                continue
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+
+            # JSON‑LD can be a single object or a graph (list)
+            graph = data.get("@graph", [data])
+            if not isinstance(graph, list):
+                graph = [graph]
+
+            for item in graph:
+                if isinstance(item, dict) and item.get("@type") == "JobPosting":
+                    title = item.get("title", "")
+                    org = item.get("hiringOrganization", {})
+                    company = org.get("name", "Unknown") if isinstance(org, dict) else "Unknown"
+                    url = item.get("url", "")
+
+                    if not url:
+                        url = f"https://www.google.com/search?q={title}+{company}+jobs"
+
+                    if title:
+                        jobs.append(
+                            Job(
+                                title=title,
+                                company=company,
+                                url=url,
+                                source=f"{self.source_tag} (JSON‑LD)",
+                                location=(
+                                    item.get("jobLocation", {})
+                                    .get("address", {})
+                                    .get("addressLocality")
+                                ),
+                            )
+                        )
+
         return jobs

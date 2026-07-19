@@ -6,8 +6,7 @@ page content. It centralizes the logic for detecting and dismissing these
 elements, allowing the main scraping strategies to remain clean and focused
 on their primary tasks.
 """
-# Layer: application
-# Depends on: domain
+
 
 import logging
 

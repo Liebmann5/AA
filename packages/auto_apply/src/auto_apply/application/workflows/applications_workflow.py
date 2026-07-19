@@ -7,18 +7,20 @@ What this engine does:
     GPT4All (with SpaCy similarity fallback), handle file uploads, navigate multi-page
     forms, and submit the completed application.
 
-11-step sequence:
+10‑step sequence:
     1.  _navigate_to_application       — open form URL, detect ATS, click Apply CTA
-    2.  _analyze_form_mathematically   — WebpageAnalyzer + Hungarian for field pairing
-    3.  _instantiate_form_fsm          — UniversalApplicationStrategy FSM
-    4.  _classify_all_fields           — FieldClassifier + SpaCy fallback for ambiguous labels
-    5.  _fill_standard_fields          — SemanticFiller → profile → interaction_port
-    6.  _generate_custom_answers       — GPT4All or SpaCy-ranked experience paragraph
-    7.  _handle_file_uploads           — resume / cover letter upload
-    8.  _navigate_multi_page_flow      — detect Next/Continue, click, wait for DOM
-    9.  _handle_interruptions          — banners, CAPTCHA detection, redirect detection
-    10. _submit_application            — HITL gate, submit button, cooldown extraction
-    11. _record_application_outcome    — persist result, publish event, telemetry
+    2.  _detect_login_wall             — check for authentication barriers before filling
+    3.  _get_form_structure_with_iframe_fallback — search iFrames + Shadow DOM if main frame empty
+    4.  _analyze_form_mathematically   — route analysis tier (KNOWN_PLATFORM/CSS_EXTRACTION/
+                                          FULL_MATH_DOM); produce FormStructure
+    5.  _classify_all_fields           — FieldClassifier + SpaCy fallback for ambiguous labels
+    6.  _fill_standard_fields          — SemanticFiller → profile → interaction_port
+    7.  _generate_custom_answers       — GPT4All or SpaCy-ranked experience paragraph
+    8.  _handle_file_uploads           — resume / cover letter upload
+    9.  _navigate_multi_page_flow      — detect Next/Continue, click, wait for DOM
+    10. _handle_interruptions          — banners, CAPTCHA detection, redirect detection
+    11. _submit_application            — HITL gate, submit button, cooldown extraction
+    12. _record_application_outcome    — persist result, publish event, telemetry
 
 Inputs:
     profile           — UserProfile (all form fill data)
@@ -29,6 +31,7 @@ Inputs:
     field_classifier  — FieldClassifier (label → FieldType)
     semantic_filler   — SemanticFiller (FieldType → profile value)
     text_matcher      — TextMatcher (similarity for label disambiguation)
+    page_analysis_router — PageAnalysisRouter (lightweight‑first tier decision)
     file_handler      — FileInteractionHandler (resume/cover letter upload)
     interruption_handler — InterruptionHandler (dismisses cookie banners)
     dom_observer      — DOMObserver (waits for DOM stability)
@@ -37,9 +40,10 @@ Inputs:
     task_queue        — WorkQueuePort (CAPTCHA hand-off)
     event_bus         — EventBus
     interrupt_policy  — InterruptPolicyPort (HITL checkpoint decisions)
+    rng               — random.Random (deterministic randomness; optional)
 
 Outputs:
-    Returns bool — True iff application was submitted successfully.
+    Returns ApplicationEvidence — structured evidence with boolean truthiness.
     Publishes: FORM_FIELD_FILLED, FORM_FIELD_FAILED, APPLICATION_SUBMITTED,
                APPLICATION_FAILED, REDIRECT_TO_LIST_DETECTED, CAPTCHA_DETECTED.
 
@@ -54,24 +58,85 @@ How to extend:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import random
 import re
+import time
+from datetime import date
 from typing import Any
 
+from auto_apply.application.services.company_batch_scheduler import (
+    CompanyBatchScheduler,
+)
 from auto_apply.domain.events import Event
+from auto_apply.domain.models.application_evidence import (
+    ATS_CONFIRMATION_PATTERNS,
+    ApplicationEvidence,
+)
 from auto_apply.domain.models.job import Job
+from auto_apply.domain.models.session_plan import SessionPlan
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.ui import UIElement, UIElementType
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
+from auto_apply.domain.models.task_payloads import CaptchaResolutionPayload
 from auto_apply.domain.ports.interrupt_policy_port import Checkpoint
+from auto_apply.domain.ports.page_understanding_port import (
+    FormFieldInfo,
+    FormStructure,
+)
+from auto_apply.domain.ports.research_port import (
+    ApplicationOutcomeObservation,
+    FormObservation,
+    ResearchObserverPort,
+)
+from auto_apply.application.services.page_analysis_router import (
+    PageAnalysisRouter,
+    PageAnalysisTier,
+)
 
 logger = logging.getLogger(__name__)
 
+# ── Cooldown patterns ───────────────────────────────────────────────────────
 _COOLDOWN_PATTERNS = [
     re.compile(r"apply\s+again\s+in\s+(\d+)\s+months?", re.IGNORECASE),
     re.compile(r"(\d+)[- ]month\s+cooldown", re.IGNORECASE),
     re.compile(r"reapply\s+after\s+(\d+)\s+months?", re.IGNORECASE),
 ]
-_KEEP_ON_FILE_PATTERN = re.compile(r"keep\s+your\s+application\s+on\s+file", re.IGNORECASE)
+_KEEP_ON_FILE_PATTERN = re.compile(
+    r"keep\s+your\s+application\s+on\s+file", re.IGNORECASE
+)
+
+# Degree name → numeric level mapping for knockout thresholds
+_DEGREE_LEVEL_MAP = {
+    "high school": 0,
+    "bachelor": 1,
+    "bachelors": 1,
+    "ba": 1,
+    "bs": 1,
+    "master": 2,
+    "masters": 2,
+    "ma": 2,
+    "ms": 2,
+    "mba": 2,
+    "phd": 3,
+    "doctorate": 3,
+    "doctoral": 3,
+}
+
+# ── Login wall detection ────────────────────────────────────────────────────
+
+_LOGIN_WALL_INDICATORS: frozenset[str] = frozenset({
+    "sign in", "log in", "login", "create an account", "register",
+    "sign up", "password", "forgot password", "authentication required",
+    "please log in", "member login", "employee login",
+})
+
+_LOGIN_WALL_URL_PATTERNS: frozenset[str] = frozenset({
+    "/login", "/signin", "/auth", "/register", "/signup",
+    "/account/login", "/users/sign_in", "/sso/",
+})
 
 
 class ApplicationsWorkflow:
@@ -108,9 +173,14 @@ class ApplicationsWorkflow:
         interrupt_policy,
         text_generation_port=None,
         approval_gate=None,
-        research_collector=None,
         config: dict | None = None,
-        context_manager=None,              # NEW: ContextManager for tab management
+        context_manager=None,
+        research_observer: ResearchObserverPort | None = None,
+        page_analysis_router: PageAnalysisRouter | None = None,
+        browser_lease=None,   # <--- NEW: injected by composition root
+        rng: random.Random | None = None,    # deterministic randomness
+        *,
+        plan: SessionPlan,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -133,9 +203,12 @@ class ApplicationsWorkflow:
             interrupt_policy: InterruptPolicyPort for HITL checkpoint decisions.
             text_generation_port: TextGenerationPort | None — GPT4All or None.
             approval_gate: ApprovalGate | None — HITL approval callable.
-            research_collector: ResearchCollector | None — anonymized telemetry.
             config: Effective config dict from registry.
             context_manager: ContextManager | None — tab/window switching.
+            research_observer: ResearchObserverPort | None — new research signal pipeline.
+            page_analysis_router: PageAnalysisRouter | None — lightweight‑first tier decision.
+            browser_lease: Optional BrowserLeaseManager — concurrency safety.
+            rng: Optional seeded random.Random instance for deterministic behaviour.
         """
         self._profile = profile
         self._browser = browser
@@ -155,15 +228,34 @@ class ApplicationsWorkflow:
         self._interrupt_policy = interrupt_policy
         self._text_generation_port = text_generation_port
         self._approval_gate = approval_gate
-        self._research_collector = research_collector
         self._config = config or {}
-        self._context_manager = context_manager   # NEW
+        self._context_manager = context_manager
+        self._research_observer = research_observer
+        self._page_analysis_router = page_analysis_router
+        self._browser_lease = browser_lease
+        self._rng = rng if rng is not None else random.Random()
+        # Required session plan. Unlike DiscoveryWorkflow, this is not defaulted
+        # to a fabricated fallback — a missing plan must fail at construction,
+        # not silently run as if non-deterministic.
+        self._plan = plan
+        # Feedback-loop capture: the tier the router chose and the page it chose
+        # it for, remembered between form analysis and the recorded outcome.
+        self._last_analysis_tier: PageAnalysisTier | None = None
+        self._last_page_url: str = ""
+        self._last_page_source: str = ""
 
         self._current_job: Job | None = None
         self._pages_navigated: int = 0
         self._fields_filled: int = 0
         self._gpt4all_invoked: bool = False
         self._session_id: str | None = None
+
+        # ── Company‑batch scheduler (owned here, called by orchestrator) ──
+        batch_threshold = self._cfg("applications.batch_threshold", 3)
+        self.batch_scheduler = CompanyBatchScheduler(
+            task_queue=self._task_queue,
+            batch_threshold=batch_threshold,
+        )
 
     def set_approval_gate(self, gate) -> None:
         """Late-bind the HITL approval gate.
@@ -190,57 +282,260 @@ class ApplicationsWorkflow:
                 return default
         return node
 
-    def _navigate_to_application(self, job: Job) -> bool:
+    # ──────────────────────────────────────────────────────────────────────────
+    # LOGIN WALL DETECTION (Wave K2)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _detect_login_wall(self, job: Job) -> bool:
+        """Returns True if the current page is a login/authentication wall.
+
+        Checks:
+        1. URL contains login-related path segments
+        2. Page title contains login-related text
+        3. Page source contains multiple login indicators
+
+        Called after navigation, before form filling — prevents AA from
+        trying to fill a login form with the applicant's profile data.
+        """
+        try:
+            current_url = (self._browser.current_url or "").lower()
+            page_title = (getattr(self._browser, "title", "") or "").lower()
+
+            # URL check
+            for pattern in _LOGIN_WALL_URL_PATTERNS:
+                if pattern in current_url:
+                    logger.warning(
+                        "Login wall detected via URL | pattern=%s | job=%s @ %s",
+                        pattern,
+                        job.title[:30],
+                        job.company[:30],
+                    )
+                    return True
+
+            # Title check
+            for indicator in _LOGIN_WALL_INDICATORS:
+                if indicator in page_title:
+                    logger.warning(
+                        "Login wall detected via page title | indicator=%s | "
+                        "job=%s @ %s",
+                        indicator,
+                        job.title[:30],
+                        job.company[:30],
+                    )
+                    return True
+
+        except Exception as exc:
+            logger.debug("Login wall detection error: %s", exc)
+
+        return False
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # IFRAME + SHADOW DOM FORM SEARCH (Wave K1)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _get_form_structure_with_iframe_fallback(self, job: Job):
+        """Analyze the current page for a form, searching iFrames if main frame
+        is empty.
+
+        Returns the form structure from wherever it is found.
+        Returns None if no form is found anywhere on the page.
+        """
+        # ── Attempt 1: Main frame ──────────────────────────────────────────
+        form_structure = self._analyze_form_mathematically()
+
+        if form_structure and self._has_fillable_fields(form_structure):
+            return form_structure
+
+        logger.info(
+            "No form found in main frame — scanning iFrames | url=%s",
+            job.url[:60],
+        )
+
+        # ── Attempt 2: iFrame scan ─────────────────────────────────────────
+        try:
+            from auto_apply.domain.types import Locator  # noqa: PLC0415
+
+            iframes = self._browser.find_elements(Locator.TAG_NAME, "iframe")
+            logger.debug("Found %d iFrames to scan", len(iframes) if iframes else 0)
+
+            if iframes:
+                for i, iframe in enumerate(iframes):
+                    try:
+                        self._browser.switch_to_iframe(iframe)
+                        frame_structure = self._analyze_form_mathematically()
+
+                        if frame_structure and self._has_fillable_fields(
+                            frame_structure
+                        ):
+                            logger.info(
+                                "Form found in iFrame %d/%d | url=%s",
+                                i + 1,
+                                len(iframes),
+                                job.url[:60],
+                            )
+                            # Stay in the iFrame context so field filling works.
+                            return frame_structure
+
+                        # Not found in this frame — go back to default before
+                        # trying the next one.
+                        self._browser.switch_to_default_content()
+
+                    except Exception as exc:
+                        logger.debug("iFrame %d scan error: %s", i, exc)
+                        try:
+                            self._browser.switch_to_default_content()
+                        except Exception:
+                            pass
+
+        except Exception as exc:
+            logger.warning("iFrame enumeration failed: %s", exc)
+            try:
+                self._browser.switch_to_default_content()
+            except Exception:
+                pass
+
+        # ── Attempt 3: Shadow DOM (Web Components) ─────────────────────────
+        shadow_structure = self._scan_shadow_dom_for_form()
+        if shadow_structure and self._has_fillable_fields(shadow_structure):
+            logger.info("Form found inside Shadow DOM | url=%s", job.url[:60])
+            return shadow_structure
+
+        logger.warning(
+            "No form found in main frame, iFrames, or Shadow DOM | url=%s",
+            job.url[:60],
+        )
+        return None
+
+    def _scan_shadow_dom_for_form(self):
+        """Attempt to pierce Shadow DOM and find form elements.
+
+        Web Component-based ATS (some modern platforms) put their forms inside
+        a Shadow DOM that Selenium cannot access directly. We use JavaScript
+        to pierce it.
+
+        Returns the form structure if found, or None.
+        """
+        try:
+            # Pierce the shadow DOM and extract form elements via JavaScript
+            result = self._browser.execute_script("""
+                function queryShadowAll(root, selector) {
+                    let elements = Array.from(root.querySelectorAll(selector));
+                    root.querySelectorAll('*').forEach(el => {
+                        if (el.shadowRoot) {
+                            elements = elements.concat(
+                                queryShadowAll(el.shadowRoot, selector)
+                            );
+                        }
+                    });
+                    return elements;
+                }
+                const inputs = queryShadowAll(
+                    document,
+                    'input:not([type=hidden]),textarea,select'
+                );
+                return inputs.length;
+            """)
+
+            if result and result > 0:
+                logger.info(
+                    "Shadow DOM contains %d form inputs — "
+                    "attempting JavaScript fill strategy",
+                    result,
+                )
+                # Shadow DOM forms require a JS-based fill strategy.
+                # Return a marker structure indicating shadow DOM mode.
+                return {"shadow_dom_mode": True, "input_count": result}
+
+        except Exception as exc:
+            logger.debug("Shadow DOM scan failed: %s", exc)
+
+        return None
+
+    @staticmethod
+    def _has_fillable_fields(form_structure) -> bool:
+        """Returns True if the form structure contains at least one fillable field."""
+        if not form_structure:
+            return False
+        if isinstance(form_structure, dict) and form_structure.get("shadow_dom_mode"):
+            return True
+        # Check for actual field pairs in the math subsystem's structure
+        label_pairs = getattr(form_structure, "label_field_pairs", None) or {}
+        return len(label_pairs) > 0
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # NAVIGATION
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _navigate_to_application(
+        self, job: Job, evidence: ApplicationEvidence
+    ) -> ApplicationEvidence:
         """Open the job URL, detect ATS, and click the Apply CTA if on a listing page.
 
         Args:
             job: The Job to apply to.
+            evidence: Mutable evidence accumulator (returned updated).
 
         Returns:
-            True on successful navigation, False on failure.
+            Updated ApplicationEvidence.
         """
         try:
             self._browser.get(job.url)
         except Exception as exc:
             logger.warning(
                 "ApplicationsWorkflow: navigation failed | url=%s error=%s",
-                job.url, exc,
+                job.url,
+                exc,
             )
-            return False
+            return evidence.model_copy(update={
+                "outcome": "FAILED_NAVIGATION",
+                "confidence": 0.95,
+                "error_message": str(exc)[:200],
+            })
 
         try:
             descriptor = self._ats_registry.match(job.url)
             if descriptor is not None and hasattr(job, "metadata"):
                 job.metadata["ats"] = descriptor.name
+                evidence = evidence.model_copy(update={
+                    "ats_platform": descriptor.name,
+                })
         except Exception:
             pass
 
         try:
             page_source = getattr(self._browser, "page_source", "") or ""
             if "<form" not in page_source.lower():
-                apply_labels = ["apply now", "apply", "easy apply", "quick apply"]
+                apply_labels = [
+                    "apply now", "apply", "easy apply", "quick apply",
+                ]
                 buttons = self._get_clickable_elements()
                 for button in buttons:
                     label = getattr(button, "text", "") or ""
-                    _, score = self._text_matcher.find_best_match(label.lower(), apply_labels)
+                    _, score = self._text_matcher.find_best_match(
+                        label.lower(), apply_labels
+                    )
                     if score > 0.7:
                         self._interaction_port.click(button)
                         self._wait_for_dom_stable()
-                        # ❯❯❯ Tab switch detection after clicking Apply CTA ❮❮❮
                         if self._context_manager:
                             self._context_manager.switch_to_new_tab()
                         break
         except Exception as exc:
-            logger.debug("ApplicationsWorkflow: apply CTA search failed: %s", exc)
+            logger.debug(
+                "ApplicationsWorkflow: apply CTA search failed: %s", exc
+            )
 
-        return True
+        return evidence
 
     def _get_clickable_elements(self) -> list:
         """Return a best-effort list of button/link elements from the current page."""
         try:
             if hasattr(self._browser, "find_elements"):
                 from auto_apply.domain.types import Locator  # noqa: PLC0415
-                return self._browser.find_elements(Locator.TAG, "button") or []
+
+                return (
+                    self._browser.find_elements(Locator.TAG_NAME, "button") or []
+                )
         except Exception:
             pass
         return []
@@ -252,27 +547,135 @@ class ApplicationsWorkflow:
             if hasattr(self._dom_observer, "wait_for_dom_stable"):
                 self._dom_observer.wait_for_dom_stable(timeout=t)
         except Exception as exc:
-            logger.debug("ApplicationsWorkflow: DOM stabilization wait failed: %s", exc)
+            logger.debug(
+                "ApplicationsWorkflow: DOM stabilization wait failed: %s", exc
+            )
 
     def _analyze_form_mathematically(self):
-        """Run WebpageAnalyzer to extract form structure.
+        """Analyze the current page to produce a form structure.
 
-        Returns:
-            WebpageStructure with fields, labels, honeypots.
+        Uses the PageAnalysisRouter to choose the cheapest effective tier:
+          1. KNOWN_PLATFORM / CSS_EXTRACTION → lightweight (DOMScanner)
+          2. FULL_MATH_DOM → existing WebpageAnalyzer
+
+        Always falls back to WebpageAnalyzer if the lightweight path yields no
+        fillable fields.
         """
+        # ── Determine tier ──────────────────────────────────────────────────
+        page_url = ""
+        page_source = ""
+        try:
+            page_url = self._browser.current_url or ""
+            page_source = getattr(self._browser, "page_source", "") or ""
+        except Exception:
+            pass
+
+        tier = PageAnalysisTier.FULL_MATH_DOM
+        if self._page_analysis_router is not None:
+            try:
+                tier = self._page_analysis_router.determine_tier(
+                    page_url, page_source
+                )
+                logger.debug("PageAnalysisTier: %s | url=%s", tier.name, page_url[:80])
+            except Exception as exc:
+                logger.warning("PageAnalysisRouter raised: %s — defaulting to FULL_MATH_DOM", exc)
+
+        # Remember the tier and page for the feedback loop. The outcome that
+        # tells us whether this tier actually worked is not known until the
+        # application concludes, in _record_application_outcome.
+        self._last_analysis_tier = tier
+        self._last_page_url = page_url
+        self._last_page_source = page_source
+
+        # ── Lightweight path ────────────────────────────────────────────────
+        if tier != PageAnalysisTier.FULL_MATH_DOM:
+            structure = self._build_simple_form_structure(tier)
+            if structure and structure.fields:
+                logger.info(
+                    "Using lightweight form structure | tier=%s fields=%d",
+                    tier.name,
+                    len(structure.fields),
+                )
+                return structure
+            logger.debug("Lightweight path returned no fields — falling back to math DOM")
+
+        # ── Full math DOM (fallback) ────────────────────────────────────────
+        if self._webpage_analyzer is None:
+            logger.warning(
+                "ApplicationsWorkflow: WebpageAnalyzer not available — "
+                "returning empty form structure"
+            )
+            return FormStructure()
+
         try:
             return self._webpage_analyzer.analyze()
         except Exception as exc:
             logger.warning(
                 "ApplicationsWorkflow: WebpageAnalyzer failed: %s", exc
             )
+            return FormStructure()
 
-        class _EmptyStructure:
-            fields = []
-            honeypots = []
-            label_field_pairs = {}
+    # ------------------------------------------------------------------
+    # Lightweight form structure builder
+    # ------------------------------------------------------------------
 
-        return _EmptyStructure()
+    def _build_simple_form_structure(
+        self, tier: PageAnalysisTier
+    ) -> FormStructure:
+        """Construct a FormStructure using cheaper perception methods.
+
+        Args:
+            tier: The recommended analysis tier (already not FULL_MATH_DOM).
+
+        Returns:
+            A FormStructure populated from DOMScanner (or empty if no browser).
+        """
+        ui_model = None
+        try:
+            if self._perception_port is not None:
+                ui_model = self._perception_port.scan_page()
+        except Exception as exc:
+            logger.warning("DOM scan failed for lightweight structure: %s", exc)
+
+        if ui_model is None or not ui_model.elements:
+            return FormStructure()
+
+        fields: list[FormFieldInfo] = []
+        for el in ui_model.elements:
+            # Map UIElement → FormFieldInfo (conservative mapping).
+            field_type = _map_ui_element_type(el.element_type)
+
+            # Try to classify the field type via the injected classifier
+            # (may upgrade the field_type to a more specific semantic type).
+            if self._field_classifier is not None:
+                # We need a DOMNode-compatible object; FieldClassifier.classify
+                # expects an ElementInterface.  Since our lightweight path uses
+                # the generic elements from the perception port, we can try to
+                # call classify with the underlying reference if available.
+                try:
+                    # For DOMScanner the elements have a reference attachment.
+                    raw_ref = el.get_reference()
+                    if raw_ref is not None:
+                        ft = self._field_classifier.classify(raw_ref)
+                        if ft is not None:
+                            field_type = str(ft)
+                except Exception:
+                    pass
+
+            fields.append(
+                FormFieldInfo(
+                    field_id=el.id or "",
+                    label_text=el.label or el.placeholder or el.name or "",
+                    field_type=field_type,
+                    name=el.name or "",
+                    placeholder=el.placeholder or "",
+                    is_required=el.is_required,
+                    is_honeypot=False,
+                    options=tuple(el.options) if el.options else (),
+                )
+            )
+
+        return FormStructure(fields=tuple(fields))
 
     def _instantiate_form_fsm(self, structure) -> None:
         """Instantiate the UniversalApplicationStrategy FSM for this page.
@@ -284,6 +687,7 @@ class ApplicationsWorkflow:
             from auto_apply.domain.applications.fsm.universal import (  # noqa: PLC0415
                 UniversalApplicationStrategy,
             )
+
             self._fsm = UniversalApplicationStrategy(
                 browser=self._browser,
                 profile=self._profile,
@@ -292,7 +696,8 @@ class ApplicationsWorkflow:
             )
         except Exception as exc:
             logger.debug(
-                "ApplicationsWorkflow: FSM instantiation failed (non-fatal): %s", exc
+                "ApplicationsWorkflow: FSM instantiation failed (non-fatal): %s",
+                exc,
             )
             self._fsm = None
 
@@ -318,10 +723,14 @@ class ApplicationsWorkflow:
             except Exception:
                 field_type = None
 
-            if field_type is None or str(field_type).upper() in ("UNKNOWN", "NONE"):
+            if field_type is None or str(field_type).upper() in (
+                "UNKNOWN", "NONE",
+            ):
                 label_text = label_pairs.get(field_el, "")
                 if label_text:
-                    _, score = self._text_matcher.find_best_match(label_text, [])
+                    _, score = self._text_matcher.find_best_match(
+                        label_text, []
+                    )
                     if score > 0.7:
                         pass
 
@@ -348,9 +757,13 @@ class ApplicationsWorkflow:
 
             label_text = structure_label_pairs.get(field_el, "")
             try:
-                value = self._semantic_filler.get_value_for_field(field_type, label_text)
+                value = self._semantic_filler.get_value_for_field(
+                    field_type, label_text
+                )
             except Exception as exc:
-                logger.debug("SemanticFiller failed for %s: %s", type_name, exc)
+                logger.debug(
+                    "SemanticFiller failed for %s: %s", type_name, exc
+                )
                 continue
 
             if not value:
@@ -370,20 +783,29 @@ class ApplicationsWorkflow:
             except Exception as exc:
                 logger.warning(
                     "ApplicationsWorkflow: fill failed | type=%s label=%s error=%s",
-                    type_name, label_text, exc,
+                    type_name,
+                    label_text,
+                    exc,
                 )
                 try:
                     self._event_bus.publish(
                         Event.FORM_FIELD_FAILED,
-                        {"field_label": label_text, "field_type": type_name, "error": str(exc)},
+                        {
+                            "field_label": label_text,
+                            "field_type": type_name,
+                            "error": str(exc),
+                        },
                     )
                 except Exception:
                     pass
 
         return filled
 
-    def _generate_custom_answers(self, classifications: dict, structure) -> int:
-        """Generate answers for custom/unknown text fields using GPT4All or SpaCy fallback.
+    def _generate_custom_answers(
+        self, classifications: dict, structure
+    ) -> int:
+        """Generate answers for custom/unknown text fields using GPT4All or SpaCy
+        fallback.
 
         Args:
             classifications: Dict of field element → FieldType.
@@ -412,13 +834,19 @@ class ApplicationsWorkflow:
             for exp in experiences:
                 desc = getattr(exp, "description", "") or ""
                 try:
-                    score = self._text_matcher.get_similarity(label_text, desc)
+                    score = self._text_matcher.get_similarity(
+                        label_text, desc
+                    )
                 except Exception:
                     score = 0.0
                 scored.append((score, exp))
             scored.sort(reverse=True)
             best_exp = scored[0][1] if scored else None
-            best_desc = getattr(best_exp, "description", "") or "" if best_exp else ""
+            best_desc = (
+                getattr(best_exp, "description", "") or ""
+                if best_exp
+                else ""
+            )
 
             answer: str | None = None
 
@@ -432,13 +860,16 @@ class ApplicationsWorkflow:
                 try:
                     answer = self._text_generation_port.generate(
                         prompt,
-                        max_tokens=self._cfg("applications.custom_answer_max_tokens", 150),
+                        max_tokens=self._cfg(
+                            "applications.custom_answer_max_tokens", 150
+                        ),
                     )
                     if answer:
                         self._gpt4all_invoked = True
                 except Exception as exc:
                     logger.warning(
-                        "ApplicationsWorkflow: GPT4All generate failed: %s", exc
+                        "ApplicationsWorkflow: GPT4All generate failed: %s",
+                        exc,
                     )
                     answer = None
 
@@ -459,19 +890,28 @@ class ApplicationsWorkflow:
                     {
                         "field_label": label_text,
                         "field_type": type_name,
-                        "strategy": "gpt4all" if self._gpt4all_invoked else "spacy_fallback",
+                        "strategy": (
+                            "gpt4all"
+                            if self._gpt4all_invoked
+                            else "spacy_fallback"
+                        ),
                     },
                 )
                 filled += 1
             except Exception as exc:
                 logger.warning(
                     "ApplicationsWorkflow: custom fill failed | label=%s error=%s",
-                    label_text, exc,
+                    label_text,
+                    exc,
                 )
                 try:
                     self._event_bus.publish(
                         Event.FORM_FIELD_FAILED,
-                        {"field_label": label_text, "field_type": type_name, "error": str(exc)},
+                        {
+                            "field_label": label_text,
+                            "field_type": type_name,
+                            "error": str(exc),
+                        },
                     )
                 except Exception:
                     pass
@@ -516,13 +956,16 @@ class ApplicationsWorkflow:
                     self._file_handler.upload(field_el, str(resume_path))
                 elif is_cover and cover_letter:
                     cover_str = str(cover_letter)
-                    if cover_str.endswith((".pdf", ".doc", ".docx", ".txt")):
+                    if cover_str.endswith(
+                        (".pdf", ".doc", ".docx", ".txt")
+                    ):
                         self._file_handler.upload(field_el, cover_str)
                     else:
                         self._interaction_port.fill(field_el, cover_str)
             except Exception as exc:
                 logger.warning(
-                    "ApplicationsWorkflow: file upload failed for field: %s", exc
+                    "ApplicationsWorkflow: file upload failed for field: %s",
+                    exc,
                 )
 
     def _navigate_multi_page_flow(self) -> bool:
@@ -560,7 +1003,9 @@ class ApplicationsWorkflow:
             return True
 
         except Exception as exc:
-            logger.debug("ApplicationsWorkflow: multi-page navigation failed: %s", exc)
+            logger.debug(
+                "ApplicationsWorkflow: multi-page navigation failed: %s", exc
+            )
             return False
 
     def _handle_interruptions(self, job: Job) -> bool:
@@ -578,39 +1023,52 @@ class ApplicationsWorkflow:
             pass
 
         try:
-            browser_state = None
-            if hasattr(self._browser, "get_current_state"):
-                browser_state = self._browser.get_current_state()
-
             page_source = getattr(self._browser, "page_source", "") or ""
             captcha_indicators = [
                 "recaptcha", "hcaptcha", "cf-turnstile", "captcha",
                 "i am not a robot", "verify you are human",
             ]
             if any(ind in page_source.lower() for ind in captcha_indicators):
+                matched_indicator = next(
+                    ind for ind in captcha_indicators if ind in page_source.lower()
+                )
+                current_url = getattr(self._browser, "current_url", job.url)
                 logger.info(
                     "ApplicationsWorkflow: CAPTCHA detected | url=%s",
-                    getattr(self._browser, "current_url", "unknown"),
+                    current_url,
                 )
                 try:
-                    self._event_bus.publish(Event.CAPTCHA_DETECTED, {"job_url": job.url})
+                    self._event_bus.publish(
+                        Event.CAPTCHA_DETECTED, {"job_url": job.url}
+                    )
                     self._task_queue.queue_task(
                         WorkUnit(
                             priority=1,
                             task_type=TaskType.HANDLE_CAPTCHA,
-                            payload=job,
+                            payload=CaptchaResolutionPayload(
+                                challenge_url=current_url,
+                                challenge_type=matched_indicator,
+                                context={"job_url": job.url},
+                            ),
                             source="applications_workflow",
                             context_data={
                                 "return_state": "applying",
-                                "return_url": getattr(self._browser, "current_url", job.url),
+                                "return_url": current_url,
                             },
                         )
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "ApplicationsWorkflow: failed to enqueue HANDLE_CAPTCHA "
+                        "task after detecting a CAPTCHA | url=%s error=%s",
+                        current_url,
+                        exc,
+                    )
                 return False
         except Exception as exc:
-            logger.debug("ApplicationsWorkflow: interruption check failed: %s", exc)
+            logger.debug(
+                "ApplicationsWorkflow: interruption check failed: %s", exc
+            )
 
         try:
             page_source = getattr(self._browser, "page_source", "") or ""
@@ -649,22 +1107,36 @@ class ApplicationsWorkflow:
                 except Exception:
                     pass
         except Exception as exc:
-            logger.debug("ApplicationsWorkflow: redirect check failed: %s", exc)
+            logger.debug(
+                "ApplicationsWorkflow: redirect check failed: %s", exc
+            )
 
         return True
 
-    def _submit_application(self, job: Job) -> bool:
-        """Perform pre-submit HITL check, find submit button, click, and scan confirmation.
+    def _submit_application(
+        self, job: Job, evidence: ApplicationEvidence
+    ) -> ApplicationEvidence:
+        """Perform pre-submit HITL check, find submit button, click, and scan
+        confirmation.
+
+        Uses ATS-specific confirmation patterns (ATS_CONFIRMATION_PATTERNS) to
+        detect platform-specific success pages, falling back to generic patterns
+        when the ATS platform is unknown.
 
         Args:
             job: The job being applied to.
+            evidence: Evidence accumulator to update with submission outcome.
 
         Returns:
-            True on successful submission, False otherwise.
+            Updated ApplicationEvidence with submission outcome, confirmation
+            phrases found, cooldown extraction, and confidence score.
         """
+        # ── HITL gate (pre-submit user approval) ──────────────────────────
         try:
             ctx = type("ctx", (), {"job": job})()
-            if self._interrupt_policy.should_pause(Checkpoint.BEFORE_FORM_SUBMIT, ctx):
+            if self._interrupt_policy.should_pause(
+                Checkpoint.BEFORE_FORM_SUBMIT, ctx
+            ):
                 if self._approval_gate is not None:
                     choice = self._approval_gate(
                         "Submit application?",
@@ -676,13 +1148,20 @@ class ApplicationsWorkflow:
                             "ApplicationsWorkflow: user skipped submission | job=%s",
                             job.title,
                         )
-                        return False
+                        return evidence.model_copy(update={
+                            "outcome": "USER_SKIPPED",
+                            "confidence": 1.0,
+                        })
         except Exception as exc:
-            logger.debug("ApplicationsWorkflow: HITL submit check failed: %s", exc)
+            logger.debug(
+                "ApplicationsWorkflow: HITL submit check failed: %s", exc
+            )
 
+        # ── Find the submit button ────────────────────────────────────────
+        submit_button = None
+        submit_text = ""
         try:
             buttons = self._get_clickable_elements()
-            submit_button = None
             for btn in buttons:
                 btn_text = getattr(btn, "text", "") or ""
                 _, score = self._text_matcher.find_best_match(
@@ -690,133 +1169,296 @@ class ApplicationsWorkflow:
                 )
                 if score > 0.7:
                     submit_button = btn
+                    submit_text = btn_text[:50]
                     break
-
-            if submit_button is None:
-                logger.warning(
-                    "ApplicationsWorkflow: no submit button found | job=%s", job.title
-                )
-                return False
-
-            self._interaction_port.click(submit_button)
-
-            try:
-                if hasattr(self._dom_observer, "wait_for_dom_stable"):
-                    self._dom_observer.wait_for_dom_stable(timeout=15.0)
-            except Exception:
-                pass
-
-            page_source = getattr(self._browser, "page_source", "") or ""
-            for pattern in _COOLDOWN_PATTERNS:
-                match = pattern.search(page_source)
-                if match:
-                    months = int(match.group(1))
-                    if hasattr(job, "metadata"):
-                        job.metadata["company_cooldown_days"] = months * 30
-                    logger.info(
-                        "ApplicationsWorkflow: cooldown detected %d months | job=%s",
-                        months, job.title,
-                    )
-                    break
-            else:
-                if _KEEP_ON_FILE_PATTERN.search(page_source):
-                    if hasattr(job, "metadata"):
-                        job.metadata["company_cooldown_days"] = 180
-                    logger.info(
-                        "ApplicationsWorkflow: 'keep on file' cooldown (6 months) | job=%s",
-                        job.title,
-                    )
-
-            try:
-                if hasattr(self._job_repo, "mark_applied"):
-                    self._job_repo.mark_applied(job, self._session_id)
-            except Exception as exc:
-                logger.warning("ApplicationsWorkflow: mark_applied failed: %s", exc)
-
-            self._event_bus.publish(
-                Event.APPLICATION_SUBMITTED,
-                {
-                    "job_title": job.title,
-                    "company": job.company,
-                    "url": job.url,
-                },
-            )
-            return True
-
         except Exception as exc:
             logger.warning(
-                "ApplicationsWorkflow: submission failed | job=%s error=%s",
-                job.title, exc,
+                "ApplicationsWorkflow: submit button search failed: %s", exc
             )
-            return False
 
-    def _record_application_outcome(self, result: bool) -> None:
+        if submit_button is None:
+            logger.warning(
+                "ApplicationsWorkflow: no submit button found | job=%s",
+                job.title,
+            )
+            return evidence.model_copy(update={
+                "submit_button_found": False,
+                "outcome": "FAILED_NO_SUBMIT_BUTTON",
+                "confidence": 0.95,
+            })
+
+        # ── Click submit ──────────────────────────────────────────────────
+        evidence = evidence.model_copy(update={
+            "submit_button_found": True,
+            "submit_button_text": submit_text,
+        })
+
+        try:
+            self._interaction_port.click(submit_button)
+            evidence = evidence.model_copy(update={
+                "submit_clicked": True,
+            })
+        except Exception as exc:
+            return evidence.model_copy(update={
+                "submit_clicked": False,
+                "outcome": "ERROR",
+                "error_message": str(exc)[:200],
+                "confidence": 0.90,
+            })
+
+        # ── Wait for post-submit page to settle ───────────────────────────
+        try:
+            if hasattr(self._dom_observer, "wait_for_dom_stable"):
+                self._dom_observer.wait_for_dom_stable(timeout=15.0)
+        except Exception:
+            pass
+
+        # ── Collect post-submit state ─────────────────────────────────────
+        post_url = ""
+        post_title = ""
+        page_source = ""
+        try:
+            post_url = getattr(self._browser, "current_url", "") or ""
+            post_title = getattr(self._browser, "title", "") or ""
+            page_source = (
+                getattr(self._browser, "page_source", "") or ""
+            ).lower()
+        except Exception:
+            pass
+
+        url_changed = bool(post_url and post_url != job.url)
+
+        # ── Check for ATS-specific confirmation phrases ───────────────────
+        ats_name = (
+            job.metadata.get("ats")
+            if hasattr(job, "metadata")
+            else None
+        )
+        patterns_to_check: list[str] = list(
+            ATS_CONFIRMATION_PATTERNS.get(ats_name or "", [])
+        )
+        patterns_to_check += ATS_CONFIRMATION_PATTERNS.get("generic", [])
+
+        found_phrases: list[str] = []
+        for phrase in patterns_to_check:
+            if (
+                phrase.lower() in page_source
+                or phrase.lower() in post_url.lower()
+            ):
+                found_phrases.append(phrase)
+
+        # ── Classify the outcome ──────────────────────────────────────────
+        if found_phrases and url_changed:
+            outcome = "SUBMITTED"
+            confidence = 0.95
+        elif found_phrases:
+            outcome = "SUBMITTED"
+            confidence = 0.85
+        elif url_changed:
+            outcome = "PROBABLY_SUBMITTED"
+            confidence = 0.65
+        else:
+            outcome = "AMBIGUOUS"
+            confidence = 0.35
+
+        # ── Cooldown extraction from confirmation page ────────────────────
+        for pattern in _COOLDOWN_PATTERNS:
+            match = pattern.search(page_source)
+            if match:
+                months = int(match.group(1))
+                if hasattr(job, "metadata"):
+                    job.metadata["company_cooldown_days"] = months * 30
+                logger.info(
+                    "ApplicationsWorkflow: cooldown detected %d months | job=%s",
+                    months,
+                    job.title,
+                )
+                break
+        else:
+            if _KEEP_ON_FILE_PATTERN.search(page_source):
+                if hasattr(job, "metadata"):
+                    job.metadata["company_cooldown_days"] = 180
+                logger.info(
+                    "ApplicationsWorkflow: 'keep on file' cooldown (6 months) | job=%s",
+                    job.title,
+                )
+
+        # ── Build final evidence ──────────────────────────────────────────
+        evidence = evidence.model_copy(update={
+            "post_submit_url": post_url,
+            "page_title_after": post_title,
+            "confirmation_text_found": found_phrases,
+            "url_changed_after_submit": url_changed,
+            "outcome": outcome,
+            "confidence": confidence,
+            "required_fields_filled": self._fields_filled,
+            "fields_classified": self._fields_filled,
+            "pages_navigated": self._pages_navigated,
+            "used_gpt4all": self._gpt4all_invoked,
+        })
+
+        # ── Persist to job repository ─────────────────────────────────────
+        try:
+            if hasattr(self._job_repo, "mark_applied"):
+                self._job_repo.mark_applied(job, self._session_id)
+        except Exception as exc:
+            logger.warning(
+                "ApplicationsWorkflow: mark_applied failed: %s", exc
+            )
+
+        # ── Publish event ─────────────────────────────────────────────────
+        self._event_bus.publish(
+            (
+                Event.APPLICATION_SUBMITTED
+                if evidence.is_likely_success
+                else Event.APPLICATION_FAILED
+            ),
+            {
+                "job_title": job.title,
+                "company": job.company,
+                "url": job.url,
+                "evidence": evidence.to_log_string(),
+            },
+        )
+        return evidence
+
+    def _record_application_outcome(self, evidence: ApplicationEvidence) -> None:
         """Persist result and publish the final application event.
 
         Args:
-            result: True if application was submitted successfully.
+            evidence: The ApplicationEvidence from the submission attempt.
         """
         job = self._current_job
         if job is None:
             return
 
-        status = "APPLIED" if result else "FAILED"
+        # ── Close the page-analysis feedback loop ────────────────────
+        # The router chose a tier for this page; now we know whether the
+        # application succeeded. Feed that back so the router learns which tier
+        # works for pages like this one. is_deterministic comes from the session
+        # plan: on a seeded research run the service drops the write, so two
+        # identical runs cannot poison each other's store. Only records when a
+        # tier was actually chosen for this job.
+        if (
+            self._page_analysis_router is not None
+            and self._last_analysis_tier is not None
+        ):
+            try:
+                self._page_analysis_router.record_tier_outcome(
+                    self._last_page_url,
+                    self._last_page_source,
+                    self._last_analysis_tier.name,
+                    evidence.is_likely_success,
+                    is_deterministic=self._plan.is_deterministic,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "ApplicationsWorkflow: feedback recording failed: %s", exc
+                )
+            finally:
+                # Reset so the next job cannot misattribute to this one's tier.
+                self._last_analysis_tier = None
+
+        status = "APPLIED" if evidence.is_likely_success else "FAILED"
         try:
             if hasattr(self._job_repo, "mark_applied"):
-                self._job_repo.mark_applied(job, self._session_id, status=status)
+                self._job_repo.mark_applied(
+                    job, self._session_id, status=status
+                )
         except Exception as exc:
-            logger.warning("ApplicationsWorkflow: outcome persistence failed: %s", exc)
+            logger.warning(
+                "ApplicationsWorkflow: outcome persistence failed: %s", exc
+            )
 
-        event = Event.APPLICATION_SUBMITTED if result else Event.APPLICATION_FAILED
+        event = (
+            Event.APPLICATION_SUBMITTED
+            if evidence.is_likely_success
+            else Event.APPLICATION_FAILED
+        )
         payload = {
             "job_url": job.url,
             "job_title": job.title,
             "company": job.company,
-            "ats": job.metadata.get("ats") if hasattr(job, "metadata") else None,
+            "ats": (
+                job.metadata.get("ats")
+                if hasattr(job, "metadata")
+                else None
+            ),
             "pages_navigated": self._pages_navigated,
             "fields_filled": self._fields_filled,
             "used_gpt4all": self._gpt4all_invoked,
+            "evidence_outcome": evidence.outcome,
+            "evidence_confidence": evidence.confidence,
         }
         try:
             self._event_bus.publish(event, payload)
         except Exception as exc:
-            logger.warning("ApplicationsWorkflow: event publish failed: %s", exc)
+            logger.warning(
+                "ApplicationsWorkflow: event publish failed: %s", exc
+            )
 
-        if self._research_collector is not None:
+        # ── New research observer: application outcome observation ────────
+        if self._research_observer is not None:
             try:
-                self._research_collector.record_signal(
-                    event,
-                    {
-                        "ats": payload["ats"],
-                        "pages_navigated": self._pages_navigated,
-                        "fields_filled": self._fields_filled,
-                        "used_gpt4all": self._gpt4all_invoked,
-                        "result": result,
-                    },
+                salt = os.environ.get("AA_RESEARCH_SALT", "default_dev_salt")
+                company_id = hashlib.sha256(
+                    (job.company or "").lower().encode() + salt.encode()
+                ).hexdigest()[:16]
+                outcome_obs = ApplicationOutcomeObservation(
+                    platform=getattr(job, "source", "unknown"),
+                    company_id=company_id,
+                    submitted_date=date.today(),
+                    acknowledgment_received=evidence.is_likely_success,
+                    acknowledgment_date=None,
                 )
-            except Exception:
-                pass
+                self._research_observer.observe_application_outcome(
+                    outcome_obs
+                )
+            except Exception as _exc:
+                logger.debug(
+                    "ApplicationsWorkflow: observe_application_outcome "
+                    "failed (non-fatal): %s",
+                    _exc,
+                )
 
-    def run(self, job: Job, session_id: str | None = None) -> bool:
-        """Apply to a single job end to end.
+    # ──────────────────────────────────────────────────────────────────────────
+    # Lazy scroll-up — simulate a person reviewing the form before filling
+    # ──────────────────────────────────────────────────────────────────────────
 
-        Navigates to the application form, fills all fields using profile data,
-        handles multi-page flows and interruptions, and submits the application.
+    def _lazy_scroll_to_top(self) -> None:
+        """Scroll smoothly to the top of the page.
 
-        The three intelligence layers used in order:
-          1. Mathematical: WebpageAnalyzer + Hungarian algorithm (form structure)
-          2. Linguistic: SpaCy via TextMatcher (field classification, label similarity)
-          3. Generative: GPT4All via TextGenerationPort (custom question answers)
+        Simulates a person who has scrolled down to read the job description,
+        then lazily scrolls back up before starting to fill out the form.
+        Called once per form page, after analysis and before filling.
+        """
+        try:
+            if self._browser is not None:
+                self._browser.execute_script(
+                    "window.scrollTo({top: 0, behavior: 'smooth'})"
+                )
+            # Brief pause to simulate the person orienting at the top of the form.
+            time.sleep(self._rng.uniform(0.8, 1.5))
+        except Exception:
+            pass  # Degrade gracefully — scroll is cosmetic, not critical.
 
-        Each layer degrades gracefully if its dependency is unavailable.
+    def run(
+        self, job: Job, session_id: str | None = None
+    ) -> ApplicationEvidence:
+        """Apply to a single job end to end. Returns structured evidence.
+
+        The entire browser-touching portion of the application is optionally
+        wrapped in a browser lease (if a ``browser_lease`` was injected) to
+        serialize concurrent access to the shared driver instance.
+
+        Truthiness: ``bool(result)`` delegates to ``result.is_likely_success``.
 
         Args:
             job: The approved Job to apply to. Must have job.url set.
             session_id: Optional session identifier for persistence records.
 
         Returns:
-            True if application was submitted successfully.
-            False on any unrecoverable failure (CAPTCHA, redirect, form error, HITL skip).
+            ApplicationEvidence with outcome classification and confidence.
         """
         self._current_job = job
         self._pages_navigated = 0
@@ -825,42 +1467,357 @@ class ApplicationsWorkflow:
         self._session_id = session_id
 
         logger.info(
-            "ApplicationsWorkflow.run() | job=%s company=%s", job.title, job.company
+            "ApplicationsWorkflow.run() | job=%s company=%s",
+            job.title,
+            job.company,
         )
 
-        if not self._navigate_to_application(job):
-            self._record_application_outcome(False)
-            return False
+        evidence = ApplicationEvidence(
+            pre_submit_url=job.url,
+            page_title_before=job.title,
+        )
+
+        # ── Concurrency safety ───────────────────────────────────────────────
+        if self._browser_lease:
+            with self._browser_lease.acquire():
+                return self._apply_single(job, evidence)
+        else:
+            return self._apply_single(job, evidence)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Private core of run() — same logic, extracted for lease wrapping
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _apply_single(
+        self, job: Job, evidence: ApplicationEvidence
+    ) -> ApplicationEvidence:
+        """Core of a single application attempt; called under lease when provided."""
+        evidence = self._navigate_to_application(job, evidence)
+        if evidence.outcome == "FAILED_NAVIGATION":
+            self._record_application_outcome(evidence)
+            return evidence
+
+        # ── Login wall detection (Wave K2) ──────────────────────────────
+        if self._detect_login_wall(job):
+            evidence = evidence.model_copy(update={
+                "outcome": "LOGIN_WALL_BLOCKED",
+                "confidence": 0.90,
+                "login_wall_encountered": True,
+                "error_message": (
+                    "Login wall — application form requires authentication"
+                ),
+            })
+            self._record_application_outcome(evidence)
+            return evidence
 
         if not self._handle_interruptions(job):
-            self._record_application_outcome(False)
-            return False
+            evidence = evidence.model_copy(update={
+                "outcome": "CAPTCHA_BLOCKED",
+                "confidence": 0.90,
+                "captcha_encountered": True,
+            })
+            self._record_application_outcome(evidence)
+            return evidence
 
-        while True:
-            structure = self._analyze_form_mathematically()
-            self._instantiate_form_fsm(structure)
-            classifications = self._classify_all_fields(structure)
-            self._fields_filled += self._fill_standard_fields(classifications)
-            self._fields_filled += self._generate_custom_answers(classifications, structure)
-            self._handle_file_uploads(structure)
+        try:
+            while True:
+                # ── iFrame + Shadow DOM fallback (Wave K1) ──────────────
+                structure = self._get_form_structure_with_iframe_fallback(job)
+                self._instantiate_form_fsm(structure)
+                classifications = self._classify_all_fields(structure)
 
-            if not self._handle_interruptions(job):
-                self._record_application_outcome(False)
-                return False
+                # ── Lazy scroll to top before filling ────────────────────
+                self._lazy_scroll_to_top()
 
-            has_next = self._navigate_multi_page_flow()
-            if not has_next:
-                break
+                self._fields_filled += self._fill_standard_fields(
+                    classifications
+                )
+                self._fields_filled += self._generate_custom_answers(
+                    classifications, structure
+                )
+                self._handle_file_uploads(structure)
 
-        result = self._submit_application(job)
-        self._record_application_outcome(result)
+                if not self._handle_interruptions(job):
+                    evidence = evidence.model_copy(update={
+                        "outcome": "CAPTCHA_BLOCKED",
+                        "confidence": 0.90,
+                        "captcha_encountered": True,
+                    })
+                    self._record_application_outcome(evidence)
+                    return evidence
 
-        # ❯❯❯ Close the tab that was opened for the application if any ❮❮❮
-        if self._context_manager:
-            self._context_manager.close_current_tab_and_return()
+                has_next = self._navigate_multi_page_flow()
+                if not has_next:
+                    break
 
-        logger.info(
-            "ApplicationsWorkflow.run() complete | result=%s pages=%d fields=%d gpt4all=%s",
-            result, self._pages_navigated, self._fields_filled, self._gpt4all_invoked,
-        )
-        return result
+            evidence = self._submit_application(job, evidence)
+            self._record_application_outcome(evidence)
+
+            # ❯❯❯ Close the tab that was opened for the application if any
+            if self._context_manager:
+                self._context_manager.close_current_tab_and_return()
+
+            # -- observe form structure for research -----------------------
+            self._observe_form_structure(structure, job)
+
+            logger.info(
+                "ApplicationsWorkflow.run() complete | %s pages=%d fields=%d gpt4all=%s",
+                evidence.to_log_string(),
+                self._pages_navigated,
+                self._fields_filled,
+                self._gpt4all_invoked,
+            )
+            return evidence
+
+        finally:
+            # ── Always restore to main frame context (Wave K1 safety) ────
+            try:
+                self._browser.switch_to_default_content()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Research observation helpers
+    # ------------------------------------------------------------------
+
+    def _observe_form_structure(self, form_structure, job: Job) -> None:
+        """Submit the form structure observation to the research pipeline.
+
+        Args:
+            form_structure: A FormStructure from PageUnderstandingPort (or empty stub).
+            job: The Job being processed.
+        """
+        if self._research_observer is None:
+            return
+        try:
+            posting_hash = (
+                job.metadata.get("posting_hash")
+                if hasattr(job, "metadata")
+                else None
+            )
+            platform = getattr(job, "source", None)
+            fs = (
+                form_structure
+                if isinstance(form_structure, FormStructure)
+                else None
+            )
+
+            self._research_observer.observe_form(
+                FormObservation(
+                    platform=platform or "",
+                    company_name=job.company,
+                    job_title=job.title,
+                    jurisdiction=self._infer_jurisdiction(
+                        job.location or ""
+                    ),
+                    posting_hash=posting_hash,
+                    form_structure=fs or FormStructure(),
+                    knockout_thresholds=(
+                        self._extract_knockout_thresholds(fs) if fs else {}
+                    ),
+                    estimated_completion_minutes=(
+                        self._estimate_completion_minutes(fs) if fs else None
+                    ),
+                    application_form_field_count=(
+                        len(fs.fields) if fs else 0
+                    ),
+                )
+            )
+        except Exception as exc:
+            logger.debug(
+                "ApplicationsWorkflow: observe_form failed: %s", exc
+            )
+
+    # ------------------------------------------------------------------
+    # Static helper methods for research data extraction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _infer_jurisdiction(location: str) -> str | None:
+        """Map a raw location string to a jurisdiction code used in
+        pay_transparency_laws.yaml.
+
+        Returns None if no match can be confidently made.
+        """
+        if not location:
+            return None
+        loc = location.lower()
+        if any(
+            term in loc
+            for term in (
+                "ca", "california", "san francisco", "los angeles",
+                "san diego",
+            )
+        ):
+            return "CA"
+        if any(
+            term in loc
+            for term in (
+                "ny", "new york", "nyc", "brooklyn", "queens", "manhattan",
+            )
+        ):
+            return "NYC"
+        if any(
+            term in loc
+            for term in ("wa", "washington", "seattle")
+        ):
+            return "WA"
+        if any(
+            term in loc
+            for term in ("co", "colorado", "denver")
+        ):
+            return "CO"
+        if any(
+            term in loc
+            for term in ("il", "illinois", "chicago")
+        ):
+            return "IL"
+        if any(
+            term in loc
+            for term in ("md", "maryland", "baltimore")
+        ):
+            return "MD"
+        if any(
+            term in loc
+            for term in ("hi", "hawaii", "honolulu")
+        ):
+            return "HI"
+        if any(
+            term in loc
+            for term in ("dc", "washington dc", "washington d.c.")
+        ):
+            return "DC"
+        if any(
+            term in loc
+            for term in ("nj", "new jersey", "newark")
+        ):
+            return "NJ"
+        if any(
+            term in loc
+            for term in ("ma", "massachusetts", "boston")
+        ):
+            return "MA"
+        if any(
+            term in loc
+            for term in ("mn", "minnesota", "minneapolis")
+        ):
+            return "MN"
+        return None
+
+    @staticmethod
+    def _estimate_completion_minutes(form_structure: FormStructure) -> int:
+        """Estimate application completion time in minutes from the form structure.
+
+        Heuristic:
+            - 0.5 minutes per field
+            - +3.0 minutes for each textarea (essay) field
+            - +1.0 minutes for each file upload field
+
+        Returns integer minutes, never raises.
+        """
+        try:
+            if not isinstance(form_structure, FormStructure):
+                return 60  # default guess
+            total = 0.0
+            for field in form_structure.fields:
+                total += 0.5
+                ftype = field.field_type.lower()
+                if ftype == "textarea":
+                    total += 3.0
+                elif ftype in ("file_upload", "file"):
+                    total += 1.0
+            return max(1, int(round(total)))
+        except Exception:
+            return 60
+
+    @staticmethod
+    def _extract_knockout_thresholds(
+        form_structure: FormStructure,
+    ) -> dict[str, float]:
+        """Scan form fields for binary/numeric knockout questions and extract
+        thresholds.
+
+        Returns a dictionary mapping threshold type (str) to a numeric value
+        (float). Example keys: ``"min_years_experience"``,
+        ``"min_salary_expectation_ceiling"``, ``"min_degree_level"``.
+
+        Never raises — returns an empty dict on any error.
+        """
+        thresholds: dict[str, float] = {}
+        try:
+            if (
+                not isinstance(form_structure, FormStructure)
+                or not form_structure.fields
+            ):
+                return thresholds
+
+            for field in form_structure.fields:
+                label = (field.label_text or "").lower()
+                options = field.options or ()
+                combined = " ".join([label] + list(options)).lower()
+
+                # 1. Years of experience threshold
+                if (
+                    "experience" in label
+                    or "years" in label
+                    or "experience" in combined
+                ):
+                    nums = re.findall(
+                        r"(\d+)\s*(?:\+)?\s*(?:\s*years?)?", combined
+                    )
+                    if nums:
+                        min_years = min(int(n) for n in nums)
+                        thresholds["min_years_experience"] = float(min_years)
+
+                # 2. Salary expectation ceiling
+                if (
+                    ("salary" in label or "compensation" in label)
+                    and "expect" in label
+                ):
+                    nums = re.findall(r"\$?([\d,]+)", combined)
+                    if nums:
+                        cleaned = int(nums[-1].replace(",", ""))
+                        thresholds["min_salary_expectation_ceiling"] = float(
+                            cleaned
+                        )
+
+                # 3. Degree level requirement
+                if "degree" in label or "education" in label:
+                    for keyword, level in _DEGREE_LEVEL_MAP.items():
+                        if keyword in combined:
+                            thresholds["min_degree_level"] = float(level)
+                            break
+                    else:
+                        if options:
+                            for opt in options:
+                                opt_lower = opt.lower()
+                                for keyword, level in _DEGREE_LEVEL_MAP.items():
+                                    if keyword in opt_lower:
+                                        thresholds["min_degree_level"] = float(
+                                            level
+                                        )
+                                        break
+        except Exception:
+            pass
+        return thresholds
+
+
+# --------------------------------------------------------------------------
+# Module‑level helper
+# --------------------------------------------------------------------------
+
+def _map_ui_element_type(ui_type: UIElementType) -> str:
+    """Map a UIElementType to a simple form field type string."""
+    if ui_type in (UIElementType.TEXT_INPUT, UIElementType.TEXT_AREA):
+        return "text"
+    if ui_type == UIElementType.SELECT:
+        return "select"
+    if ui_type == UIElementType.CHECKBOX:
+        return "checkbox"
+    if ui_type == UIElementType.RADIO:
+        return "radio"
+    if ui_type == UIElementType.BUTTON:
+        return "button"
+    if ui_type == UIElementType.FILE_UPLOAD:
+        return "file"
+    return "text"

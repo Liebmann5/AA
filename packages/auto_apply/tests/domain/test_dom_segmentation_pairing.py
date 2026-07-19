@@ -18,12 +18,12 @@ def test_input_gets_nearest_label_under_matrix_padding():
     far = DOMNode(tag="label", text="Phone", geometry=Geometry(0, 500, 50, 20), depth=2)
     inp = DOMNode(
         tag="input",
-        attributes={"name": "email"},
+        attributes=(("name", "email"),),
         geometry=Geometry(60, 0, 100, 20),
         depth=2,
     )
     # 1 input × 2 labels → non-square → exercises the square padding.
-    context = DOMNode(tag="form", depth=1, children=[near, inp, far])
+    context = DOMNode(tag="form", depth=1, children=(near, inp, far))
 
     fields = svc._pair_labels_to_inputs([inp], context)
 
@@ -39,15 +39,15 @@ def test_more_inputs_than_labels_still_labels_the_closest():
 
     label = DOMNode(tag="label", text="Email", geometry=Geometry(0, 0, 50, 20), depth=2)
     close_input = DOMNode(
-        tag="input", attributes={"name": "email"},
+        tag="input", attributes=(("name", "email"),),
         geometry=Geometry(60, 0, 100, 20), depth=2,
     )
     far_input = DOMNode(
-        tag="input", attributes={"name": "other"},
+        tag="input", attributes=(("name", "other"),),
         geometry=Geometry(60, 800, 100, 20), depth=2,
     )
     # 2 inputs × 1 label → dummy column; the closer input should win the label.
-    context = DOMNode(tag="form", depth=1, children=[label, close_input, far_input])
+    context = DOMNode(tag="form", depth=1, children=(label, close_input, far_input))
 
     fields = svc._pair_labels_to_inputs([close_input, far_input], context)
 
@@ -58,10 +58,10 @@ def test_more_inputs_than_labels_still_labels_the_closest():
 # ── _is_descendant: uses the cached parent map (no per-call O(n²) rebuild) ─────
 
 def _tree():
-    grandchild = DOMNode(tag="input", attributes={"name": "q"}, depth=2)
-    child_a = DOMNode(tag="div", depth=1, children=[grandchild])
+    grandchild = DOMNode(tag="input", attributes=(("name", "q"),), depth=2)
+    child_a = DOMNode(tag="div", depth=1, children=(grandchild,))
     child_b = DOMNode(tag="span", text="x", depth=1)
-    root = DOMNode(tag="div", depth=0, children=[child_a, child_b])
+    root = DOMNode(tag="div", depth=0, children=(child_a, child_b))
     return root, child_a, child_b, grandchild
 
 

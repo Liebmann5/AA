@@ -40,6 +40,7 @@ Thread Safety:
 import logging
 from typing import Any, Callable
 
+from auto_apply.domain.exceptions import ConfigurationError
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.infrastructure.driver_registry import DriverRegistry
 from auto_apply.infrastructure.registry import CapabilitiesRegistry
@@ -185,6 +186,13 @@ class BrowserCascade:
             self._attempt_log.append((browser, True, None))
             return resilient
 
+        except ConfigurationError:
+            # A privacy/config misconfiguration must not be masked as a browser
+            # failure and must not fall through to the next candidate — every
+            # candidate would hit the same misconfig, and silently launching
+            # direct is the failure we are preventing. Surface it.
+            raise
+
         except Exception as exc:
             if raw_driver is not None:
                 provider.cleanup(raw_driver)
@@ -202,11 +210,29 @@ class BrowserCascade:
         profile = self._registry.get_active_profile()
         resources = self._registry.get_runtime_profile()
         app_config = getattr(profile, "app_config", None)
+
+        # Proxy: opt-in and fail-closed. If the user asked to route through a
+        # proxy (use_proxies) but none is configured, launching direct would
+        # present as protected while exposing their traffic — the exact failure
+        # a privacy toggle must never have. Refuse to launch instead. This raises
+        # ConfigurationError, which the cascade re-raises rather than swallowing,
+        # so the user sees the real cause instead of "all browsers failed".
+        use_proxies = bool(getattr(app_config, "use_proxies", False))
+        proxy_server = getattr(app_config, "proxy_server", None)
+        if use_proxies and not proxy_server:
+            raise ConfigurationError(
+                "use_proxies is enabled but no proxy_server is configured. "
+                "Refusing to launch a direct connection, which would expose "
+                "traffic the user asked to route through a proxy. Set "
+                "proxy_server, or turn off use_proxies."
+            )
+        proxy = proxy_server if use_proxies else None
+
         return {
             "browser_type": browser_type,
             "headless": resources.headless,
             "use_undetected_chromedriver": resources.use_stealth_driver,
-            "proxy": getattr(app_config, "proxy_server", None),
+            "proxy": proxy,
             "width": 1920,
             "height": 1080,
             "rotate_user_agent": bool(getattr(app_config, "rotate_user_agent", False)),

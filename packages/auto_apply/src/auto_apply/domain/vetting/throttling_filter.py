@@ -5,7 +5,7 @@ is currently in a 'Cooldown' period.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import UserProfile
@@ -17,18 +17,26 @@ logger = logging.getLogger(__name__)
 class ThrottlingFilter:
     """Gatekeeper that enforces application limits and cooldown periods."""
 
-    DEFAULT_COOLDOWN_DAYS: int = 180
     MAX_APPLICATIONS_PER_COMPANY: int = 3
 
-    def __init__(self, profile: UserProfile, job_repo: JobRepositoryPort) -> None:
+    def __init__(
+        self,
+        profile: UserProfile,
+        job_repo: JobRepositoryPort,
+        *,
+        cooldown_days_default: int,
+    ) -> None:
         """Initializes the filter.
 
         Args:
             profile: User settings containing default preferences.
             job_repo: Port for querying persisted application history.
+            cooldown_days_default: System cooldown used when higher authorities
+                do not provide a value.
         """
         self._profile = profile
         self._job_repo = job_repo
+        self._cooldown_days_default = cooldown_days_default
         self._daily_limit: int = getattr(
             getattr(profile, "app_config", None),
             "daily_application_limit",
@@ -64,7 +72,7 @@ class ThrottlingFilter:
             return True, "No previous history"
 
         cooldown_days = self._calculate_cooldown_authority(company_name)
-        days_since = (datetime.utcnow() - last_applied_date).days
+        days_since = (datetime.now(timezone.utc) - last_applied_date).days
 
         if days_since < cooldown_days:
             remaining = cooldown_days - days_since
@@ -86,12 +94,15 @@ class ThrottlingFilter:
             The effective cooldown period in days.
         """
         company_mandate = self._job_repo.get_company_mandate_cooldown(company_name)
-        user_pref = getattr(
-            getattr(self._profile, "application_preferences", None),
-            "cooldown_days",
-            0,
-        )
-        return max(company_mandate, user_pref, self.DEFAULT_COOLDOWN_DAYS)
+        if company_mandate:
+            return int(company_mandate)
+
+        preferences = getattr(self._profile, "application_preferences", None)
+        user_pref = getattr(preferences, "cooldown_days", None)
+        if user_pref is not None:
+            return int(user_pref)
+
+        return self._cooldown_days_default
 
     def check(self, job: Job) -> tuple[bool, str]:
         """Preferred API alias for filter() — called by VettingWorkflow."""

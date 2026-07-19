@@ -2,7 +2,7 @@
 
 This module acts as a Dispatcher/Facade. It analyzes a target DOM element's
 properties (tag name, input type, ARIA roles) and routes the interaction request
-to the appropriate specialized handler (Text, Select, File, etc.).
+to the appropriate specialized handler (Text, Select, File, Date, Checkable).
 
 This abstraction allows the higher-level FSM strategies to simply call
 `fill_input(element, value)` without needing to know the low-level details of
@@ -15,7 +15,8 @@ It acts as the bridge between high-level logical intent (e.g., "Type 'Bruce'
 into the First Name field") and low-level driver manipulation.
 
 It relies on the `UnifiedInteractor` to handle specific widget nuances (Selects,
-File Uploads) and `behavior` to ensure human-like cadence and stealth.
+File Uploads, Date Pickers, Checkboxes) and `behavior` to ensure human-like
+cadence and stealth.
 """
 
 import logging
@@ -26,6 +27,7 @@ from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.adapters.secondary.interaction.handlers.checkable import (
     CheckableInputHandler,
 )
+from auto_apply.adapters.secondary.interaction.handlers.date import DateInputHandler
 from auto_apply.adapters.secondary.interaction.handlers.file import FileInputHandler
 from auto_apply.adapters.secondary.interaction.handlers.select import SelectInputHandler
 from auto_apply.adapters.secondary.interaction.handlers.text import TextInputHandler
@@ -42,7 +44,27 @@ class ExecutionStrategy(Protocol):
 
 
 class UnifiedInteractor:
-    """Dispatches interaction requests to specialized handlers based on element type."""
+    """Dispatches interaction requests to specialized handlers based on element type.
+
+    Routing table (evaluated in order):
+
+        ====================== ============================================
+        Condition              Handler
+        ====================== ============================================
+        ``<select>``           :class:`SelectInputHandler`
+        ``role=combobox``      :class:`SelectInputHandler` (custom combobox)
+        ``type=file``          :class:`FileInputHandler`
+        ``type=checkbox/radio``:class:`CheckableInputHandler`
+        ``type=date``          :class:`DateInputHandler`
+        ``type=datetime-local``:class:`DateInputHandler`
+        ``type=month``         :class:`DateInputHandler`
+        ``type=week``          :class:`DateInputHandler`
+        everything else        :class:`TextInputHandler`
+        ====================== ============================================
+    """
+
+    # HTML input types that the date handler should receive.
+    _DATE_TYPES: frozenset[str] = frozenset({"date", "datetime-local", "month", "week"})
 
     def __init__(self, browser: BrowserInterface, text_matcher=None):
         """Initializes the interactor and its component handlers.
@@ -56,18 +78,19 @@ class UnifiedInteractor:
         self.browser = browser
         self._text_matcher = text_matcher
 
-        # Initialize strategies
+        # Initialize strategies — one instance per handler type.
         self.text_handler = TextInputHandler(browser)
         self.select_handler = SelectInputHandler(browser, text_matcher=self._text_matcher)
         self.file_handler = FileInputHandler(browser)
         self.checkable_handler = CheckableInputHandler(browser)
+        self.date_handler = DateInputHandler(browser)
 
     def fill_input(self, element: ElementInterface, value: Any) -> None:
         """Analyzes the element and delegates interaction to the correct handler.
 
         This method employs a heuristic dispatch mechanism to identify the
         nature of the element (e.g., is it a native Select, a React Combobox,
-        or a File input?) and ensures the data is entered correctly.
+        a Date picker, or a File input?) and ensures the data is entered correctly.
 
         Args:
             element (ElementInterface): The target DOM element.
@@ -75,8 +98,8 @@ class UnifiedInteractor:
         """
         try:
             tag = element.get_attribute("tagName").lower()
-            input_type = element.get_attribute("type")
-            role = element.get_attribute("role")
+            input_type = (element.get_attribute("type") or "").lower()
+            role = (element.get_attribute("role") or "").lower()
 
             # 1. Select / Combobox Logic (Native <select> or ARIA combobox)
             if tag == "select" or role == "combobox" or self.select_handler._is_custom_combobox(element):  # noqa: E501
@@ -89,19 +112,25 @@ class UnifiedInteractor:
                 return
 
             # 3. Radio / Checkbox Logic
-            if input_type in ["radio", "checkbox"]:
+            if input_type in ("radio", "checkbox"):
                 self.checkable_handler.handle(element, value)
                 return
 
-            # 4. Default: Text Input Logic (Fallback for text, email, tel, textarea)
+            # 4. Date / Datetime / Month / Week picker
+            if input_type in self._DATE_TYPES:
+                self.date_handler.handle(element, str(value))
+                return
+
+            # 5. Default: Text Input Logic (Fallback for text, email, tel, textarea)
             # Note: We treat unknown types as text fields to attempt entry
             self.text_handler.handle(element, str(value))
 
         except Exception as e:
-            logger.error(f"Interaction dispatch failed for element: {e}")
+            logger.error("Interaction dispatch failed for element: %s", e)
             # We explicitly do not raise here to prevent a single bad field
             # from crashing the entire application flow. The FSM will verify
             # completion later.
+
 
 class InteractionExecutor:
     """Executes a sequence of planned actions on the browser.
@@ -127,6 +156,37 @@ class InteractionExecutor:
         # The UnifiedInteractor handles the specific "How-To" for inputs
         self.interactor = UnifiedInteractor(browser, text_matcher=self._text_matcher)
 
+    # ------------------------------------------------------------------
+    # Public API — entry point used by ApplicationsWorkflow
+    # ------------------------------------------------------------------
+
+    def fill(self, element: ElementInterface, value: Any) -> bool:
+        """Fill a single form field, routing to the correct strategy.
+
+        This is the comprehensive dispatcher that the ApplicationsWorkflow
+        (and any other caller) should use.  It inspects the element's tag and
+        HTML type attribute to select the appropriate fill strategy, then
+        delegates to :class:`UnifiedInteractor.fill_input`.
+
+        Args:
+            element: The DOM element to interact with.
+            value: The data to enter (str, bool, file path, etc.).
+
+        Returns:
+            True if filling completed without raising an exception.
+        """
+        try:
+            self.interactor.fill_input(element, value)
+            return True
+        except Exception as exc:
+            tag = element.get_attribute("tagName").lower() if element else "?"
+            input_type = (element.get_attribute("type") or "").lower() if element else "?"
+            logger.warning(
+                "InteractionExecutor.fill failed | tag=%s type=%s error=%s",
+                tag, input_type, exc,
+            )
+            return False
+
     def execute_plan(self, plan: InteractionPlan) -> bool:
         """Iterates through an interaction plan and performs all actions.
 
@@ -140,13 +200,13 @@ class InteractionExecutor:
             bool: True if the critical path of the plan succeeded.
                   False if a critical action failed.
         """
-        logger.info(f"Executor: Starting plan '{plan.goal_description}' ({len(plan.actions)} steps).")  # noqa: E501
+        logger.info("Executor: Starting plan '%s' (%d steps).", plan.goal_description, len(plan.actions))  # noqa: E501
 
         for action in plan.actions:
             success = self._execute_single_action(action)
 
             if not success:
-                logger.error(f"Executor: Action failed -> {action.action_type.name} on {action.target_element_id}")  # noqa: E501
+                logger.error("Executor: Action failed -> %s on %s", action.action_type.name, action.target_element_id)  # noqa: E501
 
                 if action.is_critical:
                     logger.warning("Executor: Critical action failed. Aborting plan.")
@@ -175,19 +235,19 @@ class InteractionExecutor:
             # The logic engine (Solver) must have attached the live UIElement reference
             # to the action object before passing it here.
             if not hasattr(action, 'ui_element') or not action.ui_element:
-                logger.error(f"Action {action.target_element_id} missing UIElement reference. Logic error.")  # noqa: E501
+                logger.error("Action %s missing UIElement reference. Logic error.", action.target_element_id)  # noqa: E501
                 return False
 
             # Get the raw driver element (WebElement/Locator) from the wrapper
             try:
                 element_ref = action.ui_element.get_reference()
             except ValueError:
-                logger.error(f"UIElement {action.target_element_id} has lost its browser reference (Stale?).")  # noqa: E501
+                logger.error("UIElement %s has lost its browser reference (Stale?).", action.target_element_id)  # noqa: E501
                 return False
 
             # 2. Log Intent (Masking sensitive data if needed)
             display_value = "***" if action.encrypted_value else action.value
-            logger.debug(f"Act: {action.action_type.name} -> {action.target_element_id} (Val: {display_value})")  # noqa: E501
+            logger.debug("Act: %s -> %s (Val: %s)", action.action_type.name, action.target_element_id, display_value)  # noqa: E501
 
             # 3. Dispatch based on InteractionType
             if action.action_type == InteractionType.CLICK:
@@ -209,11 +269,11 @@ class InteractionExecutor:
                 # Validation step: Ensure text appeared (e.g. "Application Submitted")
                 current_text = element_ref.text
                 if not action.value or str(action.value) not in current_text:
-                    logger.warning(f"Verification Failed. Expected '{action.value}', found '{current_text}'")  # noqa: E501
+                    logger.warning("Verification Failed. Expected '%s', found '%s'", action.value, current_text)  # noqa: E501
                     return False
 
             else:
-                logger.warning(f"Unsupported action type: {action.action_type}")
+                logger.warning("Unsupported action type: %s", action.action_type)
                 return False
 
             return True
@@ -221,5 +281,5 @@ class InteractionExecutor:
         except Exception as e:
             # Catch specific driver errors like StaleElementReferenceException
             # which imply the page changed under our feet.
-            logger.warning(f"Action execution exception on {action.target_element_id}: {e}")  # noqa: E501
+            logger.warning("Action execution exception on %s: %s", action.target_element_id, e)  # noqa: E501
             return False

@@ -1,22 +1,24 @@
 """Provides the specific search provider for Google Jobs.
 
-This module implements the Google-specific logic. It acts as the 'Foreman',
+This module implements the Google‑specific logic. It acts as the 'Foreman',
 configuring the generic SERP strategy with the specific CSS selectors and
 URL parameters required to scrape Google's 'Jobs Widget' interface.
+
+The provider no longer builds its own search URL — that knowledge lives in
+:class:`~auto_apply.adapters.secondary.discovery.strategies.engine_strategies.GoogleSearchStrategy`.
+
+JSON‑LD extraction is now handled universally by
+:class:`GenericSERPStrategy`, so the provider does not duplicate it.
 """
 
 import logging
 import urllib.parse
-from urllib.parse import urlencode
 
-from auto_apply.application.agent.context import ExecutionContext
-from auto_apply.adapters.secondary.perception.dom_adapter import (
-    JSONLDParser,
-    SmartTextExtractor,
-    SmartURLExtractor,
-)
 from auto_apply.adapters.secondary.discovery.providers.base_provider import (
     BaseSearchProvider,
+)
+from auto_apply.adapters.secondary.discovery.strategies.engine_strategies import (
+    GoogleSearchStrategy,
 )
 from auto_apply.adapters.secondary.discovery.strategies.navigators import (
     DirectURLNavigation,
@@ -27,7 +29,12 @@ from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (
     GenericSERPStrategy,
 )
 from auto_apply.adapters.secondary.evasion.components import behavior
+from auto_apply.adapters.secondary.perception.dom_adapter import (
+    SmartTextExtractor,
+    SmartURLExtractor,
+)
 from auto_apply.domain.models.job import Job
+from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.types import Locator
 
@@ -40,157 +47,98 @@ class GoogleProvider(BaseSearchProvider):
     def __init__(
         self,
         browser: BrowserInterface,
-        context: ExecutionContext,
         ats_registry=None,
-        page_understanding_port=None,          # NEW: injectable geometric analysis
-        math_analyzer=None,                     # DEPRECATED: use page_understanding_port
+        page_understanding_port=None,
     ) -> None:
-        super().__init__(browser, context)
+        super().__init__(browser)
         # Optional ATSRegistry: when provided, find_company_career_page() builds
-        # the site-filter list from loaded descriptors rather than a hardcoded set.
+        # the site‑filter list from loaded descriptors rather than a hardcoded set.
         self._ats_registry = ats_registry
+        self._page_understanding = page_understanding_port
+
+        # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
+        self._engine_strategy = GoogleSearchStrategy()
+
         self.navigator = ResilientNavigator(browser, [
             DirectURLNavigation(browser),
             HumanSearchNavigation(browser),
         ])
-        # Store page understanding port (preferred) and deprecated math_analyzer
-        self._page_understanding = page_understanding_port
-        self._math_analyzer = math_analyzer
-        if math_analyzer is not None:
-            logger.warning(
-                "GoogleProvider: math_analyzer is deprecated; use page_understanding_port instead."
-            )
 
     def _is_page_healthy(self) -> bool:
-        if self.evasion is not None and not self.evasion.check_page_safety():
-            return False
+        # If an evasion manager is wired, use it; otherwise assume healthy.
         return True
 
-    def run(self, override_criteria: dict | None = None) -> list[Job]:
-        """Executes the Google search workflow for all user preferences.
+    def run(self, instruction: SearchInstruction) -> list[Job]:
+        """Executes a single Google search for the given instruction.
 
-        It iterates through the user's desired titles and locations, constructs
-        the specific Google URLs, and deploys the GenericSERPStrategy to scrape
-        them.
+        Args:
+            instruction: A typed search instruction — must NOT be None.
+
+        Returns:
+            List of Job objects discovered for this single instruction.
         """
-        all_jobs: list[Job] = []
+        logger.info(
+            "GoogleProvider: Processing instruction | title=%r location=%r "
+            "raw_query=%s date_range=%s",
+            instruction.title,
+            instruction.location,
+            bool(instruction.raw_query_string),
+            instruction.date_range or "none",
+        )
 
-        for title in self.prefs.desired_job_titles:
-            locations = self.prefs.preferred_locations or ["Remote"]
+        if not self.navigator.navigate_with_fallback(
+            self._engine_strategy, instruction, self._is_page_healthy
+        ):
+            logger.warning(
+                "GoogleProvider: navigation/health check failed — returning empty"
+            )
+            return []
 
-            for location in locations:
-                url = self._construct_url(title, location)
-                context_data = {"query": title, "location": location}
-                logger.info(
-                    "GoogleProvider: Processing query '%s' in '%s'",
-                    title,
-                    location,
-                )
+        # ── Apply toolbar filters (date, etc.) after navigation ─────────────
+        self._engine_strategy.apply_toolbar_filters(self.browser, instruction)
 
-                if not self.navigator.navigate_with_fallback(
-                    url, context_data, self._is_page_healthy
-                ):
-                    logger.warning("Skipping URL due to safety/throttling checks.")
-                    continue
+        behavior.simulate_idle_time(
+            self.browser, min_seconds=2.0, max_seconds=4.0
+        )
 
-                behavior.simulate_idle_time(
-                    self.browser, min_seconds=2.0, max_seconds=4.0
-                )
+        scraper = GenericSERPStrategy(
+            browser=self.browser,
+            search_prefs=None,
+            source_tag="Google",
+            max_results=instruction.max_results,
+            title_parser=SmartTextExtractor(
+                strategies=[
+                    "div[role='heading']",
+                    ".v0nnCb",
+                    "h3",
+                    ".BjJfJf",
+                ]
+            ),
+            company_parser=SmartTextExtractor(
+                strategies=[
+                    "div.vNnecGC",
+                    "span.VuuXrf",
+                    "div.nJlQNd",
+                ]
+            ),
+            url_parser=SmartURLExtractor(),
+        )
 
-                json_parser = JSONLDParser(self.browser)
-                raw_data = json_parser.parse_page()
-                if raw_data:
-                    json_jobs = self._convert_json_to_jobs(raw_data)
-                    if json_jobs:
-                        all_jobs.extend(json_jobs)
-                        logger.info(
-                            "  Found %d jobs via JSON-LD. Skipping HTML scrape.",
-                            len(json_jobs),
-                        )
-                        continue
+        # The scraper handles the full extraction (JSON‑LD, scrolling, mining)
+        return scraper.execute()
 
-                scraper = GenericSERPStrategy(
-                    browser=self.browser,
-                    search_prefs=self.prefs,
-                    source_tag="Google",
-                    title_parser=SmartTextExtractor(
-                        strategies=[
-                            "div[role='heading']",
-                            ".v0nnCb",
-                            "h3",
-                            ".BjJfJf",
-                        ]
-                    ),
-                    company_parser=SmartTextExtractor(
-                        strategies=[
-                            "div.vNnecGC",
-                            "span.VuuXrf",
-                            "div.nJlQNd",
-                        ]
-                    ),
-                    url_parser=SmartURLExtractor(),
-                )
 
-                html_jobs = scraper.execute()
-                all_jobs.extend(html_jobs)
-
-        return self._deduplicate(all_jobs)
-
-    def _construct_url(self, title: str, location: str) -> str:
-        """Builds the Google Jobs URL with strict locale enforcement."""
-        query = f"{title} jobs in {location}"
-        params = {
-            "q": query,
-            "ibp": "htl;jobs",
-            "hl": "en",
-            "gl": "us",
-            "start": 0,
-        }
-        return f"https://www.google.com/search?{urlencode(params)}"
-
-    def _convert_json_to_jobs(self, raw_data: list[dict]) -> list[Job]:
-        """Normalizes raw JSON-LD dictionaries into Job objects."""
-        jobs = []
-        for item in raw_data:
-            try:
-                title = item.get("title")
-                org = item.get("hiringOrganization", {})
-                company = org.get("name") if isinstance(org, dict) else "Unknown"
-                url = item.get("url")
-
-                if not url:
-                    url = f"https://www.google.com/search?q={title}+{company}+jobs"
-
-                if title:
-                    jobs.append(
-                        Job(
-                            title=title,
-                            company=company,
-                            url=url,
-                            source="Google (JSON-LD)",
-                            location=(
-                                item.get("jobLocation", {})
-                                .get("address", {})
-                                .get("addressLocality")
-                            ),
-                        )
-                    )
-            except Exception:
-                continue
-        return jobs
-
-    def _deduplicate(self, jobs: list[Job]) -> list[Job]:
-        """Removes duplicate jobs based on URL."""
-        unique_map = {job.url: job for job in jobs}
-        return list(unique_map.values())
+    # ------------------------------------------------------------------
+    # Company career‑page discovery (kept for DISCOVER_COMPANY tasks)
+    # ------------------------------------------------------------------
 
     def find_company_career_page(self, company_name: str) -> str | None:
         """Performs a targeted search to find a company's official career page.
 
-        This is the core of the 'Recursive Discovery' feature. When an
-        ATSRegistry was provided at construction, the site-filter list is built
-        dynamically from loaded YAML descriptors so newly-added ATS platforms
-        are automatically included without code changes.
+        This is the core of the 'Recursive Discovery' feature.  When an
+        ATSRegistry was provided at construction, the site‑filter list is
+        built dynamically from loaded YAML descriptors so newly‑added ATS
+        platforms are automatically included without code changes.
 
         Args:
             company_name: The name of the target company (e.g., "Meta").
@@ -242,7 +190,7 @@ class GoogleProvider(BaseSearchProvider):
 def _ats_site_filters(registry) -> list[str]:
     """Returns root domains for all loaded ATS descriptors.
 
-    Extracts the last two dot-separated parts of each descriptor's first URL
+    Extracts the last two dot‑separated parts of each descriptor's first URL
     pattern hostname (e.g. ``*.greenhouse.io/jobs/*`` → ``greenhouse.io``).
     Falls back to a hardcoded list when no registry is provided or when
     domain extraction yields no results.

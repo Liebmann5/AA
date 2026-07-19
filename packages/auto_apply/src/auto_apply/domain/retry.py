@@ -16,7 +16,8 @@ def retry(
     attempts: int = 3,
     delay: float = 2.0,
     backoff: float = 1.5,
-    exceptions: tuple[type[Exception], ...] = (Exception,)
+    exceptions: tuple[type[Exception], ...] = (Exception,),
+    rng: random.Random | None = None,
 ):
     """Decorates a function to retry upon failure.
 
@@ -25,6 +26,7 @@ def retry(
         delay (float): Initial sleep time in seconds.
         backoff (float): Multiplier for delay after each failure.
         exceptions (tuple): Which exceptions trigger a retry.
+        rng: Optional seeded random.Random for deterministic jitter.
     """
     def decorator(func: Callable):
         @wraps(func)
@@ -41,7 +43,8 @@ def retry(
                         logger.error(f"Function {func.__name__} failed after {attempts} attempts.")  # noqa: E501
                         raise last_exception
 
-                    wait = current_delay + random.uniform(0, 0.5) # Add jitter
+                    _rng = rng if rng is not None else random
+                    wait = current_delay + _rng.uniform(0, 0.5)
                     logger.warning(
                         f"Retrying {func.__name__} ({i+1}/{attempts}) in {wait:.2f}s due to: {e}"  # noqa: E501
                     )

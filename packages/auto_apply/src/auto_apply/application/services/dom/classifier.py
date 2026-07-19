@@ -5,9 +5,6 @@ strategy involving Metadata (JSON-LD), Security Signals, and DOM Heuristics
 to strictly categorize the current page state.
 """
 
-# Layer: application
-# Depends on: domain
-
 import logging
 from typing import Protocol
 

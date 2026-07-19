@@ -12,8 +12,14 @@ session execution and results display:
 The CLI is designed for terminal environments (SSH, library computers,
 headless servers) where Tkinter may not be available.
 
+A ``profile_override`` (name or path) may be passed at construction to skip
+the interactive profile selection menu entirely. This is wired from the
+``--profile`` CLI flag in ``main.py``.
+
 Example:
     $ python -m auto_apply --cli
+    $ python -m auto_apply --cli --profile nick_engineer
+    $ python -m auto_apply --cli --profile /path/to/profile.json
 """
 
 import getpass
@@ -38,10 +44,21 @@ class CLIStartup:
 
     This class never touches the orchestrator or database directly — it
     works exclusively through SessionController.
+
+    Args:
+        profile_repo_factory: Callable that returns a ProfileRepository.
+        profile_override: Optional profile name or absolute path. When
+            provided, the interactive profile selection menu is skipped
+            and this profile is loaded directly.
     """
 
-    def __init__(self, profile_repo_factory: Callable[..., object]) -> None:
+    def __init__(
+        self,
+        profile_repo_factory: Callable[..., object],
+        profile_override: str | None = None,
+    ) -> None:
         self._repo_factory = profile_repo_factory
+        self._profile_override = profile_override
         self.repo = profile_repo_factory()
 
     def run(self) -> None:
@@ -58,7 +75,11 @@ class CLIStartup:
         self.repo = self._repo_factory(master_password=password if password else None)
 
         # 1. Profile Selection
-        profile = self._select_profile_loop()
+        if self._profile_override:
+            profile = self._load_profile_override()
+        else:
+            profile = self._select_profile_loop()
+
         if not profile:
             sys.exit(0)
 
@@ -95,12 +116,82 @@ class CLIStartup:
     # PROFILE SELECTION
     # =========================================================================
 
+    def _load_profile_override(self) -> UserProfile | None:
+        """Loads the profile specified by ``--profile`` on the command line.
+
+        Tries two strategies in order:
+            1. Treat the value as a profile name (look up in storage_dir).
+            2. Treat the value as an absolute path to a ``.json`` file.
+
+        Returns:
+            A loaded UserProfile, or None if neither strategy succeeded.
+        """
+        override = self._profile_override
+        logger.info("Loading profile override | raw=%s", override)
+
+        # ── Strategy 1: profile name ──────────────────────────────────────
+        profile = self.repo.load_profile(override)
+        if profile is not None:
+            logger.info("Loaded profile by name | name=%s", override)
+            return profile
+
+        # ── Strategy 2: absolute or relative path ─────────────────────────
+        candidate = Path(override)
+        if candidate.suffix != ".json":
+            candidate = candidate.with_suffix(".json")
+
+        if candidate.exists():
+            try:
+                saved_path = self.repo.import_profile(candidate)
+                profile_name = saved_path.stem
+                profile = self.repo.load_profile(profile_name)
+                if profile is not None:
+                    logger.info("Loaded profile from path | path=%s", candidate)
+                    return profile
+            except Exception as exc:
+                logger.error("Profile override load from path failed | path=%s error=%s", candidate, exc)
+
+        logger.error("Profile override not found | raw=%s", override)
+        return None
+
     def _select_profile_loop(self) -> UserProfile | None:
         """Loops until a valid profile is loaded or user quits.
+
+        When no user profiles exist, launches the first‑run profile
+        creation wizard before falling back to the selection menu.
 
         Returns:
             A loaded UserProfile, or None if the user chose to quit.
         """
+        # ── First‑run: launch the profile creation wizard ──────────────────
+        profiles = self.repo.list_profiles()
+        user_profiles = [p for p in profiles if p != "default_profile"]
+
+        if not user_profiles:
+            print("\n  No user profiles found.")  # noqa: T201
+            try:
+                choice = input("  Create one now? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  No input available — exiting.")  # noqa: T201
+                sys.exit(0)
+
+            if choice in ("", "y", "yes"):
+                from auto_apply.adapters.primary.cli.profile_wizard import (  # noqa: PLC0415
+                    run_profile_wizard,
+                )
+                from auto_apply.domain.config import PROFILES_DIR  # noqa: PLC0415
+
+                new_path = run_profile_wizard(PROFILES_DIR)
+                if new_path is not None:
+                    # Load the newly created profile immediately
+                    profile_name = new_path.stem
+                    profile = self.repo.load_profile(profile_name)
+                    if profile is not None:
+                        return profile
+
+                # Wizard was cancelled — fall through to the regular menu
+                print("  Profile creation cancelled.")  # noqa: T201
+
         return self._select_profile_menu()
 
     def _select_profile_menu(self) -> UserProfile | None:
@@ -260,19 +351,55 @@ class CLIStartup:
     # =========================================================================
 
     def _print_results(self, controller: "SessionController") -> None:
-        """Displays the session summary after execution completes.
-
-        Args:
-            controller: The SessionController with session stats.
-        """
+        """Displays a full session summary after execution completes."""
+        print("\n" + "\u2550" * 60)  # noqa: T201
+        print("  SESSION COMPLETE")  # noqa: T201
+        print("\u2550" * 60)  # noqa: T201
 
         try:
             stats = controller.get_stats()
 
-            stats.get("success_rate", 0)
+            jobs_found      = stats.get("jobs_found", 0)
+            jobs_vetted     = stats.get("jobs_vetted", 0)
+            jobs_passed     = stats.get("jobs_passed_vetting", 0)
+            apps_tried      = stats.get("applications_attempted", 0)
+            apps_submitted  = stats.get("applications_submitted", 0)
+            apps_failed     = stats.get("applications_failed", 0)
+            duration_s      = stats.get("session_duration_seconds", 0)
+            submitted_urls  = stats.get("submitted_job_urls", [])
+            submitted_companies = stats.get("submitted_companies", {})
+
+            minutes = int(duration_s // 60)
+            seconds = int(duration_s % 60)
+
+            print(f"\n  \U0001f4cb  Jobs discovered:          {jobs_found}")  # noqa: T201
+            print(f"  \U0001f50d  Jobs vetted:              {jobs_vetted}")  # noqa: T201
+            print(f"  \u2705  Passed vetting:           {jobs_passed}")  # noqa: T201
+            print(f"  \U0001f4e4  Applications attempted:   {apps_tried}")  # noqa: T201
+            print(f"  \U0001f3af  Applications submitted:   {apps_submitted}")  # noqa: T201
+            if apps_failed > 0:
+                print(f"  \u274c  Applications failed:      {apps_failed}")  # noqa: T201
+            print(f"\n  \u23f1   Session duration:         {minutes}m {seconds}s")  # noqa: T201
+
+            if submitted_urls:
+                print(f"\n  Submitted applications:")  # noqa: T201
+                for url in submitted_urls[:10]:  # cap at 10 for readability
+                    company = submitted_companies.get(url, "")
+                    label = f" ({company})" if company else ""
+                    print(f"    \u2192 {url[:70]}{label}")  # noqa: T201
+                if len(submitted_urls) > 10:
+                    print(f"    ... and {len(submitted_urls) - 10} more (see session report)")  # noqa: T201
+
+            # Session report file location
+            report_path = stats.get("report_path")
+            if report_path:
+                print(f"\n  \U0001f4c1  Full report: {report_path}")  # noqa: T201
 
         except Exception as exc:
             logger.error("Could not retrieve session stats: %s", exc)
+            print("  (Session stats unavailable — check logs for details)")  # noqa: T201
+
+        print("\n" + "\u2550" * 60)  # noqa: T201
 
         try:
             again = input("\nRun another session? [y/N]: ").strip().lower()

@@ -61,7 +61,7 @@ def test_is_interactable_by_tag(tag):
 
 @pytest.mark.parametrize("role", ["button", "checkbox", "radio", "textbox", "combobox", "listbox", "link"])
 def test_is_interactable_by_role(role):
-    node = DOMNode(tag="div", attributes={"role": role})
+    node = DOMNode(tag="div", attributes=(("role", role),))
     assert _is_interactable(node)
 
 
@@ -78,17 +78,17 @@ def test_classify_select_tag():
 
 
 def test_classify_checkbox_input():
-    node = DOMNode(tag="input", attributes={"type": "checkbox"})
+    node = DOMNode(tag="input", attributes=(("type", "checkbox"),))
     assert _classify_node(node) == UIElementType.CHECKBOX
 
 
 def test_classify_radio_input():
-    node = DOMNode(tag="input", attributes={"type": "radio"})
+    node = DOMNode(tag="input", attributes=(("type", "radio"),))
     assert _classify_node(node) == UIElementType.RADIO
 
 
 def test_classify_file_input():
-    node = DOMNode(tag="input", attributes={"type": "file"})
+    node = DOMNode(tag="input", attributes=(("type", "file"),))
     assert _classify_node(node) == UIElementType.FILE_UPLOAD
 
 
@@ -108,7 +108,7 @@ def test_classify_link():
 
 
 def test_classify_text_input_fallback():
-    node = DOMNode(tag="input", attributes={"type": "text"})
+    node = DOMNode(tag="input", attributes=(("type", "text"),))
     assert _classify_node(node) == UIElementType.TEXT_INPUT
 
 
@@ -125,11 +125,11 @@ def test_scan_page_empty_dom():
 def test_scan_page_collects_visible_input():
     visible_input = DOMNode(
         tag="input",
-        attributes={"type": "text", "name": "email", "placeholder": "Email"},
+        attributes=(("type", "text"), ("name", "email"), ("placeholder", "Email")),
         geometry=Geometry(x=100, y=100, width=200, height=40),
         depth=1,
     )
-    root = DOMNode(tag="body", depth=0, children=[visible_input])
+    root = DOMNode(tag="body", depth=0, children=(visible_input,))
 
     browser = MagicMock()
     with patch(_ADAPTER_PATH, return_value=_patched_adapter(root)):
@@ -144,11 +144,11 @@ def test_scan_page_collects_visible_input():
 def test_scan_page_skips_hidden_element():
     hidden = DOMNode(
         tag="input",
-        attributes={"type": "text", "name": "trap"},
+        attributes=(("type", "text"), ("name", "trap")),
         geometry=Geometry(x=0, y=0, width=0, height=0),
         depth=1,
     )
-    root = DOMNode(tag="body", depth=0, children=[hidden])
+    root = DOMNode(tag="body", depth=0, children=(hidden,))
 
     browser = MagicMock()
     with patch(_ADAPTER_PATH, return_value=_patched_adapter(root)):
@@ -160,11 +160,15 @@ def test_scan_page_skips_hidden_element():
 
 def test_scan_page_collects_multiple_elements():
     nodes = [
-        DOMNode(tag="input", attributes={"type": "text", "name": f"field_{i}", "placeholder": f"Field {i}"},
-                geometry=Geometry(x=0, y=i * 50, width=200, height=40), depth=1)
+        DOMNode(
+            tag="input",
+            attributes=(("type", "text"), ("name", f"field_{i}"), ("placeholder", f"Field {i}")),
+            geometry=Geometry(x=0, y=i * 50, width=200, height=40),
+            depth=1,
+        )
         for i in range(3)
     ]
-    root = DOMNode(tag="body", depth=0, children=nodes)
+    root = DOMNode(tag="body", depth=0, children=tuple(nodes))
 
     browser = MagicMock()
     with patch(_ADAPTER_PATH, return_value=_patched_adapter(root)):
@@ -188,12 +192,12 @@ def test_scan_page_url_and_title_forwarded():
 def test_scan_page_classifies_button_correctly():
     btn = DOMNode(
         tag="button",
-        attributes={"type": "submit"},
+        attributes=(("type", "submit"),),
         text="Submit",
         geometry=Geometry(x=200, y=300, width=100, height=40),
         depth=1,
     )
-    root = DOMNode(tag="body", depth=0, children=[btn])
+    root = DOMNode(tag="body", depth=0, children=(btn,))
     browser = MagicMock()
     with patch(_ADAPTER_PATH, return_value=_patched_adapter(root)):
         adapter = MathPerceptionAdapter(browser)
@@ -227,8 +231,6 @@ def test_get_current_state_form_step_fallback():
     browser = MagicMock()
     browser.execute_script.return_value = "Fill out the form below."
 
-    # Return elements only for the input selector; modal and job-card checks
-    # must return empty so they don't short-circuit before the form fallback.
     def _find_elements(by, selector):
         if "input" in selector or "textarea" in selector:
             return [MagicMock()]

@@ -16,7 +16,7 @@ Usage::
 
 import logging
 
-from auto_apply.infrastructure.providers.base import DriverProvider
+from auto_apply.domain.ports.browser_provider_port import DriverProvider
 
 logger = logging.getLogger(__name__)
 

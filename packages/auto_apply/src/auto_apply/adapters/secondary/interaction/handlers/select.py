@@ -38,54 +38,87 @@ class SelectInputHandler(BaseInputHandler):
             self._handle_custom_combobox(element, value)
 
     def _handle_standard_select(self, element: ElementInterface, user_value: str) -> None:  # noqa: E501
-        """Handles standard HTML <select> tags robustly.
+        """Handles standard HTML <select> tags with multi‑tier matching.
 
-        Instead of typing blindly, we:
-        1. Get all <option> text values.
-        2. Find the semantically closest match to the user's profile value.
-        3. Click that specific option.
+        Matching tiers, tried in order:
+            1. Exact visible-text match.
+            2. Case‑insensitive exact match.
+            3. Substring match (user_value in option OR option in user_value).
+            4. Semantic (SpaCy / difflib) best match.
+            5. First non‑placeholder option as ultimate fallback.
         """
-        logger.info(f"Handling Standard Select for value: '{user_value}'")
+        logger.info("Handling Standard Select for value: '%s'", user_value)
 
         try:
             # 1. Retrieve all options
             options = element.find_elements(Locator.TAG_NAME, "option")
-            #option_map = {opt.text.strip(): opt for opt in options if opt.text.strip()}
             if not options:
                 logger.warning("Select element has no options.")
                 return
 
-            # Extract text from options for matching
-            # We filter out empty or placeholder options like "Select..."
-            option_map = {}
+            # Build a mapping of visible text → option element, filtering out
+            # placeholder entries (empty, single‑char, or common prompt strings).
+            placeholder_texts = {"", "-- select --", "select...", "choose", "choose..."}
+            option_map: dict[str, object] = {}
             for opt in options:
-                text = opt.text.strip()
-                if text and len(text) > 1:
+                text = (opt.text or "").strip()
+                if text.lower() not in placeholder_texts and len(text) > 1:
                     option_map[text] = opt
 
             if not option_map:
                 logger.warning("No valid text options found in select.")
                 return
 
-            # 2. Find Best Match (AI/Fuzzy Logic)
             candidates = list(option_map.keys())
-            best_match_text, score = self.matcher.find_best_match(user_value, candidates)  # noqa: E501
 
-            logger.info(f"Semantic Match: User='{user_value}' -> Option='{best_match_text}' (Score: {score:.2f})")  # noqa: E501
+            # ── Tier 1: exact text match ──────────────────────────────────
+            if user_value in option_map:
+                option_map[user_value].click()
+                logger.info("Select exact match | value=%r", user_value)
+                return
 
-            # 3. Select logic
+            # ── Tier 2: case‑insensitive exact match ──────────────────────
+            lower_value = user_value.lower()
+            for text, opt in option_map.items():
+                if text.lower() == lower_value:
+                    opt.click()
+                    logger.info("Select case‑insensitive match | value=%r → %r", user_value, text)
+                    return
+
+            # ── Tier 3: substring / contains match ────────────────────────
+            for text, opt in option_map.items():
+                text_lower = text.lower()
+                if lower_value in text_lower or text_lower in lower_value:
+                    opt.click()
+                    logger.info(
+                        "Select substring match | value=%r → %r",
+                        user_value, text,
+                    )
+                    return
+
+            # ── Tier 4: semantic match ────────────────────────────────────
+            best_match_text, score = self.matcher.find_best_match(user_value, candidates)
+
+            logger.info(
+                "Select semantic | user=%r → option=%r (score=%.2f)",
+                user_value, best_match_text, score,
+            )
+
             if score > 0.6:
-                target_option = option_map[best_match_text]
-                target_option.click()
-            else:
-                # Fallback: If no good match, try typing explicitly (browser native behavior)  # noqa: E501
-                logger.warning("Low match score ({score:.2f}). Attempting native typing fallback.")  # noqa: E501
-                element.click()
-                element.send_keys(user_value)
-                element.send_keys(Keys.ENTER)
+                option_map[best_match_text].click()
+                return
+
+            # ── Tier 5: fallback — first non‑placeholder option ───────────
+            if option_map:
+                first_text = candidates[0]
+                option_map[first_text].click()
+                logger.warning(
+                    "Select: no match for %r — selected first option %r",
+                    user_value, first_text,
+                )
 
         except Exception as e:
-            logger.error(f"Failed to handle standard select: {e}")
+            logger.error("Failed to handle standard select: %s", e)
 
     def _handle_custom_combobox(self, element: ElementInterface, user_value: str) -> None:  # noqa: E501
         """Handles React-Select, Select2, and ARIA comboboxes.
@@ -99,7 +132,7 @@ class SelectInputHandler(BaseInputHandler):
         3. Identify the 'listbox' container that appears in the DOM.
         4. Match and click the best result.
         """
-        logger.info(f"Handling Custom Combobox for value: '{user_value}'")
+        logger.info("Handling Custom Combobox for value: '%s'", user_value)
 
         try:
             # 1. Open the dropdown
@@ -130,7 +163,7 @@ class SelectInputHandler(BaseInputHandler):
                     best_match_text, score = self.matcher.find_best_match(user_value, candidates)  # noqa: E501
 
                     if score > 0.7:
-                        logger.info(f"Combobox Match: '{best_match_text}'")
+                        logger.info("Combobox Match: '%s'", best_match_text)
                         behavior.human_like_click(self.browser, item_map[best_match_text])  # noqa: E501
                         return
 
@@ -139,7 +172,7 @@ class SelectInputHandler(BaseInputHandler):
             element.send_keys(Keys.ENTER)
 
         except Exception as e:
-            logger.error(f"Failed to handle custom combobox: {e}")
+            logger.error("Failed to handle custom combobox: %s", e)
 
     def _extract_keyword(self, full_text: str) -> str:
         """Extracts the most distinct keyword from a long string.

@@ -11,6 +11,9 @@ Orchestrator Integration Contract:
         - get_next_task() -> Optional[WorkUnit]   -> dequeue highest priority
         - mark_task_complete(task_id, skipped)     -> mark done or skipped
         - mark_task_failed(task_id, error, permanent) -> mark failed with retry info
+        - reschedule_for_retry(task_id, error)     -> exponential backoff retry
+        - has_applied_previously(job_url) -> bool  -> cross-session dedup check
+        - record_application_permanently(...)       -> persist application to log
 
     All methods are thread-safe via the connection-per-call model (SQLite
     handles its own locking with WAL mode).
@@ -18,6 +21,7 @@ Orchestrator Integration Contract:
 Schema:
     work_queue:   Priority queue for WorkUnits with status tracking.
     job_history:  Cross-session deduplication and application history.
+    applied_jobs: Permanent application log — never cleared between sessions.
     company_history: Company-specific metadata (cooldown periods, mandates).
 """
 
@@ -28,13 +32,19 @@ import sqlite3
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
 
 from auto_apply.domain.config import DB_PATH, IS_FROZEN
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 
+if TYPE_CHECKING:
+    from auto_apply.domain.models.capability_profile import ResolvedCapabilityProfile
+
 logger = logging.getLogger(__name__)
+
+# Maximum retry attempts for failed tasks before permanent failure.
+MAX_RETRY_ATTEMPTS: int = 3
 
 
 class DatabaseManager:
@@ -66,9 +76,29 @@ class DatabaseManager:
             return
 
         self.db_path = DB_PATH
+        self._capability_profile: "ResolvedCapabilityProfile | None" = None
         self._init_schema()
         self._initialized = True
         logger.info("DatabaseManager initialized | path=%s", self.db_path)
+
+    def set_capability_profile(
+        self, profile: "ResolvedCapabilityProfile"
+    ) -> None:
+        """Store the session capability profile for queue-task validation.
+
+        Called once by the composition root after the driver cascade completes.
+        When set, queue_task() will reject tasks whose TaskType requires
+        capabilities that are not available in this session (e.g. APPLY task
+        when no browser driver was acquired).
+
+        Args:
+            profile: The frozen ResolvedCapabilityProfile for this session.
+        """
+        self._capability_profile = profile
+        logger.debug(
+            "DatabaseManager: capability profile set | mode=%s",
+            profile.mode_name,
+        )
 
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -115,9 +145,24 @@ class DatabaseManager:
                     error_message TEXT,
                     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    context_data  TEXT
+                    context_data  TEXT,
+                    retry_count   INTEGER DEFAULT 0,
+                    retry_after   TEXT DEFAULT NULL
                 )
             """)
+
+            # ── Migration: add retry columns if upgrading from older schema ──
+            try:
+                conn.execute("SELECT retry_count FROM work_queue LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE work_queue ADD COLUMN retry_count INTEGER DEFAULT 0")
+                logger.info("DatabaseManager: added retry_count column to work_queue")
+
+            try:
+                conn.execute("SELECT retry_after FROM work_queue LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE work_queue ADD COLUMN retry_after TEXT DEFAULT NULL")
+                logger.info("DatabaseManager: added retry_after column to work_queue")
 
             # 2. Job History — cross-session deduplication and throttling.
             conn.execute("""
@@ -132,7 +177,22 @@ class DatabaseManager:
                 )
             """)
 
-            # 3. Company History — per-company cooldown periods and mandates.
+            # 3. Applied Jobs — permanent application log; NEVER cleared.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS applied_jobs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_url     TEXT    NOT NULL UNIQUE,
+                    company     TEXT,
+                    outcome     TEXT,
+                    session_id  TEXT,
+                    applied_at  TEXT    NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_applied_jobs_url ON applied_jobs(job_url)"
+            )
+
+            # 4. Company History — per-company cooldown periods and mandates.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS company_history (
                     domain        TEXT PRIMARY KEY,
@@ -160,13 +220,49 @@ class DatabaseManager:
     def queue_task(self, task: WorkUnit) -> None:
         """Persists a WorkUnit into the priority queue.
 
+        Validates the payload type against TASK_PAYLOAD_REGISTRY before
+        inserting. This is the queue's last line of defense against malformed
+        tasks. A ValueError here surfaces at task-creation time rather than
+        at task-execution time (where it would be a confusing AttributeError).
+
+        When a capability profile is active, additionally rejects tasks whose
+        TaskType requires capabilities not available in this session (e.g.
+        APPLY task when no browser driver was acquired).
+
         Handles serialization of Pydantic models, plain dicts, and
         primitive payloads. Duplicate task IDs are silently replaced
         (upsert behavior) to support re-queuing after retry.
 
         Args:
             task: The WorkUnit to enqueue.
+
+        Raises:
+            ValueError: If the payload type does not match the task type contract,
+                or if the task type is not allowed by the capability profile.
         """
+        # ── Capability gating ────────────────────────────────────────────────
+        if self._capability_profile is not None:
+            if not self._capability_profile.can_run_task(task.task_type.value):
+                raise ValueError(
+                    f"Cannot queue {task.task_type.name} task: "
+                    f"current capability profile "
+                    f"({self._capability_profile.mode_name}) "
+                    f"does not support this task type. "
+                    f"Allowed types: {self._capability_profile.allowed_task_types}"
+                )
+
+        # ── Payload type validation (TTK contract enforcement) ────────────────
+        try:
+            from auto_apply.domain.models.task_payloads import validate_work_unit_payload
+            validate_work_unit_payload(task.task_type.value, task.payload)
+        except ValueError as exc:
+            logger.error(
+                "PAYLOAD VALIDATION FAILED | task_type=%s error=%s | "
+                "Task rejected — this is a programming error, not a runtime error.",
+                task.task_type.name, exc,
+            )
+            raise
+
         payload_data = task.payload
         if hasattr(payload_data, "model_dump"):
             payload_data = payload_data.model_dump(mode="json")
@@ -236,40 +332,164 @@ class DatabaseManager:
             )
 
     # =========================================================================
+    # RETRY WITH EXPONENTIAL BACKOFF
+    # =========================================================================
+
+    def reschedule_for_retry(
+        self,
+        task_id: str,
+        error_message: str,
+        backoff_base_seconds: float = 30.0,
+    ) -> bool:
+        """Mark a failed task for retry with exponential backoff.
+
+        Returns True if rescheduled, False if max retries exceeded
+        (permanently failed). Tasks with retry_after in the future are
+        skipped by get_next_task().
+
+        Backoff schedule:
+            Attempt 1 → wait 30s
+            Attempt 2 → wait 60s
+            Attempt 3 → wait 120s
+            Attempt 4+ → PERMANENTLY_FAILED
+
+        Args:
+            task_id: The unique ID of the WorkUnit.
+            error_message: Human-readable description of the failure.
+            backoff_base_seconds: Base wait time in seconds (doubles each retry).
+
+        Returns:
+            True if rescheduled, False if permanently failed.
+        """
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT retry_count FROM work_queue WHERE id = ?", (task_id,)
+            ).fetchone()
+
+            if row is None:
+                logger.warning(
+                    "reschedule_for_retry: task %s not found", task_id[:8]
+                )
+                return False
+
+            retry_count = (row["retry_count"] or 0) + 1
+
+            if retry_count > MAX_RETRY_ATTEMPTS:
+                conn.execute(
+                    """UPDATE work_queue
+                       SET status = 'PERMANENTLY_FAILED',
+                           error_message = ?,
+                           updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        f"Max retries ({MAX_RETRY_ATTEMPTS}) exceeded. "
+                        f"Last error: {error_message[:200]}",
+                        datetime.now(timezone.utc).isoformat(),
+                        task_id,
+                    ),
+                )
+                logger.warning(
+                    "Task permanently failed after %d attempts | id=%s",
+                    retry_count - 1, task_id[:8],
+                )
+                return False
+
+            backoff_seconds = backoff_base_seconds * (2 ** (retry_count - 1))
+            retry_after = datetime.now(timezone.utc) + timedelta(
+                seconds=backoff_seconds
+            )
+
+            conn.execute(
+                """UPDATE work_queue
+                   SET status = 'PENDING',
+                       retry_count = ?,
+                       retry_after = ?,
+                       error_message = ?,
+                       updated_at = ?
+                   WHERE id = ?""",
+                (
+                    retry_count,
+                    retry_after.isoformat(),
+                    error_message[:200],
+                    datetime.now(timezone.utc).isoformat(),
+                    task_id,
+                ),
+            )
+            logger.info(
+                "Task rescheduled for retry %d/%d | wait=%.0fs | id=%s",
+                retry_count,
+                MAX_RETRY_ATTEMPTS,
+                backoff_seconds,
+                task_id[:8],
+            )
+            return True
+
+    # =========================================================================
     # WORK QUEUE — READ OPERATIONS
     # =========================================================================
 
     def get_next_task(self) -> WorkUnit | None:
         """Retrieves and atomically locks the highest-priority pending task.
 
+        Uses an atomic UPDATE...RETURNING (SQLite 3.35+) to claim the task
+        in a single database operation, eliminating the TOCTOU race between
+        SELECT and UPDATE in multi-threaded or multi-process scenarios.
+
         The task's status is updated to 'IN_PROGRESS' within the same
-        transaction, preventing double-processing in concurrent scenarios.
+        transaction, preventing double-processing.
+
+        Respects retry_after — tasks whose retry_after timestamp is in the
+        future are skipped until the backoff elapses.
 
         Returns:
             The next WorkUnit to process, or None if the queue is empty.
         """
+        now_iso = datetime.now(timezone.utc).isoformat()
+
         with self.get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT id, priority, task_type, payload, source, context_data
-                FROM work_queue
-                WHERE status = 'PENDING'
-                ORDER BY priority ASC, created_at ASC
-                LIMIT 1
-                """
-            )
-            row = cursor.fetchone()
+            # Atomic claim: UPDATE ... RETURNING locks the row in one step.
+            # Falls back gracefully to SELECT+UPDATE if SQLite < 3.35.
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET status = 'IN_PROGRESS', updated_at = ?
+                    WHERE id = (
+                        SELECT id FROM work_queue
+                        WHERE status = 'PENDING'
+                          AND (retry_after IS NULL OR retry_after <= ?)
+                        ORDER BY priority ASC, created_at ASC
+                        LIMIT 1
+                    )
+                    RETURNING id, priority, task_type, payload, source, context_data
+                    """,
+                    (now_iso, now_iso),
+                )
+                row = cursor.fetchone()
+            except sqlite3.OperationalError:
+                # SQLite < 3.35 — fall back to SELECT + UPDATE
+                cursor = conn.execute(
+                    """
+                    SELECT id, priority, task_type, payload, source, context_data
+                    FROM work_queue
+                    WHERE status = 'PENDING'
+                      AND (retry_after IS NULL OR retry_after <= ?)
+                    ORDER BY priority ASC, created_at ASC
+                    LIMIT 1
+                    """,
+                    (now_iso,),
+                )
+                row = cursor.fetchone()
+
+                if row:
+                    conn.execute(
+                        "UPDATE work_queue SET status = 'IN_PROGRESS', updated_at = ? WHERE id = ?",
+                        (now_iso, row["id"]),
+                    )
 
             if not row:
                 return None
 
-            # Atomic lock: mark IN_PROGRESS before returning.
-            conn.execute(
-                "UPDATE work_queue SET status = 'IN_PROGRESS', updated_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), row["id"]),
-            )
-
-            # --- NEW: Rehydrate the payload back into a Job object ---
             payload_data = json.loads(row["payload"])
             task_type = TaskType(row["task_type"])
 
@@ -278,6 +498,21 @@ class DatabaseManager:
                 if "url" in payload_data and "title" in payload_data:
                     from auto_apply.domain.models.job import Job
                     payload_data = Job(**payload_data)
+
+            # ── Validate recovered payload ────────────────────────────────────
+            try:
+                from auto_apply.domain.models.task_payloads import validate_work_unit_payload
+                validate_work_unit_payload(task_type.value, payload_data)
+            except ValueError as exc:
+                logger.error(
+                    "Skipping corrupt WorkUnit from DB | id=%s error=%s",
+                    row["id"], exc,
+                )
+                conn.execute(
+                    "UPDATE work_queue SET status = 'PERMANENTLY_FAILED', error_message = ? WHERE id = ?",
+                    (str(exc)[:500], row["id"]),
+                )
+                return None
 
             return WorkUnit(
                 id=row["id"],
@@ -315,6 +550,70 @@ class DatabaseManager:
                 "SELECT COUNT(*) FROM work_queue WHERE status = 'PENDING'"
             )
             return cursor.fetchone()[0]
+
+    # =========================================================================
+    # CROSS-SESSION DUPLICATE APPLICATION PREVENTION
+    # =========================================================================
+
+    def has_applied_previously(self, job_url: str) -> bool:
+        """Check if AA has ever submitted an application to this job URL.
+
+        Checks the applied_jobs table across all past sessions.  Returns
+        True only for outcomes that represent a real submission (SUBMITTED,
+        PROBABLY_SUBMITTED).  Failed, skipped, and blocked jobs are not
+        counted as previously applied — they can be retried.
+
+        Args:
+            job_url: The job posting URL to check.
+
+        Returns:
+            True if this URL has been successfully submitted in any session.
+        """
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """SELECT id FROM applied_jobs
+                    WHERE job_url = ?
+                      AND outcome IN ('SUBMITTED', 'PROBABLY_SUBMITTED')
+                    LIMIT 1""",
+                (job_url,),
+            ).fetchone()
+            return row is not None
+
+    def record_application_permanently(
+        self,
+        job_url: str,
+        company: str,
+        outcome: str,
+        session_id: str,
+    ) -> None:
+        """Persist an application to the permanent applied_jobs log.
+
+        This table is the cross-session deduplication record.  It is NEVER
+        cleared between sessions (unlike work_queue).  Uses INSERT OR REPLACE
+        on the UNIQUE job_url column so re-submissions are idempotent.
+
+        Args:
+            job_url: The job posting URL that was applied to.
+            company: Company name for reporting.
+            outcome: The ApplicationEvidence outcome string.
+            session_id: Current session identifier.
+        """
+        with self.get_connection() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO applied_jobs
+                   (job_url, company, outcome, session_id, applied_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    job_url,
+                    company,
+                    outcome,
+                    session_id,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        logger.debug(
+            "Applied jobs log updated | url=%.60s outcome=%s", job_url, outcome,
+        )
 
     # =========================================================================
     # CRASH RECOVERY
