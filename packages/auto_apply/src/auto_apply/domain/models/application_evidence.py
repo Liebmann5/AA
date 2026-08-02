@@ -98,6 +98,7 @@ class ApplicationEvidence(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     # ── Pre-submit state ─────────────────────────────────────────────────
+    attempt_id: str = ""   # joins this outcome to its per-page research rows
     pre_submit_url: str = ""
     page_title_before: str = ""
     ats_platform: str | None = None  # matched ATS name (e.g. "greenhouse")
@@ -140,6 +141,7 @@ class ApplicationEvidence(BaseModel):
         "CAPTCHA_BLOCKED",          # Stopped by CAPTCHA challenge
         "LOGIN_WALL_BLOCKED",       # Stopped by login/sign-up requirement
         "USER_SKIPPED",             # User declined at HITL checkpoint
+        "SUBMISSION_GATE_BLOCKED",  # Submission gate unsatisfied — never clicked
         "POLICY_BLOCKED",           # Admin policy or cooldown blocked
         "ERROR",                    # Unhandled exception
     ] = "AMBIGUOUS"

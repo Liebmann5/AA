@@ -446,6 +446,8 @@ class TestCompositionRootNamespacing:
             ("playwright.adapter",),
             ("selenium.provider",),
             ("applications_workflow",),
+            ("discovery.provider_order",),
+            ("interaction.pacing",),
         }
         missing = required - namespaces
         assert not missing, (

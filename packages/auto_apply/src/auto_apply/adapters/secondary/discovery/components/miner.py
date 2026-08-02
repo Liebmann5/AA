@@ -7,7 +7,9 @@ visible containers. It relies on the Strategy to handle scrolling/loading.
 
 import logging
 
-from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
+from auto_apply.domain.ports.extraction_observer_port import (
+    NullExtractionObserver,
+)
 from auto_apply.adapters.secondary.perception.dom_adapter import BaseExtractor
 
 from auto_apply.adapters.secondary.browser.context_manager import ContextManager
@@ -25,9 +27,12 @@ class SemanticMiner:
         browser: BrowserInterface,
         title_parser: BaseExtractor,
         url_parser: BaseExtractor,
-        company_parser: BaseExtractor
+        company_parser: BaseExtractor,
+        observer=None,
     ):
         self.browser = browser
+        # Observation only. A null observer keeps mining identical.
+        self._observer = observer or NullExtractionObserver()
         self.ctx_mgr = ContextManager(browser)
         self.title_parser = title_parser
         self.url_parser = url_parser
@@ -74,14 +79,14 @@ class SemanticMiner:
             if len(children) < 2:
                 return 0, []  # Relaxed constraint
 
-            DiscoveryMathAuditor.audit_candidate_containers([container], 'SemanticMiner')
+            self._observer.audit_candidate_containers([container], 'SemanticMiner')
 
             for child in children:
                 job = self._extract_single_job(child, source)
                 if job:
                     valid_jobs.append(job)
                 else:
-                    DiscoveryMathAuditor.audit_extraction_attempt({}, False, 'SemanticMiner extraction failed')
+                    self._observer.audit_extraction_attempt({}, False, 'SemanticMiner extraction failed')
         except Exception:
             pass
 

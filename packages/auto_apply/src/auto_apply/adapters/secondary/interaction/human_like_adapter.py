@@ -23,7 +23,6 @@ import logging
 import time
 from typing import Any, Protocol
 
-from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.adapters.secondary.interaction.handlers.checkable import (
     CheckableInputHandler,
 )
@@ -33,6 +32,7 @@ from auto_apply.adapters.secondary.interaction.handlers.select import SelectInpu
 from auto_apply.adapters.secondary.interaction.handlers.text import TextInputHandler
 
 # Core Models
+from auto_apply.domain.exceptions import ApplicationError
 from auto_apply.domain.models.ui import InteractionPlan, InteractionType, PlannedAction
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 
@@ -66,7 +66,13 @@ class UnifiedInteractor:
     # HTML input types that the date handler should receive.
     _DATE_TYPES: frozenset[str] = frozenset({"date", "datetime-local", "month", "week"})
 
-    def __init__(self, browser: BrowserInterface, text_matcher=None):
+    def __init__(
+        self,
+        browser: BrowserInterface,
+        text_matcher=None,
+        page_action=None,
+        readiness=None,
+    ):
         """Initializes the interactor and its component handlers.
 
         Args:
@@ -78,12 +84,18 @@ class UnifiedInteractor:
         self.browser = browser
         self._text_matcher = text_matcher
 
+        # Every handler receives the same two collaborators, so timing and
+        # readiness have exactly one implementation across all widgets.
+        _kw = {"page_action": page_action, "readiness": readiness}
+
         # Initialize strategies — one instance per handler type.
-        self.text_handler = TextInputHandler(browser)
-        self.select_handler = SelectInputHandler(browser, text_matcher=self._text_matcher)
-        self.file_handler = FileInputHandler(browser)
-        self.checkable_handler = CheckableInputHandler(browser)
-        self.date_handler = DateInputHandler(browser)
+        self.text_handler = TextInputHandler(browser, **_kw)
+        self.select_handler = SelectInputHandler(
+            browser, text_matcher=self._text_matcher, **_kw
+        )
+        self.file_handler = FileInputHandler(browser, **_kw)
+        self.checkable_handler = CheckableInputHandler(browser, **_kw)
+        self.date_handler = DateInputHandler(browser, **_kw)
 
     def fill_input(self, element: ElementInterface, value: Any) -> None:
         """Analyzes the element and delegates interaction to the correct handler.
@@ -140,7 +152,14 @@ class InteractionExecutor:
     logic-derived plans are translated into robust browser events.
     """
 
-    def __init__(self, browser: BrowserInterface, strategy: ExecutionStrategy | None = None, text_matcher=None):
+    def __init__(
+        self,
+        browser: BrowserInterface,
+        strategy: ExecutionStrategy | None = None,
+        text_matcher=None,
+        page_action=None,
+        readiness=None,
+    ):
         """Initializes the executor.
 
         Args:
@@ -148,17 +167,88 @@ class InteractionExecutor:
             strategy: Optional execution strategy (stealth vs. instant).
             text_matcher: Optional shared TextMatcher passed down to the
                 UnifiedInteractor and its handlers (single SpaCy load).
+            page_action: The PageActionService tool. It owns every click, all
+                pacing, and the seeded RNG; this class only delegates to it.
+                Injected by the composition root whenever a driver exists.
+                Passed positionally-free and defaulted to None so direct
+                construction in tests still works, but ``click`` requires it.
         """
         self.browser = browser
         self.strategy = strategy    # e.g., StealthHumanStrategy || InstantHeadlessStrategy
         self._text_matcher = text_matcher
+        self._page_action = page_action
+        self._readiness = readiness
 
         # The UnifiedInteractor handles the specific "How-To" for inputs
-        self.interactor = UnifiedInteractor(browser, text_matcher=self._text_matcher)
+        self.interactor = UnifiedInteractor(
+            browser,
+            text_matcher=self._text_matcher,
+            page_action=page_action,
+            readiness=readiness,
+        )
 
     # ------------------------------------------------------------------
     # Public API — entry point used by ApplicationsWorkflow
     # ------------------------------------------------------------------
+
+    def click(self, element: ElementInterface) -> None:
+        """Clicks an element through the shared PageActionService tool.
+
+        This method deliberately contains no mechanics. The tool owns the
+        mouse path, the fingerprint decision, the settle pause and the seeded
+        RNG, so every click in AA is paced by one config-driven implementation.
+
+        Per the ``InteractionPort`` contract this returns None on success and
+        raises on failure — the tool itself never raises (it returns a falsy
+        ``ActionResult``), so the failure is converted here. Callers such as
+        ``ApplicationsWorkflow._submit_application`` rely on that raise to
+        record ``submit_clicked=False`` rather than reporting a click that
+        never landed.
+
+        Args:
+            element: The element to click.
+
+        Raises:
+            ApplicationError: If no tool is available, or the tool reports the
+                click did not complete.
+        """
+        if self._page_action is None:
+            raise ApplicationError(
+                "InteractionExecutor.click requires the PageActionService tool; "
+                "none was injected (composition root supplies it whenever a "
+                "driver is present)."
+            )
+
+        result = self._page_action.click(element)
+        if not result:
+            reason = getattr(result, "reason", "unknown")
+            raise ApplicationError(f"click did not complete: {reason}")
+
+    def simulate_idle(self, min_seconds: float, max_seconds: float) -> None:
+        """Pauses for a human-scale interval between tasks.
+
+        Delegates to the tool's macro pause so inter-task pacing comes from the
+        same configured, seeded distribution as every other pause.
+
+        Args:
+            min_seconds: Minimum pause duration in seconds.
+            max_seconds: Maximum pause duration in seconds.
+        """
+        if self._page_action is None:
+            return
+        self._page_action.macro_pause(min_seconds, max_seconds)
+
+    def _settle(self) -> None:
+        """Short post-action pause, delegated to the tool.
+
+        Replaces the hardcoded ``time.sleep(0.5)`` that used to sit between
+        plan steps. When no tool is present this is a no-op rather than a
+        magic-number fallback: a second pacing implementation is exactly the
+        duplication this stage removes.
+        """
+        if self._page_action is None:
+            return
+        self._page_action.settle()
 
     def fill(self, element: ElementInterface, value: Any) -> bool:
         """Fill a single form field, routing to the correct strategy.
@@ -214,9 +304,10 @@ class InteractionExecutor:
                 else:
                     logger.info("Executor: Non-critical action failed. Continuing.")
 
-            # Brief pause between actions to allow JS events to propagate
-            # and to maintain human-like pacing.
-            time.sleep(0.5)
+            # Brief pause between actions to allow JS events to propagate and
+            # to maintain human-like pacing. The duration is the tool's
+            # config-driven, low-resource-clamped, seeded settle pause.
+            self._settle()
 
         logger.info("Executor: Plan completed successfully.")
         return True
@@ -251,7 +342,7 @@ class InteractionExecutor:
 
             # 3. Dispatch based on InteractionType
             if action.action_type == InteractionType.CLICK:
-                behavior.human_like_click(self.browser, element_ref)
+                self.click(element_ref)
 
             elif action.action_type in [InteractionType.TYPE, InteractionType.SELECT_OPTION, InteractionType.UPLOAD_FILE]:  # noqa: E501
                 # Delegate complex inputs to the UnifiedInteractor

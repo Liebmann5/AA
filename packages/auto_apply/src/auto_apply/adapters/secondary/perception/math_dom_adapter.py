@@ -20,7 +20,9 @@ import logging
 from typing import Any
 from urllib.parse import urljoin
 
-from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
+from auto_apply.domain.ports.extraction_observer_port import (
+    NullExtractionObserver,
+)
 from auto_apply.domain.models.math_dom import DOMNode, Geometry
 from auto_apply.domain.models.math_webpage import WebpageStructure, FieldType
 from auto_apply.domain.ports.browser_port import BrowserInterface
@@ -127,6 +129,7 @@ class MathDOMAdapter(MathematicalPerceptionPort):
         browser: BrowserInterface,
         max_depth: int = 50,
         include_computed_styles: bool = False,
+        observer=None,
     ) -> None:
         """Initialize the adapter.
 
@@ -139,6 +142,8 @@ class MathDOMAdapter(MathematicalPerceptionPort):
         self._max_depth = max_depth
         self._include_computed_styles = include_computed_styles
         self._script = self._EXTRACTION_SCRIPT % max_depth
+        # Observation only — a null observer leaves extraction identical.
+        self._observer = observer or NullExtractionObserver()
 
     def extract_full_dom_tree(self) -> DOMNode | None:
         """Execute the extraction script and build a DOMNode tree.
@@ -327,8 +332,8 @@ class MathDOMAdapter(MathematicalPerceptionPort):
             depth=depth,
         )
 
-        if DiscoveryMathAuditor._ENABLED and node.is_interactable and not node.has_geometry:
-            DiscoveryMathAuditor.audit_text_extraction(node, node.text or '', 'MathDOM')
+        if self._observer.enabled and node.is_interactable and not node.has_geometry:
+            self._observer.audit_text_extraction(node, node.text or '', 'MathDOM')
 
         return node
 
@@ -350,6 +355,26 @@ class MathDOMAdapter(MathematicalPerceptionPort):
 # ----------------------------------------------------------------------
 # PageUnderstandingPort implementation
 # ----------------------------------------------------------------------
+
+
+_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+def _is_heading(node: DOMNode) -> bool:
+    """True for an h1-h6 element or an ARIA heading with text.
+
+    Google's jobs vertical marks card titles with ``role="heading"`` rather
+    than a heading tag — ``google.py`` already says so, listing
+    ``div[role='heading']`` first among the title selectors it injects into
+    SemanticMiner. Looking only at h1-h6 meant real Google job cards produced
+    no title at all, which is how the "Unknown" placeholder came to be doing
+    the work.
+    """
+    if not (node.text or "").strip():
+        return False
+    if node.tag in _HEADING_TAGS:
+        return True
+    return node.get_attribute("role", "").strip().lower() == "heading"
 
 
 class MathPageUnderstandingAdapter:
@@ -513,7 +538,7 @@ class MathPageUnderstandingAdapter:
             text_nodes: list[str] = []
             link_url = ""
             for node in card.iter_nodes():
-                if node.tag in {"h1", "h2", "h3", "h4", "h5", "h6"} and not title:
+                if not title and _is_heading(node):
                     title = node.text.strip()
                 elif node.tag == "a" and not link_url:
                     href = (node.get_attribute("href") or "").strip()
@@ -543,9 +568,16 @@ class MathPageUnderstandingAdapter:
                             link_url = urljoin(page_url, href)
                             break
 
+            # A card with no title is not a job. It used to become
+            # ``title="Unknown"`` here, and because that placeholder is truthy
+            # it sailed straight through PageUnderstandingExtractor's
+            # ``if not (title and url)`` guard — the guard that exists to drop
+            # exactly this. Live run 4 enqueued 61 records that way, every one
+            # of them Google's tab bar or filter chips, and vetted all 61 at
+            # ~1 s each. Leave the title empty and let the guard work.
             results.append(
                 JobCardInfo(
-                    title=title or "Unknown",
+                    title=title,
                     company=company or "Unknown",
                     url=link_url or "",
                     location=location or "",

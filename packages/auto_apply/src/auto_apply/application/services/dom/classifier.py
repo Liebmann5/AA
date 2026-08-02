@@ -8,7 +8,6 @@ to strictly categorize the current page state.
 import logging
 from typing import Protocol
 
-from auto_apply.domain.models.job import Job
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.types import Locator, PageType
 
@@ -21,12 +20,6 @@ class _DetectionScanner(Protocol):
     def is_challenge_present(self) -> bool: ...
 
 
-class _JobMiner(Protocol):
-    """Minimal interface for probing a page for job card listings."""
-
-    def mine_jobs(self, source_name: str) -> list[Job]: ...
-
-
 class PageClassifier:
     """Analyzes browser state to determine the PageType."""
 
@@ -34,14 +27,34 @@ class PageClassifier:
         self,
         browser: BrowserInterface,
         detection_scanner: _DetectionScanner,
-        miner: _JobMiner,
     ):
         self.browser = browser
         self.detection_scanner = detection_scanner
-        self.miner = miner
 
     def classify(self) -> PageType:
-        """Determines the semantic type of the current page."""
+        """Determines the semantic type of the current page.
+
+        Every check here is cheap: one detection scan, the page title, and
+        three small ``execute_script``/``find_elements`` probes.
+
+        A fourth check used to live at the end of this method. It ran a full
+        ``miner.mine_jobs(source_name="classifier_probe")`` over the page and
+        returned :attr:`PageType.SERP` when the mine yielded three or more
+        cards. It was removed because its result could not reach a decision:
+        the sole consumer of :meth:`classify` (``GenericSERPStrategy.execute``)
+        branches only on ``{CAPTCHA_BLOCK, LOGIN_REQUIRED, ERROR_404}``, and
+        that probe could only produce ``SERP`` or fall through to ``UNKNOWN``.
+        Neither is in the abort set, so the mine's outcome changed nothing —
+        while costing a complete duplicate extraction pass over the unscrolled
+        page, immediately before the harvest loop mined that same page again.
+        Measured on a live Google SERP: ~40 seconds, discarded.
+
+        ``SERP`` is still reachable, via the JSON-LD check above, which is one
+        ``execute_script`` rather than thousands of WebDriver round trips.
+
+        Returns:
+            The semantic :class:`PageType` of the current page.
+        """
 
         # 1. CRITICAL: Security & Error Checks
         if self.detection_scanner.is_challenge_present():
@@ -65,15 +78,6 @@ class PageClassifier:
 
         if self._has_application_form():
             return PageType.APPLICATION_FORM
-
-        # 4. Content Analysis (SERP Detection)
-        # Use the miner to probe the page. If it finds valid job cards, it's a SERP.
-        try:
-            jobs = self.miner.mine_jobs(source_name="classifier_probe")
-            if jobs and len(jobs) >= 3:
-                return PageType.SERP
-        except Exception:
-            pass
 
         return PageType.UNKNOWN
 

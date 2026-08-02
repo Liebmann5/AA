@@ -85,6 +85,15 @@ class FormObservation:
             {"min_years_experience": 8}.
         estimated_completion_minutes: Estimated time to complete the form.
         application_form_field_count: Total field count (0 = no real form).
+        attempt_id: Joins every page of one application attempt to the
+            outcome record for that attempt. Without it a partial attempt's
+            rows are indistinguishable from a completed one's, and friction
+            data reads as successful applications.
+        page_index: Zero-based step within a multi-page application. One
+            observation is emitted per wizard page, so a five-step form
+            produces five records with indices 0-4. A merged record would
+            lose which fields lived on which step, and for research the
+            per-step structure is the interesting part.
     """
     platform: str = ""
     company_name: str | None = None
@@ -94,6 +103,8 @@ class FormObservation:
     form_structure: FormStructure = field(default_factory=FormStructure)
     knockout_thresholds: dict[str, float] = field(default_factory=dict)
     estimated_completion_minutes: int | None = None
+    page_index: int = 0
+    attempt_id: str = ""
     application_form_field_count: int | None = None
 
 

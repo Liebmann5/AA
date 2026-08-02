@@ -94,10 +94,16 @@ spoof_hardware_concurrency: 8       # integer, or null to leave untouched
 instantaneous, mouse movements are straight lines, and typing has a perfectly
 uniform rhythm. Bot‑detection ML models are trained to spot these patterns.
 
-**Our Solution:** The `PageActionService` is the single entry point for all
-browser interactions. Every click, keystroke, scroll, and pause passes
-through it, and it applies human‑consistent timing and movement patterns
-automatically.
+**Our Solution:** The `PageActionService` is the single entry point for
+browser interaction, and it applies human‑consistent timing and movement
+patterns automatically.
+
+> **Status (Stage 1).** Every **click**, and the pacing between plan steps,
+> passes through the tool. Keystrokes, scrolling and pagination still have
+> other live paths (the interaction handlers, `InfiniteScrollStrategy`,
+> `behavior.human_like_scroll`) and are scheduled to move behind the tool in
+> later stages. Treat this section as the target state, not a description of
+> today's every code path.
 
 ### MICRO Timing — Intra‑Task (milliseconds)
 - **Parabolic keystroke delays:** Each character is typed with a pause drawn
@@ -243,8 +249,10 @@ The evasion framework is fully decoupled from the business logic.
   provides `check_page_safety()` — a single method the engines call after
   navigation.
 - **`PageActionService`** (application services) is the unified interaction
-  API. Engines call `page.click(btn)` and the service applies human‑like
-  movement automatically.
+  API. Engines receive it as `interaction_port`; a call to
+  `interaction_port.click(btn)` delegates to the tool, which applies
+  human‑like movement automatically. The composition root constructs it with
+  a namespaced seeded RNG (`interaction.pacing`) whenever a driver exists.
 - **`SessionManager`** (adapters layer) manages persistent browser state.
   It is used as a context manager around the browser session.
 

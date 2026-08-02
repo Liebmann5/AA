@@ -22,8 +22,22 @@ class BaseSearchProvider(DiscoveryProviderPort):
     heavy lifting of scraping to reusable Strategies.
     """
 
-    def __init__(self, browser: BrowserInterface) -> None:
-        """Initializes the provider with the browser only.
+    def __init__(
+        self,
+        browser: BrowserInterface,
+        scroller=None,
+        paginator=None,
+        max_pages: int = 1,
+        observer=None,
+        reporter=None,
+        forced_tier=None,
+    ) -> None:
+        """Initializes the provider with the browser and its page collaborators.
+
+        The scroller and paginator are injected rather than constructed here:
+        a discovery adapter should ask for the next page, not decide how one
+        is fetched. ``max_pages`` is a ceiling, defaulting to 1 — today's
+        single-page behaviour.
 
         Args:
             browser: The active browser instance.
@@ -34,6 +48,12 @@ class BaseSearchProvider(DiscoveryProviderPort):
             exactly one :class:`SearchInstruction` per :meth:`run` call.
         """
         self.browser = browser
+        self._scroller = scroller
+        self._paginator = paginator
+        self._max_pages = max(1, int(max_pages))
+        self._observer = observer
+        self._reporter = reporter
+        self._forced_tier = forced_tier
 
     @property
     def name(self) -> str:

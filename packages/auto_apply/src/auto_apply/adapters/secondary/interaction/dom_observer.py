@@ -8,6 +8,7 @@ ensuring that the application engine doesn't get stuck on embedded forms.
 """
 
 import logging
+import time
 from enum import Enum, auto
 
 from auto_apply.adapters.secondary.browser.context_manager import ContextManager
@@ -46,7 +47,65 @@ class FormState(Enum):
 class DOMObserver:
     """Analyzes the DOM to determine the current FormState."""
 
-    def __init__(self, browser: BrowserInterface):
+    def __init__(
+        self,
+        browser: BrowserInterface,
+        stability_timeout_s: float = 3.0,
+        poll_interval_s: float = 0.25,
+    ):
+        """Initialise the observer.
+
+        Args:
+            browser: The active browser instance.
+            stability_timeout_s: Budget for :meth:`wait_for_dom_stable`, from
+                ``dom_stabilization_timeout_s``. Not a literal — the
+                composition root passes the resolved config value.
+            poll_interval_s: Gap between readiness samples, from
+                ``dom_stabilization_poll_interval_s``.
+        """
+        self._stability_timeout_s = float(stability_timeout_s)
+        self._poll_interval_s = float(poll_interval_s)
+        self._init_browser(browser)
+
+    def wait_for_dom_stable(self, timeout: float | None = None) -> bool:
+        """Block until the DOM stops changing, or the budget expires.
+
+        A real readiness poll, not a sleep: it samples a cheap fingerprint of
+        the page and returns as soon as two consecutive samples agree, so a
+        page that settles in 200ms costs 200ms rather than the whole budget.
+
+        Args:
+            timeout: Override for the configured budget, in seconds.
+
+        Returns:
+            True if the DOM settled within the budget, False if it did not.
+            Never raises: a browser that cannot be sampled is a False, because
+            a readiness check must not be able to abort a form fill.
+        """
+        budget = self._stability_timeout_s if timeout is None else float(timeout)
+        deadline = time.monotonic() + budget
+        previous: int | None = None
+
+        while True:
+            try:
+                current = len(self.browser.page_source or "")
+            except Exception as exc:
+                logger.debug("DOMObserver: DOM sample failed | %s", exc)
+                return False
+
+            if previous is not None and current == previous:
+                return True
+            previous = current
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.debug(
+                    "DOMObserver: DOM did not settle within %.2fs", budget
+                )
+                return False
+            time.sleep(min(self._poll_interval_s, remaining))
+
+    def _init_browser(self, browser: BrowserInterface):
         """Initializes the observer.
 
         Args:

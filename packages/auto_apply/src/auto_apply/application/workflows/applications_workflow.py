@@ -78,10 +78,18 @@ from auto_apply.domain.models.application_evidence import (
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.session_plan import SessionPlan
 from auto_apply.domain.models.profile import UserProfile
-from auto_apply.domain.models.ui import UIElement, UIElementType
+from auto_apply.domain.models.ui import (
+    InteractionType,
+    UIElement,
+    UIElementType,
+)
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.models.task_payloads import CaptchaResolutionPayload
-from auto_apply.domain.ports.interrupt_policy_port import Checkpoint
+from auto_apply.domain.exceptions import ApplicationError
+from auto_apply.domain.ports.interrupt_policy_port import (
+    ApplicationContext,
+    Checkpoint,
+)
 from auto_apply.domain.ports.page_understanding_port import (
     FormFieldInfo,
     FormStructure,
@@ -178,6 +186,8 @@ class ApplicationsWorkflow:
         research_observer: ResearchObserverPort | None = None,
         page_analysis_router: PageAnalysisRouter | None = None,
         browser_lease=None,   # <--- NEW: injected by composition root
+        navigation=None,
+        reasoning_port=None,
         rng: random.Random | None = None,    # deterministic randomness
         *,
         plan: SessionPlan,
@@ -226,6 +236,10 @@ class ApplicationsWorkflow:
         self._task_queue = task_queue
         self._event_bus = event_bus
         self._interrupt_policy = interrupt_policy
+        self._navigation = navigation
+        # The planner half of understand -> plan -> act. Built by the
+        # composition root since day one and never handed to anyone.
+        self._reasoning_port = reasoning_port
         self._text_generation_port = text_generation_port
         self._approval_gate = approval_gate
         self._config = config or {}
@@ -246,6 +260,10 @@ class ApplicationsWorkflow:
 
         self._current_job: Job | None = None
         self._pages_navigated: int = 0
+        #: Monotonic per-session counter; makes each attempt's id unique so
+        #: two attempts at the same job do not merge into one set of rows.
+        self._attempt_seq: int = 0
+        self._attempt_id: str = ""
         self._fields_filled: int = 0
         self._gpt4all_invoked: bool = False
         self._session_id: str | None = None
@@ -479,7 +497,7 @@ class ApplicationsWorkflow:
             Updated ApplicationEvidence.
         """
         try:
-            self._browser.get(job.url)
+            self._navigate(job.url)
         except Exception as exc:
             logger.warning(
                 "ApplicationsWorkflow: navigation failed | url=%s error=%s",
@@ -490,6 +508,7 @@ class ApplicationsWorkflow:
                 "outcome": "FAILED_NAVIGATION",
                 "confidence": 0.95,
                 "error_message": str(exc)[:200],
+                **self._run_statistics(),
             })
 
         try:
@@ -543,9 +562,12 @@ class ApplicationsWorkflow:
     def _wait_for_dom_stable(self, timeout: float | None = None) -> None:
         """Wait for DOM to stabilize, with graceful degradation."""
         t = timeout or self.DOM_STABILIZATION_TIMEOUT_S
+        if self._dom_observer is None:
+            return
         try:
-            if hasattr(self._dom_observer, "wait_for_dom_stable"):
-                self._dom_observer.wait_for_dom_stable(timeout=t)
+            # Unconditional. This used to be guarded by a hasattr() probe
+            # for a method that did not exist, so the wait never ran once.
+            self._dom_observer.wait_for_dom_stable(timeout=t)
         except Exception as exc:
             logger.debug(
                 "ApplicationsWorkflow: DOM stabilization wait failed: %s", exc
@@ -677,29 +699,76 @@ class ApplicationsWorkflow:
 
         return FormStructure(fields=tuple(fields))
 
-    def _instantiate_form_fsm(self, structure) -> None:
-        """Instantiate the UniversalApplicationStrategy FSM for this page.
+    def _run_strategic_pass(self) -> int:
+        """Understand -> plan -> act over whatever the classifier left unfilled.
 
-        Args:
-            structure: WebpageStructure from _analyze_form_mathematically.
+        This is the domain's own triad, live for the first time:
+        ``perception_port.scan_page()`` produces a UIModel,
+        ``reasoning_port.devise_plan()`` turns it into an ordered
+        InteractionPlan, and ``interaction_port.execute_plan()`` runs it.
+
+        It SUPPLEMENTS the classifier pass rather than replacing it. Two rules
+        keep it from changing anything the existing path already decided:
+
+        1. **No clicks.** ``FormSolver.devise_plan`` includes a submit button in
+           its plan. Executing that here would submit the application from a
+           path that never consults the submission gate — so this pass fills,
+           and every click stays with the workflow, which owns both the gate and
+           the page loop.
+        2. **No overwrites.** An action is dropped if its element already holds
+           a value, and also dropped if the element cannot be inspected: not
+           being able to check is a reason to leave a field alone, not a licence
+           to overwrite it.
+
+        Returns:
+            The number of actions executed. Zero on any missing collaborator or
+            any failure — a supplementary pass must never break a fill.
         """
-        try:
-            from auto_apply.domain.applications.fsm.universal import (  # noqa: PLC0415
-                UniversalApplicationStrategy,
-            )
+        if (
+            self._perception_port is None
+            or self._reasoning_port is None
+            or self._interaction_port is None
+        ):
+            return 0
 
-            self._fsm = UniversalApplicationStrategy(
-                browser=self._browser,
-                profile=self._profile,
-                perception_port=self._perception_port,
-                interaction_port=self._interaction_port,
-            )
+        try:
+            ui_model = self._perception_port.scan_page()
+            plan = self._reasoning_port.devise_plan(ui_model)
         except Exception as exc:
-            logger.debug(
-                "ApplicationsWorkflow: FSM instantiation failed (non-fatal): %s",
-                exc,
-            )
-            self._fsm = None
+            logger.debug("ApplicationsWorkflow: strategic pass planning failed: %s", exc)
+            return 0
+
+        actions = [a for a in getattr(plan, "actions", []) if self._is_safe_fill(a)]
+        if not actions:
+            return 0
+
+        try:
+            executed = plan.model_copy(update={"actions": actions})
+            self._interaction_port.execute_plan(executed)
+        except Exception as exc:
+            logger.debug("ApplicationsWorkflow: strategic pass execution failed: %s", exc)
+            return 0
+
+        logger.info(
+            "ApplicationsWorkflow: strategic pass filled %d element(s)", len(actions)
+        )
+        return len(actions)
+
+    def _is_safe_fill(self, action) -> bool:
+        """Whether a planned action may run in the supplementary pass."""
+        if getattr(action, "action_type", None) is not InteractionType.TYPE:
+            return False
+
+        element = getattr(action, "ui_element", None)
+        reference = element.get_reference() if element is not None else None
+        if reference is None:
+            return False
+
+        try:
+            existing = reference.get_attribute("value")
+        except Exception:
+            return False
+        return not (existing and str(existing).strip())
 
     def _classify_all_fields(self, structure) -> dict:
         """Classify each form field using FieldClassifier + SpaCy fallback.
@@ -1090,7 +1159,9 @@ class ApplicationsWorkflow:
                     pass
 
                 try:
-                    ctx = type("ctx", (), {"job": job, "url": current_url})()
+                    ctx = self._checkpoint_context(
+                        Checkpoint.ON_SUSPICIOUS_REDIRECT, job, url=current_url
+                    )
                     if self._interrupt_policy.should_pause(
                         Checkpoint.ON_SUSPICIOUS_REDIRECT, ctx
                     ):
@@ -1113,6 +1184,209 @@ class ApplicationsWorkflow:
 
         return True
 
+    # ------------------------------------------------------------------
+    # Submission gate
+    # ------------------------------------------------------------------
+
+    #: The one answer from an approval gate that authorises a submission.
+    #: SessionController.request_approval offers ["submit", "skip"] and returns
+    #: "skip" on timeout, so anything else — None, "", a dismissed dialog, an
+    #: unexpected UI value — is ambiguity, and ambiguity does not submit.
+    SUBMIT_APPROVAL_TOKEN: str = "submit"
+
+    def _checkpoint_context(
+        self,
+        checkpoint: Checkpoint,
+        job: Job,
+        *,
+        url: str = "",
+    ) -> ApplicationContext:
+        """Build the real ApplicationContext a checkpoint policy is promised.
+
+        The port defines a frozen dataclass with named fields; passing an ad hoc
+        object instead means any policy that reads ``ctx.url`` or ``ctx.company``
+        raises — and a raised policy check used to be swallowed into an
+        unauthorised submit.
+
+        Args:
+            checkpoint: The checkpoint being evaluated.
+            job: The job under consideration.
+            url: Current page URL, when it differs from the job URL.
+
+        Returns:
+            A populated ApplicationContext.
+        """
+        return ApplicationContext(
+            checkpoint=checkpoint,
+            job_title=getattr(job, "title", "") or "",
+            company=getattr(job, "company", "") or "",
+            url=url or (getattr(job, "url", "") or ""),
+        )
+
+    #: Set once a session has explained why submissions are being blocked.
+    _gate_warning_emitted: bool = False
+
+    def _warn_once_about_the_gate(self, outcome: str, detail: str) -> None:
+        """Explain a blocked submission loudly, once per session.
+
+        Fail-closed is only safe if it is also fail-loud. A default install with
+        no approval gate wired blocks every submission correctly — and, if that
+        only ever reaches evidence records and debug logs, the run looks broken
+        rather than safe, which invites the operator to "fix" it by disabling
+        the very check protecting them.
+
+        One WARNING per session, carrying the reason AND the remedy. Per-job
+        lines stay at INFO so a long run does not turn into a wall of identical
+        warnings.
+
+        Args:
+            outcome: The evidence outcome recorded for this refusal.
+            detail: Why authorisation was refused.
+        """
+        if outcome != "SUBMISSION_GATE_BLOCKED" or self._gate_warning_emitted:
+            return
+        self._gate_warning_emitted = True
+
+        logger.warning(
+            "Submissions are being BLOCKED by the pre-submit review gate. "
+            "This is the safe default, not a fault: reason=%s. "
+            "To submit automatically, either wire an approval gate (enable the "
+            "review prompt) or remove 'BEFORE_FORM_SUBMIT' from "
+            "human_review_checkpoints in your profile to opt into autonomous "
+            "submission.",
+            detail,
+        )
+
+    def _run_statistics(self) -> dict:
+        """Per-attempt counters, so every outcome carries what actually happened.
+
+        These were stamped only on the path that reaches a submit attempt. Every
+        early return — the submission gate, a CAPTCHA, a login wall, a failed
+        navigation, no submit button — recorded zeros for work that had
+        demonstrably happened: a live run walked all three pages of a wizard and
+        reported ``pages_navigated=0``.
+
+        That matters most where it is least visible: gate-blocked is the DEFAULT
+        outcome for an install with no approver wired, so the research dataset
+        lost these counters on exactly the runs a cautious user produces.
+
+        Returns:
+            The counter fields to merge into any ApplicationEvidence update.
+        """
+        return {
+            "pages_navigated": self._pages_navigated,
+            "fields_classified": self._fields_filled,
+            "required_fields_filled": self._fields_filled,
+            "used_gpt4all": self._gpt4all_invoked,
+        }
+
+    def _authorize_submission(self, job: Job) -> tuple[bool, str, str]:
+        """Decide whether this application may be submitted. Fail closed.
+
+        Submission is authorised by exactly one of two things:
+
+        1. The user's interrupt policy does not ask for a pre-submit pause.
+           Removing ``BEFORE_FORM_SUBMIT`` from ``human_review_checkpoints`` is
+           a deliberate, sovereign choice to run autonomously, and it is
+           honoured — the gate exists to catch ambiguity, never to override a
+           user who chose no review.
+        2. A wired approval gate returned :attr:`SUBMIT_APPROVAL_TOKEN`.
+
+        Every other path — no approval gate wired, a policy that raised, a gate
+        that raised, an unrecognised answer — is ambiguity, and returns refusal.
+        The caller records evidence and does not click.
+
+        Args:
+            job: The job about to be submitted.
+
+        Returns:
+            ``(authorized, outcome, detail)``. When *authorized* is False,
+            *outcome* is the ApplicationEvidence outcome to record and *detail*
+            explains why, for the log and the evidence error_message.
+        """
+        ctx = self._checkpoint_context(Checkpoint.BEFORE_FORM_SUBMIT, job)
+
+        try:
+            pause_required = bool(
+                self._interrupt_policy.should_pause(
+                    Checkpoint.BEFORE_FORM_SUBMIT, ctx
+                )
+            )
+        except Exception as exc:
+            return (
+                False,
+                "SUBMISSION_GATE_BLOCKED",
+                f"interrupt policy raised: {exc}"[:200],
+            )
+
+        if not pause_required:
+            # The user configured autonomous submission for this checkpoint.
+            return True, "", "no pre-submit review configured"
+
+        if self._approval_gate is None:
+            return (
+                False,
+                "SUBMISSION_GATE_BLOCKED",
+                "pre-submit review is required but no approval gate is wired",
+            )
+
+        try:
+            choice = self._approval_gate(
+                "Submit application?",
+                ["submit", "skip"],
+                f"submit_{job.url}",
+            )
+        except Exception as exc:
+            return (
+                False,
+                "SUBMISSION_GATE_BLOCKED",
+                f"approval gate raised: {exc}"[:200],
+            )
+
+        if choice == self.SUBMIT_APPROVAL_TOKEN:
+            return True, "", "user approved"
+
+        if choice == "skip":
+            return False, "USER_SKIPPED", "user declined at the submit checkpoint"
+
+        return (
+            False,
+            "SUBMISSION_GATE_BLOCKED",
+            f"approval gate returned an unrecognised answer: {choice!r}",
+        )
+
+    def _navigate(self, url: str) -> None:
+        """Load a URL through the shared PageActionService tool.
+
+        Routing here is what finally activates two features that had been
+        written, tested and left on a dead branch: ``navigation_retries``
+        (a bounded search for a working URL, so a dead link is abandoned rather
+        than hanging the session) and ``warmup_pause`` (a one-time human-scale
+        pause before the very first page load, which measurably reduces the
+        chance of an immediate CAPTCHA).
+
+        The tool never raises — it returns a falsy ``ActionResult`` — so the
+        failure is converted here, preserving this engine's existing
+        FAILED_NAVIGATION path exactly.
+
+        Args:
+            url: The fully qualified URL to load.
+
+        Raises:
+            ApplicationError: If the load did not complete.
+        """
+        if self._navigation is None:
+            # Degradation: no tool (no driver, or direct construction). Fall
+            # back to the raw browser rather than inventing a second retry
+            # implementation here.
+            self._browser.get(url)
+            return
+
+        result = self._navigation.navigate(url)
+        if not result:
+            reason = getattr(result, "reason", "unknown")
+            raise ApplicationError(f"navigation did not complete: {reason}")
+
     def _submit_application(
         self, job: Job, evidence: ApplicationEvidence
     ) -> ApplicationEvidence:
@@ -1131,31 +1405,33 @@ class ApplicationsWorkflow:
             Updated ApplicationEvidence with submission outcome, confirmation
             phrases found, cooldown extraction, and confidence score.
         """
-        # ── HITL gate (pre-submit user approval) ──────────────────────────
-        try:
-            ctx = type("ctx", (), {"job": job})()
-            if self._interrupt_policy.should_pause(
-                Checkpoint.BEFORE_FORM_SUBMIT, ctx
-            ):
-                if self._approval_gate is not None:
-                    choice = self._approval_gate(
-                        "Submit application?",
-                        ["submit", "skip"],
-                        f"submit_{job.url}",
-                    )
-                    if choice == "skip":
-                        logger.info(
-                            "ApplicationsWorkflow: user skipped submission | job=%s",
-                            job.title,
-                        )
-                        return evidence.model_copy(update={
-                            "outcome": "USER_SKIPPED",
-                            "confidence": 1.0,
-                        })
-        except Exception as exc:
-            logger.debug(
-                "ApplicationsWorkflow: HITL submit check failed: %s", exc
+        # ── Submission gate (fail closed) ─────────────────────────────────
+        # Nothing below this point may run unless submission is authorised.
+        # This is deliberately NOT wrapped in a try/except that continues: a
+        # swallowed error here is how an unapproved application gets sent.
+        authorized, gate_outcome, gate_detail = self._authorize_submission(job)
+        if not authorized:
+            self._warn_once_about_the_gate(gate_outcome, gate_detail)
+            logger.info(
+                "ApplicationsWorkflow: submission not authorised | job=%s "
+                "outcome=%s reason=%s",
+                job.title,
+                gate_outcome,
+                gate_detail,
             )
+            return evidence.model_copy(update={
+                "submit_clicked": False,
+                "outcome": gate_outcome,
+                "error_message": gate_detail,
+                "confidence": 1.0,
+                **self._run_statistics(),
+            })
+
+        logger.debug(
+            "ApplicationsWorkflow: submission authorised | job=%s reason=%s",
+            job.title,
+            gate_detail,
+        )
 
         # ── Find the submit button ────────────────────────────────────────
         submit_button = None
@@ -1185,6 +1461,7 @@ class ApplicationsWorkflow:
                 "submit_button_found": False,
                 "outcome": "FAILED_NO_SUBMIT_BUTTON",
                 "confidence": 0.95,
+                **self._run_statistics(),
             })
 
         # ── Click submit ──────────────────────────────────────────────────
@@ -1204,11 +1481,16 @@ class ApplicationsWorkflow:
                 "outcome": "ERROR",
                 "error_message": str(exc)[:200],
                 "confidence": 0.90,
+                **self._run_statistics(),
             })
 
         # ── Wait for post-submit page to settle ───────────────────────────
         try:
-            if hasattr(self._dom_observer, "wait_for_dom_stable"):
+            if self._dom_observer is not None:
+                # FOLLOW-UP: this 15.0 and DOM_STABILIZATION_TIMEOUT_S (8.0)
+                # are page-transition budgets, still literals. Collapsing
+                # them onto config is a separate single-source change —
+                # doing it here would silently shorten live waits.
                 self._dom_observer.wait_for_dom_stable(timeout=15.0)
         except Exception:
             pass
@@ -1472,7 +1754,15 @@ class ApplicationsWorkflow:
             job.company,
         )
 
+        # One identifier per attempt, stamped on the outcome record and on
+        # every per-page research row, so friction data joins to the
+        # outcome that produced it. Deterministic: no RNG, so a seeded
+        # replay produces the same ids.
+        self._attempt_seq += 1
+        self._attempt_id = f"{session_id or 'session'}:{self._attempt_seq}"
+
         evidence = ApplicationEvidence(
+            attempt_id=self._attempt_id,
             pre_submit_url=job.url,
             page_title_before=job.title,
         )
@@ -1506,6 +1796,7 @@ class ApplicationsWorkflow:
                 "error_message": (
                     "Login wall — application form requires authentication"
                 ),
+                            **self._run_statistics(),
             })
             self._record_application_outcome(evidence)
             return evidence
@@ -1515,6 +1806,7 @@ class ApplicationsWorkflow:
                 "outcome": "CAPTCHA_BLOCKED",
                 "confidence": 0.90,
                 "captcha_encountered": True,
+                            **self._run_statistics(),
             })
             self._record_application_outcome(evidence)
             return evidence
@@ -1523,7 +1815,10 @@ class ApplicationsWorkflow:
             while True:
                 # ── iFrame + Shadow DOM fallback (Wave K1) ──────────────
                 structure = self._get_form_structure_with_iframe_fallback(job)
-                self._instantiate_form_fsm(structure)
+                # One research record per wizard step, page-indexed.
+                self._observe_form_structure(
+                    structure, job, page_index=self._pages_navigated
+                )
                 classifications = self._classify_all_fields(structure)
 
                 # ── Lazy scroll to top before filling ────────────────────
@@ -1536,12 +1831,14 @@ class ApplicationsWorkflow:
                     classifications, structure
                 )
                 self._handle_file_uploads(structure)
+                self._fields_filled += self._run_strategic_pass()
 
                 if not self._handle_interruptions(job):
                     evidence = evidence.model_copy(update={
                         "outcome": "CAPTCHA_BLOCKED",
                         "confidence": 0.90,
                         "captcha_encountered": True,
+                        **self._run_statistics(),
                     })
                     self._record_application_outcome(evidence)
                     return evidence
@@ -1556,9 +1853,6 @@ class ApplicationsWorkflow:
             # ❯❯❯ Close the tab that was opened for the application if any
             if self._context_manager:
                 self._context_manager.close_current_tab_and_return()
-
-            # -- observe form structure for research -----------------------
-            self._observe_form_structure(structure, job)
 
             logger.info(
                 "ApplicationsWorkflow.run() complete | %s pages=%d fields=%d gpt4all=%s",
@@ -1580,12 +1874,20 @@ class ApplicationsWorkflow:
     # Research observation helpers
     # ------------------------------------------------------------------
 
-    def _observe_form_structure(self, form_structure, job: Job) -> None:
-        """Submit the form structure observation to the research pipeline.
+    def _observe_form_structure(
+        self, form_structure, job: Job, page_index: int = 0
+    ) -> None:
+        """Submit one form-structure observation to the research pipeline.
+
+        Called once per wizard page rather than once per application, so a
+        multi-step form contributes one record per step. Previously this ran
+        after the page loop, where ``structure`` had been rebound on every
+        iteration — a five-page application contributed only its last page.
 
         Args:
             form_structure: A FormStructure from PageUnderstandingPort (or empty stub).
             job: The Job being processed.
+            page_index: Zero-based step within the application.
         """
         if self._research_observer is None:
             return
@@ -1621,6 +1923,8 @@ class ApplicationsWorkflow:
                     application_form_field_count=(
                         len(fs.fields) if fs else 0
                     ),
+                    page_index=page_index,
+                    attempt_id=self._attempt_id,
                 )
             )
         except Exception as exc:

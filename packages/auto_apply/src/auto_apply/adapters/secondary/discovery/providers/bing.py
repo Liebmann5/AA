@@ -40,8 +40,25 @@ logger = logging.getLogger(__name__)
 class BingProvider(BaseSearchProvider):
     """A provider that finds jobs via Bing's job search aggregation."""
 
-    def __init__(self, browser: BrowserInterface) -> None:
-        super().__init__(browser)
+    def __init__(
+        self,
+        browser: BrowserInterface,
+        scroller=None,
+        paginator=None,
+        max_pages: int = 1,
+        observer=None,
+        reporter=None,
+        forced_tier=None,
+    ) -> None:
+        super().__init__(
+            browser,
+            scroller,
+            paginator,
+            max_pages,
+            observer,
+            reporter,
+            forced_tier,
+        )
 
         # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
         self._engine_strategy = BingSearchStrategy()
@@ -92,6 +109,12 @@ class BingProvider(BaseSearchProvider):
             search_prefs=None,
             source_tag="Bing",
             max_results=instruction.max_results,
+            scroller=self._scroller,
+            paginator=self._paginator,
+            max_pages=self._max_pages,
+            observer=self._observer,
+            reporter=self._reporter,
+            forced_tier=self._forced_tier,
             title_parser=SmartTextExtractor(
                 strategies=[
                     "h2",

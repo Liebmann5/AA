@@ -49,6 +49,36 @@ from auto_apply.infrastructure.resilient_driver import ResilientDriver
 logger = logging.getLogger(__name__)
 
 
+_CHROME_VERSION_MISMATCH_MARKERS = (
+    "only supports chrome version",
+    "this version of chromedriver",
+)
+
+
+def _is_stealth_chrome_version_mismatch(browser: str, error_msg: str) -> bool:
+    """True when a Chrome candidate failed due to a ChromeDriver/Chrome version
+    mismatch (the signature undetected_chromedriver / Selenium emit). Pure and
+    case-insensitive so it is trivially testable and framework-agnostic."""
+    if "chrome" not in browser.lower():
+        return False
+    low = error_msg.lower()
+    return any(marker in low for marker in _CHROME_VERSION_MISMATCH_MARKERS)
+
+
+def _version_mismatch_detail(error_msg: str) -> str:
+    """Best-effort 'driver expects X, browser is Y' extract for the warning; falls
+    back to a generic phrase if the versions are not present in the message."""
+    import re as _re  # noqa: PLC0415
+
+    supports = _re.search(r"only supports Chrome version (\d+)", error_msg)
+    current = _re.search(r"Current browser version is ([\d.]+)", error_msg)
+    if supports and current:
+        return f"driver expects Chrome {supports.group(1)}, installed is {current.group(1)}"
+    if supports:
+        return f"driver expects Chrome {supports.group(1)}"
+    return "version mismatch"
+
+
 class BrowserCascade:
     """Selects and initializes a browser using an ordered fallback strategy.
 
@@ -203,6 +233,24 @@ class BrowserCascade:
                 "source=%s error=%s",
                 framework, browser, source, error_msg,
             )
+            # Honest surfacing: a Chrome/ChromeDriver version mismatch silently
+            # costs the user their stealth (anti-detection) browser and drops them
+            # onto a plain one, which raises CAPTCHA / bot-block risk. Detect that
+            # specific case and say so plainly, naming the cost and the cause, so
+            # the fallback is not invisible. AA does NOT modify the user's machine
+            # or force a browser — the user decides whether to update Chrome or the
+            # driver. The run continues on the next candidate.
+            if _is_stealth_chrome_version_mismatch(browser, error_msg):
+                logger.warning(
+                    "Stealth browser unavailable: the stealth Chrome driver and "
+                    "your installed Chrome are on different versions (%s), so "
+                    "anti-detection could not be applied. AA is falling back to a "
+                    "non-stealth browser, which increases CAPTCHA / bot-block risk "
+                    "on sites like Google. To use stealth Chrome, update Chrome or "
+                    "its driver to matching versions — AA will not change your "
+                    "system automatically.",
+                    _version_mismatch_detail(error_msg),
+                )
             return None
 
     def _build_config(self, browser_type: str) -> dict:

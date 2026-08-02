@@ -147,28 +147,33 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         Scores each node based on the number of interactable descendants,
         then selects the highest‑scoring subtrees that do not overlap.
         """
-        # Map each node to the set of interactables it contains
-        node_to_inputs: dict[DOMNode, set[DOMNode]] = defaultdict(set)
-        for inp in interactables:
-            # Walk up the tree and add this input to each ancestor
-            # Since DOMNode doesn't have parent pointer, we pre‑compute
-            # a parent map during a single traversal.
-            pass
+        # Map each node to the set of interactables it contains.
+        #
+        # Keyed by ``id(node)``, not by the node. ``DOMNode`` is a frozen
+        # dataclass, so its generated ``__hash__`` recurses through
+        # ``children`` — hashing one node hashes its whole subtree, uncached.
+        # Using nodes as keys here cost ~1.1 ms per dict operation on a real
+        # SERP and, worse, made two structurally identical sibling cards a
+        # single key, merging their input sets. Identity is what this map
+        # means: which node, not which shape.
+        node_to_inputs: dict[int, set[int]] = defaultdict(set)
+        nodes_by_id: dict[int, DOMNode] = {}
 
         # For efficiency, we build a parent map first.
         parent_map = self._build_parent_map(root)
 
         for inp in interactables:
-            current = inp
+            current: DOMNode | None = inp
             while current is not None:
-                node_to_inputs[current].add(inp)
-                current = parent_map.get(current)
+                nodes_by_id[id(current)] = current
+                node_to_inputs[id(current)].add(id(inp))
+                current = parent_map.get(id(current))
 
         # Score each node: number of inputs it contains
         candidates = []
-        for node, inputs in node_to_inputs.items():
+        for node_id, inputs in node_to_inputs.items():
             if len(inputs) >= self.MIN_INPUTS_FOR_FORM:
-                candidates.append((len(inputs), node))
+                candidates.append((len(inputs), nodes_by_id[node_id]))
 
         if not candidates:
             return []
@@ -179,46 +184,85 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         # Greedy selection: pick highest scoring, then remove any node
         # that is an ancestor/descendant of a chosen one to avoid overlaps.
         selected: list[DOMNode] = []
-        chosen_ancestors: set[DOMNode] = set()
+        chosen_ancestors: set[int] = set()
         for _, node in candidates:
             # Check if node is ancestor/descendant of already chosen
             if self._has_overlap(node, chosen_ancestors, parent_map):
                 continue
             selected.append(node)
             # Mark all ancestors and descendants (simplified: mark only node)
-            chosen_ancestors.add(node)
+            chosen_ancestors.add(id(node))
 
         return selected
 
-    def _build_parent_map(self, root: DOMNode) -> dict[DOMNode, DOMNode | None]:
-        """Return a dictionary mapping each node to its parent."""
-        parent_map: dict[DOMNode, DOMNode | None] = {root: None}
+    def _build_parent_map(self, root: DOMNode) -> dict[int, DOMNode | None]:
+        """Return a dictionary mapping each node's ``id()`` to its parent.
+
+        Keyed by identity rather than by the node itself, for two reasons that
+        are both load-bearing:
+
+        * **Correctness.** ``DOMNode`` equality is structural, so two identical
+          sibling job cards are the same dict key. A node-keyed map silently
+          collapses them and then hands back the wrong parent — on a SERP,
+          which is repeated identical cards by definition, that is most of the
+          page.
+        * **Cost.** The frozen dataclass ``__hash__`` recurses through
+          ``children`` and is not cached, so every lookup hashes an entire
+          subtree. Measured at ~1.1 ms per lookup on a 2,641-node Google SERP,
+          which is what made ``analyze()`` take minutes.
+
+        Values stay real ``DOMNode`` objects, and ``analyze()`` holds the root
+        for the map's whole lifetime, so no node can be collected and no id
+        reused while the map is in use.
+
+        Args:
+            root: Root of the tree to index.
+
+        Returns:
+            ``{id(node): parent_node_or_None}`` for every node in the tree.
+        """
+        parent_map: dict[int, DOMNode | None] = {id(root): None}
         stack = [root]
         while stack:
             node = stack.pop()
             for child in node.children:
-                parent_map[child] = node
+                parent_map[id(child)] = node
                 stack.append(child)
         return parent_map
 
     @staticmethod
     def _has_overlap(
-        node: DOMNode, selected: set[DOMNode], parent_map: dict[DOMNode, DOMNode | None]
+        node: DOMNode,
+        selected: set[int],
+        parent_map: dict[int, DOMNode | None],
     ) -> bool:
-        """Return True if node is ancestor or descendant of any node in selected."""
+        """Return True if node is ancestor or descendant of any selected node.
+
+        ``selected`` holds ``id()`` values and comparisons are by identity, to
+        match :meth:`_build_parent_map`. Structural equality would treat two
+        distinct-but-identical cards as overlapping and discard one of them.
+
+        Args:
+            node: Candidate container.
+            selected: ``id()`` of the containers already chosen.
+            parent_map: Identity-keyed parent map from ``_build_parent_map``.
+
+        Returns:
+            True if the candidate overlaps anything already chosen.
+        """
         # Check if any selected node is an ancestor of node
-        current = node
-        while current:
-            if current in selected:
+        current: DOMNode | None = node
+        while current is not None:
+            if id(current) in selected:
                 return True
-            current = parent_map.get(current)
+            current = parent_map.get(id(current))
         # Check if node is ancestor of any selected
-        for sel in selected:
-            current = sel
-            while current:
-                if current == node:
+        for sel_id in selected:
+            current = parent_map.get(sel_id)
+            while current is not None:
+                if current is node:
                     return True
-                current = parent_map.get(current)
+                current = parent_map.get(id(current))
         return False
 
     # ======================================================================
@@ -270,9 +314,9 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             parent_map = self._build_parent_map(ancestor)
         current: DOMNode | None = node
         while current is not None:
-            if current == ancestor:
+            if current is ancestor:
                 return True
-            current = parent_map.get(current)
+            current = parent_map.get(id(current))
         return False
 
     # ======================================================================
@@ -389,18 +433,18 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             return 0
         # Build path from node_a to root
         path_a = set()
-        curr = node_a
+        curr: DOMNode | None = node_a
         while curr is not None:
-            path_a.add(curr)
-            curr = self._parent_map.get(curr)
+            path_a.add(id(curr))
+            curr = self._parent_map.get(id(curr))
         # Walk up from node_b until we hit a node in path_a (the LCA)
         curr = node_b
         lca = None
         while curr is not None:
-            if curr in path_a:
+            if id(curr) in path_a:
                 lca = curr
                 break
-            curr = self._parent_map.get(curr)
+            curr = self._parent_map.get(id(curr))
         if lca is None:
             # Should not happen if both are in the same tree
             return 1_000_000
@@ -413,9 +457,9 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         """Return depth of a node (root = 0)."""
         depth = 0
         curr = node
-        while self._parent_map.get(curr) is not None:
+        while self._parent_map.get(id(curr)) is not None:
             depth += 1
-            curr = self._parent_map[curr]
+            curr = self._parent_map[id(curr)]
         return depth
 
     def _build_labeled_field(

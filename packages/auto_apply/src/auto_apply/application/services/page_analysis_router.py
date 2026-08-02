@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
-from enum import Enum, auto
+from auto_apply.domain.models.analysis_tier import PageAnalysisTier
 from typing import TYPE_CHECKING, Optional
 
 from auto_apply.domain.ports.ats_port import ATSRegistryPort
@@ -24,13 +24,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class PageAnalysisTier(Enum):
-    """Analysis tiers ordered from cheapest to most expensive."""
-
-    STRUCTURED_DATA = auto()    # JSON‑LD present → skip scraping
-    KNOWN_PLATFORM = auto()     # Known ATS with explicit selectors
-    CSS_EXTRACTION = auto()     # DOMScanner + FieldClassifier
-    FULL_MATH_DOM = auto()      # MathDOM + Hungarian
+# PageAnalysisTier now lives in the domain so adapters can honour a forced
+# tier without importing this service. Re-exported here: every existing
+# `from ...page_analysis_router import PageAnalysisTier` keeps working.
+PageAnalysisTier = PageAnalysisTier
 
 
 class PageAnalysisRouter:
@@ -57,9 +54,13 @@ class PageAnalysisRouter:
         self,
         ats_registry: ATSRegistryPort | None = None,
         feedback_service: "PageFeedbackService | None" = None,
+        forced_tier: PageAnalysisTier | None = None,
     ) -> None:
         self._ats_registry = ats_registry
         self._feedback_service = feedback_service
+        # When set, every page uses this tier. None (the default) leaves
+        # selection exactly as it was.
+        self._forced_tier = forced_tier
 
     # ==================================================================
     # PUBLIC
@@ -82,6 +83,14 @@ class PageAnalysisRouter:
             The recommended tier; *always* returns a valid tier.
             Falls back to ``FULL_MATH_DOM`` in the worst case.
         """
+        if self._forced_tier is not None:
+            logger.debug(
+                "PageAnalysisTier: %s (forced) | url=%s",
+                self._forced_tier.name,
+                url,
+            )
+            return self._forced_tier
+
         # ── 1. Compute static scores for every tier ──────────────────────
         static_scores = self._static_tier_scores(url, page_html)
 

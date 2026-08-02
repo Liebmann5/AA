@@ -9,7 +9,6 @@ accidental toggling off).
 import logging
 from typing import Any
 
-from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.adapters.secondary.interaction.handlers.base import BaseInputHandler
 from auto_apply.domain.ports.browser_port import ElementInterface
 
@@ -109,7 +108,7 @@ class CheckableInputHandler(BaseInputHandler):
     def _click_safely(self, element: ElementInterface) -> None:
         """Attempts a human-like click, falling back to JavaScript if intercepted."""
         try:
-            behavior.human_like_click(self.browser, element)
+            self._click(element)
         except Exception as e:
             logger.debug("Human-like click failed on checkable: %s. Attempting JS fallback.", e)  # noqa: E501
             try:

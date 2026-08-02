@@ -24,6 +24,10 @@ Example:
 
 import getpass
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from auto_apply.application.services.session_controller import SessionController
 import sys
 from pathlib import Path
 from collections.abc import Callable
@@ -365,6 +369,8 @@ class CLIStartup:
             apps_tried      = stats.get("applications_attempted", 0)
             apps_submitted  = stats.get("applications_submitted", 0)
             apps_failed     = stats.get("applications_failed", 0)
+            apps_blocked    = stats.get("submissions_blocked_by_gate", 0)
+            gate_remedy     = stats.get("gate_block_remedy", "")
             duration_s      = stats.get("session_duration_seconds", 0)
             submitted_urls  = stats.get("submitted_job_urls", [])
             submitted_companies = stats.get("submitted_companies", {})
@@ -379,7 +385,15 @@ class CLIStartup:
             print(f"  \U0001f3af  Applications submitted:   {apps_submitted}")  # noqa: T201
             if apps_failed > 0:
                 print(f"  \u274c  Applications failed:      {apps_failed}")  # noqa: T201
+            if apps_blocked > 0:
+                # Blocked is not failed: the gate held and is waiting for a
+                # human. Printed with the remedy so a correct run cannot be
+                # mistaken for a broken one.
+                print(f"  \u26d4  Blocked (awaiting review): {apps_blocked}")  # noqa: T201
             print(f"\n  \u23f1   Session duration:         {minutes}m {seconds}s")  # noqa: T201
+
+            if gate_remedy:
+                print(f"\n  {gate_remedy}")  # noqa: T201
 
             if submitted_urls:
                 print(f"\n  Submitted applications:")  # noqa: T201

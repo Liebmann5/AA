@@ -661,9 +661,18 @@ class DatabaseManager:
 
         try:
             with self.get_connection() as conn:
+                # OR IGNORE, because re-finding a job you already know is the
+                # normal case, not a failure. A bare INSERT raised
+                # IntegrityError on every repeat search and surfaced as two
+                # ERROR lines ("Database transaction failed" plus "Failed to
+                # record job discovery"), which is how a routine no-op came to
+                # look like data loss in the log. rowcount now carries the
+                # answer the docstring already promised: 1 for new, 0 for
+                # already known.
                 cursor = conn.execute(
                     """
-                    INSERT INTO job_history (url_hash, url, company, title, status, applied_at)
+                    INSERT OR IGNORE INTO job_history
+                        (url_hash, url, company, title, status, applied_at)
                     VALUES (?, ?, ?, ?, 'DISCOVERED', ?)
                     """,  # noqa: E501
                     (url_hash, url, company, title, now),

@@ -19,7 +19,13 @@ logger = logging.getLogger(__name__)
 class PaginationStrategy(ABC):
     """The abstract base class (contract) for all pagination strategies."""
 
-    def __init__(self, browser: BrowserInterface, interactor: InteractionPort | None = None):
+    def __init__(
+        self,
+        browser: BrowserInterface,
+        interactor: InteractionPort | None = None,
+        scroller=None,
+        settle_s: float = 2.0,
+    ):
         """Initializes the pagination strategy.
 
         Args:
@@ -30,6 +36,8 @@ class PaginationStrategy(ABC):
         """
         self.browser = browser
         self._interactor = interactor
+        self._scroller = scroller
+        self._settle_s = float(settle_s)
 
     @property
     def name(self) -> str:
@@ -161,11 +169,17 @@ class InfiniteScrollStrategy(PaginationStrategy):
             True if the page grew (new content loaded).
             False if we hit the bottom and nothing happened.
         """
+        if self._scroller is not None:
+            # One implementation of 'scroll and see if the page grew'.
+            return self._scroller.scroll_to_bottom()
+
         prev_height = self.browser.execute_script("return document.body.scrollHeight")
 
         self.browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
 
-        time.sleep(2.0)
+        # Was a hardcoded 2.0. The default IS 2.0, so the unconfigured
+        # path is byte-for-byte what it was.
+        time.sleep(self._settle_s)
 
         new_height = self.browser.execute_script("return document.body.scrollHeight")
 

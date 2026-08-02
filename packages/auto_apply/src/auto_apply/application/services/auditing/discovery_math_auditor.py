@@ -18,6 +18,15 @@ class DiscoveryMathAuditor:
     """
     _ENABLED = _ENABLED
 
+    @property
+    def enabled(self) -> bool:
+        """Whether records are being kept — satisfies ExtractionObserverPort.
+
+        Reads the same class flag every static call site already reads, so
+        instance use and static use agree by construction.
+        """
+        return bool(self._ENABLED)
+
     @staticmethod
     def audit_candidate_containers(containers: list[Any], source: str) -> None:
         if not DiscoveryMathAuditor._ENABLED or not containers:

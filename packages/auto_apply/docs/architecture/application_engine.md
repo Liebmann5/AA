@@ -212,8 +212,23 @@ appropriate handler:
 
 Every action is wrapped with **micro‑timing** (parabolic pauses) and
 **macro‑timing** (inter‑action delays of 0.3–1.2 seconds). The executor
-never calls `element.click()` directly — it goes through `PageActionService`,
-which applies the active execution strategy (stealth or instant).
+never calls `element.click()` directly — `InteractionExecutor.click()`
+delegates to `PageActionService`, which owns the mouse path, the settle
+pause and the seeded RNG.
+
+> **Status (Stage 1).** Clicking and inter‑step pacing route through the
+> tool. The two `execution_strategies` classes (`StealthHumanStrategy`,
+> `InstantHeadlessStrategy`) are **not** yet constructed by anything —
+> `InteractionExecutor.strategy` is assigned and never read. They are
+> scheduled to become the tool's two injected timing profiles; until then
+> the tool's own config‑driven timing applies and there is no "active
+> execution strategy" to select.
+
+**Submission is gated.** The submit click cannot fire unless submission is
+explicitly authorised — either the user's `human_review_checkpoints` omits
+`BEFORE_FORM_SUBMIT`, or a wired approval gate returned the approval token.
+Anything else records `SUBMISSION_GATE_BLOCKED` and does not click. See
+[ADR‑012](../adr/012_fail_closed_submission_gate.md).
 
 ### Error Recovery
 

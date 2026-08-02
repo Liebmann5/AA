@@ -25,6 +25,8 @@ marked **Superseded**.
 | [ADR‑008](008_plugin_architecture.md) | Protocol‑Based Plugin Architecture | Accepted |
 | [ADR‑009](009_research_module.md) | Consent‑Gated, Zero‑PII Research Module | Accepted |
 | [ADR‑010](010_remediation_changelog.md) | Architecture Audit and Remediation Sprint | Accepted |
+| [ADR‑011](011_discovery_pipeline_priority.md) | Discovery Pipeline Priority Bands | Accepted |
+| [ADR‑012](012_fail_closed_submission_gate.md) | Fail‑Closed Submission Gate | Accepted |
 
 ---
 

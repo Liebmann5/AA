@@ -41,8 +41,22 @@ class IndeedProvider(BaseSearchProvider):
         self,
         browser: BrowserInterface,
         evasion_manager: EvasionManager | None = None,
+        scroller=None,
+        paginator=None,
+        max_pages: int = 1,
+        observer=None,
+        reporter=None,
+        forced_tier=None,
     ) -> None:
-        super().__init__(browser)
+        super().__init__(
+            browser,
+            scroller,
+            paginator,
+            max_pages,
+            observer,
+            reporter,
+            forced_tier,
+        )
 
         # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
         self._engine_strategy = IndeedSearchStrategy()
@@ -108,6 +122,12 @@ class IndeedProvider(BaseSearchProvider):
                 None,
                 source_tag="Indeed",
                 max_results=instruction.max_results,
+                scroller=self._scroller,
+                paginator=self._paginator,
+                max_pages=self._max_pages,
+            observer=self._observer,
+            reporter=self._reporter,
+            forced_tier=self._forced_tier,
                 title_parser=SmartTextExtractor(
                     strategies=[
                         "h2.jobTitle",

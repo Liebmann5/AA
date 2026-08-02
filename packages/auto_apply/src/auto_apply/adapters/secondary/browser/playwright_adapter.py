@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from playwright.sync_api import Browser, Page, Playwright
+    from playwright.sync_api import Locator as PlaywrightLocator
 
 # Playwright-specific imports are moved inside a lazy initialisation
 # function to avoid hard dependency at module load time.
