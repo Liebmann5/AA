@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from datetime import datetime
 from typing import Any
 
@@ -81,7 +80,7 @@ class DateInputHandler(BaseInputHandler):
                 element,
                 value,
             )
-            time.sleep(0.3)
+            self._settle()
 
             # Verify the value "stuck".
             current = self.browser.execute_script(
@@ -101,10 +100,8 @@ class DateInputHandler(BaseInputHandler):
         Returns True if the element accepted the value.
         """
         try:
-            element.click()
-            time.sleep(0.2)
-            element.send_keys(value)
-            time.sleep(0.2)
+            self._click(element)
+            self._type(element, value)
             element.send_keys(Keys.TAB)  # Dismiss any date-picker overlay.
             logger.debug("DateInputHandler: send_keys OK | value=%s", value)
             return True
@@ -116,13 +113,12 @@ class DateInputHandler(BaseInputHandler):
     def _try_clear_and_type(self, element: ElementInterface, value: str) -> None:
         """Brute‑force fallback: select all, delete, type character by character."""
         try:
-            element.click()
-            time.sleep(0.15)
+            self._click(element)
             # Select existing text and replace.
             element.send_keys(Keys.BACKSPACE * 20)
-            for char in value:
-                element.send_keys(char)
-                time.sleep(0.05)
+            # The tool types character by character with its own rhythm;
+            # the old 0.05s-per-character loop was a second implementation.
+            self._type(element, value)
             element.send_keys(Keys.TAB)
             logger.debug("DateInputHandler: clear+type OK | value=%s", value)
         except Exception as exc:

@@ -49,6 +49,7 @@ from typing import Any
 
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.job import Job
+from auto_apply.domain.models.task_priority import TaskPriority
 from auto_apply.domain.models.parsed_job_description import ParsedJobDescription
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.session_plan import SessionExecutionMode
@@ -385,7 +386,7 @@ class VettingWorkflow:
             job: The approved Job to enqueue.
         """
         fit = getattr(job, "fit_score", 0.0) or 0.0
-        priority = max(1, int((1.0 - fit) * 10) + 1)
+        priority = TaskPriority.apply_for_fit(fit)
         try:
             self._task_queue.queue_task(
                 WorkUnit(

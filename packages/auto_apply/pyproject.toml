@@ -221,9 +221,9 @@ auto-apply = "auto_apply.main:main"
 
 # ── URLs ──────────────────────────────────────────────────────────────────────
 [project.urls]
-"Homepage"    = "https://github.com/Liebman5/AA"
-"Bug Tracker" = "https://github.com/Liebman5/AA/issues"
-"Source"      = "https://github.com/Liebman5/AA/tree/main/packages/auto_apply"
+"Homepage"    = "https://github.com/Liebmann5/AA"
+"Bug Tracker" = "https://github.com/Liebmann5/AA/issues"
+"Source"      = "https://github.com/Liebmann5/AA/tree/main/packages/auto_apply"
 "Personal"    = "https://www.nicholasliebmann.dev/"
 
 

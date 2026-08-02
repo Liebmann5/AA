@@ -162,6 +162,24 @@ class PageActionService:
         self._settle_min_s:  float = float(cfg.get("settle_min_s", 0.3))
         self._settle_max_s:  float = float(cfg.get("settle_max_s", 1.2))
 
+        # Action-pacing FLOOR. The registry raises min_action_delay_ms in
+        # low-resource mode (e.g. 500ms -> 800ms); it is the minimum time that
+        # should elapse between actions. It floors the settle pause (the
+        # between-actions rhythm) so a weak machine is genuinely paced slower —
+        # macro pauses are already well above it and micro (keystroke) timing is
+        # a different rhythm, so this is the floor's single, correct consumer.
+        self._min_action_delay_s: float = max(
+            0.0, float(cfg.get("min_action_delay_ms", 500)) / 1000.0
+        )
+
+        # One-time warmup: a human opens the browser and orients before their
+        # first navigation. Firing the first request the instant the driver is
+        # ready is a bot signal (it contributed to the immediate CAPTCHA on
+        # Google). navigate() performs a single warmup pause before the first
+        # load. This is one factor, not a silver bullet, and is fully
+        # config-driven (macro range + the floor above) so it can be measured.
+        self._warmed_up: bool = False
+
         # Feature flags — determined by hardware and admin policy.
         self._human_timing:  bool = bool(cfg.get("enable_human_timing",        True))
         self._fingerprint:   bool = bool(cfg.get("enable_fingerprint_spoofing", True))
@@ -170,6 +188,10 @@ class PageActionService:
         # This is a navigation *policy* (how many attempts before giving up),
         # not a human-timing value. See navigate() and its traversal-graph note.
         self._navigation_retries: int = max(1, int(cfg.get("navigation_retries", 3)))
+        self._infinite_scroll_settle_s: float = float(
+            cfg.get("infinite_scroll_settle_s", 2.0)
+        )
+        self._occlusion_guard: bool = bool(cfg.get("occlusion_guard", True))
 
         logger.debug(
             "PageActionService ready | micro_peak=%.0fms "
@@ -239,6 +261,9 @@ class PageActionService:
         attempts = max(1, self._navigation_retries)
         target = url
         last_reason = "navigation not attempted"
+        # Warm up once before the very first load of the session (CAPTCHA
+        # mitigation). No-op on every subsequent navigation.
+        self.warmup_pause()
         for attempt in range(1, attempts + 1):
             try:
                 logger.debug("navigate | attempt=%d/%d url=%s", attempt, attempts, target)
@@ -409,6 +434,66 @@ class PageActionService:
     # CLICK
     # =========================================================================
 
+    #: Classifies a click target. Returns one of:
+    #:   "ok"            - the target (or a descendant) is topmost at its centre
+    #:   "hidden"        - display:none or zero-sized: a classic honeypot shape
+    #:   "occluded:<tag>" - something unrelated is on top of it
+    #:   "offscreen"     - outside the viewport, so elementFromPoint cannot judge
+    _REACHABILITY_SCRIPT = """
+    var elem = arguments[0];
+    if (window.getComputedStyle(elem).display === 'none') { return 'hidden'; }
+    if (elem.offsetWidth === 0 || elem.offsetHeight === 0) { return 'hidden'; }
+    var box = elem.getBoundingClientRect();
+    var cx = box.left + box.width / 2;
+    var cy = box.top + box.height / 2;
+    if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) {
+        return 'offscreen';
+    }
+    var top = document.elementFromPoint(cx, cy);
+    if (!top) { return 'offscreen'; }
+    for (var e = top; e; e = e.parentElement) {
+        if (e === elem) { return 'ok'; }
+    }
+    for (var a = elem; a; a = a.parentElement) {
+        if (a === top) { return 'ok'; }
+    }
+    return 'occluded:' + (top.tagName || '?').toLowerCase();
+    """
+
+    def _click_target_reachable(self, element: ElementInterface) -> tuple[bool | None, str]:
+        """Judges whether a click will land on the intended element.
+
+        Three outcomes, and the third is the important one:
+
+        * ``True``  - the target, or something inside it, is topmost.
+        * ``False`` - something unrelated covers it, or it is hidden/zero-sized
+          (the classic honeypot shape).
+        * ``None``  - undetermined: the element is outside the viewport, or the
+          probe failed. **Undetermined proceeds.** The predecessor of this check
+          treated every error as a trap and was disabled for being "too
+          aggressive"; refusing to click because we could not look is how a
+          guard becomes worse than no guard.
+
+        Args:
+            element: The element about to be clicked.
+
+        Returns:
+            ``(verdict, detail)`` where verdict is True/False/None.
+        """
+        try:
+            verdict = self._browser.execute_script(
+                self._REACHABILITY_SCRIPT, element
+            )
+        except Exception as exc:
+            logger.debug("occlusion probe failed, proceeding | %s", exc)
+            return None, "probe failed"
+
+        if verdict == "ok":
+            return True, "reachable"
+        if verdict == "offscreen" or not verdict:
+            return None, "outside the viewport"
+        return False, str(verdict)
+
     def click(self, element: ElementInterface) -> ActionResult:
         """Performs a human-like click on an element.
 
@@ -430,6 +515,21 @@ class PageActionService:
         Returns:
             ActionResult. success=True if the click completed.
         """
+        if self._occlusion_guard:
+            reachable, detail = self._click_target_reachable(element)
+            if reachable is False:
+                # Most occlusion is a sticky header or a banner that a
+                # scroll resolves, so look again before refusing.
+                self.scroll_to(element)
+                reachable, detail = self._click_target_reachable(element)
+            if reachable is False:
+                logger.warning(
+                    "click refused: target is not clickable (%s)", detail
+                )
+                return ActionResult(
+                    False, reason=f"click target not reachable: {detail}"
+                )
+
         try:
             if self._fingerprint:
                 self._browser.move_mouse_to_element(
@@ -675,6 +775,38 @@ class PageActionService:
             logger.warning("scroll_to failed | %s", exc)
             return ActionResult(False, reason=str(exc))
 
+    def scroll_to_bottom(self) -> bool:
+        """Scrolls to the bottom once and reports whether the page grew.
+
+        The single-step primitive behind infinite scroll. It is deliberately
+        ONE step: the caller owns the loop, because the loop is where the
+        dry-scroll guard and the result cap live — the guard that stopped a
+        live run scrolling Google for four minutes re-mining the same six jobs.
+
+        The settle after scrolling comes from ``infinite_scroll_settle_s``
+        (default 2.0, today's literal), so lazy-loaded content has time to
+        arrive without a magic number in the caller.
+
+        Returns:
+            True if the document grew (new content loaded), False at the
+            bottom of the feed or on error.
+        """
+        try:
+            before = self._browser.execute_script(
+                "return document.body.scrollHeight"
+            )
+            self._browser.execute_script(
+                "window.scrollTo(0, document.body.scrollHeight);"
+            )
+            time.sleep(self._infinite_scroll_settle_s)
+            after = self._browser.execute_script(
+                "return document.body.scrollHeight"
+            )
+            return bool(after > before)
+        except Exception as exc:
+            logger.warning("scroll_to_bottom failed | %s", exc)
+            return False
+
     def scroll_page(self, max_scrolls: int = 20) -> int:
         """Performs a full-page scan with infinite-scroll detection.
 
@@ -725,6 +857,17 @@ class PageActionService:
     # TIMING — PUBLIC
     # =========================================================================
 
+    def settle(self) -> None:
+        """Short post-action pause — the tool's public pacing primitive.
+
+        Every caller that needs "wait a beat after acting" uses this instead of
+        its own sleep, so the duration stays config-driven (floored by
+        ``min_action_delay_ms``, widened in low-resource mode) and seeded in one
+        place. Internally identical to the settle applied after the tool's own
+        click/type/scroll operations.
+        """
+        self._settle_pause()
+
     def macro_pause(
         self,
         min_s: float | None = None,
@@ -774,11 +917,37 @@ class PageActionService:
         return max(0.01, abs(base * factor))
 
     def _settle_pause(self) -> None:
-        """Short post-action pause within a task."""
+        """Short post-action pause within a task, floored by min_action_delay_ms.
+
+        The floor (low-resource-clamped by the registry) is the minimum time
+        between actions, so it raises the settle range's lower bound; the upper
+        bound is widened to match if the floor exceeds it, keeping lo <= hi.
+        """
+        lo = max(self._settle_min_s, self._min_action_delay_s)
+        hi = max(self._settle_max_s, lo)
         if not self._human_timing:
-            time.sleep(self._settle_min_s)
+            time.sleep(lo)
             return
-        time.sleep(self._rng.uniform(self._settle_min_s, self._settle_max_s))
+        time.sleep(self._rng.uniform(lo, hi))
+
+    def warmup_pause(self) -> None:
+        """One-time pause before the first navigation of the session.
+
+        Models a human orienting before acting. Uses the MACRO range (no new
+        timing knobs) but floored by min_action_delay_ms, jittered via the
+        seeded rng, and gated by enable_human_timing. Idempotent per instance:
+        after the first call it is a no-op. Called by navigate(); callers do not
+        invoke it directly.
+        """
+        if self._warmed_up:
+            return
+        self._warmed_up = True
+        lo = max(self._macro_min_s, self._min_action_delay_s)
+        hi = max(self._macro_max_s, lo)
+        if not self._human_timing:
+            time.sleep(lo)
+            return
+        time.sleep(self._rng.uniform(lo, hi))
 
     def _idle_with_fidgets(self, duration: float) -> None:
         """Sleeps for `duration` seconds with random mouse micro-movements."""

@@ -64,7 +64,29 @@ def setup_logging(
         root_logger.handlers.clear()
 
     # 1. Console Handler
-    console_handler = logging.StreamHandler(sys.stdout)
+    #    Force a UTF-8, never-crash console stream. Python's default console
+    #    encoding is platform-dependent (cp1252 on Windows, cp437 on some
+    #    consoles); a single non-ASCII character in ANY log message — an arrow,
+    #    a bullet, an em dash — otherwise raises UnicodeEncodeError *inside* the
+    #    logging handler and spews a traceback per message. Reconfigure the
+    #    stream to UTF-8 with errors="backslashreplace" so logging degrades to a
+    #    readable escape (e.g. \u2192) instead of crashing, on any platform and
+    #    for any message content. This is a reliability/auditability fix, not a
+    #    behavioural one — the app never depended on the crash.
+    console_stream = sys.stdout
+    try:
+        console_stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        # Stream isn't reconfigurable (already wrapped, redirected, or a plain
+        # buffer). Wrap it so the handler still can't crash on non-ASCII.
+        import io  # noqa: PLC0415
+
+        buffer = getattr(console_stream, "buffer", None)
+        if buffer is not None:
+            console_stream = io.TextIOWrapper(
+                buffer, encoding="utf-8", errors="backslashreplace", line_buffering=True
+            )
+    console_handler = logging.StreamHandler(console_stream)
     console_handler.setLevel(console_level)
     console_formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",

@@ -11,7 +11,6 @@ It goes beyond simple key-sending by handling:
 import logging
 from typing import Any
 
-from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.adapters.secondary.interaction.handlers.base import BaseInputHandler
 from auto_apply.domain.ports.browser_port import ElementInterface
 from auto_apply.domain.types import Keys
@@ -49,7 +48,7 @@ class TextInputHandler(BaseInputHandler):
                 self._smart_clear(element)
 
             # 3. Type Data
-            behavior.human_like_typing(element, text_value)
+            self._type(element, text_value)
 
             # 4. Blur / Commit
             # Sometimes tabbing out is required to trigger validation logic
@@ -66,7 +65,7 @@ class TextInputHandler(BaseInputHandler):
     def _ensure_focus(self, element: ElementInterface) -> None:
         """Clicks the element to ensure it has focus."""
         try:
-            behavior.human_like_click(self.browser, element)
+            self._click(element)
         except Exception:
             # Fallback for non-clickable overlays
             self.browser.execute_script("arguments[0].focus();", element)

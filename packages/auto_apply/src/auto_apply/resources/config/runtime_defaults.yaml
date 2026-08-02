@@ -15,11 +15,23 @@ browser_timeout_seconds: 30
 page_load_timeout_seconds: 20
 # Max navigation attempts before giving up on a URL (bounded-retry).
 navigation_retries: 3
+occlusion_guard: true   #! refuse clicks that would land on an overlay
+force_analysis_tier: ""   #! empty = router chooses per page
+infinite_scroll_settle_s: 2.0
 preferred_browser_order:
   - chrome
   - firefox
   - edge
   - safari
+
+# Automation-framework fallback order for the browser cascade. Configurable and
+# agnostic: the cascade tries frameworks in this order (browser choice within a
+# framework still follows preferred_browser_order). 'static' is always the final
+# fallback regardless of this list. Admin policy may override via config_overrides.
+framework_order:
+  - playwright
+  - selenium
+  - camoufox
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Session limits  (conservative — safe for low-resource users)
@@ -94,7 +106,7 @@ discovery:
   # Maximum concurrent source fetches (ThreadPoolExecutor max_workers).
   max_concurrent_sources: 1   #! MUST BE 1 when sharing a single live browser!
   # Maximum pages to paginate through per search query.
-  max_pages_per_query: 5      #! Reduced to avoid Google dynamic noise.
+  max_pages_per_query: 1      #! 1 = today's single-page behaviour; raise to paginate.
   # Pause between switching search providers (faster engine switching).
   between_provider_pause_min: 1.0   # ↓ 2.0 → 1.0
   between_provider_pause_max: 2.0   # ↓ 5.0 → 2.0
@@ -109,6 +121,7 @@ applications:
   max_steps_per_page: 15
   # Seconds to wait for DOM to stabilize after each navigation.
   dom_stabilization_timeout_s: 3.0  #! 8.0
+  dom_stabilization_poll_interval_s: 0.25
   # Token budget for GPT4All custom-question answers.
   custom_answer_max_tokens: 150
 

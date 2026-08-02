@@ -6,6 +6,7 @@ import pytest
 
 from auto_apply.application.services.session_controller import SessionController
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.task_priority import TaskPriority
 from auto_apply.domain.models.work_unit import TaskType
 
 
@@ -53,7 +54,7 @@ def test_seed_discovery_tasks_uses_title_location_pairs():
     for call_args in db.queue_task.call_args_list:
         task = call_args[0][0]
         assert task.task_type == TaskType.DISCOVER
-        assert task.priority == 5
+        assert task.priority == TaskPriority.DISCOVER
         assert "query" in task.payload
         assert "location" in task.payload
         # The title/location are derived from the cross product, so we don't

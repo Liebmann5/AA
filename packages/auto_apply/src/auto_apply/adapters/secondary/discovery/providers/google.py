@@ -36,6 +36,12 @@ from auto_apply.adapters.secondary.perception.dom_adapter import (
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
+from auto_apply.adapters.secondary.discovery.components.page_understanding_extractor import (
+    PageUnderstandingExtractor,
+)
+from auto_apply.domain.ports.page_understanding_port import (
+    NullPageUnderstandingAdapter,
+)
 from auto_apply.domain.types import Locator
 
 logger = logging.getLogger(__name__)
@@ -49,8 +55,22 @@ class GoogleProvider(BaseSearchProvider):
         browser: BrowserInterface,
         ats_registry=None,
         page_understanding_port=None,
+        scroller=None,
+        paginator=None,
+        max_pages: int = 1,
+        observer=None,
+        reporter=None,
+        forced_tier=None,
     ) -> None:
-        super().__init__(browser)
+        super().__init__(
+            browser,
+            scroller,
+            paginator,
+            max_pages,
+            observer,
+            reporter,
+            forced_tier,
+        )
         # Optional ATSRegistry: when provided, find_company_career_page() builds
         # the site‑filter list from loaded descriptors rather than a hardcoded set.
         self._ats_registry = ats_registry
@@ -63,6 +83,33 @@ class GoogleProvider(BaseSearchProvider):
             DirectURLNavigation(browser),
             HumanSearchNavigation(browser),
         ])
+
+    def _fast_extractor(self):
+        """The single-script extraction route, or None if unavailable.
+
+        ``page_understanding_port`` has been injected here since the math
+        subsystem was built and read by nothing. This is where it is read.
+        Returning None leaves the strategy on the DOM miner alone, which is the
+        behaviour every previous run had.
+        """
+        if self._page_understanding is None:
+            return None
+        if isinstance(self._page_understanding, NullPageUnderstandingAdapter):
+            # The Null adapter answers every analyze_serp with an empty
+            # SERPStructure. Wrapping it would produce a harvest logged as
+            # "fallback:empty" — indistinguishable from a real page where the
+            # detector found nothing, which is the one question the next live
+            # run exists to answer. Report no fast route instead.
+            logger.info(
+                "GoogleProvider: page understanding is the Null adapter — no "
+                "fast SERP route; using the DOM miner."
+            )
+            return None
+        return PageUnderstandingExtractor(
+            page_understanding=self._page_understanding,
+            browser=self.browser,
+            observer=self._observer,
+        )
 
     def _is_page_healthy(self) -> bool:
         # If an evasion manager is wired, use it; otherwise assume healthy.
@@ -106,6 +153,13 @@ class GoogleProvider(BaseSearchProvider):
             search_prefs=None,
             source_tag="Google",
             max_results=instruction.max_results,
+            fast_extractor=self._fast_extractor(),
+            scroller=self._scroller,
+            paginator=self._paginator,
+            max_pages=self._max_pages,
+            observer=self._observer,
+            reporter=self._reporter,
+            forced_tier=self._forced_tier,
             title_parser=SmartTextExtractor(
                 strategies=[
                     "div[role='heading']",

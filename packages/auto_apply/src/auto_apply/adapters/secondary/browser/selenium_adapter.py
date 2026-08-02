@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from selenium.webdriver.remote.webdriver import WebDriver
+    from selenium.webdriver.remote.webelement import WebElement
 
 # Selenium-specific imports are moved inside a lazy initialisation
 # function to avoid hard dependency at module load time.

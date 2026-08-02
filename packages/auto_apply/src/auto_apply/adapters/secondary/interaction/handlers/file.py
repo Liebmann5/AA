@@ -8,7 +8,6 @@ the file exists locally before attempting interaction to prevent browser hangs.
 
 import logging
 import os
-import time
 from pathlib import Path
 from typing import Any
 
@@ -70,8 +69,14 @@ class FileInputHandler(BaseInputHandler):
             logger.info("Uploading file: %s", abs_path)
             target_input.send_keys(abs_path)
 
-            # Wait for the upload to begin processing (file validation, preview, etc.)
-            time.sleep(1.0)
+            # Wait for the upload to begin processing (file validation,
+            # preview, etc.). Readiness, not pacing: poll until the DOM
+            # stops changing rather than guessing at a fixed second.
+            if not self._await_dom_ready():
+                logger.debug(
+                    "FileInputHandler: DOM did not settle after upload; "
+                    "continuing"
+                )
 
         except Exception as e:
             logger.error("File upload interaction failed: %s", e)

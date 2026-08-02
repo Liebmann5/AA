@@ -53,6 +53,7 @@ from pathlib import Path
 
 from auto_apply.application.agent.orchestrator import AgentOrchestrator
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.task_priority import TaskPriority
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.ports.registry_port import RegistryPort
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
@@ -305,7 +306,7 @@ class SessionController:
         for title in titles:
             for location in locations:
                 task = WorkUnit(
-                    priority=5,
+                    priority=TaskPriority.DISCOVER,
                     task_type=TaskType.DISCOVER,
                     payload={"query": title, "location": location},
                     source="user_discovery_input",

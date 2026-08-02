@@ -156,6 +156,14 @@ def build_orchestrator(  # noqa: PLR0914
             "build_orchestrator: no browser driver — falling back to static perception"
         )
 
+    # ── Audit observer (defined before its first use) ─────────────────────
+    # Observation only: records what extraction saw, never changes it.
+    from auto_apply.application.services.auditing.discovery_math_auditor import (  # noqa: PLC0415
+        DiscoveryMathAuditor,
+    )
+
+    _extraction_observer = DiscoveryMathAuditor()
+
     # ── Retrieve the frozen SessionPlan ──────────────────────────────────────
     plan = registry.get_session_plan()
 
@@ -164,7 +172,7 @@ def build_orchestrator(  # noqa: PLR0914
     if driver is not None:
         try:
             from auto_apply.adapters.secondary.perception.math_dom_adapter import MathDOMAdapter  # noqa: PLC0415
-            math_perception_port = MathDOMAdapter(browser=driver)
+            math_perception_port = MathDOMAdapter(browser=driver, observer=_extraction_observer)
         except Exception as _exc:
             logger.debug("build_orchestrator: MathDOMAdapter unavailable: %s", _exc)
 
@@ -297,11 +305,82 @@ def build_orchestrator(  # noqa: PLR0914
             "build_orchestrator: no browser driver — using BS4PerceptionAdapter (static HTML only)"
         )
 
-    interaction_port = (
-        InteractionExecutor(driver, text_matcher=text_matcher)
+    # ── The shared element-interaction tool ───────────────────────────────────
+    # PageActionService owns every click, all pacing, and the seeded RNG; the
+    # InteractionExecutor injected into the engines delegates to it. The RNG
+    # namespace is allocated unconditionally so seeded stream allocation does
+    # not depend on whether a driver was acquired.
+    from auto_apply.application.services.page_action.service import (  # noqa: PLC0415
+        PageActionService,
+    )
+
+    interaction_pacing_rng = behavior_params.make_rng("interaction.pacing")
+
+    page_action_tool = (
+        PageActionService(browser=driver, registry=registry, rng=interaction_pacing_rng)
         if driver is not None
         else None
     )
+
+    # ── DOM readiness ─────────────────────────────────────────────────────
+    # Built here rather than beside the workflow so the handlers can have it
+    # too: ONE observer instance is shared by the Applications engine and
+    # every form handler. Budgets come from config, never from literals.
+    dom_readiness = None
+    if driver is not None:
+        try:
+            from auto_apply.adapters.secondary.interaction.dom_observer import (  # noqa: PLC0415
+                DOMObserver,
+            )
+            _readiness_cfg = registry.get_all_effective_config()
+            dom_readiness = DOMObserver(
+                browser=driver,
+                stability_timeout_s=_readiness_cfg.get(
+                    "dom_stabilization_timeout_s", 3.0
+                ),
+                poll_interval_s=_readiness_cfg.get(
+                    "dom_stabilization_poll_interval_s", 0.25
+                ),
+            )
+        except Exception as _exc:
+            logger.debug("build_orchestrator: DOMObserver unavailable: %s", _exc)
+
+    interaction_port = (
+        InteractionExecutor(
+            driver,
+            text_matcher=text_matcher,
+            page_action=page_action_tool,
+            readiness=dom_readiness,
+        )
+        if driver is not None
+        else None
+    )
+    # ── Page-advance collaborators ────────────────────────────────────────
+    # Built once and shared. Discovery adapters receive them instead of
+    # importing scrolling and pagination across the layer boundary.
+    _page_scroller = None
+    _paginator = None
+    _max_pages_per_query = 1
+
+    # ── Audit observers ───────────────────────────────────────────────────
+    # Observation only: these record what extraction saw and never change
+    # what it produces. Adapters receive them instead of importing the
+    # auditing services across the layer boundary.
+    _audit_reporter = None
+
+    # ── Forced extraction tier (opt-in capability, off by default) ────────
+    # Empty/absent/unrecognised leaves tier selection exactly as it was.
+    from auto_apply.domain.models.analysis_tier import PageAnalysisTier  # noqa: PLC0415
+
+    _forced_tier = PageAnalysisTier.from_name(
+        registry.get_all_effective_config().get("force_analysis_tier")
+    )
+    if _forced_tier is not None:
+        logger.info(
+            "build_orchestrator: extraction tier forced to %s for every page",
+            _forced_tier.name,
+        )
+
     reasoning_port = FormSolver(profile, text_matcher=text_matcher)
 
     from auto_apply.domain.ports.interrupt_policy_port import ProfileBasedInterruptPolicy  # noqa: PLC0415
@@ -332,11 +411,21 @@ def build_orchestrator(  # noqa: PLR0914
             # Reuse the same MathDOMAdapter instance we already created for
             # math_perception_port, or build a new one if we didn't create it
             # above (should not happen, but be safe).
-            math_dom = math_perception_port if math_perception_port is not None else MathDOMAdapter(browser=driver)
+            math_dom = math_perception_port if math_perception_port is not None else MathDOMAdapter(browser=driver, observer=_extraction_observer)
             form_svc = MathFormUnderstandingService()
             page_understanding_port = MathPageUnderstandingAdapter(math_dom, form_svc)
         except Exception as _exc:
-            logger.debug("build_orchestrator: MathPageUnderstandingAdapter unavailable: %s", _exc)
+            # WARNING, not debug. Substituting the Null adapter silently
+            # disables single-script SERP extraction for the whole session and
+            # discovery falls back to the slow DOM miner with no console trace
+            # of why. This exact except-swallow already hid a NameError that
+            # disabled the math perception adapter on every real browser run.
+            logger.warning(
+                "build_orchestrator: MathPageUnderstandingAdapter could not be "
+                "built (%s) — using NullPageUnderstandingAdapter. Fast SERP "
+                "extraction is DISABLED for this session; discovery will use "
+                "the DOM miner.", _exc,
+            )
             from auto_apply.domain.ports.page_understanding_port import NullPageUnderstandingAdapter
             page_understanding_port = NullPageUnderstandingAdapter()
 
@@ -372,14 +461,66 @@ def build_orchestrator(  # noqa: PLR0914
             )
             _indeed_evasion_manager = None
 
+        from auto_apply.application.services.navigation.pagination import (  # noqa: PLC0415
+            InfiniteScrollStrategy,
+            PaginationHandler,
+        )
+
+        _nav_cfg = registry.get_all_effective_config()
+        _discovery_cfg = _nav_cfg.get("discovery") or {}
+        _max_pages_per_query = max(
+            1,
+            int(
+                _discovery_cfg.get(
+                    "max_pages_per_query",
+                    _nav_cfg.get("max_pages_per_query", 1),
+                )
+            ),
+        )
+        _page_scroller = InfiniteScrollStrategy(
+            driver,
+            scroller=page_action_tool,
+            settle_s=_nav_cfg.get("infinite_scroll_settle_s", 2.0),
+        )
+        _paginator = PaginationHandler(driver, interaction_port)
+
+        from auto_apply.application.services.auditing.reporter import (  # noqa: PLC0415
+            AuditReporter,
+        )
+
+        _audit_reporter = AuditReporter(driver)
+
         providers = [
             GoogleProvider(
                 browser=driver,
                 ats_registry=_ats_registry,
                 page_understanding_port=page_understanding_port,
+                scroller=_page_scroller,
+                paginator=_paginator,
+                max_pages=_max_pages_per_query,
+                observer=_extraction_observer,
+                reporter=_audit_reporter,
+                forced_tier=_forced_tier,
             ),
-            BingProvider(browser=driver),
-            IndeedProvider(browser=driver, evasion_manager=_indeed_evasion_manager),
+            BingProvider(
+                browser=driver,
+                scroller=_page_scroller,
+                paginator=_paginator,
+                max_pages=_max_pages_per_query,
+                observer=_extraction_observer,
+                reporter=_audit_reporter,
+                forced_tier=_forced_tier,
+            ),
+            IndeedProvider(
+                browser=driver,
+                evasion_manager=_indeed_evasion_manager,
+                scroller=_page_scroller,
+                paginator=_paginator,
+                max_pages=_max_pages_per_query,
+                observer=_extraction_observer,
+                reporter=_audit_reporter,
+                forced_tier=_forced_tier,
+            ),
         ]
 
     from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (  # noqa: PLC0415
@@ -393,6 +534,12 @@ def build_orchestrator(  # noqa: PLR0914
             browser=browser,
             search_prefs=search_prefs_for_miner,
             source_tag="CompanyDirect",
+            scroller=_page_scroller,
+            paginator=_paginator,
+            max_pages=_max_pages_per_query,
+            observer=_extraction_observer,
+            reporter=_audit_reporter,
+            forced_tier=_forced_tier,
         ).execute()
 
     # Single-URL careers-page scraper for DISCOVER_COMPANY tasks: navigate the
@@ -510,6 +657,7 @@ def build_orchestrator(  # noqa: PLR0914
     page_analysis_router = PageAnalysisRouter(
         ats_registry=_ats_registry,
         feedback_service=page_feedback_service,
+        forced_tier=_forced_tier,
     )
 
     discovery_workflow = DiscoveryWorkflow(
@@ -525,6 +673,7 @@ def build_orchestrator(  # noqa: PLR0914
         plan=plan,
         browser_lease=browser_lease,
         research_observer=research_observer,
+        provider_order_rng=behavior_params.make_rng("discovery.provider_order"),
     )
 
     vetting_workflow = VettingWorkflow(
@@ -575,7 +724,7 @@ def build_orchestrator(  # noqa: PLR0914
                 MathFormUnderstandingService,
             )
             _webpage_analyzer = WebpageAnalyzer(
-                perception_port=MathDOMAdapter(browser=driver),
+                perception_port=MathDOMAdapter(browser=driver, observer=_extraction_observer),
                 reasoning_port=MathFormUnderstandingService(),
             )
         except Exception as _exc:
@@ -594,13 +743,9 @@ def build_orchestrator(  # noqa: PLR0914
                 "build_orchestrator: InterruptionHandler unavailable: %s", _exc
             )
 
-        try:
-            from auto_apply.adapters.secondary.interaction.dom_observer import (  # noqa: PLC0415
-                DOMObserver,
-            )
-            _dom_observer = DOMObserver(browser=driver)
-        except Exception as _exc:
-            logger.debug("build_orchestrator: DOMObserver unavailable: %s", _exc)
+        # Reuse the single observer built above — one instance, one config
+        # source, shared by the workflow and the handlers.
+        _dom_observer = dom_readiness
 
     applications_workflow = ApplicationsWorkflow(
         profile=profile,
@@ -619,6 +764,8 @@ def build_orchestrator(  # noqa: PLR0914
         task_queue=db_manager,
         event_bus=event_bus,
         interrupt_policy=interrupt_policy,
+        navigation=page_action_tool,
+        reasoning_port=reasoning_port,
         text_generation_port=gpt4all_adapter,
         config=_effective_config,
         research_observer=research_observer,

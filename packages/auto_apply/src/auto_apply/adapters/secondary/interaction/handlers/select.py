@@ -8,11 +8,11 @@ option (e.g., "Mathematics").
 """
 
 import logging
-import time
 
-from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.adapters.secondary.interaction.handlers.base import BaseInputHandler
-from auto_apply.application.services.text_matching import TextMatcher
+from auto_apply.domain.ports.text_similarity_port import (
+    TextSimilarityPort,
+)
 from auto_apply.domain.ports.browser_port import ElementInterface
 from auto_apply.domain.types import Keys, Locator
 
@@ -21,9 +21,15 @@ logger = logging.getLogger(__name__)
 class SelectInputHandler(BaseInputHandler):
     """Handles interaction with dropdown selection widgets."""
 
-    def __init__(self, browser, text_matcher=None):
-        super().__init__(browser)
-        self.matcher = text_matcher if text_matcher is not None else TextMatcher()
+    def __init__(
+        self,
+        browser,
+        text_matcher=None,
+        page_action=None,
+        readiness=None,
+    ):
+        super().__init__(browser, page_action=page_action, readiness=readiness)
+        self.matcher: TextSimilarityPort | None = text_matcher
 
     def handle(self, element: ElementInterface, value: str) -> None:
         """Dispatches to standard or custom logic based on element structure."""
@@ -136,15 +142,23 @@ class SelectInputHandler(BaseInputHandler):
 
         try:
             # 1. Open the dropdown
-            behavior.human_like_click(self.browser, element)
-            time.sleep(0.5)   # Wait for animation/DOM injection
+            self._click(element)
+            # The tool settles after the click; the dropdown's animation
+            # and DOM injection are then waited for by readiness below.
 
             # 2. Type to filter (simulating user narrowing down options)
             # We don't type the whole sentence ("Applied Mathematics..."),
             # we try to type the most significant keyword first.
             search_term = self._extract_keyword(user_value)
-            behavior.human_like_typing(element, search_term)
-            time.sleep(1.0)   # Wait for filter results
+            self._type(element, search_term)
+            # Wait for filter results. Readiness, not pacing: a fixed
+            # second could scan a stale option list and pick the wrong
+            # value, which then gets submitted to a real employer.
+            if not self._await_dom_ready():
+                logger.debug(
+                    "SelectInputHandler: combobox did not settle; "
+                    "matching against the current option list"
+                )
 
             # 3. Identify the results container (Heuristic)
             # Common roles for dropdown results: listbox, menu, grid
@@ -164,7 +178,7 @@ class SelectInputHandler(BaseInputHandler):
 
                     if score > 0.7:
                         logger.info("Combobox Match: '%s'", best_match_text)
-                        behavior.human_like_click(self.browser, item_map[best_match_text])  # noqa: E501
+                        self._click(item_map[best_match_text])
                         return
 
             # Fallback: If we can't find the list or match, hit Enter and hope

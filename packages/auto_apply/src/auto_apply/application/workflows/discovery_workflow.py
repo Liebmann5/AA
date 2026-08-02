@@ -23,12 +23,15 @@ All configuration comes from the frozen SessionPlan, never from a raw dict.
 from __future__ import annotations
 
 import logging
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
 from urllib.parse import urlparse
 
 from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
+from auto_apply.application.services.auditing.discovery_verification import DiscoveryVerifier
+from auto_apply.domain.models.task_priority import TaskPriority
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import UserProfile
@@ -68,6 +71,7 @@ class DiscoveryWorkflow:
         plan: SessionPlan | None = None,
         browser_lease=None,
         research_observer: ResearchObserverPort | None = None,
+        provider_order_rng: random.Random | None = None,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -90,6 +94,11 @@ class DiscoveryWorkflow:
         """
         self._profile = profile
         self._providers = providers
+        # Seeded, namespaced RNG for provider-order cycling: shuffles which SERP
+        # provider is tried first each search, so runs are not always Google-first
+        # (a CAPTCHA magnet) and stay reproducible when a session seed is set. None
+        # -> a fresh unseeded Random (non-deterministic order).
+        self._provider_rng = provider_order_rng or random.Random()
         self._task_queue = task_queue
         self._event_bus = event_bus
         self._dedup = dedup
@@ -208,6 +217,24 @@ class DiscoveryWorkflow:
 
         return instructions
 
+    def _order_providers(self, active_providers: list) -> list:
+        """Return a seeded shuffle of the active SERP providers.
+
+        Cycling the provider order each search spreads first-hit load across
+        Google/Bing/Indeed instead of always leading with one (which invites an
+        immediate CAPTCHA), and is reproducible when a session seed is set. The
+        input list is not mutated. The chosen order is logged for auditability.
+        """
+        if len(active_providers) <= 1:
+            return list(active_providers)
+        ordered = list(active_providers)
+        self._provider_rng.shuffle(ordered)
+        logger.info(
+            "Discovery provider order: %s",
+            ", ".join(str(getattr(p, "name", type(p).__name__)) for p in ordered),
+        )
+        return ordered
+
     def _execute_serp_discovery(
         self, instructions: list[SearchInstruction], active_providers: list
     ) -> list[Job]:
@@ -225,6 +252,7 @@ class DiscoveryWorkflow:
             List of Job objects discovered across all providers and instructions.
         """
         all_jobs: list[Job] = []
+        active_providers = self._order_providers(active_providers)
 
         def _run_provider(provider, instr: SearchInstruction) -> list[Job]:
             name = getattr(provider, "name", type(provider).__name__)
@@ -370,7 +398,7 @@ class DiscoveryWorkflow:
             try:
                 self._task_queue.queue_task(
                     WorkUnit(
-                        priority=5,
+                        priority=TaskPriority.VET,
                         task_type=TaskType.VET,
                         payload=job,
                         source=getattr(job, "source", "discovery") or "discovery",
@@ -497,6 +525,21 @@ class DiscoveryWorkflow:
         stats.deduped_dropped = (stats.raw_found - stats.prefiltered_dropped) - len(all_jobs)
 
         self._classify_job_source(all_jobs)
+
+        # Verify the output is real before enqueueing: valid fields, no
+        # duplicates, and within the resolved per-query ceiling. "Know, not
+        # hope." The report is logged (loud on failure) but never raised — bad
+        # discovery output should be visible on every run, not fatal.
+        ceiling = (
+            len(active_providers)
+            * sum(instr.max_results for instr in search_instructions)
+        ) or None
+        report = DiscoveryVerifier(max_results=ceiling).verify(all_jobs)
+        if report.passed:
+            logger.info(report.summary())
+        else:
+            logger.warning("%s\n%s", report.summary(), report.details())
+
         stats.enqueued = self._enqueue_vet_tasks(all_jobs, mode)
         self._emit_completion_summary(stats)
 

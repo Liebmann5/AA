@@ -63,6 +63,10 @@ class ApplicationRecord:
     )
     started_at: str = ""
     duration_seconds: float = 0.0
+    #: Joins this outcome to the per-page research rows for the same
+    #: attempt, so a partial application's friction data is not read as a
+    #: completed one.
+    attempt_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,7 +137,44 @@ class SessionReport:
             1
             for a in self.applications
             if a.outcome
-            not in ("SUBMITTED", "PROBABLY_SUBMITTED", "USER_SKIPPED")
+            not in (
+                "SUBMITTED",
+                "PROBABLY_SUBMITTED",
+                "USER_SKIPPED",
+                "SUBMISSION_GATE_BLOCKED",
+            )
+        )
+
+    @property
+    def submissions_blocked_by_gate(self) -> int:
+        """Applications the submission gate refused to send.
+
+        Separate from :attr:`applications_failed` on purpose: a blocked
+        submission is a *not attempted*, not a failure. A run showing a high
+        count here is working correctly and waiting for a human — which is the
+        opposite of what a silent count would imply.
+        """
+        return sum(
+            1 for a in self.applications if a.outcome == "SUBMISSION_GATE_BLOCKED"
+        )
+
+    @property
+    def gate_block_remedy(self) -> str:
+        """What the operator should do about blocked submissions, if any.
+
+        Empty when nothing was blocked, so callers can print it unconditionally
+        and it simply disappears on a normal run.
+        """
+        blocked = self.submissions_blocked_by_gate
+        if not blocked:
+            return ""
+        return (
+            f"{blocked} submission(s) were blocked by the pre-submit review "
+            f"gate and were NOT sent. This is the safe default, not a fault. "
+            f"To submit automatically, either wire an approval gate (run with "
+            f"the GUI/CLI review prompt enabled) or remove "
+            f"'BEFORE_FORM_SUBMIT' from human_review_checkpoints in your "
+            f"profile to opt into autonomous submission."
         )
 
     @property
@@ -194,8 +235,12 @@ class SessionReport:
                 job_url=job.url,
                 job_title=job.title,
                 company=job.company,
-                ats_platform=evidence.ats_descriptor_matched,
+                # Was evidence.ats_descriptor_matched — a field ApplicationEvidence
+                # has never had. Every record_application call raised
+                # AttributeError, so the session report stayed empty.
+                ats_platform=evidence.ats_platform,
                 outcome=evidence.outcome,
+                attempt_id=evidence.attempt_id,
                 confidence=evidence.confidence,
                 fields_filled=evidence.required_fields_filled
                 + evidence.optional_fields_filled,
@@ -274,6 +319,8 @@ class SessionReport:
             "applications_attempted": self.applications_completed,
             "applications_submitted": self.applications_submitted,
             "applications_failed": self.applications_failed,
+            "submissions_blocked_by_gate": self.submissions_blocked_by_gate,
+            "gate_block_remedy": self.gate_block_remedy,
             "session_duration_seconds": self.duration_seconds,
             "submitted_job_urls": self.submitted_job_urls,
             "submitted_companies": self.submitted_companies,

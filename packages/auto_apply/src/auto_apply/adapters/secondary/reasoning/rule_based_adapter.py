@@ -24,7 +24,7 @@ import re
 from typing import Any
 
 # Services
-from auto_apply.application.services.text_matching import TextMatcher
+from auto_apply.domain.ports.text_similarity_port import TextSimilarityPort
 from auto_apply.domain.models.profile import UserProfile
 
 # Core Models
@@ -270,7 +270,7 @@ class FormSolver:
                 created (loads SpaCy independently — used by unit tests).
         """
         self.profile = profile
-        self.matcher = text_matcher if text_matcher is not None else TextMatcher()
+        self.matcher: TextSimilarityPort | None = text_matcher
         self.logic = LogicEngine(profile)
 
         # Pre-calculate the knowledge base to ensure fast lookups per element
@@ -347,6 +347,8 @@ class FormSolver:
             return None
 
         # Compare the element's label against all keys in our knowledge base
+        if self.matcher is None:
+            return None
         best_match_key, score = self.matcher.find_best_match(
             element.label,
             list(self._knowledge_base.keys())

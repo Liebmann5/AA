@@ -50,36 +50,13 @@ from auto_apply.domain.ports.math_perception_port import MathematicalPerceptionP
 logger = logging.getLogger(__name__)
 
 
-class WebpageAnalysisError(Exception):
-    """Base exception for webpage analysis failures."""
-    pass
-
-
-class PerceptionError(WebpageAnalysisError):
-    """Raised when DOM extraction fails."""
-    pass
-
-
-class ReasoningError(WebpageAnalysisError):
-    """Raised when the reasoning engine fails."""
-    pass
-
-
-class AnalysisTimeoutError(WebpageAnalysisError):
-    """Raised when analysis exceeds configured time limit."""
-    pass
-
-
-@dataclass(frozen=True)
-class AnalyzerConfig:
-    """Immutable configuration for the WebpageAnalyzer."""
-    enable_performance_logging: bool = True
-    extraction_timeout_seconds: float = 30.0
-    reasoning_timeout_seconds: float = 60.0
-    fallback_to_partial: bool = False
-    max_retries: int = 2
-    retry_delay_seconds: float = 1.0
-
+from auto_apply.application.services.analysis_contracts import (
+    AnalysisTimeoutError,
+    AnalyzerConfig,
+    PerceptionError,
+    ReasoningError,
+    WebpageAnalysisError,
+)
 
 
 class MathematicalWebAnalyzer:

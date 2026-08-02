@@ -36,7 +36,12 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from auto_apply.domain.models.capability_profile import (
+        ResolvedCapabilityProfile,
+    )
 
 from auto_apply.adapters.secondary.os.detectors import BrowserDetector, ToolDetector
 from auto_apply.adapters.secondary.os.hardware import HardwareInspector
@@ -50,6 +55,7 @@ from auto_apply.domain.models.resources import RuntimeProfile
 from auto_apply.domain.models.session_plan import SessionPlan
 from auto_apply.domain.models.timing import BehaviorParameters
 from auto_apply.domain.models.browser_candidates import (
+    DEFAULT_FRAMEWORK_ORDER,
     AutomationCandidate,
     CANDIDATE_PRIORITY,
     build_filtered_candidates,
@@ -98,7 +104,11 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "browser_timeout_seconds": 30,
     "page_load_timeout_seconds": 20,
     "navigation_retries": 3,
+    "occlusion_guard": True,
+    "force_analysis_tier": "",
+    "infinite_scroll_settle_s": 2.0,
     "preferred_browser_order": ["chrome", "firefox", "edge", "safari"],
+    "framework_order": ["playwright", "selenium", "camoufox"],
     "max_applications_per_session": 50,
     "max_applications_per_company": 3,
     "cooldown_days_default": 180,
@@ -136,7 +146,7 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     },
     "discovery": {
         "max_concurrent_sources": 1,
-        "max_pages_per_query": 5,
+        "max_pages_per_query": 1,
         "between_provider_pause_min": 1.0,
         "between_provider_pause_max": 2.0,
     },
@@ -144,6 +154,7 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "max_pages": 10,
         "max_steps_per_page": 15,
         "dom_stabilization_timeout_s": 3.0,
+        "dom_stabilization_poll_interval_s": 0.25,
         "custom_answer_max_tokens": 150,
         "inter_action_delay_ms": 400,
         "macro_pause_min_seconds": 0.4,
@@ -516,11 +527,15 @@ class CapabilitiesRegistry:
         os_browsers = self.get_allowed_browsers()
         native_map = self.get_framework_native_browsers()
 
+        framework_order = self._effective_config.get(
+            "framework_order", DEFAULT_FRAMEWORK_ORDER
+        )
         candidates = build_filtered_candidates(
             available_frameworks=available_frameworks,
             os_browsers=os_browsers,
             framework_native_map=native_map,
             admin_policy=self._admin_policy,
+            framework_order=framework_order,
         )
         return [
             {
