@@ -90,7 +90,7 @@ def _strategy_over(browser, scroller):
 
 def _native_scroller(browser):
     """The pre-Stage-3 path: raw JS and a plain sleep, no tool."""
-    from auto_apply.application.services.navigation.pagination import (
+    from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
 
@@ -99,7 +99,7 @@ def _native_scroller(browser):
 
 def _tool_scroller(browser):
     """The live path: InfiniteScrollStrategy delegating to PageActionService."""
-    from auto_apply.application.services.navigation.pagination import (
+    from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
     from auto_apply.application.services.page_action.service import PageActionService
@@ -122,7 +122,7 @@ def _tool_scroller(browser):
 def _harvest(scroller_factory, growth_steps=4):
     browser = _scripted_browser(growth_steps)
     strategy = _strategy_over(browser, scroller_factory(browser))
-    with patch("auto_apply.application.services.navigation.pagination.time.sleep"), patch(
+    with patch("auto_apply.adapters.secondary.navigation.pagination.time.sleep"), patch(
         "auto_apply.adapters.secondary.discovery.strategies.serp_strategy.time.sleep"
     ):
         harvested = strategy._scroll_and_mine(strategy._scroller)

@@ -179,7 +179,7 @@ def test_each_revived_strategy_clicks_through_the_interaction_tool(strategy_name
     have raised AttributeError the moment it found a Next link. That is the
     dependency that ordered this stage after the interaction beachhead.
     """
-    import auto_apply.application.services.navigation.pagination as pagination
+    import auto_apply.adapters.secondary.navigation.pagination as pagination
 
     cls = getattr(pagination, strategy_name)
     interactor = MagicMock()
@@ -202,7 +202,7 @@ def test_each_revived_strategy_clicks_through_the_interaction_tool(strategy_name
 
 
 def test_the_pagination_handler_delegates_to_its_strategies():
-    from auto_apply.application.services.navigation.pagination import (
+    from auto_apply.adapters.secondary.navigation.pagination import (
         PaginationHandler,
     )
 
@@ -313,4 +313,4 @@ def test_the_serp_adapter_no_longer_imports_pagination_across_the_boundary():
         / "serp_strategy.py"
     ).read_text(encoding="utf-8", errors="ignore")
 
-    assert "application.services.navigation.pagination" not in serp
+    assert "adapters.secondary.navigation.pagination" not in serp

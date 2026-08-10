@@ -74,11 +74,16 @@ def build_filtered_candidates(
     # framework. static is handled last as the guaranteed fallback.
     non_static = [c for c in CANDIDATE_PRIORITY if c.framework != "static"]
     static_candidates = [c for c in CANDIDATE_PRIORITY if c.framework == "static"]
-    seen_fw: set = set()
-    frameworks_present = [
-        c.framework for c in non_static
-        if not (c.framework in seen_fw or seen_fw.add(c.framework))
-    ]
+    # Order-preserving dedupe. Previously written as the
+    # `x in seen or seen.add(x)` comprehension idiom, which works but relies
+    # on set.add returning None as a falsy value -- the type checker reports
+    # it as using the result of a function that returns nothing.
+    seen_fw: set[str] = set()
+    frameworks_present: list[str] = []
+    for c in non_static:
+        if c.framework not in seen_fw:
+            seen_fw.add(c.framework)
+            frameworks_present.append(c.framework)
 
     result = []
     for framework in _order_frameworks(framework_order, frameworks_present):

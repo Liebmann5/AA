@@ -90,6 +90,22 @@ class JobRepositoryPort(ABC):
         """
 
     @abstractmethod
+    def count_applications_since(self, since: datetime) -> int:
+        """Counts completed applications recorded at or after *since*.
+
+        Used by ThrottlingFilter to enforce the daily application quota.
+        "Completed" means a real submission outcome (SUBMITTED or
+        PROBABLY_SUBMITTED), matching cross-session deduplication — one
+        definition of "applied" shared by quota and dedup.
+
+        Args:
+            since: Inclusive window start (timezone-aware UTC).
+
+        Returns:
+            Count of completed applications in the window, or ``0``.
+        """
+
+    @abstractmethod
     def mark_applied(self, job: "Job", session_id: str) -> None:
         """Records a completed application for the given job and session.
 

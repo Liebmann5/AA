@@ -13,6 +13,7 @@ and to avoid loading SpaCy before the logging system is ready.
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import re
 
 
@@ -23,10 +24,13 @@ _EMAIL_PATTERN = re.compile(
 )
 
 _PHONE_PATTERN = re.compile(
+    # (?<!\w) / (?!\w) — NOT \b. A letter-to-digit transition is not a word
+    # boundary (both are \w), so \b would still match a 10-digit run inside
+    # a 32-char hex task ID. The lookarounds are what actually protect IDs.
     r"""
-    (?:\+?1[\s\-.]?)?               # Optional country code
+    (?<!\w)(?:\+?1[\s\-.]?)?               # Optional country code
     (?:\(?\d{3}\)?[\s\-.]?)         # Area code
-    \d{3}[\s\-.]?\d{4}             # Local number
+    \d{3}[\s\-.]?\d{4}(?!\w)             # Local number
     """,
     re.VERBOSE,
 )
@@ -44,6 +48,16 @@ _FIELD_VALUE_PATTERN = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+
+
+# Inert sentinel tokens used during multi-pattern redaction. They contain
+# no label vocabulary, so the field-value pattern can never re-match a region
+# that was already redacted. (The previous one-phase pipeline let redaction
+# placeholders like "[PHONE REDACTED]" re-trigger the phone/email label
+# words, mangling output into shapes like "[PHONE [VALUE REDACTED]".)
+_SENTINEL_EMAIL = "\x00AA1\x00"
+_SENTINEL_PHONE = "\x00AA2\x00"
+_SENTINEL_VALUE = "\x00AA3\x00"
 
 
 class PIIRedactingFilter(logging.Filter):
@@ -89,14 +103,24 @@ class PIIRedactingFilter(logging.Filter):
         return True
 
     def _scrub(self, text: str) -> str:
-        """Apply all PII redaction patterns to a string."""
-        text = _EMAIL_PATTERN.sub(self.REDACTED_EMAIL, text)
-        text = _PHONE_PATTERN.sub(self.REDACTED_PHONE, text)
+        """Apply all PII redaction patterns to a string.
+
+        Two-phase: patterns substitute inert sentinel tokens first, then the
+        sentinels are mapped to the human-readable placeholders. The sentinels
+        contain no label vocabulary, so the field-value pattern can never
+        re-match a region that was already redacted (the cascade).
+        """
+        text = _EMAIL_PATTERN.sub(_SENTINEL_EMAIL, text)
+        text = _PHONE_PATTERN.sub(_SENTINEL_PHONE, text)
         text = _FIELD_VALUE_PATTERN.sub(
-            lambda m: f"{m.group('label')}{m.group('sep')}{self.REDACTED_VALUE}",
+            lambda m: f"{m.group('label')}{m.group('sep')}{_SENTINEL_VALUE}",
             text,
         )
-        return text
+        return (
+            text.replace(_SENTINEL_EMAIL, self.REDACTED_EMAIL)
+            .replace(_SENTINEL_PHONE, self.REDACTED_PHONE)
+            .replace(_SENTINEL_VALUE, self.REDACTED_VALUE)
+        )
 
 
 def install_pii_filter(debug_mode: bool = False) -> None:

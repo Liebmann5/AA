@@ -318,6 +318,17 @@ class Event(Enum):
     Payload: {'worker_id': str, 'provider_name': str, 'last_action': str}
     """
 
+    PROVIDER_BENCHED = auto()
+    """A discovery provider has been benched for the rest of the session by
+    the silent-degradation detector: its harvest yield AND page size both
+    collapsed versus its own recorded baseline, with no hard or soft block
+    detected. Fail-closed by design: if AA may have been served false
+    information, leaving is the safe move.
+
+    Payload: {'provider': str, 'yield_ratio': float, 'bytes_ratio': float,
+              'baseline_samples': int}
+    """
+
     # ─────────────────────────────────────────────────────────────────────────
     # RESILIENCE AND CHECKPOINTING
     # Published by: CheckpointManager, AgentOrchestrator

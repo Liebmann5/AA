@@ -240,7 +240,33 @@ def test_each_retired_violation_is_gone(path, module):
     assert (path, module) not in _violations()
 
 
-def test_the_total_violation_count_is_eleven():
-    """15 -> 11, by the same AST logic the failing pin uses."""
+# The descent, so a future reader can see the direction of travel:
+#   15 -> 11 (earlier stages)
+#   11 ->  4 (ports stage: EventPublisherPort, LivenessPort,
+#             ProfileRepositoryPort, RegistryPort.get_environment_capabilities)
+#    4 ->  0 (relocation stage: interruption/pagination/classifier moved from
+#             application/services/ to adapters/secondary/ — they drive a
+#             browser, so they were secondary adapters filed in the wrong
+#             layer; ConsentRecord/ConsentRepositoryPort moved to domain)
+#
+# Zero. This must never rise. test_hexagonal_import_boundaries asserts the
+# empty list; this asserts the count, so a violation that the list-based pin
+# somehow tolerates still shows up here as a number that moved.
+_BOUNDARY_VIOLATION_CEILING = 0
+
+
+def test_the_total_violation_count_does_not_rise():
+    """A ratchet, checked by the same AST logic the main boundary pin uses.
+
+    Equality, not <=, on purpose: a stage that retires one violation while
+    introducing another nets to zero under <= and would pass silently. Equality
+    forces the number to be restated deliberately every time it moves, which is
+    the only reason a count pin earns its place alongside the pin that asserts
+    the list itself.
+    """
     total = len(_violations())
-    assert total == 11, f"expected 11 boundary violations, found {total}"
+    assert total == _BOUNDARY_VIOLATION_CEILING, (
+        f"expected {_BOUNDARY_VIOLATION_CEILING} boundary violations, found "
+        f"{total}. If you retired one, lower the ceiling in the same commit. "
+        f"If this went up, an adapter started reaching across a layer."
+    )

@@ -66,9 +66,8 @@ import urllib.request
 from datetime import datetime, timezone
 
 from auto_apply.domain.events import Event
+from auto_apply.domain.ports.event_publisher_port import EventPublisherPort
 
-if False:  # TYPE_CHECKING guard — avoids circular import at runtime
-    from auto_apply.application.agent.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +124,7 @@ class NetworkHealthMonitor:
 
     def __init__(
         self,
-        event_bus: "EventBus",
+        event_bus: EventPublisherPort,
         check_interval_seconds: int    = 30,
         failure_threshold: int         = 2,
         check_timeout_seconds: int     = 5,

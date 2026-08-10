@@ -23,49 +23,10 @@ from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from auto_apply.domain.constants import CURRENT_CONSENT_VERSION
+from auto_apply.domain.models.consent import ConsentRecord
+from auto_apply.domain.ports.consent_repository_port import ConsentRepositoryPort
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class ConsentRecord:
-    """A user's research consent decision.
-
-    Attributes:
-        granted: Whether research collection is currently authorized.
-        consent_version: The version of the consent dialog the user agreed to.
-        granted_at: UTC timestamp when consent was granted (None if never granted).
-        withdrawn_at: UTC timestamp when consent was withdrawn (None if active).
-    """
-    granted: bool = False
-    consent_version: str | None = None
-    granted_at: datetime | None = None
-    withdrawn_at: datetime | None = None
-
-
-@runtime_checkable
-class ConsentRepositoryPort(Protocol):
-    """Persistence contract for consent records.
-
-    Implementations store this in the user's local profile data
-    (e.g. profile.json or a small SQLite table) — never transmitted anywhere.
-    """
-
-    def load_consent(self) -> ConsentRecord:
-        """Load the current consent record. Returns default (not granted) if none exists."""
-        ...
-
-    def save_consent(self, record: ConsentRecord) -> None:
-        """Persist a consent record."""
-        ...
-
-    def purge_research_data(self) -> int:
-        """Delete all research signal data associated with this user.
-
-        Returns:
-            Number of records deleted (for user-facing confirmation).
-        """
-        ...
 
 
 class InMemoryConsentRepository:

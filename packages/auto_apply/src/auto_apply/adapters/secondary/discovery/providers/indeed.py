@@ -47,6 +47,7 @@ class IndeedProvider(BaseSearchProvider):
         observer=None,
         reporter=None,
         forced_tier=None,
+        degradation_detector=None,
     ) -> None:
         super().__init__(
             browser,
@@ -57,6 +58,7 @@ class IndeedProvider(BaseSearchProvider):
             reporter,
             forced_tier,
         )
+        self._degradation_detector = degradation_detector
 
         # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
         self._engine_strategy = IndeedSearchStrategy()

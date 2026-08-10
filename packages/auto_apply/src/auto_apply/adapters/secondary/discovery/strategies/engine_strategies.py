@@ -169,8 +169,8 @@ class SearchEngineStrategy(ABC):
         """
         self._locator = locator
         # Defaults — subclasses override in their own __init__.
-        self._homepage_url: str = ""
-        self._search_bar_selectors: list[str] = []
+        self._homepage_url = ""
+        self._search_bar_selectors = []
 
     # ── Locator‑based toolbar interaction ───────────────────────────────
 

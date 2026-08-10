@@ -75,7 +75,7 @@ def setup_logging(
     #    behavioural one — the app never depended on the crash.
     console_stream = sys.stdout
     try:
-        console_stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        console_stream.reconfigure(encoding="utf-8", errors="backslashreplace")  # type: ignore[union-attr]
     except (AttributeError, ValueError):
         # Stream isn't reconfigurable (already wrapped, redirected, or a plain
         # buffer). Wrap it so the handler still can't crash on non-ASCII.
@@ -123,6 +123,15 @@ def setup_logging(
     # raise its threshold to ERROR to keep the console signal clean while still
     # surfacing genuine pool errors.
     logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
+
+    # Selenium logs every WebDriver command round trip at DEBUG via
+    # remote_connection — measured at 96-98% of app.log bytes (137-300 KB/s
+    # sustained, ~26 MB in a 112 s session). That is the largest single
+    # log-volume source and the worst offender for USB flash endurance.
+    # WARNING keeps genuine driver errors visible.
+    logging.getLogger("selenium.webdriver.remote.remote_connection").setLevel(
+        logging.WARNING
+    )
 
     # ── PII Scrubbing ──────────────────────────────────────────────────────
     try:

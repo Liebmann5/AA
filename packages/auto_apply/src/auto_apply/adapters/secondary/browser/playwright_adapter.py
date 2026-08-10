@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from playwright.sync_api import Browser, Page, Playwright
@@ -411,7 +411,9 @@ class PlaywrightAdapter(BrowserInterface):
         Returns:
             List[dict]: A list of cookie dictionaries.
         """
-        return self._page.context.cookies()
+        # The browser port is framework-agnostic and speaks plain dicts;
+        # playwright returns its own TypedDicts, which are dicts at runtime.
+        return cast("list[dict[Any, Any]]", self._page.context.cookies())
 
     def add_cookie(self, cookie: dict) -> None:
         """Adds a cookie to the current session.
@@ -419,7 +421,7 @@ class PlaywrightAdapter(BrowserInterface):
         Args:
             cookie (dict): A dictionary representing the cookie.
         """
-        self._page.context.add_cookies([cookie])
+        self._page.context.add_cookies([cast("Any", cookie)])
 
     def scroll_by_offset(self, x: int, y: int) -> None:
         """Scrolls the viewport by a specific offset.

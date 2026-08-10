@@ -1,3 +1,23 @@
+# RELOCATED from application/services/navigation/pagination.py (2026-08-07).
+#
+# This module drives a live browser through BrowserInterface / InteractionPort
+# and returns domain types. It imports nothing from the application layer and
+# never has. It was filed under application/services/ but is a secondary
+# adapter by every structural test: discovery strategies — themselves secondary
+# adapters — need it, and importing it across the layer boundary was flagged by
+# tests/test_architecture.py::test_hexagonal_import_boundaries.
+#
+# Moved rather than wrapped in a port. Injecting it would have added a
+# constructor parameter threaded through composition_root -> provider ->
+# strategy with a Null default, and a Null default here means cookie banners
+# silently stop being dismissed on live discovery — a wired-but-not-connected
+# failure of exactly the kind this codebase already has eleven of. Relocation
+# fixes the same violation with no behaviour change and nothing new to wire.
+#
+# No back-compat shim is left at the old path on purpose: a re-export in
+# application/services/ would import from adapters/ and reintroduce the
+# violation in the opposite direction.
+
 """Provides a resilient, multi-strategy system for handling pagination.
 
 This module contains strategies for finding and clicking 'Next Page' controls.
@@ -7,6 +27,7 @@ Arrow Buttons) and integrates with InteractionPort to click naturally.
 
 
 import logging
+from typing import Any
 import time
 from abc import ABC, abstractmethod
 
@@ -35,7 +56,9 @@ class PaginationStrategy(ABC):
                         and do not click DOM elements.
         """
         self.browser = browser
-        self._interactor = interactor
+        # Annotated Any: every use is inside a try/except that already treats
+        # a missing interactor as "this strategy cannot advance the page".
+        self._interactor: Any = interactor
         self._scroller = scroller
         self._settle_s = float(settle_s)
 

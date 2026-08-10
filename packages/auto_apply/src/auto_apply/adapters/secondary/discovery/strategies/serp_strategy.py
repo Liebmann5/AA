@@ -21,8 +21,8 @@ from auto_apply.adapters.secondary.discovery.components.miner import SemanticMin
 from auto_apply.adapters.secondary.discovery.components.page_understanding_extractor import (
     FallbackSerpExtractor,
 )
-from auto_apply.application.services.dom.classifier import PageClassifier
-from auto_apply.application.services.navigation.interruption import InterruptionHandler
+from auto_apply.adapters.secondary.dom.classifier import PageClassifier
+from auto_apply.adapters.secondary.navigation.interruption import InterruptionHandler
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import JobSearchPreferences
 from auto_apply.domain.ports.browser_port import BrowserInterface
@@ -63,6 +63,7 @@ class GenericSERPStrategy:
         reporter=None,
         forced_tier: PageAnalysisTier | None = None,
         fast_extractor=None,
+        degradation_detector=None,
     ):
         """Initializes the strategy with specific parsing tools.
 
@@ -97,6 +98,8 @@ class GenericSERPStrategy:
         self.auditor = reporter or NullAuditReporter()
         # None (the default) leaves the JSON-LD-then-mine order untouched.
         self._forced_tier = forced_tier
+        # None (unwired) leaves discovery byte-identical to before S8k.
+        self._degradation_detector = degradation_detector
 
         self.title_parser = title_parser or SmartTextExtractor()
         self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])
@@ -157,6 +160,52 @@ class GenericSERPStrategy:
         """Name the route that produced the last harvest, for the log line."""
         return getattr(self.miner, "route_label", type(self.miner).__name__)
 
+    def _is_provider_benched(self) -> bool:
+        """True if the silent-degradation guard benched this provider."""
+        if self._degradation_detector is None:
+            return False
+        benched = self._degradation_detector.is_benched(self.source_tag)
+        if benched:
+            logger.warning(
+                "%s: provider is benched this session (silent-degradation "
+                "guard) — returning no results",
+                self.source_tag,
+            )
+        return benched
+
+    def _evaluate_first_harvest(self, visible: list[Job], elapsed_s: float) -> bool:
+        """Feed this page's FIRST harvest to the degradation guard.
+
+        Only the first harvest is evaluated and recorded — the dry-scroll
+        tail is expected to thin and must never reach the baseline. Returns
+        False if the guard just benched the provider (caller fails closed).
+        """
+        if self._degradation_detector is None:
+            return True
+        try:
+            page_bytes = len(getattr(self.browser, "page_source", "") or "")
+        except Exception:
+            page_bytes = 0
+        self._degradation_detector.evaluate_first_harvest(
+            provider=self.source_tag,
+            visible_count=len(visible),
+            page_bytes=page_bytes,
+            elapsed_seconds=elapsed_s,
+            route=self._extractor_label(),
+        )
+        if self._degradation_detector.is_benched(self.source_tag):
+            logger.warning(
+                "%s: harvest discarded — %d record(s) in %.1fs over %d bytes "
+                "collapsed versus this provider's baseline. Treated as "
+                "degraded content, NOT a valid harvest (fail closed).",
+                self.source_tag,
+                len(visible),
+                elapsed_s,
+                page_bytes,
+            )
+            return False
+        return True
+
     def _scroll_and_mine(self, scroller) -> dict:
         """Single source of truth for the scroll-and-mine harvest loop.
 
@@ -169,10 +218,17 @@ class GenericSERPStrategy:
         """
         unique: dict = {}
         consecutive_dry = 0
+        first_harvest = True
         while True:
             harvest_started = time.monotonic()
             visible = self.miner.mine_jobs(source_name=self.source_tag)
             harvest_seconds = time.monotonic() - harvest_started
+
+            if first_harvest:
+                first_harvest = False
+                if not self._evaluate_first_harvest(visible, harvest_seconds):
+                    return unique  # empty — fail closed, discard the harvest
+
             new_count = 0
             for job in visible:
                 key = job.url if job.url else f"{job.title}|{job.company}"
@@ -221,6 +277,9 @@ class GenericSERPStrategy:
         Returns:
             List[Job]: A list of unique, valid jobs found.
         """
+        if self._is_provider_benched():
+            return []
+
         # 1. Audit & Health Check
         self.auditor.log_state(f"{self.source_tag} - Pre-Scrape")
 
@@ -267,6 +326,9 @@ class GenericSERPStrategy:
 
     def run(self) -> list[Job]:
         """Executes the scraping logic using 'Harvest-Then-Scroll'."""
+
+        if self._is_provider_benched():
+            return []
 
         scroller = self._scroller
 

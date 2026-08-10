@@ -73,7 +73,7 @@ def _classifier(browser, challenge: bool = False):
     TypeError, which would look like teeth while discriminating nothing. The
     spy is returned alongside so a caller can assert it was never mined.
     """
-    from auto_apply.application.services.dom.classifier import (  # noqa: PLC0415
+    from auto_apply.adapters.secondary.dom.classifier import (  # noqa: PLC0415
         PageClassifier,
     )
 
@@ -92,7 +92,7 @@ def _classifier(browser, challenge: bool = False):
 
 def test_classifier_takes_no_miner():
     """teeth: constructing without a miner raised TypeError before the fix."""
-    from auto_apply.application.services.dom.classifier import (  # noqa: PLC0415
+    from auto_apply.adapters.secondary.dom.classifier import (  # noqa: PLC0415
         PageClassifier,
     )
 

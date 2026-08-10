@@ -41,12 +41,12 @@ Example:
 """  # noqa: E501
 
 import logging
-from typing import TYPE_CHECKING
 
 from auto_apply.domain.models.policy import AdminPolicy
+from auto_apply.domain.ports.environment_capabilities_port import (
+    EnvironmentCapabilitiesProvider,
+)
 
-if TYPE_CHECKING:
-    from auto_apply.infrastructure.composition_root import CapabilitiesRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class PolicyEnforcement:
         >>> enforcement.enforce()
     """
 
-    def __init__(self, registry: "CapabilitiesRegistry") -> None:
+    def __init__(self, registry: EnvironmentCapabilitiesProvider) -> None:
         """Initializes policy enforcement with the active registry.
 
         Args:
@@ -159,7 +159,7 @@ class PolicyEnforcement:
             return
 
         blocked = [t.lower() for t in self._policy.blocked_tools]
-        capabilities = self._registry._capabilities
+        capabilities = self._registry.get_environment_capabilities()
         original = list(capabilities.available_tools)
 
         # Remove blocked tools from the detected capabilities snapshot.

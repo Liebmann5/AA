@@ -63,13 +63,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
-from typing import TYPE_CHECKING
 
 from auto_apply.domain.events import Event
+from auto_apply.domain.ports.event_publisher_port import EventPublisherPort
+from auto_apply.domain.ports.liveness_port import LivenessPort
 
-if TYPE_CHECKING:
-    from auto_apply.application.agent.event_bus import EventBus
-    from auto_apply.infrastructure.resilient_driver import ResilientDriver
 
 logger = logging.getLogger(__name__)
 
@@ -227,8 +225,8 @@ class BrowserHealthMonitor:
 
     def __init__(
         self,
-        driver: "ResilientDriver",
-        event_bus: "EventBus",
+        driver: LivenessPort,
+        event_bus: EventPublisherPort,
         check_interval_seconds: int   = 10,
         failure_threshold: int        = 3,
         check_timeout_seconds: int    = 5,

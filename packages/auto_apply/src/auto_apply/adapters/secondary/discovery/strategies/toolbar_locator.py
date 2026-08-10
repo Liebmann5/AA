@@ -48,7 +48,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from auto_apply.domain.config import USER_DATA_DIR
 from auto_apply.domain.models.math_dom import DOMNode
@@ -115,12 +115,14 @@ class SelectorConfidenceTracker:
     def __init__(
         self, file_path: "Path | _UseDefaultFileType | None" = _USE_DEFAULT_FILE
     ) -> None:
+        self._file_path: Path | None
         if file_path is _USE_DEFAULT_FILE:
-            self._file_path: Path | None = _CONFIDENCE_FILE
+            self._file_path = _CONFIDENCE_FILE
         else:
             # None means "ephemeral, in-memory only" — anything else is an
-            # explicit path to persist to.
-            self._file_path = file_path
+            # explicit path to persist to. The sentinel is excluded by the
+            # branch above; narrowing it away is what the cast records.
+            self._file_path = cast("Path | None", file_path)
         # _data[engine_name][selector_key][selector_value] = {success, fail}
         self._data: dict[str, dict[str, dict[str, dict[str, int]]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(lambda: {"success": 0, "fail": 0}))
@@ -421,7 +423,7 @@ class ToolbarElementLocator:
 
     def _resolve_path(self, dot_path: str) -> dict[str, Any] | None:
         """Walk *dot_path* into ``self._config``, returning the leaf dict."""
-        node = self._config
+        node: Any = self._config
         for part in dot_path.split("."):
             if not isinstance(node, dict):
                 return None

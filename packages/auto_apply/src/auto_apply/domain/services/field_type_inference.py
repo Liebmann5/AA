@@ -8,6 +8,7 @@ learning is used; all rules are explicit and auditable.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Collection
 
 from auto_apply.domain.models.math_dom import DOMNode
 from auto_apply.domain.models.math_webpage import FieldType
@@ -119,7 +120,7 @@ class FieldTypeClassifier:
                 scores[field_type] += weight
 
     @staticmethod
-    def _contains_any(text: str, keywords: set[str]) -> bool:
+    def _contains_any(text: str, keywords: Collection[str]) -> bool:
         """Return True if any keyword is a substring of text."""
         text_lower = text.lower()
         return any(kw in text_lower for kw in keywords)

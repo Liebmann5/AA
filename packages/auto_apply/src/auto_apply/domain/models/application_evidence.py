@@ -95,7 +95,22 @@ class ApplicationEvidence(BaseModel):
     so existing orchestrator code that checks ``if result:`` continues to
     work without changes.
     """
-    model_config = ConfigDict(frozen=True)
+    # R-7: unknown fields are REJECTED at construction instead of silently
+    # dropped. This is the first extra="forbid" in the codebase — deliberate,
+    # because this model is the research dataset's write path: a misspelled
+    # field name here corrupts data with no signal (the job_url= incident).
+    # EffectiveConfig keeps extra="ignore" on purpose — the merged config
+    # legitimately carries keys beyond the schema. Do not "consistency-fix"
+    # that one.
+    #
+    # Known blind spot (RV-1, recorded): model_copy(update={...}) bypasses
+    # Pydantic validation entirely, so the ~15 model_copy(update=) sites in
+    # applications_workflow.py are NOT covered by this guard, and mypy cannot
+    # check those dict keys either. This layer guards direct construction —
+    # literal kwargs, dict-splat, model_validate — which today is two sites
+    # (orchestrator._buffer_application, applications_workflow.run) and
+    # tomorrow is any deserialization the research pipeline adds.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     # ── Pre-submit state ─────────────────────────────────────────────────
     attempt_id: str = ""   # joins this outcome to its per-page research rows

@@ -58,6 +58,7 @@ from auto_apply.domain.models.resources import RuntimeProfile
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.models.session_plan import SessionExecutionMode, SessionPlan
 from auto_apply.domain.models.session_report import SessionReport
+from auto_apply.domain.models.timing import BehaviorParameters
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.repository_port import JobRepositoryPort
@@ -137,6 +138,7 @@ class AgentOrchestrator:
         task_queue: WorkQueuePort,
         db: JobRepositoryPort,
         event_bus: EventBus,
+        session_plan: SessionPlan,
         driver: BrowserInterface | None = None,
         captcha_resolver: Any | None = None,
         browser_monitor: Any | None = None,
@@ -144,6 +146,8 @@ class AgentOrchestrator:
         watchdog: Any | None = None,              # ← Phase 5: ProviderWatchdog
         job_posting_resolver: Any | None = None,  # ← JobPostingResolver service
         progress: Any | None = None,  # ← optional SessionProgressDisplay (CLI adapter)
+        workflows: dict[str, Any] | None = None,
+        behavior_parameters: BehaviorParameters | None = None,
     ) -> None:
         """Initializes all orchestrator components.
 
@@ -157,6 +161,11 @@ class AgentOrchestrator:
             task_queue: Port for work-unit persistence and priority dequeuing.
             db: Port for job application history — deduplication and recording.
             event_bus: The pub/sub event system shared across all components.
+            session_plan: The frozen SessionPlan assembled by the registry at
+                startup. Required: execution mode and application caps are read
+                from it. Promoted from a post-construction monkey-patch (P1);
+                a missing plan is now a TypeError at construction, not a silent
+                fail-closed at apply time.
             driver: Optional active browser session. Tasks that require browser
                 access will fail until a driver is available.
             captcha_resolver: Optional CAPTCHA resolution service. Injected by
@@ -216,9 +225,10 @@ class AgentOrchestrator:
         # only calls into it via the workflow reference.
 
         # ── Workflow orchestrators (the live execution path) ──────────────
-        # Populated by build_orchestrator(). Each TaskType is dispatched to the
-        # corresponding *Workflow.run(); see _dispatch_task / _get_workflow.
-        self._workflows: dict[str, Any] = {}
+        # Injected by build_orchestrator() via the constructor (P1 — formerly
+        # monkey-patched after construction). Each TaskType is dispatched to
+        # the corresponding *Workflow.run(); see _dispatch_task / _get_workflow.
+        self._workflows: dict[str, Any] = dict(workflows) if workflows else {}
 
         # Retained for backward compatibility with any external inspectors;
         # no longer the dispatch path (the workflows superseded the engines).
@@ -232,6 +242,12 @@ class AgentOrchestrator:
 
         # ── Job posting resolver (RESOLVE_JOB_URL) ────────────────────────
         self._job_posting_resolver: Any | None = job_posting_resolver
+
+        # Promoted from post-construction monkey-patching (P1). session_plan
+        # is required; behavior_parameters stays optional because nothing in
+        # the orchestrator reads it yet (attached for future consumers).
+        self.session_plan: SessionPlan = session_plan
+        self.behavior_parameters: BehaviorParameters | None = behavior_parameters
 
         # ── Wire EventBus subscriptions ───────────────────────────────────
         self._register_event_handlers()
@@ -326,6 +342,20 @@ class AgentOrchestrator:
                             self._progress.update("IDLE", "waiting for tasks...")
                         time.sleep(self.IDLE_SLEEP_SECONDS)
                         continue
+
+                    # ── 4b. Round-completion batch flush (R-2) ────────────────
+                    # A DISCOVER/DISCOVER_COMPANY task being dequeued means the
+                    # previous round's VET and APPLY tasks have all drained —
+                    # TaskPriority banding (APPLY 10-19 < VET 50 < DISCOVER 100)
+                    # guarantees it. Flush the previous round's buffered
+                    # applications before dispatching the next round's search.
+                    if (
+                        batch_scheduler is not None
+                        and task.task_type in (TaskType.DISCOVER, TaskType.DISCOVER_COMPANY)
+                        and batch_scheduler.has_any_buffered()
+                    ):
+                        self._flush_round_boundary_batches(batch_scheduler)
+                    # Fall through: the dequeued task is dispatched below.
 
                     # ── 5. Deduplication check ────────────────────────────────
                     if self._is_duplicate_task(task):
@@ -569,11 +599,8 @@ class AgentOrchestrator:
     # =========================================================================
 
     def _get_execution_mode(self) -> SessionExecutionMode:
-        """Return the active execution mode, defaulting to FULL_PIPELINE."""
-        plan = getattr(self, "session_plan", None)
-        if plan is None:
-            return SessionExecutionMode.FULL_PIPELINE
-        return plan.execution_mode
+        """Return the active execution mode from the session plan."""
+        return self.session_plan.execution_mode
 
     def _session_cap_reached(self) -> bool:
         """True when the per-session application cap is reached and applying must stop.
@@ -590,15 +617,9 @@ class AgentOrchestrator:
         """
         if self._get_execution_mode() == SessionExecutionMode.RESEARCH_AUDIT:
             return False
-        plan = getattr(self, "session_plan", None)
-        if plan is None:
-            # No plan wired is a construction bug, not a runtime state. Refuse
-            # to apply rather than invent an unbounded cap — fail closed on an
-            # irreversible action.
-            return True
         return (
             self.context.stats.applications_submitted
-            >= plan.max_applications_per_session
+            >= self.session_plan.max_applications_per_session
         )
 
     def _handle_discovery(self, task: WorkUnit) -> None:
@@ -878,6 +899,43 @@ class AgentOrchestrator:
         """Pops and processes the largest ready company batch."""
         company_key, jobs = batch_scheduler.pop_best_ready_batch()
         self._process_batch(company_key, jobs, batch_scheduler)
+
+    def _flush_round_boundary_batches(self, batch_scheduler) -> None:
+        """Drain every buffered application batch at a Discovery round boundary.
+
+        This is the R-2 ruling's flush: applications drain once per completed
+        Discovery round instead of only when the work queue empties. Called
+        from run() when a DISCOVER or DISCOVER_COMPANY task is dequeued with
+        a non-empty buffer. The final round is still drained by the existing
+        queue-empty flush, so every round is covered exactly once.
+
+        Design notes (recorded per the ruling, so the next reader does not
+        "clean this up"):
+
+        - The >=3 per-company threshold (check_batch_ready) essentially never
+          fires on SERP discovery, which yields ~1 job per company. The
+          scheduler is retained deliberately for DISCOVER_COMPANY: a careers
+          page yields many openings for ONE company, where per-company caps
+          and batching pay off. On SERP rounds, this flush is the only drain.
+        - A timer-based flush was rejected: it tunes to average run length
+          and is non-deterministic. Round completion is an event AA already
+          knows with certainty via the task-priority banding.
+        - Static (no-browser) mode is safe by construction: the capability
+          profile blocks APPLY tasks from being queued without a driver, so
+          the buffer is provably empty and the flush never runs there.
+        - Recorded, not fixed here: the scheduler's threshold reads
+          ``applications.batch_threshold`` via _cfg, which never resolves —
+          the YAML knob is top-level ``company_batch_threshold``. That config
+          drift belongs to the red-pin/config stage, not this one.
+        """
+        remaining = batch_scheduler.flush_all_batches()
+        logger.info(
+            "Discovery round boundary — flushing %d buffered application "
+            "batch(es) from the previous round",
+            len(remaining),
+        )
+        for company_key, jobs in remaining.items():
+            self._process_batch(company_key, jobs, batch_scheduler)
 
     def _process_batch(self, company_key: str, jobs: list[Job], batch_scheduler) -> None:
         """Executes all applications for a single company batch.

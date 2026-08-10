@@ -12,7 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
@@ -105,7 +105,9 @@ class ProvenanceSigner:
             format=serialization.PublicFormat.Raw
         ).hex()
 
-        return private_key, public_key_hex
+        # serialization.load_pem_private_key returns the full private-key
+        # union; this module only ever writes and reads Ed25519 keys.
+        return cast(ed25519.Ed25519PrivateKey, private_key), public_key_hex
 
     def sign_payload(self, payload: dict[str, Any], code_hash: str) -> dict[str, Any]:
         """Cryptographically signs a row of research data.

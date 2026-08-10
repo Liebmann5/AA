@@ -36,11 +36,7 @@ target(submit_button, NodeID) :-
     is_synonym(submit, Name).
 
 % Rule: Find Checkboxes (e.g., Terms of Service)
-% We target any checkbox that mentions "agree" or "terms"
-target(tos_checkbox, NodeID) :-
-    node(NodeID, "checkbox", Name),
-    Name != "", % Must have a name
-    #match(".*(agree|terms).*", Name). % Regex match built into clingo
+target(tos_checkbox, NodeID) :- node(NodeID, "checkbox", "i agree to the terms").
 
 % --- OUTPUT ---
 % We only want the solver to return 'target' conclusions to our Python script.

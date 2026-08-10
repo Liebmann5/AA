@@ -37,6 +37,7 @@ Example:
 import logging
 import os
 import platform
+from typing import Any
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -50,10 +51,10 @@ except ImportError:
     plistlib = None  # type: ignore[assignment]
 
 # winreg is Windows-only.
-_winreg = None
+_winreg: Any = None
 if platform.system() == "Windows":
     try:
-        import winreg as _winreg
+        import winreg as _winreg  # type: ignore[no-redef]
     except ImportError:
         pass
 

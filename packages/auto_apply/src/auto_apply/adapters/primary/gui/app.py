@@ -49,9 +49,9 @@ from auto_apply.adapters.primary.gui.settings_editor import SettingsEditor
 from auto_apply.adapters.primary.gui.strings import get_strings
 from auto_apply.adapters.primary.gui.wizard import SessionConfigWizard as GUIWizard
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
 if TYPE_CHECKING:
-    from auto_apply.adapters.secondary.persistence.profile_repository import ProfileRepository
     from auto_apply.application.services.session_controller import SessionController
     from auto_apply.infrastructure.composition_root import CapabilitiesRegistry
 
@@ -79,7 +79,7 @@ class AutoApplyApp(tk.Tk):
     Args:
         build_registry: Factory for CapabilitiesRegistry from a UserProfile.
         create_controller: Factory for SessionController from a UserProfile.
-        profile_repo: ProfileRepository for loading/saving profiles.
+        profile_repo: ProfileRepositoryPort for loading/saving profiles.
         profile_override: Optional profile name or path to load directly,
             skipping the onboarding and profile selection flows.  Set by
             the ``--profile`` CLI flag in ``main.py``.
@@ -91,7 +91,7 @@ class AutoApplyApp(tk.Tk):
         self,
         build_registry: "Callable[[UserProfile], CapabilitiesRegistry]",
         create_controller: "Callable[[UserProfile], SessionController]",
-        profile_repo: "ProfileRepository",
+        profile_repo: ProfileRepositoryPort,
         profile_override: str | None = None,
     ) -> None:
         super().__init__()
@@ -272,7 +272,7 @@ class AutoApplyApp(tk.Tk):
                 raise ValueError(f"Profile '{profile_name}' could not be loaded.")
 
             # Pass the validated object, not a path.
-            self.registry = self._build_registry(user_profile=loaded_profile)
+            self.registry = self._build_registry(loaded_profile)
             self.profile = self.registry.get_active_profile()
 
         except Exception as exc:
@@ -312,7 +312,7 @@ class AutoApplyApp(tk.Tk):
         def _on_save():
             # Rebuild the registry so effective_config reflects saved changes.
             # Only the UserProfile object is needed; no file‑path is required.
-            self.registry = self._build_registry(user_profile=self.profile)
+            self.registry = self._build_registry(self.profile)
             self.profile = self.registry.get_active_profile()
             logger.info("Settings saved — registry rebuilt")
 
@@ -427,6 +427,9 @@ class AutoApplyApp(tk.Tk):
     def _on_session_complete(self) -> None:
         """Called when the orchestrator thread exits."""
         logger.info("Session complete — showing results")
+        if self.controller is None:
+            logger.warning("Session complete with no controller — nothing to report")
+            return
         stats = self.controller.get_stats()
 
         summary = (

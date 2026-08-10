@@ -615,6 +615,33 @@ class DatabaseManager:
             "Applied jobs log updated | url=%.60s outcome=%s", job_url, outcome,
         )
 
+    def count_applied_since(self, since_iso: str) -> int:
+        """Counts successful submissions recorded at or after *since_iso*.
+
+        Reads ``applied_jobs`` — the permanent cross-session application log —
+        and uses the same outcome filter as :meth:`has_applied_previously`,
+        so "applied" means exactly one thing in both places.
+
+        Args:
+            since_iso: Inclusive window start as a UTC ISO-8601 string.
+                ``applied_at`` values are written as UTC ISO strings, so the
+                comparison is lexicographic and exact.
+
+        Returns:
+            Count of matching rows; 0 if none.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) FROM applied_jobs
+                WHERE applied_at >= ?
+                  AND outcome IN ('SUBMITTED', 'PROBABLY_SUBMITTED')
+                """,
+                (since_iso,),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
     # =========================================================================
     # CRASH RECOVERY
     # =========================================================================

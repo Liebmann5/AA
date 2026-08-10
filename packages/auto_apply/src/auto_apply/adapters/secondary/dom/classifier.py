@@ -1,3 +1,23 @@
+# RELOCATED from application/services/dom/classifier.py (2026-08-07).
+#
+# This module drives a live browser through BrowserInterface / InteractionPort
+# and returns domain types. It imports nothing from the application layer and
+# never has. It was filed under application/services/ but is a secondary
+# adapter by every structural test: discovery strategies — themselves secondary
+# adapters — need it, and importing it across the layer boundary was flagged by
+# tests/test_architecture.py::test_hexagonal_import_boundaries.
+#
+# Moved rather than wrapped in a port. Injecting it would have added a
+# constructor parameter threaded through composition_root -> provider ->
+# strategy with a Null default, and a Null default here means cookie banners
+# silently stop being dismissed on live discovery — a wired-but-not-connected
+# failure of exactly the kind this codebase already has eleven of. Relocation
+# fixes the same violation with no behaviour change and nothing new to wire.
+#
+# No back-compat shim is left at the old path on purpose: a re-export in
+# application/services/ would import from adapters/ and reintroduce the
+# violation in the opposite direction.
+
 """Classifies the current webpage into a known semantic type.
 
 This module provides the `PageClassifier`. It uses a multi-layered analysis

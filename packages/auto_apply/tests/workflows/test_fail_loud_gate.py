@@ -1,4 +1,3 @@
-
 """Pins for making the submission gate fail-LOUD as well as fail-closed.
 
 Stage 1 made submission fail closed. That is only half safe. A default install
@@ -42,7 +41,7 @@ def _report(*outcomes) -> SessionReport:
         report.record_application(
             job=job,
             evidence=ApplicationEvidence(
-                outcome=outcome, job_url=f"https://x.test/{index}"
+                outcome=outcome, pre_submit_url=f"https://x.test/{index}"
             ),
             duration_seconds=1.0,
         )

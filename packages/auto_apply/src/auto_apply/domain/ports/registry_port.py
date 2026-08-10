@@ -12,6 +12,7 @@ from typing import Protocol, runtime_checkable
 
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.resources import RuntimeProfile
+from auto_apply.domain.models.session_plan import SessionPlan
 
 
 @runtime_checkable
@@ -43,4 +44,8 @@ class RegistryPort(Protocol):
 
     def discovery_requires_live_browser(self) -> bool:
         """Return True if the active PageAccessStrategy requires a live browser."""
+        ...
+
+    def get_session_plan(self) -> SessionPlan:
+        """Return the frozen SessionPlan for the current session."""
         ...

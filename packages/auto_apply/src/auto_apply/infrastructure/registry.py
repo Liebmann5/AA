@@ -48,6 +48,7 @@ from auto_apply.adapters.secondary.os.hardware import HardwareInspector
 from auto_apply.adapters.secondary.os.platform_inspector import PlatformInspector
 from auto_apply.adapters.secondary.persistence.policy_manager import PolicyManager
 from auto_apply.domain.config import DB_PATH
+from auto_apply.domain.models.environment import EnvironmentCapabilities
 from auto_apply.domain.models.policy import AdminPolicy
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.effective_config import EffectiveConfig
@@ -111,6 +112,9 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "framework_order": ["playwright", "selenium", "camoufox"],
     "max_applications_per_session": 50,
     "max_applications_per_company": 3,
+    # Per-UTC-day cap counted across sessions; distinct from the per-run
+    # session cap above. Mirrors runtime_defaults.yaml (parity-pinned).
+    "daily_application_limit": 1000,
     "cooldown_days_default": 180,
     "max_discovery_results_per_query": 30,
     "task_retry_limit": 3,
@@ -149,6 +153,9 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "max_pages_per_query": 1,
         "between_provider_pause_min": 1.0,
         "between_provider_pause_max": 2.0,
+        "degradation_collapse_ratio": 0.15,
+        "degradation_page_bytes_ratio": 0.25,
+        "degradation_min_samples": 3,
     },
     "applications": {
         "max_pages": 10,
@@ -219,35 +226,6 @@ _RUNTIME_DEFAULTS: dict[str, Any] = _load_runtime_defaults()
 _GEO_DB_PATH: Path = DB_PATH.parent / "geo" / "cities.db"
 
 
-@dataclass
-class EnvironmentCapabilities:
-    """A snapshot of what AA can do in the current runtime environment.
-
-    This is computed once during CapabilitiesRegistry.build() and cached.
-    It represents detected (not configured) capabilities — what the hardware
-    and OS actually support, independent of any policy or preference.
-
-    Attributes:
-        available_browsers: Browser names detected as installed and launchable.
-        available_tools: Optional tool names (e.g., "undetected_chromedriver").
-        os_name: Normalized OS name: "windows", "macos", or "linux".
-        os_version: OS version string as reported by the platform module.
-        cpu_cores: Number of logical CPU cores available.
-        ram_mb: Total available RAM in megabytes.
-        disk_free_mb: Free disk space in megabytes.
-        is_low_resource: True if hardware is below the recommended minimum.
-            When True, the registry automatically applies conservative config
-            overrides to protect session stability.
-    """
-
-    available_browsers: list[str] = field(default_factory=list)
-    available_tools: list[str] = field(default_factory=list)
-    os_name: str = "unknown"
-    os_version: str = "unknown"
-    cpu_cores: int = 1
-    ram_mb: int = 512
-    disk_free_mb: int = 1024
-    is_low_resource: bool = False
 
 
 class CapabilitiesRegistry:

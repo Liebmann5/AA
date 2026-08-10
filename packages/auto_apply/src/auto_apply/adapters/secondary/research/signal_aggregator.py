@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from typing import Any
 import queue
 import sqlite3
 import threading
@@ -202,7 +203,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
         self._enabled = consent_version is not None
 
         # ── Provenance — lazy‑init on first write ─────────────────────────
-        self._signer: object | None = None
+        self._signer: Any = None
         self._public_key_stored: bool = False
 
         # ── Macro‑signal tracking ─────────────────────────────────────────
@@ -942,7 +943,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
         if remaining:
             self._write_batch(remaining)
 
-    def _ensure_signer(self) -> object | None:
+    def _ensure_signer(self) -> Any:
         """Lazily initialize the ProvenanceSigner and store the public key.
 
         Returns:

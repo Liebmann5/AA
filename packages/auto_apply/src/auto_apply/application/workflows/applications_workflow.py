@@ -817,7 +817,7 @@ class ApplicationsWorkflow:
             Count of fields successfully filled.
         """
         filled = 0
-        structure_label_pairs = {}
+        structure_label_pairs: dict[Any, Any] = {}
 
         for field_el, field_type in classifications.items():
             type_name = str(field_type).upper() if field_type else "UNKNOWN"

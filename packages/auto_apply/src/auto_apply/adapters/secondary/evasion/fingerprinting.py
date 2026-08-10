@@ -7,10 +7,16 @@ and normalize hardware concurrency reporting.
 
 import logging
 import random
+from typing import Any
 
 # We import the raw WebDriver types for type checking, but handle errors if not installed  # noqa: E501
+# Annotated Any so the ImportError branch does not fight the imported type.
+# Same pattern and same reasoning as selenium_adapter's lazy globals: the
+# checker cannot express "this name is a class when selenium is installed and
+# None otherwise", and per-site suppression would be noisier than saying so.
+WebDriver: Any
 try:
-    from selenium.webdriver.remote.webdriver import WebDriver
+    from selenium.webdriver.remote.webdriver import WebDriver  # type: ignore[no-redef]
 except ImportError:
     WebDriver = None
 
