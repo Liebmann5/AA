@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+from typing import Any
 from pathlib import Path
 
 
@@ -81,7 +82,7 @@ def run_profile_wizard(profiles_dir: Path) -> Path | None:
         return None
 
     # Build the profile dict — matches UserProfile Pydantic schema
-    profile = {
+    profile: dict[str, Any] = {
         "profile_name": f"{first_name} {last_name}",
         "personal_info": {
             "first_name": first_name,

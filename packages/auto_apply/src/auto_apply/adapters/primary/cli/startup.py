@@ -36,6 +36,7 @@ from auto_apply.adapters.primary.cli.dashboard import CLIDashboard
 from auto_apply.adapters.primary.cli.wizard import CLIWizard
 from auto_apply.infrastructure.composition_root import build_session_controller
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +59,12 @@ class CLIStartup:
 
     def __init__(
         self,
-        profile_repo_factory: Callable[..., object],
+        profile_repo_factory: Callable[..., ProfileRepositoryPort],
         profile_override: str | None = None,
     ) -> None:
         self._repo_factory = profile_repo_factory
         self._profile_override = profile_override
-        self.repo = profile_repo_factory()
+        self.repo: ProfileRepositoryPort = profile_repo_factory()
 
     def run(self) -> None:
         """Runs the full CLI lifecycle: profile → config → execute → results."""
@@ -132,6 +133,12 @@ class CLIStartup:
         """
         override = self._profile_override
         logger.info("Loading profile override | raw=%s", override)
+
+        # The only caller guards on ``if self._profile_override``, but that
+        # guard lives in run() and cannot be seen from here. Re-stating it
+        # makes the precondition local and true independently of the caller.
+        if not override:
+            return None
 
         # ── Strategy 1: profile name ──────────────────────────────────────
         profile = self.repo.load_profile(override)

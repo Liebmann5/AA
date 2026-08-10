@@ -281,7 +281,7 @@ class Dashboard(ttk.Frame):
             ttk.Button(
                 btn_frame,
                 text=option.capitalize(),
-                command=lambda o=option: _choose(o),
+                command=lambda o=option: _choose(o),  # type: ignore[misc]
             ).pack(side=tk.LEFT, padx=5)
 
         modal.protocol("WM_DELETE_WINDOW", lambda: _choose("skip"))

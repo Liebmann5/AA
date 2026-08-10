@@ -14,6 +14,7 @@ from auto_apply.domain.ports.text_similarity_port import (
     TextSimilarityPort,
 )
 from auto_apply.domain.ports.browser_port import ElementInterface
+from typing import Any
 from auto_apply.domain.types import Keys, Locator
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ class SelectInputHandler(BaseInputHandler):
             # Build a mapping of visible text → option element, filtering out
             # placeholder entries (empty, single‑char, or common prompt strings).
             placeholder_texts = {"", "-- select --", "select...", "choose", "choose..."}
-            option_map: dict[str, object] = {}
+            option_map: dict[str, ElementInterface] = {}
             for opt in options:
                 text = (opt.text or "").strip()
                 if text.lower() not in placeholder_texts and len(text) > 1:
@@ -103,7 +104,14 @@ class SelectInputHandler(BaseInputHandler):
                     return
 
             # ── Tier 4: semantic match ────────────────────────────────────
-            best_match_text, score = self.matcher.find_best_match(user_value, candidates)
+            # The matcher is optional (ctor default None). Without one there
+            # is no semantic tier -- fall through to Tier 5 rather than
+            # raising, which is what an unguarded call did.
+            if self.matcher is None:
+                logger.info("Select: no text matcher injected — skipping semantic tier")
+                best_match_text, score = "", 0.0
+            else:
+                best_match_text, score = self.matcher.find_best_match(user_value, candidates)
 
             logger.info(
                 "Select semantic | user=%r → option=%r (score=%.2f)",
@@ -174,6 +182,11 @@ class SelectInputHandler(BaseInputHandler):
 
                 if item_map:
                     candidates = list(item_map.keys())
+                    if self.matcher is None:
+                        logger.info(
+                            "Combobox: no text matcher injected — cannot match options"
+                        )
+                        return
                     best_match_text, score = self.matcher.find_best_match(user_value, candidates)  # noqa: E501
 
                     if score > 0.7:

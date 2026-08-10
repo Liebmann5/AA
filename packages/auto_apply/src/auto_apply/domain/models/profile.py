@@ -537,7 +537,7 @@ class UserProfile(BaseModel):
             Dict[str, Any]: Flat settings dict. Keys match the config
                 namespace used by _RUNTIME_DEFAULTS in capabilities_registry.py.
         """
-        result = {}
+        result: dict[str, Any] = {}
 
         # ── App config settings ───────────────────────────────────────
         if self.app_config:

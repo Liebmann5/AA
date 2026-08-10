@@ -94,6 +94,39 @@ class JobRepository(JobRepositoryPort):
             row = cursor.fetchone()
             return row[0] if row else 0
 
+    def count_applications_since(self, since: datetime) -> int:
+        """Counts successful applications recorded at or after *since*.
+
+        Reads the permanent ``applied_jobs`` log (never cleared between
+        sessions), so the count is cross-session — that is what makes the
+        daily quota honest when the user runs several sessions in a day.
+
+        Fail-open: a transient read error returns 0 (allow) with a logged
+        warning, matching the deduplication precedent — a persistence glitch
+        must not silently discard jobs. The orchestrator's per-session cap is
+        the second line of defence.
+
+        Args:
+            since: Inclusive window start. Naive datetimes are coerced to
+                UTC; stored timestamps are UTC ISO strings.
+
+        Returns:
+            Number of successful submissions in the window; ``0`` on error
+            or when none exist.
+        """
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        try:
+            return self.db.count_applied_since(
+                since.astimezone(timezone.utc).isoformat()
+            )
+        except Exception as exc:
+            logger.warning(
+                "count_applications_since failed | error=%s — treating as 0",
+                exc,
+            )
+            return 0
+
     def was_applied(self, url: str) -> bool:
         """Checks if a specific job URL was already applied to.
 

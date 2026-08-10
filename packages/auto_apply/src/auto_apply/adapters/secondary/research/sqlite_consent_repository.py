@@ -15,10 +15,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from auto_apply.application.services.research_consent import (
-    ConsentRecord,
-    ConsentRepositoryPort,
-)
+from auto_apply.domain.models.consent import ConsentRecord
+from auto_apply.domain.ports.consent_repository_port import ConsentRepositoryPort
 
 logger = logging.getLogger(__name__)
 

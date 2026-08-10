@@ -13,7 +13,8 @@ from auto_apply.domain.ports.resolution_port import ResolutionInterface
 
 if TYPE_CHECKING:
     from auto_apply.domain.ports.browser_port import BrowserInterface
-    from auto_apply.infrastructure.composition_root import CapabilitiesRegistry
+
+from auto_apply.domain.ports.registry_port import RegistryPort
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class CaptchaResolutionService(ResolutionInterface):
     user can intervene.
     """
 
-    def __init__(self, registry: "CapabilitiesRegistry | None" = None) -> None:
+    def __init__(self, registry: RegistryPort | None = None) -> None:
         self._registry = registry
 
     @property

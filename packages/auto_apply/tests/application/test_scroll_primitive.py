@@ -19,19 +19,36 @@ The two pins that matter most here:
     * the **degradation pin** — an unusable browser yields False, never an
       exception, because a scroll probe must not be able to abort discovery.
 """
+import importlib
 import pathlib
 
 import pytest
 from unittest.mock import MagicMock, patch
 
-PAGINATION_SRC = (
-    pathlib.Path(__file__).resolve().parent.parent.parent
-    / "src"
-    / "auto_apply"
-    / "application"
-    / "services"
-    / "navigation"
-    / "pagination.py"
+# Relocated 2026-08-07: pagination.py drives a browser through
+# BrowserInterface/InteractionPort, so it is a secondary adapter, not an
+# application service. Derived from the module itself rather than hardcoded,
+# so the next move does not silently turn this pin into a FileNotFoundError.
+def _module_source(dotted: str) -> pathlib.Path:
+    """Locate a module's source file, or fail with a readable reason.
+
+    ``module.__file__`` is ``str | None`` — None for namespace packages, which
+    is exactly what an emptied-out package directory leaves behind after a
+    move. Silently passing None into Path() would raise TypeError from inside
+    pathlib and tell the next reader nothing.
+    """
+    path = importlib.import_module(dotted).__file__
+    if path is None:
+        raise AssertionError(
+            f"{dotted} has no source file — it resolved to a namespace "
+            f"package, which usually means the module was moved or deleted "
+            f"and an empty directory was left behind."
+        )
+    return pathlib.Path(path)
+
+
+PAGINATION_SRC = _module_source(
+    "auto_apply.adapters.secondary.navigation.pagination"
 )
 
 
@@ -81,7 +98,7 @@ def test_default_config_reproduces_the_previous_scroll_behaviour_exactly():
     anyone having to trust that the default matches. If the default ever drifts
     from 2.0, or the JS sequence changes, this fails.
     """
-    from auto_apply.application.services.navigation.pagination import (
+    from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
 
@@ -89,7 +106,7 @@ def test_default_config_reproduces_the_previous_scroll_behaviour_exactly():
     strategy = InfiniteScrollStrategy(browser)
 
     with patch(
-        "auto_apply.application.services.navigation.pagination.time.sleep"
+        "auto_apply.adapters.secondary.navigation.pagination.time.sleep"
     ) as slept:
         assert strategy.next_page() is True
 
@@ -103,7 +120,7 @@ def test_default_config_reproduces_the_previous_scroll_behaviour_exactly():
 
 def test_the_settle_default_is_the_old_literal():
     """The extracted magic number's default IS the number it replaced."""
-    from auto_apply.application.services.navigation.pagination import (
+    from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
 
@@ -118,11 +135,11 @@ def test_no_hardcoded_scroll_wait_survives_in_the_pagination_module():
 
 def test_reaching_the_bottom_still_reports_no_growth():
     """Unchanged semantics: same height means the feed has ended."""
-    from auto_apply.application.services.navigation.pagination import (
+    from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
 
-    with patch("auto_apply.application.services.navigation.pagination.time.sleep"):
+    with patch("auto_apply.adapters.secondary.navigation.pagination.time.sleep"):
         assert InfiniteScrollStrategy(_heights(4200, 4200)).next_page() is False
 
 
@@ -198,7 +215,7 @@ def test_the_config_key_is_registered_and_matches_the_shipped_default():
 
 
 def test_an_injected_scroller_takes_over_and_no_raw_js_is_used():
-    from auto_apply.application.services.navigation.pagination import (
+    from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
 
@@ -214,7 +231,7 @@ def test_an_injected_scroller_takes_over_and_no_raw_js_is_used():
 
 
 def test_the_injected_scrollers_answer_is_passed_through_unchanged():
-    from auto_apply.application.services.navigation.pagination import (
+    from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
 

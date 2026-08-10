@@ -67,7 +67,10 @@ def build_resilient_session(
     session.mount("http://", adapter)
 
     # Set a default timeout on the session
-    session.request = _patch_timeout(session.request, default_timeout=timeout)
+    # Deliberate: wraps the bound method so every call gets a default timeout.
+    session.request = _patch_timeout(  # type: ignore[method-assign]
+        session.request, default_timeout=timeout
+    )
 
     if respect_retry_after:
         session.hooks["response"].append(_handle_retry_after)

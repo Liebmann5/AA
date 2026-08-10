@@ -132,8 +132,8 @@ class DOMObserver:
                 detected_state = FormState.SUCCESS
                 return True
 
-            if self._detect_already_applied(browser):
-                detected_state = FormState.ALREADY_COMPLETED
+            if self._detect_already_applied():
+                detected_state = FormState.ALREADY_APPLIED
                 return True
 
             if self._detect_closed(browser):

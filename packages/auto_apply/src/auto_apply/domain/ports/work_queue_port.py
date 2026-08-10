@@ -55,3 +55,33 @@ class WorkQueuePort(ABC):
         Returns:
             Dict with keys: pending, in_progress, completed, failed, skipped.
         """
+
+    @abstractmethod
+    def reschedule_for_retry(
+        self,
+        task_id: str,
+        error_message: str,
+        backoff_base_seconds: float = 30.0,
+    ) -> bool:
+        """Marks a failed task for retry with exponential backoff.
+
+        Returns True if rescheduled, False if the retry budget is exhausted.
+        Signature mirrors DatabaseManager exactly (parameter names are
+        part of the Protocol contract for mypy).
+        """
+
+    @abstractmethod
+    def mark_task_failed(
+        self, task_id: str, error_msg: str = "", permanent: bool = False
+    ) -> None:
+        """Marks a task failed; permanent=True when retries are exhausted."""
+
+    @abstractmethod
+    def record_application_permanently(
+        self, job_url: str, company: str, outcome: str, session_id: str
+    ) -> None:
+        """Persists an application to the permanent cross-session log."""
+
+    @abstractmethod
+    def has_applied_previously(self, job_url: str) -> bool:
+        """True if this URL was successfully applied in any prior session."""

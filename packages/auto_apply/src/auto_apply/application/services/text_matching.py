@@ -1,7 +1,9 @@
 """Intelligent text matching and NLP services for Vetting and Application workflows.
 
 Uses a two-tier progressive enhancement strategy:
-    Tier 1: SpaCy (en_core_web_lg → en_core_web_md → en_core_web_sm)
+    Tier 1: SpaCy (en_core_web_lg → en_core_web_md — vector-verified at load;
+        en_core_web_sm is excluded: it ships no word vectors, so its
+        doc.similarity() emits W007 and returns inflated scores — R-6/CB-4)
     Tier 2: stdlib difflib.SequenceMatcher (always available)
 
 SentenceTransformers is NOT used — SpaCy is the sole NLP library.
@@ -45,7 +47,30 @@ class TextMatcher:
         self._engine_type: str = "basic"
         self._nlp: Any = None
         self._phrase_matcher: Any = None
+        self._vectors_verified: bool = False
+        self._fallback_reason: str | None = None
         self._initialize_engine(prefer_small=prefer_small)
+
+    @property
+    def engine_type(self) -> str:
+        """Active engine tier: 'spacy_lg' | 'spacy_md' | 'basic' (difflib)."""
+        return self._engine_type
+
+    @property
+    def vectors_verified(self) -> bool:
+        """True iff a vector-bearing SpaCy model passed the load-time check.
+
+        This is the R-6 capability self-check result, exposed as session
+        evidence. When False, all similarity scoring is difflib (Tier 2) —
+        by honest choice, not silent degradation.
+        """
+        return self._vectors_verified
+
+    @property
+    def fallback_reason(self) -> str | None:
+        """Why Tier 2 is active, when it is: 'spacy_not_installed' |
+        'no_model_installed' | 'no_vector_bearing_model'. None on Tier 1."""
+        return self._fallback_reason
 
     def _initialize_engine(self, prefer_small: bool = False) -> None:
         """Load the best available SpaCy model; fall back to difflib.
@@ -55,29 +80,74 @@ class TextMatcher:
                 on low‑resource hardware.
         """
         if _spacy is None:
+            self._fallback_reason = "spacy_not_installed"
             logger.info(
-                "TextMatcher: SpaCy unavailable, initialized with stdlib difflib (Tier 2)"
+                "TextMatcher: SpaCy not installed - using stdlib difflib (Tier 2)"
             )
             return
 
-        # Order reversed when we want a lightweight model.
+        # en_core_web_sm is deliberately excluded (R-6/CB-4): it ships no
+        # static word vectors, so doc.similarity() falls back to tok2vec —
+        # W007 and inflated scores. Low-resource sessions try md first
+        # (smaller footprint); sm is never an option on any hardware.
         model_order = (
-            ("en_core_web_sm", "en_core_web_md", "en_core_web_lg")
+            ("en_core_web_md", "en_core_web_lg")
             if prefer_small
-            else ("en_core_web_lg", "en_core_web_md", "en_core_web_sm")
+            else ("en_core_web_lg", "en_core_web_md")
         )
+
+        saw_load_failure = False
+        saw_vectorless_model = False
 
         for model_name in model_order:
             try:
-                self._nlp = _spacy.load(model_name)
-                self._engine_type = f"spacy_{model_name.split('_')[-1]}"
-                logger.info("TextMatcher: SpaCy loaded (%s)", model_name)
-                return
+                candidate = _spacy.load(model_name)
             except OSError:
+                saw_load_failure = True
                 continue
 
+            # One-time capability self-check: the model must ship word vectors.
+            # Doc.has_vector is NOT a valid check — on vector-less models it
+            # still returns True via tok2vec (the CB-4 defect). n_keys is the
+            # honest signal, checked once here instead of per similarity call.
+            n_keys = getattr(
+                getattr(getattr(candidate, "vocab", None), "vectors", None),
+                "n_keys",
+                0,
+            )
+            if not n_keys:
+                saw_vectorless_model = True
+                logger.warning(
+                    "TextMatcher: %s loaded but ships no word vectors "
+                    "(vocab.vectors.n_keys == 0) - rejecting it; doc.similarity() "
+                    "on a vector-less model emits W007 and returns inflated scores.",
+                    model_name,
+                )
+                continue
+
+            self._nlp = candidate
+            self._engine_type = f"spacy_{model_name.split('_')[-1]}"
+            self._vectors_verified = True
+            logger.info(
+                "TextMatcher: SpaCy loaded and vector-verified (%s, vectors=%d)",
+                model_name,
+                n_keys,
+            )
+            return
+
+        # No qualifying model: honest Tier 2, with the reason on the record.
+        self._fallback_reason = (
+            "no_vector_bearing_model" if saw_vectorless_model else "no_model_installed"
+        )
         logger.info(
-            "TextMatcher: SpaCy unavailable, initialized with stdlib difflib (Tier 2)"
+            "TextMatcher: no vector-bearing SpaCy model available (%s) - "
+            "using stdlib difflib (Tier 2). Install one with: "
+            "python -m spacy download en_core_web_md",
+            "models present but vector-less"
+            if saw_vectorless_model
+            else "none installed"
+            if saw_load_failure
+            else "no qualifying models",
         )
 
     def get_similarity(self, text_a: str, text_b: str) -> float:

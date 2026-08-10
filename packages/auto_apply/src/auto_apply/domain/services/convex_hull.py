@@ -31,14 +31,14 @@ def compute_convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, 
         return points
 
     # Build the lower hull
-    lower =[]
+    lower: list[tuple[float, float]] = []
     for p in points:
         while len(lower) >= 2 and _cross_product(lower[-2], lower[-1], p) <= 0:
             lower.pop()
         lower.append(p)
 
     # Build the upper hull
-    upper =[]
+    upper: list[tuple[float, float]] = []
     for p in reversed(points):
         while len(upper) >= 2 and _cross_product(upper[-2], upper[-1], p) <= 0:
             upper.pop()

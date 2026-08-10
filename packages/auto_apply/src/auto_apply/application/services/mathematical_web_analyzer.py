@@ -248,7 +248,7 @@ class MathematicalWebAnalyzer:
             {p[0].structural_hash: p for p in patterns if p}, 'MathDiscoveryProvider'
         )
 
-        all_cards = []
+        all_cards: list[Any] = []
         for group in patterns:
             all_cards.extend(node for node in group if is_card_like(node))
         # Remove duplicates (by id)
@@ -265,7 +265,7 @@ class MathematicalWebAnalyzer:
 
     def _extract_job_from_card(self, card: DOMNode, root: DOMNode) -> dict[str, Any] | None:
         """Extract structured job fields from a card node."""
-        job_data = {}
+        job_data: dict[str, Any] = {}
         
         # 1. Smarter URL Extraction (Prioritize href, then data-share-url)
         url = None

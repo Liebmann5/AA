@@ -103,27 +103,181 @@ def _universe() -> tuple[set[str], dict[str, set[str]]]:
     return flat | set(sections) | set(ApplicationConfig.model_fields), sections
 
 
-def test_profile_settings_reach_a_config_reader() -> None:
-    """The settings editor writes these. Something must read them back."""
-    import re  # noqa: PLC0415
+# Fields with no runtime consumer, and why that is deliberate. Anything not
+# listed here must be provably read. Each entry needs a reason a reader can
+# check, not just a name — an exemption without a reason is how a dead knob
+# becomes permanent.
+_UNREAD_BY_DESIGN = {
+    "auto_optimize_performance": (
+        "PLANNED self-tuning feature (profile.py carries the TODO: 'Intentionally "
+        "not yet wired to a consumer — planned, not dead. Do not delete.'). "
+        "Remove this exemption when the consumer lands."
+    ),
+}
+
+# Modules that cannot count as a consumer of a field, and why:
+#   - the model that declares the field (a field describing itself)
+#   - the settings editor that writes it (reading your own value back to
+#     redisplay it in the editor is a round-trip, not honouring the setting —
+#     and counting it would make every GUI knob self-certifying)
+#   - i18n keys name settings ("settings.headless_mode") without consuming
+#     them; a label is not a reader.
+_NOT_A_CONSUMER = (
+    ("domain", "models", "profile.py"),
+    ("adapters", "primary", "gui", "settings_editor.py"),
+    ("adapters", "primary", "gui", "strings.py"),
+)
+
+
+def _is_consumer(path: pathlib.Path) -> bool:
+    parts = path.relative_to(SRC).parts
+    return not any(parts[-len(t):] == t for t in _NOT_A_CONSUMER)
+
+
+def _read_ledger() -> dict[str, list[str]]:
+    """Map each ApplicationConfig field to the places src/ genuinely reads it.
+
+    AST, not regex. The original pin matched ``.get("field")`` textually and so
+    reported four live fields as dead. The obvious widening — also grep for
+    ``.field`` — over-corrects: ``locale`` would match ``locale.getdefaultlocale()``,
+    and the pin would pass on a spurious hit. That is the expensive failure
+    direction, because a green pin over a dead knob is indistinguishable from a
+    working one.
+
+    Parsing makes the distinction exactly. ``locale.getdefaultlocale()`` is an
+    Attribute whose ``attr`` is ``getdefaultlocale``; only ``x.locale`` has
+    ``attr == "locale"``. Four read shapes count:
+
+      * attribute LOAD    — ``app_config.locale``, ``get_settings().locale``
+      * ``getattr(obj, "locale")``
+      * ``mapping.get("locale")``
+      * a dot-path string constant ending in ``.locale``
+
+    Attribute STOREs are excluded, so ``profile.app_config.x = ...`` is a write
+    and does not certify itself as a read.
+    """
+    import ast  # noqa: PLC0415
 
     from auto_apply.domain.models.profile import ApplicationConfig  # noqa: PLC0415
 
-    unread: list[str] = []
-    for field in sorted(ApplicationConfig.model_fields):
-        found = any(
-            re.search(rf"""\.get\(\s*["']{field}["']""", py.read_text(encoding="utf-8", errors="replace"))
-            for py in SRC.rglob("*.py")
-        )
-        if not found:
-            unread.append(field)
+    fields = set(ApplicationConfig.model_fields)
+    ledger: dict[str, list[str]] = {f: [] for f in fields}
 
+    for py in SRC.rglob("*.py"):
+        if not _is_consumer(py):
+            continue
+        text = py.read_text(encoding="utf-8", errors="replace")
+        try:
+            tree = ast.parse(text, filename=str(py))
+        except SyntaxError:
+            continue
+        lines = text.splitlines()
+        rel = py.relative_to(SRC)
+
+        def record(field: str, node, idiom: str) -> None:
+            line = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+            ledger[field].append(f"{rel}:{node.lineno} [{idiom}] {line[:100]}")
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                if node.attr in fields and isinstance(node.ctx, ast.Load):
+                    record(node.attr, node, "attribute read")
+            elif isinstance(node, ast.Call):
+                fn = node.func
+                if isinstance(fn, ast.Name) and fn.id == "getattr" and len(node.args) >= 2:
+                    a = node.args[1]
+                    # isinstance(a.value, str) is load-bearing, not decoration:
+                    # ast.Constant.value is str|bytes|int|float|complex|
+                    # EllipsisType|None, and `in fields` narrows none of that.
+                    if (
+                        isinstance(a, ast.Constant)
+                        and isinstance(a.value, str)
+                        and a.value in fields
+                    ):
+                        record(a.value, node, "getattr")
+                elif isinstance(fn, ast.Attribute) and fn.attr == "get" and node.args:
+                    a = node.args[0]
+                    if (
+                        isinstance(a, ast.Constant)
+                        and isinstance(a.value, str)
+                        and a.value in fields
+                    ):
+                        record(a.value, node, "dict.get")
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if "." in node.value:
+                    tail = node.value.rsplit(".", 1)[-1]
+                    if tail in fields:
+                        record(tail, node, "dot-path string")
+
+    return ledger
+
+
+def test_profile_settings_reach_a_config_reader() -> None:
+    """The settings editor writes these. Something must read them back.
+
+    Rewritten from a ``.get("field")``-only regex to a multi-idiom AST ledger,
+    per the 2026-07-30 ruling. The old form reported six dead fields; four of
+    them (``locale``, ``use_proxies``, ``proxy_server``,
+    ``human_review_checkpoints``) were read via ``getattr`` and were never dead.
+
+    On failure this prints WHERE each field is read, not just which names it
+    liked — the claim has to be auditable by eye, because the whole defect class
+    this pin guards is "a check that silently agrees with itself".
+    """
+    ledger = _read_ledger()
+    unread = sorted(
+        f for f, hits in ledger.items() if not hits and f not in _UNREAD_BY_DESIGN
+    )
+
+    evidence = "\n".join(
+        f"  {f}: " + (f"{len(hits)} read(s), first at {hits[0]}" if hits
+                      else f"NO READS ({_UNREAD_BY_DESIGN.get(f, 'unexplained')})")
+        for f, hits in sorted(ledger.items())
+    )
     assert not unread, (
         f"ApplicationConfig fields are merged into the effective config "
         f"(registry.py:348) and never read back out: {unread}. The settings "
         f"editor writes them, the registry merges them, and no runtime consumer "
-        f"looks them up. Every one of those GUI controls appears to work and "
-        f"changes nothing."
+        f"looks them up — every one of those GUI controls appears to work and "
+        f"changes nothing.\n\nFull read ledger:\n{evidence}"
+    )
+
+
+def test_the_read_ledger_can_still_find_a_dead_field() -> None:
+    """Teeth for the pin above: prove the detector fails on a genuinely dead field.
+
+    The rewrite widened what counts as a read from one idiom to four. A detector
+    widened far enough to match anything would pass forever and pin nothing, so
+    the widening has to be shown not to have gone that far: a field name that
+    appears nowhere in src/ must come back with an empty ledger entry.
+    """
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from auto_apply.domain.models.profile import ApplicationConfig  # noqa: PLC0415
+
+    dead = "aa_field_that_no_consumer_reads"
+    fake = dict(ApplicationConfig.model_fields)
+    fake[dead] = ApplicationConfig.model_fields["use_proxies"]
+
+    with patch.object(ApplicationConfig, "model_fields", fake):
+        ledger = _read_ledger()
+
+    assert dead in ledger, "the injected field never reached the ledger"
+    assert ledger[dead] == [], (
+        f"the detector claims to have found reads of a field that does not "
+        f"exist anywhere in src/: {ledger[dead]}. It is too loose to have teeth."
+    )
+    assert ledger["use_proxies"], "widening check broke detection of a live field"
+
+
+def test_every_exemption_names_a_real_field() -> None:
+    """An exemption for a deleted field would silently hide its replacement."""
+    from auto_apply.domain.models.profile import ApplicationConfig  # noqa: PLC0415
+
+    stale = sorted(set(_UNREAD_BY_DESIGN) - set(ApplicationConfig.model_fields))
+    assert not stale, (
+        f"_UNREAD_BY_DESIGN exempts {stale}, which are no longer "
+        f"ApplicationConfig fields. Drop the entries."
     )
 
 

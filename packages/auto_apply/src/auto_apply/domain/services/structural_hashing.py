@@ -21,13 +21,46 @@ from auto_apply.domain.models.math_dom import DOMNode
 _CARD_CONTAINER_TAGS = frozenset({"div", "li", "article", "tr", "section"})
 _MIN_CARD_AREA = 1500.0   #2500.0
 
+# Interactive/structural ARIA roles that mark a real, operable listing card.
+# Chrome roles (tab, tablist, navigation, menu, menuitem, option, listbox)
+# are deliberately absent so tab bars and filter chips cannot satisfy the
+# marker test.
+_CARD_MARKER_ROLES = frozenset({"button", "link", "article", "listitem"})
+
+# data-* attributes search engines stamp on essentially every element for
+# measurement. They carry no semantic content and must not count as markers.
+_TRACKING_DATA_ATTRS = frozenset({"data-hveid", "data-ved", "data-hd", "data-lht"})
+
+
+def has_semantic_marker(node: DOMNode) -> bool:
+    """Return True if the node or any descendant carries a semantic marker.
+
+    A marker is an ARIA role in :data:`_CARD_MARKER_ROLES`, or any ``data-*``
+    attribute that is not a known tracking attribute. Class names are never
+    consulted: they are obfuscated and rotate per deploy.
+    """
+    for n in node.iter_nodes():
+        role = n.get_attribute("role", "").strip().lower()
+        if role in _CARD_MARKER_ROLES:
+            return True
+        for name, _value in n.attributes:
+            if name.startswith("data-") and name not in _TRACKING_DATA_ATTRS:
+                return True
+    return False
+
 
 def is_card_like(node: DOMNode) -> bool:
     """Return True if a node looks like a job/listing card.
 
-    A card is a rendered container of sensible size that holds both visible
-    text and at least one link. Used to filter repeated-pattern output against
-    nav/footer/comment false positives.
+    A card is a rendered container of sensible size that holds visible text
+    and is operable: either it contains at least one link, or it carries a
+    semantic marker (interactive ARIA role / non-tracking data-* attribute).
+    The marker branch exists because Google's jobs vertical renders real
+    cards as ``div[role=button]`` with no anchor anywhere (measured, S8f).
+
+    Used by both card detectors (_detect_job_listings on the SERP fast path
+    and MathematicalWebAnalyzer._detect_job_cards on the careers-page path);
+    the two MUST stay in lockstep — do not fork this guard per caller.
 
     Args:
         node: The candidate container node.
@@ -41,8 +74,9 @@ def is_card_like(node: DOMNode) -> bool:
     if node.tag not in _CARD_CONTAINER_TAGS:
         return False
     has_text = any(n.text.strip() for n in node.iter_nodes())
-    has_link = len(node.find_by_tag("a")) > 0
-    return has_text and has_link
+    if not has_text:
+        return False
+    return len(node.find_by_tag("a")) > 0 or has_semantic_marker(node)
 
 
 def compute_structural_hash(node: DOMNode) -> str:

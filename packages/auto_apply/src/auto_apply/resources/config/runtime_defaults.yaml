@@ -38,6 +38,10 @@ framework_order:
 # ─────────────────────────────────────────────────────────────────────────────
 max_applications_per_session: 50
 max_applications_per_company: 3
+#! per-UTC-day cap, counted across sessions from the permanent applied_jobs
+#! log. Distinct from max_applications_per_session, which is per-run and
+#! in-memory. Overridden by ApplicationConfig.daily_application_limit.
+daily_application_limit: 1000
 cooldown_days_default: 180
 max_discovery_results_per_query: 30
 
@@ -107,6 +111,12 @@ discovery:
   max_concurrent_sources: 1   #! MUST BE 1 when sharing a single live browser!
   # Maximum pages to paginate through per search query.
   max_pages_per_query: 1      #! 1 = today's single-page behaviour; raise to paginate.
+  # Silent-degradation guard (S8k): a provider is benched for the session
+  # only when its first-harvest yield AND page size both collapse versus its
+  # own recorded baseline, and only after enough history exists to judge.
+  degradation_collapse_ratio: 0.15      # yield <= 15% of baseline ...
+  degradation_page_bytes_ratio: 0.25    # ... AND page bytes <= 25% of baseline
+  degradation_min_samples: 3            # need >= 3 prior harvests to judge
   # Pause between switching search providers (faster engine switching).
   between_provider_pause_min: 1.0   # ↓ 2.0 → 1.0
   between_provider_pause_max: 2.0   # ↓ 5.0 → 2.0

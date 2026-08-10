@@ -70,24 +70,22 @@ import pytest
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "auto_apply"
 
 
-def test_cooldown_authority_survives_a_default_profile() -> None:
+def test_cooldown_authority_survives_a_default_profile(make_throttling_filter) -> None:
     """The default profile must not crash the cooldown calculation."""
     from unittest.mock import MagicMock  # noqa: PLC0415
 
     from auto_apply.domain.models.profile import ApplicationPreferences  # noqa: PLC0415
-    from auto_apply.domain.vetting.throttling_filter import (  # noqa: PLC0415
-        ThrottlingFilter,
-    )
 
     profile = MagicMock()
     profile.application_preferences = ApplicationPreferences()  # cooldown_days=None
     job_repo = MagicMock()
     job_repo.get_company_mandate_cooldown.return_value = 0
 
-    # cooldown_days_default is required and keyword-only: test_cooldown_failsafe
-    # forbids an optional default, because a caller that forgets one gets a
-    # zero-day cooldown silently. 180 is the value composition_root injects.
-    filt = ThrottlingFilter(profile, job_repo, cooldown_days_default=180)
+    # All three limits are required and keyword-only: test_cooldown_failsafe
+    # forbids optional defaults, because a caller that forgets one gets a
+    # permissive limit silently. make_throttling_filter carries the values
+    # composition_root injects, so a fourth limit does not break this test.
+    filt = make_throttling_filter(profile=profile, job_repo=job_repo)
     try:
         cooldown = filt._calculate_cooldown_authority("Acme")
     except TypeError as exc:
@@ -101,21 +99,18 @@ def test_cooldown_authority_survives_a_default_profile() -> None:
     assert isinstance(cooldown, int)
 
 
-def test_company_mandate_can_shorten_the_cooldown() -> None:
+def test_company_mandate_can_shorten_the_cooldown(make_throttling_filter) -> None:
     """The docstring says the company mandate is tier-1 authority."""
     from unittest.mock import MagicMock  # noqa: PLC0415
 
     from auto_apply.domain.models.profile import ApplicationPreferences  # noqa: PLC0415
-    from auto_apply.domain.vetting.throttling_filter import (  # noqa: PLC0415
-        ThrottlingFilter,
-    )
 
     profile = MagicMock()
     profile.application_preferences = ApplicationPreferences(cooldown_days=7)
     job_repo = MagicMock()
     job_repo.get_company_mandate_cooldown.return_value = 30  # "reapply after 30 days"
 
-    filt = ThrottlingFilter(profile, job_repo, cooldown_days_default=180)
+    filt = make_throttling_filter(profile=profile, job_repo=job_repo)
     cooldown = filt._calculate_cooldown_authority("Acme")
 
     assert cooldown <= 30, (

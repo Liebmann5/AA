@@ -264,7 +264,7 @@ class SmartTextExtractor(BaseExtractor):
     h3, h2, div[role='heading'], or simple spans with specific classes.
     """
 
-    def __init__(self, strategies: list[str] = None):
+    def __init__(self, strategies: list[str] | None = None):
         """Initializes the extractor.
 
         Args:

@@ -25,7 +25,9 @@ class RobotsPolicy:
         """
         self.user_agent = user_agent
         # Cache parsers by domain so we don't re-download robots.txt every time
-        self._parsers: dict[str, urllib.robotparser.RobotFileParser] = {}
+        # None is cached for domains whose robots.txt could not be fetched,
+        # so a failed fetch is not retried on every request.
+        self._parsers: dict[str, urllib.robotparser.RobotFileParser | None] = {}
 
     def can_fetch(self, url: str) -> bool:
         """Checks if the URL is allowed by robots.txt."""
@@ -41,7 +43,16 @@ class RobotsPolicy:
         if not parser:
             return None
 
-        return parser.crawl_delay(self.user_agent)
+        # RobotFileParser.crawl_delay is typed str | None by the stdlib stubs
+        # but documented to return a number when present. Convert explicitly
+        # rather than letting a str escape into a float-typed contract.
+        delay = parser.crawl_delay(self.user_agent)
+        if delay is None:
+            return None
+        try:
+            return float(delay)
+        except (TypeError, ValueError):
+            return None
 
     def _get_parser(self, url: str) -> urllib.robotparser.RobotFileParser | None:
         """Retrieves or creates a parser for the domain of the given URL."""

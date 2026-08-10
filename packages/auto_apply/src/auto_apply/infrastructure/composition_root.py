@@ -229,6 +229,23 @@ def build_orchestrator(  # noqa: PLR0914
             cooldown_days_default=registry.get_effective_config(
                 "cooldown_days_default", 180
             ),
+            # Both caps read through the typed EffectiveConfig — the first
+            # two live callers of get_effective_settings().
+            # daily_application_limit: the per-UTC-day cap, counted across
+            # sessions. Sourced from the daily knob, NOT from
+            # max_applications_per_session — those are different windows, and
+            # feeding the session number in here made a user's configured
+            # daily limit a dead write while silently capping every day at the
+            # session number. The session cap is enforced separately by
+            # AgentOrchestrator._session_cap_reached, so both still apply.
+            # max_applications_per_company: YAML default 3; AdminPolicy has
+            # no per-company field, so no policy clamp applies to this knob.
+            daily_application_limit=(
+                registry.get_effective_settings().daily_application_limit
+            ),
+            max_applications_per_company=(
+                registry.get_effective_settings().max_applications_per_company
+            ),
         ),
         SpatialLocationFilter(profile, geo_db),
         LocationLogicFilter(profile),
@@ -461,7 +478,7 @@ def build_orchestrator(  # noqa: PLR0914
             )
             _indeed_evasion_manager = None
 
-        from auto_apply.application.services.navigation.pagination import (  # noqa: PLC0415
+        from auto_apply.adapters.secondary.navigation.pagination import (  # noqa: PLC0415
             InfiniteScrollStrategy,
             PaginationHandler,
         )
@@ -490,6 +507,32 @@ def build_orchestrator(  # noqa: PLR0914
 
         _audit_reporter = AuditReporter(driver)
 
+        # ── Silent-degradation detector (S8k) ─────────────────────────────
+        _degradation_detector = None
+        try:
+            from auto_apply.adapters.secondary.persistence.harvest_baseline_repository import (  # noqa: PLC0415
+                HarvestBaselineRepository,
+            )
+            from auto_apply.application.services.auditing.degradation_detector import (  # noqa: PLC0415
+                SilentDegradationDetector,
+            )
+
+            _baseline_repo = HarvestBaselineRepository(
+                USER_DATA_DIR / "harvest_baselines.db"
+            )
+            _degradation_detector = SilentDegradationDetector(
+                baseline_store=_baseline_repo,
+                config=_effective_config.get("discovery", {}),
+                event_bus=event_bus,
+                deterministic=plan.is_deterministic,
+            )
+        except Exception as _exc:
+            logger.warning(
+                "build_orchestrator: degradation detector unavailable — "
+                "providers run without the silent-degradation guard: %s",
+                _exc,
+            )
+
         providers = [
             GoogleProvider(
                 browser=driver,
@@ -501,6 +544,7 @@ def build_orchestrator(  # noqa: PLR0914
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
                 forced_tier=_forced_tier,
+                degradation_detector=_degradation_detector,
             ),
             BingProvider(
                 browser=driver,
@@ -510,6 +554,7 @@ def build_orchestrator(  # noqa: PLR0914
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
                 forced_tier=_forced_tier,
+                degradation_detector=_degradation_detector,
             ),
             IndeedProvider(
                 browser=driver,
@@ -520,6 +565,7 @@ def build_orchestrator(  # noqa: PLR0914
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
                 forced_tier=_forced_tier,
+                degradation_detector=_degradation_detector,
             ),
         ]
 
@@ -731,7 +777,7 @@ def build_orchestrator(  # noqa: PLR0914
             logger.debug("build_orchestrator: WebpageAnalyzer unavailable: %s", _exc)
 
         try:
-            from auto_apply.application.services.navigation.interruption import (  # noqa: PLC0415
+            from auto_apply.adapters.secondary.navigation.interruption import (  # noqa: PLC0415
                 InterruptionHandler,
             )
             _interruption_handler = InterruptionHandler(
@@ -834,27 +880,20 @@ def build_orchestrator(  # noqa: PLR0914
         task_queue=db_manager,
         db=job_repo,
         event_bus=event_bus,
+        session_plan=plan,
         driver=driver,
         captcha_resolver=captcha_resolver,
         browser_monitor=browser_monitor,
         network_monitor=network_monitor,
         job_posting_resolver=job_posting_resolver,
         progress=progress_display,
+        workflows={
+            "DiscoveryWorkflow": discovery_workflow,
+            "VettingWorkflow": vetting_workflow,
+            "ApplicationsWorkflow": applications_workflow,
+        },
+        behavior_parameters=behavior_params,
     )
-
-    orchestrator._workflows = {  # type: ignore[attr-defined]
-        "DiscoveryWorkflow": discovery_workflow,
-        "VettingWorkflow": vetting_workflow,
-        "ApplicationsWorkflow": applications_workflow,
-    }
-
-    # ── Attach SessionPlan ────────────────────────────────────────────────────
-    orchestrator.session_plan = plan
-
-    # ── 5b. Attach BehaviorParameters for timing (built once, at the top of
-    # this function, so every RNG consumer and this reference share the exact
-    # same instance rather than risking two independently-constructed copies).
-    orchestrator.behavior_parameters = behavior_params
 
     logger.info(
         "build_orchestrator complete | providers=%d driver=%s",

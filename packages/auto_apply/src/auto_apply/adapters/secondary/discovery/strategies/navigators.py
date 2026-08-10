@@ -19,7 +19,7 @@ from auto_apply.adapters.secondary.discovery.strategies.engine_strategies import
     SearchEngineStrategy,
 )
 from auto_apply.adapters.secondary.evasion.components import behavior
-from auto_apply.application.services.navigation.interruption import InterruptionHandler
+from auto_apply.adapters.secondary.navigation.interruption import InterruptionHandler
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.types import Keys, Locator

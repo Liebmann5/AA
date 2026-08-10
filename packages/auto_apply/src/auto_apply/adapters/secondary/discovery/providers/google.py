@@ -61,6 +61,7 @@ class GoogleProvider(BaseSearchProvider):
         observer=None,
         reporter=None,
         forced_tier=None,
+        degradation_detector=None,
     ) -> None:
         super().__init__(
             browser,
@@ -71,6 +72,7 @@ class GoogleProvider(BaseSearchProvider):
             reporter,
             forced_tier,
         )
+        self._degradation_detector = degradation_detector
         # Optional ATSRegistry: when provided, find_company_career_page() builds
         # the site‑filter list from loaded descriptors rather than a hardcoded set.
         self._ats_registry = ats_registry
@@ -159,6 +161,7 @@ class GoogleProvider(BaseSearchProvider):
             max_pages=self._max_pages,
             observer=self._observer,
             reporter=self._reporter,
+            degradation_detector=self._degradation_detector,
             forced_tier=self._forced_tier,
             title_parser=SmartTextExtractor(
                 strategies=[

@@ -15,8 +15,11 @@ no external machine‑learning libraries.
 
 from __future__ import annotations
 
+import logging
 import math
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 from auto_apply.domain.models.math_dom import DOMNode, Geometry
 from auto_apply.domain.models.math_webpage import (
@@ -28,7 +31,7 @@ from auto_apply.domain.models.math_webpage import (
 )
 from auto_apply.domain.ports.math_reasoning_port import FormUnderstandingPort
 from auto_apply.domain.services.label_input_pairing import hungarian_assign
-from auto_apply.domain.services.structural_hashing import is_card_like
+from auto_apply.domain.services.structural_hashing import has_semantic_marker, is_card_like
 
 # Penalty for dummy (padding) cells in the square Hungarian cost matrix. Must be
 # far larger than any real pairing cost (which is bounded by MAX_LABEL_DISTANCE
@@ -750,25 +753,66 @@ class MathFormUnderstandingService(FormUnderstandingPort):
     # ======================================================================
 
     def _detect_job_listings(self, root: DOMNode) -> list[DOMNode]:
-        """Find nodes that likely represent job cards using structural similarity."""
-        # Collect all nodes that could be cards (e.g., <li>, <div> with certain classes)
-        candidates = []
-        for node in root.iter_nodes():
-            if self._is_likely_card(node):
-                candidates.append(node)
+        """Return the single best group of structurally-identical card containers.
 
-        # Group by structural hash to find repeated patterns
+        S8f selection policy. The previous implementation UNIONED every
+        structural-hash group with >= 2 members. On a live Google SERP that
+        returned 71 candidates where 9 real cards exist: each level of a
+        nested card chain forms its own structurally-identical group, and
+        every level was concatenated. Now:
+
+          1. Group guard-passing candidates by structural hash (unchanged).
+          2. Rank groups by (marker fraction, group size, mean area), desc.
+          3. Return only the top-ranked group's members.
+
+        If the top group is page chrome rather than cards, the title/url gate
+        in PageUnderstandingExtractor drops every record, the fast route
+        returns nothing, and FallbackSerpExtractor commits to the DOM miner
+        for the page — a wrong selection degrades to pre-S8f behavior, not to
+        bogus jobs. This function is a selection change only; it does not
+        alter what _extract_job_cards accepts as a Job.
+
+        Known trade-off (ruling R-1/CB-1): a SERP mixing two structurally
+        distinct card styles (e.g. promoted + organic) yields only the
+        dominant style. Discovery is a sampling exercise; accepted.
+
+        Note: grouping uses DOMNode.structural_hash (tag + sorted classes +
+        child hashes). domain/services/structural_hashing.py carries a second
+        vocabulary (tag:len(children)) used by find_repeated_patterns. Both
+        group identically within a single page load; unifying them is tracked
+        as the P3 detector-sub-fork item and is out of scope here.
+        """
+        candidates = [n for n in root.iter_nodes() if self._is_likely_card(n)]
+
         hash_groups: dict[str, list[DOMNode]] = defaultdict(list)
         for node in candidates:
             hash_groups[node.structural_hash].append(node)
 
-        # If a hash appears multiple times, it's likely a repeated card
-        listings = []
-        for nodes in hash_groups.values():
-            if len(nodes) >= 2:
-                listings.extend(nodes)
+        groups = [nodes for nodes in hash_groups.values() if len(nodes) >= 2]
+        if not groups:
+            return []
 
-        return listings
+        def _marker_fraction(nodes: list[DOMNode]) -> float:
+            return sum(1 for n in nodes if has_semantic_marker(n)) / len(nodes)
+
+        def _mean_area(nodes: list[DOMNode]) -> float:
+            areas = [n.geometry.area for n in nodes if n.geometry is not None]
+            return sum(areas) / len(areas) if areas else 0.0
+
+        best = max(
+            groups,
+            key=lambda ns: (_marker_fraction(ns), len(ns), _mean_area(ns)),
+        )
+
+        logger.info(
+            "card detection: %d candidate group(s) sizes=%s -> "
+            "selected %d card(s) (marker_frac=%.2f)",
+            len(groups),
+            sorted(len(g) for g in groups),
+            len(best),
+            _marker_fraction(best),
+        )
+        return best
 
     @staticmethod
     def _is_likely_card(node: DOMNode) -> bool:

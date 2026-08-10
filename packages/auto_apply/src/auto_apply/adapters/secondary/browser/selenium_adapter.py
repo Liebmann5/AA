@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from selenium.webdriver.remote.shadowroot import ShadowRoot
     from selenium.webdriver.remote.webdriver import WebDriver
     from selenium.webdriver.remote.webelement import WebElement
 
@@ -27,17 +28,29 @@ from auto_apply.domain.types import Locator
 
 logger = logging.getLogger(__name__)
 
-# Global placeholders – populated on first adapter creation
-_SeleniumBy = None
-_SeleniumKeys = None
-_WebDriver = None
-_WebElement = None
-_ActionChains = None
-_WebDriverWait = None
-_EC = None
-_TimeoutException = None
-_WebDriverException = None
-_LOCATOR_MAP = {}
+# Global placeholders – populated on first adapter creation.
+#
+# Annotated ``Any`` deliberately, not left to inference. Inference reads the
+# ``= None`` initialiser plus the assignment in ``_ensure_selenium`` and lands
+# on ``type[X] | None``, so every downstream use reports "Item None has no
+# attribute ..." — 19 findings describing one fact the module already
+# guarantees: nothing touches these before ``_ensure_selenium()`` has run and
+# either populated them or raised.
+#
+# ``Any`` states that honestly rather than suppressing it per-site. The
+# precondition it rests on is enforced by ``_ensure_selenium()`` being called
+# in every constructor and by its re-raise on ImportError — not by the type
+# system, which cannot express "populated by side effect before first use".
+_SeleniumBy: Any = None
+_SeleniumKeys: Any = None
+_WebDriver: Any = None
+_WebElement: Any = None
+_ActionChains: Any = None
+_WebDriverWait: Any = None
+_EC: Any = None
+_TimeoutException: Any = None
+_WebDriverException: Any = None
+_LOCATOR_MAP: dict[str, Any] = {}
 
 
 def _ensure_selenium() -> None:
@@ -176,9 +189,17 @@ class SeleniumElementAdapter(ElementInterface):
             if shadow_root:
                 # In Selenium 4+, shadow_root returns a ShadowRoot object,
                 # which acts very similar to a WebElement. We wrap it recursively.
-                # Note: We cheat slightly here because ShadowRoot isn't exactly
-                # a WebElement, but for find_element purposes, it behaves like one.
-                return SeleniumElementAdapter(shadow_root)
+                #
+                # LATENT LIMITATION, made explicit here rather than hidden in
+                # the signature: a ShadowRoot exposes only find_element /
+                # find_elements. click, send_keys, text and the geometry
+                # accessors raise on the adapter this returns. Widening the
+                # constructor to WebElement | ShadowRoot was tried and is
+                # worse -- it propagates the union through all eight of those
+                # methods and reports nine findings describing this one fact.
+                # The cast confines the inaccuracy to the single line that
+                # creates it, next to the explanation.
+                return SeleniumElementAdapter(cast("WebElement", shadow_root))
         except _WebDriverException:
             pass
         return None
@@ -306,6 +327,11 @@ class SeleniumAdapter(BrowserInterface):
         """
         if ">>" not in selector:
             selenium_by = _LOCATOR_MAP.get(by)
+            if selenium_by is None:
+                # Unrecognised locator strategy. Previously this fell through
+                # to find_element(None, ...), which raised and was swallowed
+                # by the except below -- same outcome, reached by accident.
+                return None
             try:
                 return self._driver.find_element(selenium_by, selector)
             except Exception:
@@ -313,7 +339,9 @@ class SeleniumAdapter(BrowserInterface):
 
         # Split the selector chain
         parts = [p.strip() for p in selector.split(">>")]
-        current_context = self._driver
+        # Starts as the driver, then becomes a ShadowRoot on each hop. Both
+        # expose find_element, which is all this loop uses.
+        current_context: Any = self._driver
 
         try:
             for part in parts:

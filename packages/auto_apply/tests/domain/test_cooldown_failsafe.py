@@ -50,18 +50,8 @@ guarantee is doing more work than it looks like.
 from __future__ import annotations
 
 import inspect
-from unittest.mock import MagicMock
 
-from auto_apply.domain.models.profile import ApplicationPreferences
 from auto_apply.domain.vetting.throttling_filter import ThrottlingFilter
-
-
-def _filter(**kwargs) -> ThrottlingFilter:
-    profile = MagicMock()
-    profile.application_preferences = ApplicationPreferences()  # cooldown_days=None
-    job_repo = MagicMock()
-    job_repo.get_company_mandate_cooldown.return_value = 0  # no mandate recorded
-    return ThrottlingFilter(profile, job_repo, **kwargs)
 
 
 def test_cooldown_default_has_no_fail_open_fallback() -> None:
@@ -81,9 +71,16 @@ def test_cooldown_default_has_no_fail_open_fallback() -> None:
     )
 
 
-def test_no_mandate_and_no_user_preference_is_not_zero_days() -> None:
-    """The behaviour the class constant used to guarantee."""
-    filt = _filter(cooldown_days_default=180)
+def test_no_mandate_and_no_user_preference_is_not_zero_days(
+    make_throttling_filter,
+) -> None:
+    """The behaviour the class constant used to guarantee.
+
+    The limits come from the shared conftest factory (the values
+    composition_root injects); cooldown_days_default is stated explicitly here
+    because it is the value under test.
+    """
+    filt = make_throttling_filter(cooldown_days_default=180)
     assert filt._calculate_cooldown_authority("Acme") == 180
 
     # And the shape assertion that let the regression through:
@@ -93,3 +90,39 @@ def test_no_mandate_and_no_user_preference_is_not_zero_days() -> None:
         "A profile with no company mandate and no user preference resolved to a "
         "zero-day cooldown."
     )
+
+
+def test_every_limit_is_required_not_optional() -> None:
+    """Generalises the cooldown fail-safe to all three injected limits.
+
+    ``cooldown_days_default`` earned its own pin above by regressing. The same
+    argument covers ``daily_application_limit`` and
+    ``max_applications_per_company``: a caller that forgets one must fail at
+    construction, not apply more than the user allowed and say nothing.
+
+    Honest label: this is a GUARD pin, not teeth. It passes on the current tree
+    — all three are already required. It exists so that adding a default to any
+    of them turns red here, at the one place that states the rule, rather than
+    going unnoticed because three separate test files happened to pass their
+    values in anyway.
+    """
+    sig = inspect.signature(ThrottlingFilter.__init__)
+    for name in (
+        "cooldown_days_default",
+        "daily_application_limit",
+        "max_applications_per_company",
+    ):
+        param = sig.parameters.get(name)
+        assert param is not None, (
+            f"ThrottlingFilter no longer accepts {name}. Every limit it "
+            f"enforces has to be injected from the effective config."
+        )
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY, (
+            f"{name} is positional. Three int limits in a row are trivially "
+            f"transposable at a call site; keyword-only makes that impossible."
+        )
+        assert param.default is inspect.Parameter.empty, (
+            f"{name} defaults to {param.default!r}. A caller that forgets to "
+            f"inject it gets that limit silently, and the failure is invisible: "
+            f"no exception, no log, just a cap nobody chose. Make it required."
+        )

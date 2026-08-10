@@ -82,6 +82,7 @@ class EffectiveConfig(_Frozen):
     preferred_browser_order: list[str]
     max_applications_per_session: int
     max_applications_per_company: int
+    daily_application_limit: int
     cooldown_days_default: int
     max_discovery_results_per_query: int
     task_retry_limit: int

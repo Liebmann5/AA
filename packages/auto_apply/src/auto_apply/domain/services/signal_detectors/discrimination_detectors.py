@@ -14,6 +14,7 @@ Academic grounding:
 from __future__ import annotations
 
 import re
+from typing import Any
 from auto_apply.domain.constants import (
     SEVERITY_CONCERN, SEVERITY_FLAG, SEVERITY_VIOLATION,
     SIG_DISC_01, SIG_DISC_02, SIG_DISC_03, SIG_DISC_04,
@@ -246,7 +247,7 @@ class IntersectionalDiscriminationDetector:
 
     def detect(self, ctx: DetectionContext) -> list[ResearchSignal]:
         # Collect all lower-level discrimination signals first
-        sub_detectors = [
+        sub_detectors: list[Any] = [
             GenderedLanguageDetector(),
             AgeDiminateProxyDetector(),
             DisabilityScreeningDetector(),

@@ -312,11 +312,12 @@ def main() -> None:
         sys.exit(0)
     signal.signal(signal.SIGINT, _sigint_handler)
 
-    # 1. Configure Logging
-    setup_logging()
-    logger = logging.getLogger("Main")
-
-    # 2. Parse Arguments
+    # 1. Parse Arguments — BEFORE logging setup. setup_logging's
+    # console_level and debug_mode parameters always existed but were never
+    # passed; calling it bare here meant --debug arrived after the console
+    # handler was capped at INFO, and the old post-parse root setLevel was a
+    # no-op (the root logger was already DEBUG). The handler is the
+    # bottleneck; the flag now reaches it.
     parser = argparse.ArgumentParser(
         description="AutoApply: Autonomous Agent (Secret) Job"
     )
@@ -394,8 +395,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # 2. Configure Logging — with the parsed flag.
+    setup_logging(
+        console_level=logging.DEBUG if args.debug else logging.INFO,
+        debug_mode=args.debug,
+    )
+    logger = logging.getLogger("Main")
+
     if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
         logger.debug("Logging - DEBUG ENABLED")
 
     # ── Deterministic mode — set env var before any component reads config ──

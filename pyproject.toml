@@ -99,6 +99,26 @@ ignore = [
 ]
 
 [tool.mypy]
-python_version      = "3.10"
+# 3.12, NOT AA's 3.10 floor. numpy's shipped stubs use PEP 695 `type`
+# statements; under python_version < "3.12" mypy rejects them while PARSING
+# numpy/__init__.pyi and aborts with "errors prevented further checking",
+# so the gate never reaches AA's own code.
+#
+# A parse error happens before per-module options are consulted. Measured,
+# all of these still fail: [[tool.mypy.overrides]] numpy.* with
+# follow_imports = "skip"; the same with ignore_errors = true;
+# disable_error_code = ["syntax"] plus exclude; and python_version = "3.11".
+# Raising python_version is the only lever that works. Do not re-add an
+# override here — it looks like it should work and does not.
+#
+# What this gives up: mypy no longer flags post-3.10 syntax in AA's own
+# source. RUFF HOLDS THAT LINE INSTEAD — it reports `type` aliases as
+# "invalid-syntax: Cannot use `type` alias statement on Python 3.10" under
+# the target-version it resolves from packages/auto_apply/pyproject.toml's
+# requires-python = ">=3.10", and it does so regardless of --select, so the
+# existing F821 lint gate already catches it. The two move together: if the
+# supported floor changes, change requires-python, not just this line.
+python_version      = "3.12"
 strict              = false
 ignore_missing_imports = true
+plugins             = ["pydantic.mypy"]

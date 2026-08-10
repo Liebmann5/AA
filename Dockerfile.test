@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+
+FROM python:3.12-slim
+
+WORKDIR /workspace
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY packages/auto_apply/pyproject.toml /workspace/packages/auto_apply/pyproject.toml
+COPY packages/auto_apply/README.md /workspace/packages/auto_apply/README.md
+COPY packages/auto_apply/src /workspace/packages/auto_apply/src
+COPY packages/auto_apply/tests /workspace/packages/auto_apply/tests
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install pytest \
+    && python -m pip install /workspace/packages/auto_apply
+
+WORKDIR /workspace/packages/auto_apply
+
+CMD ["python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"]

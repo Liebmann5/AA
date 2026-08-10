@@ -7,14 +7,15 @@ these tests will be skipped if clingo is not installed.
 
 import pathlib
 import pytest
+from importlib import resources
 
 clingo = pytest.importorskip("clingo")
 
 from auto_apply.adapters.secondary.reasoning.asp_adapter import ClingoFormSolver
 from auto_apply.domain.ports.accessibility_port import IAccessibilityNode
 
-SRC_ROOT = pathlib.Path(__file__).resolve().parents[3] / "src" / "auto_apply"
-RULES_PATH = SRC_ROOT / "adapters" / "secondary" / "reasoning" / "rules" / "form_semantics.lp"
+# SRC_ROOT is no longer needed; RULES_PATH is resolved via importlib.resources
+RULES_PATH = resources.files("auto_apply.adapters.secondary.reasoning") / "rules" / "form_semantics.lp"
 
 
 class MockAOMNode(IAccessibilityNode):
@@ -23,7 +24,7 @@ class MockAOMNode(IAccessibilityNode):
         self._node_id = node_id
         self._role = role
         self._name = name
-        self._properties = {}
+        self._properties: dict[str, object] = {}
 
     @property
     def node_id(self) -> str: return self._node_id

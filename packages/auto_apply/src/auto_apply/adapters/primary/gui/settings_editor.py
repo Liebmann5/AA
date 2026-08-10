@@ -31,9 +31,9 @@ from auto_apply.adapters.primary.gui.strings import get_strings
 from auto_apply.application.services.ui_schema import UIField, build_ui_schema
 from auto_apply.domain.models.policy import AdminPolicy
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
 if TYPE_CHECKING:
-    from auto_apply.adapters.secondary.persistence.profile_repository import ProfileRepository
     from auto_apply.infrastructure.composition_root import CapabilitiesRegistry
 
 
@@ -49,7 +49,7 @@ class SettingsEditor(tk.Toplevel):
         parent: tk.Widget,
         registry: "CapabilitiesRegistry",
         on_save: Callable[[], None],
-        profile_repo: "ProfileRepository",
+        profile_repo: ProfileRepositoryPort,
     ) -> None:
         super().__init__(parent)
         self.registry = registry
@@ -61,10 +61,10 @@ class SettingsEditor(tk.Toplevel):
 
         self.title(f"Settings - {self.profile.profile_name}")
         self.geometry("700x650")
-        self.transient(parent)
+        self.transient(parent)  # type: ignore[call-overload]
         self.grab_set()
 
-        self._vars = {}
+        self._vars: dict[str, tk.Variable] = {}
 
         try:
             self._ui_schema: list[UIField] = build_ui_schema(UserProfile, "en")
@@ -323,6 +323,7 @@ class SettingsEditor(tk.Toplevel):
     def _add_spinbox(
         self, parent, key: str, initial_value, min_val, max_val, step, state=tk.NORMAL
     ) -> None:
+        var: tk.Variable
         if isinstance(initial_value, float):
             var = tk.DoubleVar(value=initial_value)
         else:

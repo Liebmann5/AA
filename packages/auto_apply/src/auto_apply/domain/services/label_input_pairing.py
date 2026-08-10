@@ -44,8 +44,8 @@ def hungarian_assign(cost_matrix: list[list[float]]) -> tuple[list[int], list[in
     if n == 0:
         return [], []
 
-    u = [0] * (n + 1)
-    v = [0] * (n + 1)
+    u: list[float] = [0.0] * (n + 1)
+    v: list[float] = [0.0] * (n + 1)
     p = [0] * (n + 1)
     way = [0] * (n + 1)
 
