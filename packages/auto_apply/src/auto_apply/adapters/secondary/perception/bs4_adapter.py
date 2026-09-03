@@ -215,11 +215,25 @@ class BS4PerceptionAdapter(PerceptionPort):
         soup = BeautifulSoup(self._current_html, "html.parser")
 
         # Structural: modal/dialog open.
-        if soup.find(attrs={"role": "dialog"}) or soup.find(attrs={"role": "alertdialog"}):
+        #
+        # `None` is passed POSITIONALLY for `name`. bs4's stubs only accept an
+        # attrs dict on the overload whose signature is
+        #     find(self, name: None, attrs: dict[...], ...)
+        # -- name must be present positionally. Omitting it selects the
+        # all-defaults overload, which requires attrs to be None, so
+        # `find(attrs={...})` matches no overload at all. The dicts are also
+        # annotated dict[str, Any] because dict is invariant in its value type
+        # and the stubs declare a wide value union. Both are stubs-only
+        # constraints; runtime behaviour is unchanged.
+        _DIALOG: dict[str, Any] = {"role": "dialog"}
+        _ALERTDIALOG: dict[str, Any] = {"role": "alertdialog"}
+        _JOB_CARD: dict[str, Any] = {"data-job-id": True}
+
+        if soup.find(None, attrs=_DIALOG) or soup.find(None, attrs=_ALERTDIALOG):
             return ApplicationState.MODAL_OPEN
 
         # Structural: many job cards → listing page, not a single form.
-        job_cards = soup.find_all(attrs={"data-job-id": True})
+        job_cards = soup.find_all(None, attrs=_JOB_CARD)
         if len(job_cards) > 3:
             return ApplicationState.REDIRECT_TO_LIST
 

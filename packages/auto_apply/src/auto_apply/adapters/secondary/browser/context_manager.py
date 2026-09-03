@@ -6,6 +6,7 @@ that need to scan across iframes and tabs. Only depends on domain ports.
 
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.types import Locator
@@ -20,6 +21,24 @@ class ContextManager:
         self.browser = browser
         self.main_window = self._get_current_window_handle()
         self.known_windows: set[str] = {self.main_window} if self.main_window else set()
+
+    def _raw_driver(self) -> Any | None:
+        """Return the framework's raw driver when the browser exposes one.
+
+        Formalizes the escape hatch: SeleniumAdapter exposes get_raw_driver();
+        Playwright does not. Probed with getattr — NEVER isinstance with a
+        runtime_checkable protocol, because on Python 3.12+ that check is
+        evaluated with inspect.getattr_static, which does NOT invoke
+        __getattr__. ResilientDriver only forwards get_raw_driver through
+        __getattr__, so an isinstance probe silently returns False in
+        production and disables tab switching. getattr goes through the
+        forwarder and returns None only when the method genuinely does not
+        exist (e.g. a Playwright adapter).
+        """
+        getter = getattr(self.browser, "get_raw_driver", None)
+        if not callable(getter):
+            return None
+        return getter()
 
     # --- IFRAME MANAGEMENT ---
 
@@ -74,6 +93,10 @@ class ContextManager:
 
     def switch_to_new_tab(self) -> bool:
         """Identifies and switches to a newly opened tab/window."""
+        raw = self._raw_driver()
+        if raw is None:
+            logger.debug("ContextManager: raw driver unavailable — tab switching disabled")
+            return False
         try:
             current_handles = set(self._get_window_handles())
             new_handles = current_handles - self.known_windows
@@ -81,7 +104,7 @@ class ContextManager:
             if new_handles:
                 target = list(new_handles)[0]
                 logger.info("ContextManager: Switching to new tab %s", target)
-                self.browser.get_raw_driver().switch_to.window(target)
+                raw.switch_to.window(target)
                 self.known_windows.add(target)
                 return True
         except Exception as e:
@@ -91,11 +114,15 @@ class ContextManager:
 
     def close_current_tab_and_return(self) -> None:
         """Closes the active tab and returns to the main window."""
+        raw = self._raw_driver()
+        if raw is None:
+            logger.debug("ContextManager: raw driver unavailable — cannot return to main tab")
+            return
         try:
             current = self._get_current_window_handle()
             if current != self.main_window:
                 self.browser.close()
-                self.browser.get_raw_driver().switch_to.window(self.main_window)
+                raw.switch_to.window(self.main_window)
                 if current in self.known_windows:
                     self.known_windows.remove(current)
                 logger.info("ContextManager: Closed tab and returned to main.")
@@ -105,13 +132,19 @@ class ContextManager:
     # --- HELPERS ---
 
     def _get_current_window_handle(self) -> str:
+        raw = self._raw_driver()
+        if raw is None:
+            return ""
         try:
-            return self.browser.get_raw_driver().current_window_handle
+            return raw.current_window_handle
         except Exception:
             return ""
 
     def _get_window_handles(self) -> list[str]:
+        raw = self._raw_driver()
+        if raw is None:
+            return []
         try:
-            return self.browser.get_raw_driver().window_handles
+            return raw.window_handles
         except Exception:
             return []

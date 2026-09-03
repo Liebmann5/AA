@@ -59,10 +59,19 @@ class AOMScanner(IAccessibilityScanner):
             raise NotImplementedError(f"AOM extraction not supported for {framework}")
 
     def _extract_via_cdp(self) -> list[IAccessibilityNode]:
-        """Extracts AOM using Chrome DevTools Protocol (Selenium)."""
-        nodes =[]
+        """Extracts AOM using Chrome DevTools Protocol (Selenium).
+
+        Raw-driver access is probed with getattr, never isinstance — see the
+        note in context_manager._raw_driver for why (getattr_static does not
+        invoke __getattr__ on Python 3.12+).
+        """
+        nodes: list[IAccessibilityNode] = []
+        getter = getattr(self.browser, "get_raw_driver", None)
+        if not callable(getter):
+            logger.warning("AOMScanner: CDP extraction requires a raw-driver-capable browser")
+            return nodes
         try:
-            driver = self.browser.get_raw_driver()
+            driver = getter()
             # This CDP command returns the entire parsed accessibility tree instantly
             ax_tree = driver.execute_cdp_cmd("Accessibility.getFullAXTree", {})
 
@@ -89,9 +98,13 @@ class AOMScanner(IAccessibilityScanner):
 
     def _extract_via_playwright(self) -> list[IAccessibilityNode]:
         """Extracts AOM using Playwright's native snapshot."""
-        nodes =[]
+        nodes: list[IAccessibilityNode] = []
+        getter = getattr(self.browser, "get_raw_page", None)
+        if not callable(getter):
+            logger.warning("AOMScanner: Playwright snapshot requires a raw-page-capable browser")
+            return nodes
         try:
-            page = self.browser.get_raw_page()
+            page = getter()
             snapshot = page.accessibility.snapshot()
 
             def _traverse(node):
@@ -143,8 +156,12 @@ class AOMResolver:
 
     def _resolve_via_cdp(self, backend_node_id: str) -> ElementInterface | None:
         """Uses Chrome DevTools Protocol to safely extract the element."""
+        getter = getattr(self.browser, "get_raw_driver", None)
+        if not callable(getter):
+            logger.warning("AOMResolver: CDP resolution requires a raw-driver-capable browser")
+            return None
         try:
-            driver = self.browser.get_raw_driver()
+            driver = getter()
             node_id_int = int(backend_node_id)
 
             # Step 1: Get the live JavaScript Object ID from the Backend Node ID

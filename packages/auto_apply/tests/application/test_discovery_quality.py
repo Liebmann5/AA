@@ -51,19 +51,30 @@ import pytest
 from auto_apply.adapters.secondary.discovery.components.page_understanding_extractor import (  # noqa: E501
     PageUnderstandingExtractor,
 )
-from auto_apply.adapters.secondary.perception.math_dom_adapter import (
-    MathPageUnderstandingAdapter,
-)
 from auto_apply.application.services.auditing.discovery_verification import (
     DiscoveryVerifier,
 )
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.math_dom import DOMNode, Geometry
 from auto_apply.domain.ports.page_understanding_port import JobCardInfo, SERPStructure
+from auto_apply.domain.services.card_static_resolution import resolve_card_group
 
 
 def _geo(i: int = 0) -> Geometry:
     return Geometry(x=10.0, y=float(i), width=280.0, height=90.0)
+
+
+def _resolve_one(card: DOMNode, page_url: str = "https://www.google.coom/search"):
+    """Run one card through the resolution pipeline and return the card list.
+
+    ``_extract_job_cards`` was retired into ``resolve_card_group`` when the
+    static resolution pipeline landed. These pins follow the *behaviour* -
+    heading-gated titles, company falling back to "Unknown" - not the old
+    private method's name.
+    """
+    root = DOMNode(tag="body", children=(card,))
+    cards, _report = resolve_card_group([card], root, page_url)
+    return cards
 
 
 def _job(title="Backend Engineer", company="Acme", url="https://acme.test/j/1"):
@@ -108,9 +119,7 @@ def test_a_card_without_a_heading_gets_no_title():
         ),
     )
 
-    cards = MathPageUnderstandingAdapter._extract_job_cards(
-        [chip], "https://www.google.com/search"
-    )
+    cards = _resolve_one(chip)
 
     assert cards, "fixture produced no card at all"
     assert cards[0].title == "", (
@@ -143,9 +152,7 @@ def test_an_aria_heading_is_a_title():
         ),
     )
 
-    cards = MathPageUnderstandingAdapter._extract_job_cards(
-        [card], "https://www.google.com/search"
-    )
+    cards = _resolve_one(card)
 
     assert cards[0].title == "Senior Backend Engineer", (
         f"title={cards[0].title!r}. _extract_job_cards looks only at h1-h6, but "
@@ -172,7 +179,7 @@ def test_an_h_tag_is_still_a_title():
         ),
     )
 
-    cards = MathPageUnderstandingAdapter._extract_job_cards([card], "https://x.test")
+    cards = _resolve_one(card, "https://x.test")
 
     assert cards[0].title == "Platform Engineer"
 
@@ -188,7 +195,7 @@ def test_an_empty_heading_is_not_a_title():
         ),
     )
 
-    cards = MathPageUnderstandingAdapter._extract_job_cards([card], "https://x.test")
+    cards = _resolve_one(card, "https://x.test")
 
     assert cards[0].title != "   "
 
@@ -213,7 +220,7 @@ def test_company_still_falls_back_to_unknown():
         ),
     )
 
-    cards = MathPageUnderstandingAdapter._extract_job_cards([card], "https://x.test")
+    cards = _resolve_one(card, "https://x.test")
 
     assert cards[0].company == "Unknown"
 

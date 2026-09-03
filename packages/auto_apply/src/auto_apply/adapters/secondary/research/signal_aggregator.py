@@ -29,6 +29,7 @@ from pathlib import Path
 from auto_apply.domain.constants import RESEARCH_SCHEMA_VERSION
 from auto_apply.domain.ports.research_port import (
     ApplicationOutcomeObservation,
+    DiscoveryObservation,
     FormObservation,
     JobPostingObservation,
     ResearchObserverPort,
@@ -208,6 +209,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
 
         # ── Macro‑signal tracking ─────────────────────────────────────────
         self._last_macro_ts: float = 0.0   # monotonic timestamp of last run
+
+        # ── Discovery-surface observation counter (§4b) ──────────────────
+        self._discovery_observation_count: int = 0
 
         if self._enabled:
             self._initialize_db()
@@ -438,6 +442,39 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 )
         except Exception as exc:
             logger.debug("ResearchSignalAggregator | observe_application_outcome error: %s", exc)
+
+    def observe_discovery(self, observation: DiscoveryObservation) -> None:
+        """Accept a discovery-surface observation (§4b).
+
+        Persistence for discovery observations is deferred to the consumer
+        batch that builds the detector side of the discovery taxonomy. For
+        now each observation is logged and counted, so the record shape is
+        validated against real harvests without shipping the exporter early.
+        The observation carries no user data and no search URLs — it is
+        logged verbatim at INFO for legibility.
+
+        Args:
+            observation: The discovery-surface record for one results page.
+        """
+        if not self._enabled:
+            return
+        try:
+            self._discovery_observation_count += 1
+            logger.info(
+                "ResearchSignalAggregator | discovery observation #%d | "
+                "provider=%s blocked=%s architecture=%s cards=%d resolved=%d "
+                "multi_route=%d sponsored=%d",
+                self._discovery_observation_count,
+                observation.provider,
+                observation.blocked,
+                observation.architecture,
+                observation.card_count,
+                observation.resolved_count,
+                observation.multi_route_count,
+                observation.sponsored_card_count,
+            )
+        except Exception as exc:
+            logger.debug("ResearchSignalAggregator | observe_discovery error: %s", exc)
 
     # ── Job lifecycle persistence (GJ-02, GJ-03) ─────────────────────────────
 

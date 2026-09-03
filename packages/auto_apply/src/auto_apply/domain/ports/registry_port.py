@@ -8,8 +8,10 @@ hexagonal rule (application must not import from infrastructure) is satisfied.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
+from auto_apply.domain.models.environment import EnvironmentCapabilities
+from auto_apply.domain.models.policy import AdminPolicy
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.resources import RuntimeProfile
 from auto_apply.domain.models.session_plan import SessionPlan
@@ -34,7 +36,7 @@ class RegistryPort(Protocol):
         """Return a copy of the fully merged configuration dictionary."""
         ...
 
-    def get_effective_config(self, key: str, default: object = None) -> object:
+    def get_effective_config(self, key: str, default: Any = None) -> Any:
         """Return a single effective-config value by key."""
         ...
 
@@ -48,4 +50,20 @@ class RegistryPort(Protocol):
 
     def get_session_plan(self) -> SessionPlan:
         """Return the frozen SessionPlan for the current session."""
+        ...
+
+    def get_admin_policy(self) -> AdminPolicy | None:
+        """Return the active AdminPolicy, or None if none is configured."""
+        ...
+
+    def get_environment_capabilities(self) -> EnvironmentCapabilities:
+        """Return the detected environment capabilities snapshot."""
+        ...
+
+    def apply_config_override(self, key: str, value: Any) -> None:
+        """Apply a single enforcement override to the effective configuration.
+
+        The public write-path for policy enforcement — components must not
+        mutate the registry's private config attribute directly.
+        """
         ...

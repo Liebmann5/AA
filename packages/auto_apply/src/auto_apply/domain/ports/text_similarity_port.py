@@ -25,3 +25,20 @@ class TextSimilarityPort(Protocol):
             Float in [0.0, 1.0] where 1.0 is identical meaning.
         """
         ...
+
+    def find_best_match(self, query: str, candidates: list[str]) -> tuple[str, float]:
+        """Return the candidate most similar to *query*, and its score.
+
+        Used by form-field matchers (select options, combobox items) and by the
+        rule-based form solver to pair labels with profile keys. Backend-agnostic:
+        the application-layer TextMatcher implements this over both its SpaCy
+        and stdlib difflib tiers.
+
+        Args:
+            query: The reference string to match against.
+            candidates: List of strings to compare.
+
+        Returns:
+            Tuple of (best_matching_candidate, score in [0.0, 1.0]).
+        """
+        ...

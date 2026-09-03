@@ -2,6 +2,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  AA Monorepo — Workspace Root
 #
+#TODO: Add a [project] table here to make this a real package, so that `pip install .`
+#TODO: Add a [project.optional-dependencies] table here to make this a real package, so that `pip install .[nlp]` works.
+#TODO: Add a [project.scripts] table here to make this a real package, so that `pip install .` installs CLI entry points.
+#TODO: Add the command `uv run python -m spacy download en_core_web_sm` below so users can avoid this extra step themselves!
+#
 #  Tool: uv (https://docs.astral.sh/uv)
 #  Pattern: Virtual workspace root (no [project] table).
 #    The root is a pure coordinator: it cannot be installed, imported, or

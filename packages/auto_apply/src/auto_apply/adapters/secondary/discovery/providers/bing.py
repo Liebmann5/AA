@@ -33,6 +33,12 @@ from auto_apply.adapters.secondary.perception.dom_adapter import (
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
+from auto_apply.adapters.secondary.discovery.components.page_understanding_extractor import (
+    PageUnderstandingExtractor,
+)
+from auto_apply.domain.ports.page_understanding_port import (
+    NullPageUnderstandingAdapter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,9 @@ class BingProvider(BaseSearchProvider):
         reporter=None,
         forced_tier=None,
         degradation_detector=None,
+        page_understanding_port=None,
+        research_observer=None,
+        readiness=None,
     ) -> None:
         super().__init__(
             browser,
@@ -61,6 +70,9 @@ class BingProvider(BaseSearchProvider):
             forced_tier,
         )
         self._degradation_detector = degradation_detector
+        self._page_understanding = page_understanding_port
+        self._research_observer = research_observer
+        self._readiness = readiness
 
         # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
         self._engine_strategy = BingSearchStrategy()
@@ -72,6 +84,31 @@ class BingProvider(BaseSearchProvider):
 
     def _is_page_healthy(self) -> bool:
         return True
+
+    def _fast_extractor(self):
+        """The single-script extraction route, or None if unavailable.
+
+        Mirrors ``GoogleProvider._fast_extractor`` exactly: when no real
+        page-understanding adapter is wired there is no fast route, and the
+        provider falls back to the DOM miner. The Null-adapter check is
+        deliberate — it keeps a ``fallback:empty`` log line meaning "the
+        detector ran and found nothing", never "no detector was wired".
+        """
+        if self._page_understanding is None:
+            return None
+        if isinstance(self._page_understanding, NullPageUnderstandingAdapter):
+            logger.info(
+                "BingProvider: page understanding is the Null adapter — no "
+                "fast SERP route; using the DOM miner."
+            )
+            return None
+        return PageUnderstandingExtractor(
+            page_understanding=self._page_understanding,
+            browser=self.browser,
+            observer=self._observer,
+            readiness=self._readiness,
+            research_observer=self._research_observer,
+        )
 
     def run(self, instruction: SearchInstruction) -> list[Job]:
         """Executes a single Bing search for the given instruction.
@@ -111,6 +148,7 @@ class BingProvider(BaseSearchProvider):
             search_prefs=None,
             source_tag="Bing",
             max_results=instruction.max_results,
+            fast_extractor=self._fast_extractor(),
             scroller=self._scroller,
             paginator=self._paginator,
             max_pages=self._max_pages,
@@ -118,6 +156,7 @@ class BingProvider(BaseSearchProvider):
             reporter=self._reporter,
             degradation_detector=self._degradation_detector,
             forced_tier=self._forced_tier,
+            research_observer=self._research_observer,
             title_parser=SmartTextExtractor(
                 strategies=[
                     "h2",

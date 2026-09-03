@@ -35,6 +35,7 @@ from auto_apply.adapters.secondary.interaction.handlers.text import TextInputHan
 from auto_apply.domain.exceptions import ApplicationError
 from auto_apply.domain.models.ui import InteractionPlan, InteractionType, PlannedAction
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
+from auto_apply.domain.ports.interaction_port import InteractionPort
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,9 @@ class UnifiedInteractor:
             value (Any): The data to enter (string, bool, or file path).
         """
         try:
-            tag = element.get_attribute("tagName").lower()
+            # get_attribute returns str | None; an unreadable tag degrades to ""
+            # and falls through to the text handler, never to an AttributeError.
+            tag = (element.get_attribute("tagName") or "").lower()
             input_type = (element.get_attribute("type") or "").lower()
             role = (element.get_attribute("role") or "").lower()
 
@@ -144,7 +147,7 @@ class UnifiedInteractor:
             # completion later.
 
 
-class InteractionExecutor:
+class InteractionExecutor(InteractionPort):
     """Executes a sequence of planned actions on the browser.
 
     This class is responsible for the physical manifestation of the Agent's
@@ -269,7 +272,7 @@ class InteractionExecutor:
             self.interactor.fill_input(element, value)
             return True
         except Exception as exc:
-            tag = element.get_attribute("tagName").lower() if element else "?"
+            tag = (element.get_attribute("tagName") or "?").lower() if element else "?"
             input_type = (element.get_attribute("type") or "").lower() if element else "?"
             logger.warning(
                 "InteractionExecutor.fill failed | tag=%s type=%s error=%s",

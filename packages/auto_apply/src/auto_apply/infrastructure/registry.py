@@ -536,6 +536,13 @@ class CapabilitiesRegistry:
         """Returns a copy of the full resolved configuration dict."""
         return dict(self._effective_config)
 
+    def apply_config_override(self, key: str, value: Any) -> None:
+        """Applies a single enforcement override to the effective configuration.
+
+        Used by PolicyEnforcement instead of mutating _effective_config directly.
+        """
+        self._effective_config[key] = value
+
     def get_effective_settings(self) -> EffectiveConfig:
         """Returns the resolved configuration as a typed, frozen object.
 

@@ -127,10 +127,10 @@ class ResilientDriver(BrowserInterface):
         for attempt in range(1, retries + 1):
             try:
                 # Try setting page load timeout if the underlying driver supports it.
-                try:
-                    self._driver.set_page_load_timeout(timeout)
-                except AttributeError:
-                    pass   # Playwright handles timeouts differently; ignore.
+                # Absent attribute degrades silently (Playwright handles timeouts differently).
+                set_timeout = getattr(self._driver, "set_page_load_timeout", None)
+                if callable(set_timeout):
+                    set_timeout(timeout)
 
                 self._driver.get(url)
                 return True

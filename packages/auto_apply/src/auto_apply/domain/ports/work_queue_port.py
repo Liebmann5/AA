@@ -41,11 +41,15 @@ class WorkQueuePort(ABC):
         """
 
     @abstractmethod
-    def recover_interrupted_tasks(self) -> None:
+    def recover_interrupted_tasks(self) -> int:
         """Re-queues tasks that were in-progress when a prior session crashed.
 
         Called once at orchestrator startup to ensure work is never lost
         due to an unclean shutdown.
+
+        Returns:
+            The number of tasks recovered. SessionController reports this
+            count at startup; the implementation has always returned it.
         """
 
     @abstractmethod

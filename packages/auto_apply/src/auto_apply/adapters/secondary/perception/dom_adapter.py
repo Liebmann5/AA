@@ -19,16 +19,18 @@ from typing import Any
 from auto_apply.adapters.secondary.browser.context_manager import ContextManager
 
 # Models
+from auto_apply.domain.applications.fsm.states import ApplicationState
 from auto_apply.domain.models.ui import UIElement, UIElementType, UIModel
 
 # Core Interfaces
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
+from auto_apply.domain.ports.perception_port import PerceptionPort
 from auto_apply.domain.types import Locator
 
 logger = logging.getLogger(__name__)
 
 
-class DOMScanner:
+class DOMScanner(PerceptionPort):
     """Scans the active browser page to produce a semantic UIModel.
 
     This class handles the complexity of:
@@ -53,6 +55,27 @@ class DOMScanner:
             url: The fully qualified URL to navigate to.
         """
         self.browser.get(url)
+
+    def get_page_text(self) -> str:
+        """Return the visible text of the current page (PerceptionPort contract).
+
+        Used by VettingWorkflow._fetch_job_description. Mirrors the same
+        single-script read every perception adapter performs for this port.
+        """
+        try:
+            raw = self.browser.execute_script("return document.body.innerText")
+        except Exception:
+            return ""
+        return raw or ""
+
+    def get_current_state(self) -> ApplicationState:
+        """Return ApplicationState.UNKNOWN — DOMScanner does not classify pages.
+
+        The port requires a state classification; DOMScanner is a form scanner
+        and honestly reports that it cannot determine one. No live caller
+        consumes this method on the DOMScanner path.
+        """
+        return ApplicationState.UNKNOWN
 
     def scan_page(self) -> UIModel:
         """Performs a comprehensive scan of the current page state.
@@ -184,7 +207,9 @@ class DOMScanner:
     #! refactor this logic => belongs inside FieldClassifier
     def _determine_type(self, element: ElementInterface) -> UIElementType:
         """Determines the semantic type of the element."""
-        tag = element.get_attribute("tagName").lower()
+        # get_attribute returns str | None; an unreadable tag degrades to ""
+        # and falls through to TEXT_INPUT, never to an AttributeError.
+        tag = (element.get_attribute("tagName") or "").lower()
         role = element.get_attribute("role")
         inputType = element.get_attribute("type")
 
@@ -233,9 +258,10 @@ class DOMScanner:
         # Strategy 3: Parent text (Common in modern frameworks)
         # Often <label>Input</label>
         try:
-            parent_text = element.find_element(Locator.XPATH, "./..").text
-            # Simple heuristic: remove the input's own value from parent text
-            return parent_text.strip()
+            parent = element.find_element(Locator.XPATH, "./..")
+            if parent is None:
+                return None
+            return parent.text.strip()
         except Exception:
             pass
 

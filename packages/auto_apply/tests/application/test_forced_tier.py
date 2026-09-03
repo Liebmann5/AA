@@ -46,6 +46,37 @@ def _strategy(forced_tier=None, json_ld=None, mined=None):
     return strategy
 
 
+@pytest.fixture(autouse=True)
+def _classify_as_serp(monkeypatch):
+    """Stub the page classifier so these pins test forced tiers, not blocking.
+
+    ``execute()`` and ``run()`` now classify every page before proceeding.
+    A ``MagicMock`` browser makes each detection probe return a truthy mock,
+    so the page reads as a CAPTCHA wall and the strategy aborts before any
+    tier logic runs. These pins are about tier selection; stub the
+    classifier, never weaken the gate.
+
+    Any future pin driving ``execute()`` or ``run()`` with a MagicMock
+    browser needs this same fixture.
+    """
+    from auto_apply.adapters.secondary.discovery.strategies import serp_strategy
+    from auto_apply.domain.types import PageType
+
+    class _AlwaysSerp:
+        def __init__(self, browser, scanner) -> None:
+            pass
+
+        def classify(self):
+            return PageType.SERP
+
+    class _NoDetection:
+        def __init__(self, browser) -> None:
+            pass
+
+    monkeypatch.setattr(serp_strategy, "PageClassifier", _AlwaysSerp)
+    monkeypatch.setattr(serp_strategy, "DefaultDetectionStrategy", _NoDetection)
+
+
 def _job(n):
     return Job(
         title=f"Engineer {n}",

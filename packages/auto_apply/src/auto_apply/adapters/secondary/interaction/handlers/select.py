@@ -34,7 +34,9 @@ class SelectInputHandler(BaseInputHandler):
 
     def handle(self, element: ElementInterface, value: str) -> None:
         """Dispatches to standard or custom logic based on element structure."""
-        tag = element.get_attribute("tagName").lower()
+        # get_attribute returns str | None; an unreadable tag degrades to ""
+        # and falls through to the combobox path, never to an AttributeError.
+        tag = (element.get_attribute("tagName") or "").lower()
 
         if tag == "select":
             self._handle_standard_select(element, value)

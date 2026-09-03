@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from auto_apply.domain.config import DB_PATH, IS_FROZEN
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
+from auto_apply.domain.ports.work_queue_port import WorkQueuePort
 
 if TYPE_CHECKING:
     from auto_apply.domain.models.capability_profile import ResolvedCapabilityProfile
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRY_ATTEMPTS: int = 3
 
 
-class DatabaseManager:
+class DatabaseManager(WorkQueuePort):
     """Singleton manager for SQLite database interactions.
 
     Uses a singleton pattern to ensure exactly one schema initialization

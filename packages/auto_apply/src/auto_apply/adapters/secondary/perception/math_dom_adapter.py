@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 from urllib.parse import urljoin
 
@@ -35,6 +36,7 @@ from auto_apply.domain.ports.page_understanding_port import (
     JobCardInfo,
     FormFieldInfo,
 )
+from auto_apply.domain.services.card_static_resolution import resolve_card_group
 from auto_apply.domain.services.dom_segmentation import MathFormUnderstandingService
 
 # Sentinel type alias used only in _graft_iframes signature.
@@ -152,13 +154,37 @@ class MathDOMAdapter(MathematicalPerceptionPort):
             Root DOMNode (typically <body>), or None if extraction fails.
         """
         try:
+            script_started = time.monotonic()
             raw_json = self._browser.execute_script(self._script)
+            script_seconds = time.monotonic() - script_started
             if raw_json is None:
                 logger.warning("Extraction script returned null; page may be empty.")
                 return None
-            root_dict = json.loads(json.dumps(raw_json))
+            # Serialize once and reuse for both the parse and the payload-byte
+            # measurement — previously this dumped the same structure twice.
+            payload = json.dumps(raw_json)
+            payload_bytes = len(payload.encode("utf-8"))
+            root_dict = json.loads(payload)
+            build_started = time.monotonic()
             root = self._build_dom_node(root_dict, depth=0)
-            return self._stitch_iframes(root)
+            build_seconds = time.monotonic() - build_started
+            stitch_started = time.monotonic()
+            stitched = self._stitch_iframes(root)
+            stitch_seconds = time.monotonic() - stitch_started
+            if logger.isEnabledFor(logging.DEBUG):
+                node_count = (
+                    sum(1 for _ in stitched.iter_nodes()) if stitched is not None else 0
+                )
+                logger.debug(
+                    "MathDOM extraction: script=%.2fs build=%.2fs stitch=%.2fs "
+                    "nodes=%d bytes=%d",
+                    script_seconds,
+                    build_seconds,
+                    stitch_seconds,
+                    node_count,
+                    payload_bytes,
+                )
+            return stitched
         except Exception as e:
             logger.error("Failed to extract DOM tree: %s", e, exc_info=True)
             return None
@@ -357,26 +383,6 @@ class MathDOMAdapter(MathematicalPerceptionPort):
 # ----------------------------------------------------------------------
 
 
-_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
-
-
-def _is_heading(node: DOMNode) -> bool:
-    """True for an h1-h6 element or an ARIA heading with text.
-
-    Google's jobs vertical marks card titles with ``role="heading"`` rather
-    than a heading tag — ``google.py`` already says so, listing
-    ``div[role='heading']`` first among the title selectors it injects into
-    SemanticMiner. Looking only at h1-h6 meant real Google job cards produced
-    no title at all, which is how the "Unknown" placeholder came to be doing
-    the work.
-    """
-    if not (node.text or "").strip():
-        return False
-    if node.tag in _HEADING_TAGS:
-        return True
-    return node.get_attribute("role", "").strip().lower() == "heading"
-
-
 class MathPageUnderstandingAdapter:
     """Implements ``PageUnderstandingPort`` using mathematical DOM analysis.
 
@@ -411,6 +417,11 @@ class MathPageUnderstandingAdapter:
     def analyze_serp(self, context: PageContext) -> SERPStructure:
         """Analyse the page as a SERP and extract job card information.
 
+        The full static resolution pipeline runs here (climb → sibling-diff
+        identity → static anchor classification). Click-based activation is
+        deliberately NOT part of this method — it belongs to the extractor's
+        post-scroll finalize pass, so a click never contaminates a harvest.
+
         Args:
             context: Page metadata (URL, title, raw HTML, viewport).
 
@@ -423,19 +434,39 @@ class MathPageUnderstandingAdapter:
             if root is None:
                 return SERPStructure()
 
+            analyze_started = time.monotonic()
             structure = self._form_service.analyze(
                 root,
                 url=context.url,
                 title=context.page_title,
             )
-            cards = self._extract_job_cards(
-                structure.job_listings, context.url
+            analyze_seconds = time.monotonic() - analyze_started
+
+            cards, report = resolve_card_group(
+                structure.job_listings,
+                structure.dom_root,
+                context.url,
+            )
+
+            logger.debug(
+                "analyze_serp: analyze=%.2fs cards=%d resolved=%d multi_route=%d "
+                "level=%s identity=%s url=%s",
+                analyze_seconds,
+                len(cards),
+                sum(1 for c in cards if c.url),
+                sum(
+                    1 for c in cards if c.resolution_state == "multi_route"
+                ),
+                report.chosen_level,
+                list(report.learned_identity),
+                context.url,
             )
             return SERPStructure(
                 job_cards=tuple(cards),
                 pagination_present=False,
                 total_results_text="",
                 captcha_detected=structure.is_captcha_present,
+                resolution_report=report,
             )
 
         except Exception as exc:
@@ -507,85 +538,6 @@ class MathPageUnderstandingAdapter:
     # ------------------------------------------------------------------
     # Internal extraction helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_job_cards(
-        listings: list[DOMNode],
-        page_url: str,
-    ) -> list[JobCardInfo]:
-        """Convert a list of DOMNode job cards into ``JobCardInfo`` objects.
-
-        Uses simple heuristics: the first heading as title, the first
-        text node after the heading as company, and the first ``<a>``
-        tag's ``href`` as URL.  Falls back gracefully when data is missing.
-
-        Args:
-            listings: Nodes flagged as job cards by ``MathFormUnderstandingService``.
-            page_url:   The URL of the page (used to resolve relative links).
-
-        Returns:
-            List of ``JobCardInfo``, one per card.
-        """
-        results: list[JobCardInfo] = []
-        for card in listings:
-            title = ""
-            company = ""
-            url = ""
-            location = ""
-            snippet = ""
-
-            # Collect text nodes and links in document order
-            text_nodes: list[str] = []
-            link_url = ""
-            for node in card.iter_nodes():
-                if not title and _is_heading(node):
-                    title = node.text.strip()
-                elif node.tag == "a" and not link_url:
-                    href = (node.get_attribute("href") or "").strip()
-                    if href and not href.startswith(("#", "javascript")):
-                        resolved = urljoin(page_url, href)
-                        link_url = resolved
-                elif node.text.strip() and node.tag not in {"script", "style"}:
-                    text_nodes.append(node.text.strip())
-
-            # Use the first heading as title (already captured above).
-            # The next non‑title text is likely the company name.
-            if title:
-                # Remove title text from text_nodes so we don't double‑count
-                text_nodes = [t for t in text_nodes if t != title]
-
-            if text_nodes:
-                company = text_nodes[0]
-                if len(text_nodes) > 1:
-                    location = text_nodes[1]
-
-            # Fallback: if we still don't have a URL, try any link in the card.
-            if not link_url:
-                for node in card.iter_nodes():
-                    if node.tag == "a":
-                        href = node.get_attribute("href") or ""
-                        if href and not href.startswith(("#", "javascript")):
-                            link_url = urljoin(page_url, href)
-                            break
-
-            # A card with no title is not a job. It used to become
-            # ``title="Unknown"`` here, and because that placeholder is truthy
-            # it sailed straight through PageUnderstandingExtractor's
-            # ``if not (title and url)`` guard — the guard that exists to drop
-            # exactly this. Live run 4 enqueued 61 records that way, every one
-            # of them Google's tab bar or filter chips, and vetted all 61 at
-            # ~1 s each. Leave the title empty and let the guard work.
-            results.append(
-                JobCardInfo(
-                    title=title,
-                    company=company or "Unknown",
-                    url=link_url or "",
-                    location=location or "",
-                    snippet=snippet or "",
-                    confidence=1.0 if title else 0.5,
-                )
-            )
-        return results
 
     @staticmethod
     def _build_form_structure(structure: WebpageStructure) -> FormStructure:
@@ -664,8 +616,6 @@ class MathPageUnderstandingAdapter:
                 if n.text.strip()
             )
 
-        # Heuristics for title and company from the job cards in the structure
-        # (there is usually one card for a single listing page).
         title = page_title
         company = "Unknown"
         location = ""
@@ -673,12 +623,11 @@ class MathPageUnderstandingAdapter:
 
         if structure.job_listings:
             card = structure.job_listings[0]
-            # Re‑use the same extraction logic
-            card_info = MathPageUnderstandingAdapter._extract_job_cards(
-                [card], page_url
+            cards, _report = resolve_card_group(
+                [card], structure.dom_root, page_url
             )
-            if card_info:
-                info = card_info[0]
+            if cards:
+                info = cards[0]
                 title = info.title or page_title
                 company = info.company or "Unknown"
                 location = info.location or ""

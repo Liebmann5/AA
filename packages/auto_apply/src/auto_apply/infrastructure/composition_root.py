@@ -27,6 +27,7 @@ from auto_apply.domain.config import (
 )
 from auto_apply.domain.models.timing import BehaviorParameters
 from auto_apply.domain.ports.browser_port import BrowserInterface
+from auto_apply.domain.ports.navigation_port import InterruptionHandlerPort, NullInterruptionHandler
 from auto_apply.infrastructure.registry import (
     CapabilitiesRegistry,
     _GEO_DB_PATH,
@@ -295,6 +296,10 @@ def build_orchestrator(  # noqa: PLR0914
         FormSolver,
     )
 
+    from auto_apply.domain.ports.perception_port import PerceptionPort  # noqa: PLC0415
+
+    perception_port: PerceptionPort
+
     if driver is not None:
         perception_strategy = registry.get_effective_config("perception_strategy", "math")
         use_math = (
@@ -414,8 +419,10 @@ def build_orchestrator(  # noqa: PLR0914
     except Exception as _exc:
         logger.debug("build_orchestrator: ATSRegistry unavailable: %s", _exc)
 
-    # ── Build PageUnderstandingPort adapter (if driver available) ────────────
-    page_understanding_port = None
+    from auto_apply.domain.ports.page_understanding_port import PageUnderstandingPort  # noqa: PLC0415
+
+    page_understanding_port: PageUnderstandingPort | None = None
+
     if driver is not None:
         try:
             from auto_apply.adapters.secondary.perception.math_dom_adapter import (  # noqa: PLC0415
@@ -450,6 +457,57 @@ def build_orchestrator(  # noqa: PLR0914
     if page_understanding_port is None:
         from auto_apply.domain.ports.page_understanding_port import NullPageUnderstandingAdapter
         page_understanding_port = NullPageUnderstandingAdapter()
+
+    # ── Research observer (consent-gated) ─────────────────────────────────────
+    # Built BEFORE the discovery providers so it can be injected into them:
+    # providers hand it to the fast extractor and the SERP strategy, which
+    # emit discovery-surface observations (§4b).
+    from auto_apply.domain.ports.research_port import (  # noqa: PLC0415
+        NullResearchObserver,
+        ResearchObserverPort,
+    )
+
+    research_observer: ResearchObserverPort = NullResearchObserver()
+
+    if registry.is_research_enabled():
+        try:
+            from auto_apply.adapters.secondary.research.sqlite_consent_repository import (  # noqa: PLC0415
+                SqliteConsentRepository,
+            )
+            from auto_apply.application.services.research_consent import (  # noqa: PLC0415
+                ResearchConsentManager,
+            )
+
+            _consent_db = USER_DATA_DIR / "research_consent.db"
+            _signals_db = USER_DATA_DIR / "research_signals.db"
+
+            _consent_repo = SqliteConsentRepository(
+                consent_db_path=_consent_db,
+                research_db_path=_signals_db,
+            )
+            _consent_mgr = ResearchConsentManager(_consent_repo)
+
+            if _consent_mgr.is_active():
+                from auto_apply.adapters.secondary.research.signal_aggregator import (  # noqa: PLC0415
+                    ResearchSignalAggregator,
+                )
+                _aggregator = ResearchSignalAggregator(
+                    db_path=_signals_db,
+                    consent_version=_consent_mgr.consent_version,
+                )
+                _aggregator.start()
+                research_observer = _aggregator
+                logger.info(
+                    "Research pipeline active (consent granted, version=%s)",
+                    _consent_mgr.consent_version,
+                )
+            else:
+                logger.info("Research disabled: consent not granted by user")
+        except Exception as _exc:
+            logger.warning(
+                "Research observer failed to initialize — using NullResearchObserver: %s",
+                _exc,
+            )
 
     # ── 4. Discovery providers ────────────────────────────────────────────────
     providers = []
@@ -499,7 +557,11 @@ def build_orchestrator(  # noqa: PLR0914
             scroller=page_action_tool,
             settle_s=_nav_cfg.get("infinite_scroll_settle_s", 2.0),
         )
-        _paginator = PaginationHandler(driver, interaction_port)
+        _paginator = (
+            PaginationHandler(driver, interaction_port)
+            if interaction_port is not None
+            else None
+        )
 
         from auto_apply.application.services.auditing.reporter import (  # noqa: PLC0415
             AuditReporter,
@@ -545,9 +607,12 @@ def build_orchestrator(  # noqa: PLR0914
                 reporter=_audit_reporter,
                 forced_tier=_forced_tier,
                 degradation_detector=_degradation_detector,
+                research_observer=research_observer,
+                readiness=dom_readiness,
             ),
             BingProvider(
                 browser=driver,
+                page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
                 paginator=_paginator,
                 max_pages=_max_pages_per_query,
@@ -555,10 +620,13 @@ def build_orchestrator(  # noqa: PLR0914
                 reporter=_audit_reporter,
                 forced_tier=_forced_tier,
                 degradation_detector=_degradation_detector,
+                research_observer=research_observer,
+                readiness=dom_readiness,
             ),
             IndeedProvider(
                 browser=driver,
                 evasion_manager=_indeed_evasion_manager,
+                page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
                 paginator=_paginator,
                 max_pages=_max_pages_per_query,
@@ -566,6 +634,8 @@ def build_orchestrator(  # noqa: PLR0914
                 reporter=_audit_reporter,
                 forced_tier=_forced_tier,
                 degradation_detector=_degradation_detector,
+                research_observer=research_observer,
+                readiness=dom_readiness,
             ),
         ]
 
@@ -603,51 +673,6 @@ def build_orchestrator(  # noqa: PLR0914
     browser_lease = None
     if driver is not None:
         browser_lease = BrowserLeaseManager(driver, max_concurrent=_MAX_LEASES_PER_SHARED_DRIVER)
-
-    # ── Research observer (consent-gated) ─────────────────────────────────────
-    from auto_apply.domain.ports.research_port import NullResearchObserver  # noqa: PLC0415
-
-    research_observer = NullResearchObserver()
-
-    if registry.is_research_enabled():
-        try:
-            from auto_apply.adapters.secondary.research.sqlite_consent_repository import (  # noqa: PLC0415
-                SqliteConsentRepository,
-            )
-            from auto_apply.application.services.research_consent import (  # noqa: PLC0415
-                ResearchConsentManager,
-            )
-
-            _consent_db = USER_DATA_DIR / "research_consent.db"
-            _signals_db = USER_DATA_DIR / "research_signals.db"
-
-            _consent_repo = SqliteConsentRepository(
-                consent_db_path=_consent_db,
-                research_db_path=_signals_db,
-            )
-            _consent_mgr = ResearchConsentManager(_consent_repo)
-
-            if _consent_mgr.is_active():
-                from auto_apply.adapters.secondary.research.signal_aggregator import (  # noqa: PLC0415
-                    ResearchSignalAggregator,
-                )
-                _aggregator = ResearchSignalAggregator(
-                    db_path=_signals_db,
-                    consent_version=_consent_mgr.consent_version,
-                )
-                _aggregator.start()
-                research_observer = _aggregator
-                logger.info(
-                    "Research pipeline active (consent granted, version=%s)",
-                    _consent_mgr.consent_version,
-                )
-            else:
-                logger.info("Research disabled: consent not granted by user")
-        except Exception as _exc:
-            logger.warning(
-                "Research observer failed to initialize — using NullResearchObserver: %s",
-                _exc,
-            )
 
     # ── 5. Capability profile — gates task types based on driver availability ──
     _capability_profile = registry.build_capability_profile(driver is not None)
@@ -739,7 +764,7 @@ def build_orchestrator(  # noqa: PLR0914
     _field_classifier = None
     _semantic_filler = None
     _webpage_analyzer = None
-    _interruption_handler = None
+    _interruption_handler: InterruptionHandlerPort = NullInterruptionHandler()
     _dom_observer = None
 
     try:
@@ -780,12 +805,9 @@ def build_orchestrator(  # noqa: PLR0914
             from auto_apply.adapters.secondary.navigation.interruption import (  # noqa: PLC0415
                 InterruptionHandler,
             )
-            _interruption_handler = InterruptionHandler(
-                browser=driver,
-                interactor=interaction_port,
-            )
+            _interruption_handler = InterruptionHandler(browser=driver)
         except Exception as _exc:
-            logger.debug(
+            logger.warning(
                 "build_orchestrator: InterruptionHandler unavailable: %s", _exc
             )
 
@@ -841,7 +863,14 @@ def build_orchestrator(  # noqa: PLR0914
             from auto_apply.adapters.secondary.browser.browser_monitor import (  # noqa: PLC0415
                 BrowserHealthMonitor,
             )
-            browser_monitor = BrowserHealthMonitor(driver=driver, event_bus=event_bus)
+            from auto_apply.domain.ports.liveness_port import LivenessPort  # noqa: PLC0415
+            if isinstance(driver, LivenessPort):
+                browser_monitor = BrowserHealthMonitor(driver=driver, event_bus=event_bus)
+            else:
+                logger.info(
+                    "build_orchestrator: driver does not support liveness probing — "
+                    "browser health monitor disabled"
+                )
         except ImportError:
             logger.debug("BrowserHealthMonitor not available — skipping")
     elif driver is not None:

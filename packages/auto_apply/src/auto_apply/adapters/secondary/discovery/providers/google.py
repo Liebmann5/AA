@@ -62,6 +62,8 @@ class GoogleProvider(BaseSearchProvider):
         reporter=None,
         forced_tier=None,
         degradation_detector=None,
+        research_observer=None,
+        readiness=None,
     ) -> None:
         super().__init__(
             browser,
@@ -77,6 +79,8 @@ class GoogleProvider(BaseSearchProvider):
         # the site‑filter list from loaded descriptors rather than a hardcoded set.
         self._ats_registry = ats_registry
         self._page_understanding = page_understanding_port
+        self._research_observer = research_observer
+        self._readiness = readiness
 
         # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
         self._engine_strategy = GoogleSearchStrategy()
@@ -111,6 +115,8 @@ class GoogleProvider(BaseSearchProvider):
             page_understanding=self._page_understanding,
             browser=self.browser,
             observer=self._observer,
+            readiness=self._readiness,
+            research_observer=self._research_observer,
         )
 
     def _is_page_healthy(self) -> bool:
@@ -163,6 +169,7 @@ class GoogleProvider(BaseSearchProvider):
             reporter=self._reporter,
             degradation_detector=self._degradation_detector,
             forced_tier=self._forced_tier,
+            research_observer=self._research_observer,
             title_parser=SmartTextExtractor(
                 strategies=[
                     "div[role='heading']",

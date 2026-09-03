@@ -48,7 +48,9 @@ class FileInputHandler(BaseInputHandler):
         abs_path = str(Path(file_path).resolve())
 
         target_input = element
-        tag_name = element.get_attribute("tagName").lower()
+        # get_attribute returns str | None; an unreadable tag degrades to ""
+        # and routes to _find_associated_file_input, never to an AttributeError.
+        tag_name = (element.get_attribute("tagName") or "").lower()
         input_type = element.get_attribute("type")
 
         # Case 1: Element is NOT the input (it's a "Upload Resume" div/button)

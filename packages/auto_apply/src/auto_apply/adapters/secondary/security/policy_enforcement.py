@@ -43,9 +43,7 @@ Example:
 import logging
 
 from auto_apply.domain.models.policy import AdminPolicy
-from auto_apply.domain.ports.environment_capabilities_port import (
-    EnvironmentCapabilitiesProvider,
-)
+from auto_apply.domain.ports.registry_port import RegistryPort
 
 
 logger = logging.getLogger(__name__)
@@ -54,8 +52,9 @@ logger = logging.getLogger(__name__)
 class PolicyEnforcement:
     """Reconciles effective configuration against AdminPolicy constraints.
 
-    Constructed with a fully built CapabilitiesRegistry and mutates its
-    effective_config in-place to satisfy all active admin constraints.
+    Constructed with a fully built CapabilitiesRegistry and applies any
+    corrections needed to satisfy active admin constraints — through the
+    registry's public override method, never by mutating private state.
 
     Args:
         registry: The fully initialized CapabilitiesRegistry. Must have
@@ -66,7 +65,7 @@ class PolicyEnforcement:
         >>> enforcement.enforce()
     """
 
-    def __init__(self, registry: EnvironmentCapabilitiesProvider) -> None:
+    def __init__(self, registry: RegistryPort) -> None:
         """Initializes policy enforcement with the active registry.
 
         Args:
@@ -74,7 +73,6 @@ class PolicyEnforcement:
         """
         self._registry = registry
         self._policy: AdminPolicy = registry.get_admin_policy() or AdminPolicy.empty()
-        self._config: dict = registry._effective_config  # Direct reference for mutation.  # noqa: E501
         self._violations: list[str] = []
 
     # =========================================================================
@@ -122,7 +120,7 @@ class PolicyEnforcement:
             return  # No browser restriction active.
 
         allowed = [b.lower() for b in self._policy.allowed_browsers]
-        current_order: list[str] = self._config.get("preferred_browser_order", [])
+        current_order: list[str] = self._registry.get_effective_config("preferred_browser_order", [])
 
         current_order[0] if current_order else "none"
 
@@ -131,7 +129,7 @@ class PolicyEnforcement:
 
         if filtered != current_order:
             removed = [b for b in current_order if b not in filtered]
-            self._config["preferred_browser_order"] = filtered
+            self._registry.apply_config_override("preferred_browser_order", filtered)
             msg = (
                 f"Browser preference modified by admin policy: "
                 f"removed {removed}, allowed={allowed}, "
@@ -184,10 +182,10 @@ class PolicyEnforcement:
         if admin_cap is None:
             return
 
-        current = self._config.get("max_applications_per_session", admin_cap)
+        current = self._registry.get_effective_config("max_applications_per_session", admin_cap)
 
         if current > admin_cap:
-            self._config["max_applications_per_session"] = admin_cap
+            self._registry.apply_config_override("max_applications_per_session", admin_cap)
             msg = (
                 f"max_applications_per_session clamped: "
                 f"{current} → {admin_cap} (admin cap)"
@@ -205,8 +203,8 @@ class PolicyEnforcement:
         if not self._policy.force_headless:
             return
 
-        if not self._config.get("headless_mode", False):
-            self._config["headless_mode"] = True
+        if not self._registry.get_effective_config("headless_mode", False):
+            self._registry.apply_config_override("headless_mode", True)
             msg = "headless_mode forced True by admin policy"
             self._violations.append(msg)
             logger.warning("PolicyEnforcement: %s", msg)
@@ -224,8 +222,8 @@ class PolicyEnforcement:
         if not self._policy.disable_research_collection:
             return
 
-        if self._config.get("enable_research_collection", False):
-            self._config["enable_research_collection"] = False
+        if self._registry.get_effective_config("enable_research_collection", False):
+            self._registry.apply_config_override("enable_research_collection", False)
             msg = "research collection disabled by admin policy (overrides user opt-in)"
             self._violations.append(msg)
             logger.warning("PolicyEnforcement: %s", msg)

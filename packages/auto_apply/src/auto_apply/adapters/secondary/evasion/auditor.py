@@ -85,9 +85,10 @@ def _get_current_state(
             hidden_element_count=audit_data["hidden"],
         )
         console_errors = []
-        if browser.framework_name == "selenium":
+        get_raw = getattr(browser, "get_raw_driver", None)
+        if browser.framework_name == "selenium" and callable(get_raw):
             try:
-                console_errors = browser.get_raw_driver().get_log("browser")
+                console_errors = get_raw().get_log("browser")
             except Exception:
                 logger.warning(
                     "Could not retrieve browser console logs for audit."
@@ -105,7 +106,7 @@ def _get_current_state(
         )
         return BrowserStateSnapshot(
             page_url=browser.current_url,
-            is_captcha_present=detection.is_captcha_present(browser),
+            is_captcha_present=detection.is_challenge_present(browser),
             network=network_profile,
             browser=browser_fingerprint,
             dom=dom_metrics,
@@ -120,7 +121,7 @@ def _get_current_state(
         return None
 
 
-def _display_audit_report(snapshot: BrowserStateSnapshot):
+def _display_audit_report(snapshot: BrowserStateSnapshot | None):
     """Logs the comprehensive audit in a clean, organized, and actionable format."""
     if not snapshot:
         logger.error("Could not generate a browser state snapshot for display.")

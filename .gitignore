@@ -43,3 +43,9 @@ notes/
 .env
 output/
 Notes/
+.kimi_out/
+.kimi_backups/
+measure_*.txt
+packages/auto_apply/dev_data/
+packages/auto_apply/docs/old_retired_files/
+retire.py

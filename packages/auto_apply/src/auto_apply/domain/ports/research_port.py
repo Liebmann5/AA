@@ -126,6 +126,111 @@ class ApplicationOutcomeObservation:
     acknowledgment_date: date | None = None
 
 
+# ---------------------------------------------------------------------------
+# Discovery-surface observations (§4b).
+#
+# These records are observations about *employers, platforms, and pages* —
+# never about the user. They carry no search URLs, no query strings, and no
+# user-identifying fields. Structural variables only: card architecture,
+# resolution routes, sponsored/organic placement, syndication topology
+# (destination hosts and anchor texts), and block verdicts. AA does not infer
+# protected characteristics anywhere in this record, and nothing here can
+# support such an inference.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DiscoveryCandidateObservation:
+    """One URL candidate's outcome for one card.
+
+    Attributes:
+        original_url: The href as found on the page.
+        resolved_url: The absolute URL after resolution/unwrap.
+        resolved_host: Host of the resolved URL (syndication topology datum).
+        anchor_text: Anchor text (carries apply-intent and source attribution).
+        source: static | revealed | navigation.
+        outcome: selected | candidate | rejected.
+        rejection_reason: Why it was rejected, or "" when kept.
+        ad_evidence: Concrete advertising signals when rejected as advertising.
+        apply_intent: Whether the anchor text expressed apply intent.
+        title_overlap: Title-alignment score used in selection.
+        method: Unwrap description or "top-level navigation".
+    """
+
+    original_url: str = ""
+    resolved_url: str = ""
+    resolved_host: str = ""
+    anchor_text: str = ""
+    source: str = ""
+    outcome: str = ""
+    rejection_reason: str = ""
+    ad_evidence: tuple[str, ...] = ()
+    apply_intent: bool = False
+    title_overlap: float = 0.0
+    method: str = ""
+
+
+@dataclass(frozen=True)
+class DiscoveryCardObservation:
+    """One card's resolution record on the search surface.
+
+    Attributes:
+        card_index: Index within the detected group.
+        title: Job title as displayed (public posting data).
+        resolution_state: resolved | multi_route | deferred | no_destination.
+        selected_host: Host of the selected destination, or "" when none.
+        candidates: All candidate outcomes, kept and rejected.
+    """
+
+    card_index: int = -1
+    title: str = ""
+    resolution_state: str = ""
+    selected_host: str = ""
+    candidates: tuple[DiscoveryCandidateObservation, ...] = ()
+
+
+@dataclass(frozen=True)
+class DiscoveryObservation:
+    """One search-results page as a research observation.
+
+    Attributes:
+        provider: Provider tag (e.g. "Google", "Bing") — the source surface.
+        page_host: Host of the results page. The full URL is deliberately
+            excluded: it would carry the user's search query.
+        page_state: normal | captcha_block | login_required | error_404 | unknown.
+        blocked: Whether the page was a block interstitial (distinct from a
+            genuinely empty result set — D5).
+        architecture: Derived card-group architecture label
+            (anchorful | identifier_js | mixed | none).
+        card_count: Cards detected in the dominant group.
+        resolved_count: Cards with a selected destination.
+        multi_route_count: Cards with multiple legitimate routes, no selection.
+        deferred_count: Cards with material seen but nothing selected.
+        no_destination_count: Cards with no usable destination material.
+        sponsored_card_count: Cards whose only URL material was advertising.
+        activation_attempts: Cards clicked during deferred resolution.
+        activation_resolved: Cards that became resolved via activation.
+        learned_identity: Identity attributes learned by sibling diff.
+        cards: Per-card observation records.
+    """
+
+    provider: str = ""
+    page_host: str = ""
+    page_state: str = "normal"
+    blocked: bool = False
+    architecture: str = ""
+    card_count: int = 0
+    resolved_count: int = 0
+    multi_route_count: int = 0
+    deferred_count: int = 0
+    no_destination_count: int = 0
+    sponsored_card_count: int = 0
+    activation_attempts: int = 0
+    activation_resolved: int = 0
+    learned_identity: tuple[str, ...] = ()
+    cards: tuple[DiscoveryCardObservation, ...] = ()
+
+
 @runtime_checkable
 class ResearchObserverPort(Protocol):
     """Contract for research data collection, injected into workflows.
@@ -163,6 +268,15 @@ class ResearchObserverPort(Protocol):
         """
         ...
 
+    def observe_discovery(self, observation: DiscoveryObservation) -> None:
+        """Submit a search-surface observation (sponsored fraction, card
+        architecture, resolution routes, block verdicts).
+
+        Args:
+            observation: The discovery-surface record for one results page.
+        """
+        ...
+
     @property
     def is_enabled(self) -> bool:
         """Whether research collection is currently active (consent given)."""
@@ -186,6 +300,9 @@ class NullResearchObserver:
     def observe_application_outcome(
         self, observation: ApplicationOutcomeObservation
     ) -> None:
+        pass
+
+    def observe_discovery(self, observation: DiscoveryObservation) -> None:
         pass
 
     @property

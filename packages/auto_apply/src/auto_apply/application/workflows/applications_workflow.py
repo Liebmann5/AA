@@ -90,6 +90,7 @@ from auto_apply.domain.ports.interrupt_policy_port import (
     ApplicationContext,
     Checkpoint,
 )
+from auto_apply.domain.ports.navigation_port import InterruptionHandlerPort
 from auto_apply.domain.ports.page_understanding_port import (
     FormFieldInfo,
     FormStructure,
@@ -172,7 +173,7 @@ class ApplicationsWorkflow:
         semantic_filler,
         text_matcher,
         file_handler,
-        interruption_handler,
+        interruption_handler: InterruptionHandlerPort | None,
         dom_observer,
         ats_registry,
         job_repo,
@@ -204,7 +205,8 @@ class ApplicationsWorkflow:
             semantic_filler: SemanticFiller for FieldType → profile value mapping.
             text_matcher: TextMatcher for similarity-based label disambiguation.
             file_handler: FileInteractionHandler for resume/cover letter upload.
-            interruption_handler: InterruptionHandler for cookie banner dismissal.
+            interruption_handler: InterruptionHandlerPort for cookie banner
+                dismissal (None degrades, loudly, to no auto-dismissal).
             dom_observer: DOMObserver for waiting on DOM stability.
             ats_registry: ATSRegistry for ATS platform detection.
             job_repo: JobRepositoryPort for persisting application outcomes.
@@ -237,6 +239,7 @@ class ApplicationsWorkflow:
         self._event_bus = event_bus
         self._interrupt_policy = interrupt_policy
         self._navigation = navigation
+        self._interruption_warning_emitted: bool = False
         # The planner half of understand -> plan -> act. Built by the
         # composition root since day one and never handed to anyone.
         self._reasoning_port = reasoning_port
@@ -1077,6 +1080,23 @@ class ApplicationsWorkflow:
             )
             return False
 
+    def _warn_interruption_unavailable_once(self, reason: str) -> None:
+        """Warn once per session that banner/consent dismissal is unavailable.
+
+        A bare ``except: pass`` over a safety collaborator is how a dead
+        handler stayed invisible for weeks. Absence degrades — filling
+        proceeds — but it degrades LOUDLY, exactly once.
+        """
+        if self._interruption_warning_emitted:
+            return
+        self._interruption_warning_emitted = True
+        logger.warning(
+            "ApplicationsWorkflow: interruption handling unavailable (%s) — "
+            "banners and consent overlays will NOT be auto-dismissed for the "
+            "rest of this session",
+            reason,
+        )
+
     def _handle_interruptions(self, job: Job) -> bool:
         """Dismiss banners and check for CAPTCHA or suspicious redirects.
 
@@ -1086,10 +1106,15 @@ class ApplicationsWorkflow:
         Returns:
             True to continue, False to pause/abort.
         """
-        try:
-            self._interruption_handler.handle()
-        except Exception:
-            pass
+        if self._interruption_handler is None:
+            self._warn_interruption_unavailable_once("no handler was wired")
+        else:
+            try:
+                self._interruption_handler.handle_interruptions()
+            except Exception as exc:
+                self._warn_interruption_unavailable_once(
+                    f"{type(exc).__name__}: {exc}"
+                )
 
         try:
             page_source = getattr(self._browser, "page_source", "") or ""

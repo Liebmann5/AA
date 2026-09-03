@@ -6,6 +6,7 @@ visible containers. It relies on the Strategy to handle scrolling/loading.
 """
 
 import logging
+import time
 
 from auto_apply.domain.ports.extraction_observer_port import (
     NullExtractionObserver,
@@ -42,10 +43,14 @@ class SemanticMiner:
         """Recursively scans all contexts to find and extract jobs from CURRENT view."""
 
         all_jobs: list[Job] = []
+        candidates_seen = 0
+        mine_started = time.monotonic()
 
         def _scan_context(browser) -> bool:
+            nonlocal candidates_seen
             # 1. Find Candidates (Broad Search)
             candidates = browser.find_elements(Locator.CSS_SELECTOR, "ul, div[role='list'], div[role='feed'], div[id='search'], div, section, main")  # noqa: E501
+            candidates_seen += len(candidates) if candidates else 0
 
             highest_score = 0
             extracted_in_context: list[Job] = []
@@ -70,13 +75,28 @@ class SemanticMiner:
         # Execute Deep Scan
         self.ctx_mgr.find_context_with_content(_scan_context)
 
+        # Phase timing for the fallback route (Stage 3, R-C): the slow
+        # fallback harvests measured live (47.9s / 80.5s) were SemanticMiner
+        # time, so the per-harvest cost must be visible here, not only in the
+        # math path.
+        logger.debug(
+            "%s miner: %d candidates scanned, %d jobs extracted in %.1fs",
+            source_name,
+            candidates_seen,
+            len(all_jobs),
+            time.monotonic() - mine_started,
+        )
+
         return all_jobs
 
     def _score_and_extract(self, container: ElementInterface, source: str) -> tuple[int, list[Job]]:  # noqa: E501
         valid_jobs = []
+        container_started = time.monotonic()
+        child_count = 0
         try:
             children = container.find_elements(Locator.XPATH, "./*")
-            if len(children) < 2:
+            child_count = len(children) if children else 0
+            if child_count < 2:
                 return 0, []  # Relaxed constraint
 
             self._observer.audit_candidate_containers([container], 'SemanticMiner')
@@ -89,6 +109,14 @@ class SemanticMiner:
                     self._observer.audit_extraction_attempt({}, False, 'SemanticMiner extraction failed')
         except Exception:
             pass
+
+        logger.debug(
+            "%s miner container: %d children, %d jobs in %.2fs",
+            source,
+            child_count,
+            len(valid_jobs),
+            time.monotonic() - container_started,
+        )
 
         return len(valid_jobs), valid_jobs
 

@@ -9,6 +9,7 @@ making it adaptable to almost any list-based website (Google, Bing, Indeed).
 import json
 import logging
 import time
+import urllib.parse
 from typing import Optional
 
 # Components
@@ -16,6 +17,10 @@ from auto_apply.domain.models.analysis_tier import PageAnalysisTier
 from auto_apply.domain.ports.extraction_observer_port import (
     NullAuditReporter,
     NullExtractionObserver,
+)
+from auto_apply.domain.ports.research_port import (
+    DiscoveryObservation,
+    NullResearchObserver,
 )
 from auto_apply.adapters.secondary.discovery.components.miner import SemanticMiner
 from auto_apply.adapters.secondary.discovery.components.page_understanding_extractor import (
@@ -26,7 +31,7 @@ from auto_apply.adapters.secondary.navigation.interruption import InterruptionHa
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import JobSearchPreferences
 from auto_apply.domain.ports.browser_port import BrowserInterface
-from auto_apply.domain.types import PageType
+from auto_apply.domain.types import Locator, PageType
 
 from auto_apply.adapters.secondary.perception.dom_adapter import (
     BaseExtractor,
@@ -36,6 +41,15 @@ from auto_apply.adapters.secondary.perception.dom_adapter import (
 from auto_apply.adapters.secondary.evasion.detection import DefaultDetectionStrategy
 
 logger = logging.getLogger(__name__)
+
+# Page types that mean "we were blocked", not "there are no jobs". A blocked
+# page must never become a zero-yield measurement or a degradation-guard
+# baseline.
+_BLOCK_PAGE_TYPES = frozenset({
+    PageType.CAPTCHA_BLOCK,
+    PageType.LOGIN_REQUIRED,
+    PageType.ERROR_404,
+})
 
 
 class GenericSERPStrategy:
@@ -48,7 +62,7 @@ class GenericSERPStrategy:
     def __init__(
         self,
         browser: BrowserInterface,
-        search_prefs: JobSearchPreferences,
+        search_prefs: JobSearchPreferences | None,
         source_tag: str,
         title_parser: BaseExtractor | None = None,
         company_parser: BaseExtractor | None = None,
@@ -64,6 +78,7 @@ class GenericSERPStrategy:
         forced_tier: PageAnalysisTier | None = None,
         fast_extractor=None,
         degradation_detector=None,
+        research_observer=None,
     ):
         """Initializes the strategy with specific parsing tools.
 
@@ -71,6 +86,9 @@ class GenericSERPStrategy:
             fast_extractor: Optional SerpExtractionPort tried before the DOM
                 miner. When None (the default) the miner is used directly and
                 nothing about discovery changes.
+            research_observer: Optional ResearchObserverPort. Receives a
+                blocked-page observation when a block page is detected; the
+                null observer (default) makes that cost exactly nothing.
         """
         self.browser = browser
         self.prefs = search_prefs
@@ -100,6 +118,7 @@ class GenericSERPStrategy:
         self._forced_tier = forced_tier
         # None (unwired) leaves discovery byte-identical to before S8k.
         self._degradation_detector = degradation_detector
+        self._research_observer = research_observer or NullResearchObserver()
 
         self.title_parser = title_parser or SmartTextExtractor()
         self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])
@@ -121,6 +140,70 @@ class GenericSERPStrategy:
             if fast_extractor is not None
             else semantic_miner
         )
+
+    # ------------------------------------------------------------------
+    # Block detection (D5) — one gate, both entry paths
+    # ------------------------------------------------------------------
+
+    def _page_block_type(self) -> PageType | None:
+        """Return the blocking PageType for the current page, or None.
+
+        A CAPTCHA interstitial, a login wall, or a 404 is a *blocked* page,
+        not an empty result set. This helper exists so both ``execute()``
+        and ``run()`` apply the identical check instead of one path having
+        it and the other not.
+        """
+        classifier = PageClassifier(
+            self.browser,
+            DefaultDetectionStrategy(self.browser),
+        )
+        page_type = classifier.classify()
+        if page_type in _BLOCK_PAGE_TYPES:
+            return page_type
+        return None
+
+    def _abort_blocked(self, page_type: PageType, context: str) -> list[Job]:
+        """Log and record a blocked page, then return no jobs.
+
+        The observation carries the block verdict — it is an access-equity
+        datum for the research record, not an empty harvest.
+        """
+        logger.warning(
+            "%s: Page failed health check (%s). Aborting strategy.",
+            self.source_tag,
+            page_type.name,
+        )
+        self._emit_blocked_observation(page_type)
+        return []
+
+    def _emit_blocked_observation(self, page_type: PageType) -> None:
+        """Emit a blocked-page discovery observation (consent-gated)."""
+        if not self._research_observer.is_enabled:
+            return
+        try:
+            host = ""
+            try:
+                host = urllib.parse.urlsplit(
+                    self.browser.current_url or ""
+                ).netloc.lower()
+            except Exception:
+                pass
+            self._research_observer.observe_discovery(
+                DiscoveryObservation(
+                    provider=self.source_tag,
+                    page_host=host,
+                    page_state=page_type.name.lower(),
+                    blocked=True,
+                    architecture="none",
+                    card_count=0,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "%s: blocked-page observation failed (non-fatal): %s",
+                self.source_tag,
+                exc,
+            )
 
     def _mine_all_pages(self, scroller) -> dict:
         """Mines the current page, then advances while pages remain.
@@ -206,6 +289,36 @@ class GenericSERPStrategy:
             return False
         return True
 
+    def _scroll_height(self):
+        """Read ``document.body.scrollHeight``; None if the browser cannot say.
+
+        Read-only probe used purely for the scroll-observability log line.
+        Never raises — a browser that cannot answer yields ``None``, which
+        the log renders as ``None`` rather than breaking the harvest.
+        """
+        try:
+            return self.browser.execute_script("return document.body.scrollHeight")
+        except Exception:
+            return None
+
+    def _scroll_metrics(self):
+        """Read ``(scrollHeight, scrollY + innerHeight)`` after a scroll step.
+
+        One round trip for both values. Never raises — returns
+        ``(None, None)`` when the browser cannot answer (static mode, mocks,
+        dead session).
+        """
+        try:
+            result = self.browser.execute_script(
+                "return [document.body.scrollHeight, "
+                "window.scrollY + window.innerHeight]"
+            )
+            if isinstance(result, (list, tuple)) and len(result) == 2:
+                return result[0], result[1]
+        except Exception:
+            pass
+        return None, None
+
     def _scroll_and_mine(self, scroller) -> dict:
         """Single source of truth for the scroll-and-mine harvest loop.
 
@@ -219,6 +332,7 @@ class GenericSERPStrategy:
         unique: dict = {}
         consecutive_dry = 0
         first_harvest = True
+        step = 0
         while True:
             harvest_started = time.monotonic()
             visible = self.miner.mine_jobs(source_name=self.source_tag)
@@ -263,11 +377,43 @@ class GenericSERPStrategy:
                 # what is on the page and stop. Never raise — discovery
                 # degrading to one screenful beats it dying.
                 break
+            height_before = self._scroll_height()
             if not scroller.next_page():
                 logger.info("  Scroller reports end of feed. Stopping.")
                 break
+            step += 1
+            height_after, viewport_bottom = self._scroll_metrics()
+            logger.info(
+                "  %s scroll %d: height %s -> %s, viewport bottom %s; "
+                "harvest: %d new (total %d), dry %d/%d.",
+                self.source_tag,
+                step,
+                height_before,
+                height_after,
+                viewport_bottom,
+                new_count,
+                len(unique),
+                consecutive_dry,
+                self._dry_scroll_limit,
+            )
 
             time.sleep(self._inter_scroll_delay_s)
+
+        # ── Deferred resolution, once the scroll loop is done ────────────
+        # Activation clicks happen here — never mid-loop, so a click cannot
+        # contaminate a harvest. Extra jobs arrive already gated; merge them
+        # with the same dedup keys and the same result cap.
+        finalize = getattr(self.miner, "finalize_harvest", None)
+        if callable(finalize):
+            try:
+                for job in finalize(source_name=self.source_tag) or []:
+                    if len(unique) >= self.max_results:
+                        break
+                    key = job.url if job.url else f"{job.title}|{job.company}"
+                    if key not in unique:
+                        unique[key] = job
+            except Exception as exc:
+                logger.debug("%s: finalize merge failed: %s", self.source_tag, exc)
 
         return unique
 
@@ -283,18 +429,10 @@ class GenericSERPStrategy:
         # 1. Audit & Health Check
         self.auditor.log_state(f"{self.source_tag} - Pre-Scrape")
 
-        # Health check only. The classifier does not mine — see
-        # PageClassifier.classify for why the mine probe was removed.
-        classifier = PageClassifier(
-            self.browser,
-            DefaultDetectionStrategy(self.browser),
-        )
-
-        page_type = classifier.classify()
-
-        if page_type in {PageType.CAPTCHA_BLOCK, PageType.LOGIN_REQUIRED, PageType.ERROR_404}:
-            logger.warning(f"{self.source_tag}: Page failed health check ({page_type.name}). Aborting strategy.")
-            return []
+        # Block check (D5): a blocked page is not an empty result set.
+        block_type = self._page_block_type()
+        if block_type is not None:
+            return self._abort_blocked(block_type, "execute")
 
         # 2. Clear Interruptions (Cookies/Popups)
         self.interruption_handler.handle_interruptions()
@@ -329,6 +467,11 @@ class GenericSERPStrategy:
 
         if self._is_provider_benched():
             return []
+
+        # Block check (D5): run() uses the identical gate as execute().
+        block_type = self._page_block_type()
+        if block_type is not None:
+            return self._abort_blocked(block_type, "run")
 
         scroller = self._scroller
 
