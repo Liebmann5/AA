@@ -238,7 +238,10 @@ class DOMObserver:
             # We check both button elements and inputs of type submit
             submit_btns = context.find_elements(Locator.CSS_SELECTOR, "button, input[type='submit']")  # noqa: E501
             for btn in submit_btns:
-                btn_text = btn.text.lower() or btn.get_attribute("value").lower()
+                # get_attribute returns str | None; the value attribute may be
+                # absent, so narrow it before .lower(). This call is inside
+                # try/except already — the guard is for the type, not a crash.
+                btn_text = btn.text.lower() or (btn.get_attribute("value") or "").lower()
                 if "submit" in btn_text and "application" in btn_text:
                     return True
         except Exception:
@@ -270,7 +273,10 @@ class DOMObserver:
         """Checks if the job was already applied to."""
         try:
             #Look for generic "Applied" tags or disabled buttons
-            body_text = self.browser.find_element(Locator.TAG_NAME, "body").text.lower()
+            body = self.browser.find_element(Locator.TAG_NAME, "body")
+            if body is None:
+                return False
+            body_text = body.text.lower()
             return "you applied on" in body_text or "already applied" in body_text or "application status" in body_text  # noqa: E501
         except Exception:
             return False

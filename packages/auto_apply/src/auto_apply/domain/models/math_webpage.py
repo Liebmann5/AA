@@ -168,7 +168,13 @@ class WebpageStructure:
     Attributes:
         url: The URL of the analyzed page.
         title: Page title.
-        dom_root: Root of the extracted DOM tree.
+        dom_root: Root of the extracted DOM tree, or ``None`` when extraction
+            failed and the structure is a deliberate empty fallback. Typed as
+            optional because two fallback constructors
+            (``MathematicalWebAnalyzer.analyze_form`` and
+            ``WebpageAnalyzer._build_partial_structure``) legitimately build
+            structures without a tree; the previous non-optional annotation
+            contradicted those call sites.
         forms: List of detected form regions (in order of appearance).
         job_listings: Nodes that likely represent job cards (if any).
         is_captcha_present: True if a CAPTCHA was detected.
@@ -177,7 +183,7 @@ class WebpageStructure:
 
     url: str
     title: str
-    dom_root: DOMNode
+    dom_root: DOMNode | None = None
     forms: list[FormRegion] = field(default_factory=list)
     job_listings: list[DOMNode] = field(default_factory=list)
     is_captcha_present: bool = False

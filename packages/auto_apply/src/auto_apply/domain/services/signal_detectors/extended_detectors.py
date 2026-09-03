@@ -139,6 +139,12 @@ class GeographicPayDiscriminationDetector:
             return []  # No COL data for this metro — cannot normalize
 
         salary = ctx.salary_max or ctx.salary_min
+        if not salary:
+            # Falsy salary (None via the `or` chain, or a literal $0) carries
+            # no pay-compression signal. A max of 0 with min=None previously
+            # produced `None / col_index` — a TypeError on a common posting
+            # shape. Guarded exactly like col_index above.
+            return []
         normalized_salary = salary / col_index
         ratio_to_national = normalized_salary / self._NATIONAL_MEDIAN_SALARY
 

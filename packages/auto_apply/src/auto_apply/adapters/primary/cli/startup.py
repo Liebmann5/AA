@@ -35,7 +35,7 @@ from collections.abc import Callable
 from auto_apply.adapters.primary.cli.dashboard import CLIDashboard
 from auto_apply.adapters.primary.cli.wizard import CLIWizard
 from auto_apply.infrastructure.composition_root import build_session_controller
-from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.profile import UserProfile, make_portable_path
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
 logger = logging.getLogger(__name__)
@@ -340,7 +340,10 @@ class CLIStartup:
                 if not resume.exists():
                     pass
                 if hasattr(default, "personal_info") and hasattr(default.personal_info, "resume_path"):  # noqa: E501
-                    default.personal_info.resume_path = resume
+                    # Store a portable string, never a raw Path: relative to
+                    # PROFILES_DIR when possible so the profile survives
+                    # drive-letter changes on a USB stick.
+                    default.personal_info.resume_path = make_portable_path(resume)
 
             self.repo.save_profile(default)
             self.repo.storage_dir / f"{name}.json"

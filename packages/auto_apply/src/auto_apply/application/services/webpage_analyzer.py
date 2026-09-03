@@ -155,7 +155,9 @@ class WebpageAnalyzer:
         Returns:
             DOM root node or None if all attempts fail.
         """
-        last_error = None
+        # Widened from AnalysisTimeoutError | None: the second except clause
+        # assigns a bare Exception, so the honest type is BaseException | None.
+        last_error: BaseException | None = None
         delay = self._config.retry_delay_seconds
 
         for attempt in range(self._config.max_retries + 1):

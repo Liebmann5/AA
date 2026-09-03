@@ -23,18 +23,33 @@ Admin Lock Behavior:
 
 import tkinter as tk
 from collections.abc import Callable
-from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 from auto_apply.adapters.primary.gui.strings import get_strings
 from auto_apply.application.services.ui_schema import UIField, build_ui_schema
 from auto_apply.domain.models.policy import AdminPolicy
-from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.profile import (
+    EmploymentType,
+    UserProfile,
+    WorkplaceType,
+    make_portable_path,
+)
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
 if TYPE_CHECKING:
     from auto_apply.infrastructure.composition_root import CapabilitiesRegistry
+
+
+def _field_options(field: UIField | None, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    """Return a schema field's options, guarding the optional on BOTH halves.
+
+    ``UIField.options`` is ``tuple[str, ...] | None`` — checking only that the
+    field exists leaves a None iterable downstream.
+    """
+    if field is not None and field.options is not None:
+        return field.options
+    return fallback
 
 
 class SettingsEditor(tk.Toplevel):
@@ -46,7 +61,7 @@ class SettingsEditor(tk.Toplevel):
 
     def __init__(
         self,
-        parent: tk.Widget,
+        parent: tk.Misc,          # was tk.Widget, but mypy cannot narrow Toplevel to Widget
         registry: "CapabilitiesRegistry",
         on_save: Callable[[], None],
         profile_repo: ProfileRepositoryPort,
@@ -118,10 +133,16 @@ class SettingsEditor(tk.Toplevel):
         config = self.profile.app_config
 
         # 1. Headless Mode (Admin Lockable)
+        # mypy cannot narrow force_headless through the separate headless_locked
+        # boolean, so the None check is repeated inline where it can narrow.
         headless_locked = self.admin_policy.force_headless is not None
         headless_state = tk.DISABLED if headless_locked else tk.NORMAL
         headless_label = self._lock_label("Run Headless (Invisible)", headless_locked)
-        headless_val = self.admin_policy.force_headless if headless_locked else config.headless_mode  # noqa: E501
+        headless_val = (
+            self.admin_policy.force_headless
+            if self.admin_policy.force_headless is not None
+            else config.headless_mode
+        )
 
         self._add_checkbox(frame, headless_label, "headless_mode", headless_val, state=headless_state)  # noqa: E501
         self._add_note(frame, "Faster, but you cannot see the browser actions.")
@@ -169,7 +190,7 @@ class SettingsEditor(tk.Toplevel):
         ttk.Label(frame, text="Workplace Types:").pack(anchor=tk.W, pady=(15, 5))
         current_types = set(prefs.workplace_types or [])
         wp_field = self._schema_field("search_preferences.workplace_types")
-        wp_options = wp_field.options if wp_field else ("in-office", "hybrid", "remote")
+        wp_options = _field_options(wp_field, ("in-office", "hybrid", "remote"))
         for opt in wp_options:
             self._add_checkbox(
                 frame,
@@ -182,8 +203,8 @@ class SettingsEditor(tk.Toplevel):
         ttk.Label(frame, text="Employment Types:").pack(anchor=tk.W, pady=(15, 5))
         current_et = set(prefs.employment_types or [])
         et_field = self._schema_field("search_preferences.employment_types")
-        et_options = et_field.options if et_field else (
-            "full-time", "part-time", "contract", "temporary", "internship"
+        et_options = _field_options(
+            et_field, ("full-time", "part-time", "contract", "temporary", "internship")
         )
         for opt in et_options:
             self._add_checkbox(
@@ -382,38 +403,35 @@ class SettingsEditor(tk.Toplevel):
             # -- Search tab (no admin locks currently) ---------------------
             self.profile.search_preferences.expected_salary = self._vars["expected_salary"].get()  # noqa: E501
 
-            # Workplace types — iterate the same options used to build checkboxes.
-            wp_field = self._schema_field("search_preferences.workplace_types")
-            wp_options = wp_field.options if wp_field else ("in-office", "hybrid", "remote")
+            # Workplace types — iterate the model's Literal values themselves.
+            # Every emitted value is definitionally a WorkplaceType (mypy-safe,
+            # no cast) and a Literal the schema didn't render is simply skipped.
             self.profile.search_preferences.workplace_types = [
-                opt for opt in wp_options
-                if self._vars.get(f"wp_{opt}") is not None
-                and self._vars[f"wp_{opt}"].get()
+                wt for wt in get_args(WorkplaceType)
+                if self._vars.get(f"wp_{wt}") is not None
+                and bool(self._vars[f"wp_{wt}"].get())
             ]
 
             # Employment types — same pattern.
-            et_field = self._schema_field("search_preferences.employment_types")
-            et_options = et_field.options if et_field else (
-                "full-time", "part-time", "contract", "temporary", "internship"
-            )
             self.profile.search_preferences.employment_types = [
-                opt for opt in et_options
-                if self._vars.get(f"et_{opt}") is not None
-                and self._vars[f"et_{opt}"].get()
+                et for et in get_args(EmploymentType)
+                if self._vars.get(f"et_{et}") is not None
+                and bool(self._vars[f"et_{et}"].get())
             ]
 
             # -- Documents tab ---------------------------------------------
+            # Store portable strings, never raw Path objects: relative to
+            # PROFILES_DIR when the file lives under it (USB-drive portable),
+            # absolute only when it genuinely does not.
             resume_path = self._vars["resume_path"].get().strip()
-            if resume_path:
-                self.profile.personal_info.resume_path = Path(resume_path)
-            else:
-                self.profile.personal_info.resume_path = None
+            self.profile.personal_info.resume_path = (
+                make_portable_path(resume_path) if resume_path else None
+            )
 
             cl_path = self._vars["cover_letter"].get().strip()
-            if cl_path:
-                self.profile.personal_info.cover_letter = Path(cl_path)
-            else:
-                self.profile.personal_info.cover_letter = None
+            self.profile.personal_info.cover_letter = (
+                make_portable_path(cl_path) if cl_path else None
+            )
 
             # -- Persist to disk -------------------------------------------
             self.repo.save_profile(self.profile)
