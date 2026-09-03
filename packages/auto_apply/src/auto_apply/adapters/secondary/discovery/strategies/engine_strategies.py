@@ -188,6 +188,11 @@ class SearchEngineStrategy(ABC):
         if locator is None:
             return False
 
+        # date_range is Literal[...] | None; narrow before the dict .get below
+        # (the early return in apply_toolbar_filters does not narrow for mypy).
+        if instruction.date_range is None:
+            return False
+
         logger.debug(
             "%s: attempting toolbar date filter via locator | range=%s",
             self.engine_name,

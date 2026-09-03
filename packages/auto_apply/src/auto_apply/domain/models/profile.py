@@ -55,6 +55,35 @@ VisaSponsorshipType = Literal[
 ]
 
 
+def make_portable_path(value: str | Path) -> str:
+    """Convert a filesystem path into the portable string the model fields store.
+
+    The profile's document fields (``resume_path``, ``cover_letter``) are
+    ``str | None`` on purpose: an absolute ``Path`` carries a drive letter,
+    and a USB stick mounted as ``E:`` on one library computer and ``F:`` on
+    the next would produce a profile that cannot find its own résumé.
+
+    Rules:
+      - If the file lives under ``PROFILES_DIR``, store it RELATIVE to
+        ``PROFILES_DIR`` (e.g. ``"resume.pdf"``). ``get_resolved_resume_path()``
+        re-roots it at runtime, so the stored string survives drive-letter
+        changes and profile migration between machines.
+      - Anything outside ``PROFILES_DIR`` is stored as an absolute path
+        string. ``get_resolved_resume_path()`` resolves absolute paths
+        directly.
+
+    This is the single helper every writer (GUI settings editor, GUI
+    onboarding, CLI profile creation) must use — never store a raw ``Path``.
+    """
+    from auto_apply.domain.config import PROFILES_DIR
+
+    candidate = Path(value)
+    try:
+        return str(candidate.resolve().relative_to(PROFILES_DIR.resolve()))
+    except ValueError:
+        return str(candidate)
+
+
 #Identification Information
 class PersonalInfo(BaseModel):
     """A model for the user's basic personal and contact information."""

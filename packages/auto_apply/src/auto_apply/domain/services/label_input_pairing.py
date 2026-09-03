@@ -155,27 +155,37 @@ def tree_distance(
     depth_a = _node_depth(node_a, parent_map)
     depth_b = _node_depth(node_b, parent_map)
 
-    # Equalize depths: move the deeper node up
+    # Equalize depths: move the deeper node up. Every parent lookup goes
+    # through a narrowed local because parent_map values are DOMNode | None
+    # and mypy cannot narrow through a subscript.
     if depth_a > depth_b:
         distance = depth_a - depth_b
         up_a = node_a
-        for _ in range(distance):
-            up_a = parent_map[up_a]
         up_b = node_b
+        for _ in range(distance):
+            next_a = parent_map.get(up_a)
+            if next_a is None:
+                return 1_000_000
+            up_a = next_a
     else:
         distance = depth_b - depth_a
+        up_a = node_a
         up_b = node_b
         for _ in range(distance):
-            up_b = parent_map[up_b]
-        up_a = node_a
+            next_b = parent_map.get(up_b)
+            if next_b is None:
+                return 1_000_000
+            up_b = next_b
 
     # Move both up together until they meet
     while up_a is not up_b:
-        if parent_map[up_a] is None or parent_map[up_b] is None:
+        next_a = parent_map.get(up_a)
+        next_b = parent_map.get(up_b)
+        if next_a is None or next_b is None:
             # Not in the same tree – shouldn't happen
             return 1_000_000
-        up_a = parent_map[up_a]
-        up_b = parent_map[up_b]
+        up_a = next_a
+        up_b = next_b
         distance += 2
 
     return distance
@@ -185,10 +195,12 @@ def _node_depth(node: DOMNode, parent_map: dict[DOMNode, DOMNode | None]) -> int
     """Return the depth of a node (root = 0)."""
     depth = 0
     curr = node
-    while parent_map.get(curr) is not None:
+    while True:
+        parent = parent_map.get(curr)
+        if parent is None:
+            return depth
         depth += 1
-        curr = parent_map[curr]
-    return depth
+        curr = parent
 
 
 def build_parent_map(root: DOMNode) -> dict[DOMNode, DOMNode | None]:

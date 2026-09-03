@@ -401,12 +401,19 @@ class FormSolver:
         """Handles file uploads for Resumes and Cover Letters."""
         label_lower = (element.label or "").lower()
 
-        # 1. Resume
+        # 1. Resume — resolve via the portable accessor, never the raw field.
+        #    get_resolved_resume_path() re-roots relative paths against
+        #    PROFILES_DIR at runtime (USB-drive portability); the raw
+        #    resume_path string breaks on a relative path and stringifies
+        #    None into the literal "None".
         if "resume" in label_lower or "cv" in label_lower or "curriculum" in label_lower:  # noqa: E501
+            resolved = self.profile.personal_info.get_resolved_resume_path()
+            if resolved is None:
+                return None
             return PlannedAction(
                 target_element_id=element.id,
                 action_type=InteractionType.UPLOAD_FILE,
-                value=str(self.profile.personal_info.resume_path),
+                value=str(resolved),
                 reasoning="Detected Resume upload field.",
                 ui_element=element,
                 is_critical=True

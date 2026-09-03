@@ -10,7 +10,6 @@ message (not a cryptic exception deep in the application workflow).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -146,11 +145,16 @@ def validate_profile(
                 "will be skipped. Set this to your resume PDF for complete "
                 "applications."
             )
-        elif not Path(str(resume_path)).exists():
-            result.add_error(
-                f"personal_info.resume_path points to a file that does not "
-                f"exist: {resume_path}. Fix the path or remove it."
-            )
+        else:
+            # Existence check goes through the portable accessor, not the raw
+            # field: get_resolved_resume_path() re-roots relative paths against
+            # PROFILES_DIR at runtime and returns None when the file is missing.
+            resolved = info.get_resolved_resume_path()
+            if resolved is None:
+                result.add_error(
+                    f"personal_info.resume_path points to a file that does not "
+                    f"exist: {resume_path}. Fix the path or remove it."
+                )
 
         phone = getattr(info, "phone_number", "") or ""
         if not phone.strip():

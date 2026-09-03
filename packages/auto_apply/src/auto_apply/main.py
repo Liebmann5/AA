@@ -36,6 +36,10 @@ import os
 import signal
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from auto_apply.adapters.secondary.research.parquet_exporter import ExportFormat
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -207,12 +211,30 @@ def _print_check_config(profile_repo) -> None:
     print("")
 
 
+def _parse_export_format(raw: str) -> "ExportFormat":
+    """Validate an --export-format value against the exporter's Literal set.
+
+    Returns one of the accepted literals (so no cast is needed downstream),
+    or prints the accepted values and exits on a bad input. A user typing
+    ``--export-format xml`` is told what IS accepted, not silently handed csv.
+    """
+    if raw == "csv":
+        return "csv"
+    if raw == "json":
+        return "json"
+    if raw == "parquet":
+        return "parquet"
+    print(f"Unsupported --export-format {raw!r}. Accepted values: csv, json, parquet.")
+    sys.exit(2)
+
+
 def _handle_export_research(args) -> None:
     """Export all collected research signals and exit.
 
     Does not start a job search session.
     """
     from auto_apply.adapters.secondary.research.parquet_exporter import (
+        ExportFormat,
         ParquetExporter,
     )
     from auto_apply.domain.config import REPORTS_DIR, RESEARCH_DIR
@@ -222,7 +244,7 @@ def _handle_export_research(args) -> None:
         export_dir=REPORTS_DIR,
     )
 
-    fmt = args.export_format or "csv"
+    fmt: ExportFormat = _parse_export_format(args.export_format or "csv")
     print(f"Exporting research signals as {fmt.upper()}...")
 
     try:

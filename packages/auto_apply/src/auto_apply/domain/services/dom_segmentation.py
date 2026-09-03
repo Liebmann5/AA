@@ -457,13 +457,20 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         return depth_a + depth_b - 2 * depth_lca
 
     def _node_depth(self, node: DOMNode) -> int:
-        """Return depth of a node (root = 0)."""
+        """Return depth of a node (root = 0).
+
+        Every parent lookup goes through a narrowed local because
+        ``self._parent_map`` values are ``DOMNode | None`` and mypy cannot
+        narrow through a subscript.
+        """
         depth = 0
         curr = node
-        while self._parent_map.get(id(curr)) is not None:
+        while True:
+            parent = self._parent_map.get(id(curr))
+            if parent is None:
+                return depth
             depth += 1
-            curr = self._parent_map[id(curr)]
-        return depth
+            curr = parent
 
     def _build_labeled_field(
         self, input_node: DOMNode, label_node: DOMNode

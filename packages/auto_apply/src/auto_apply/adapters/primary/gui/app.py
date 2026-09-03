@@ -40,7 +40,6 @@ import logging
 import sys
 import tkinter as tk
 from collections.abc import Callable
-from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
@@ -48,7 +47,7 @@ from auto_apply.adapters.primary.gui.dashboard import Dashboard as GUIDashboard
 from auto_apply.adapters.primary.gui.settings_editor import SettingsEditor
 from auto_apply.adapters.primary.gui.strings import get_strings
 from auto_apply.adapters.primary.gui.wizard import SessionConfigWizard as GUIWizard
-from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.profile import UserProfile, make_portable_path
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
 if TYPE_CHECKING:
@@ -243,7 +242,9 @@ class AutoApplyApp(tk.Tk):
                 if not default:
                     raise FileNotFoundError("Default profile template missing.")
                 default.profile_name = name
-                default.personal_info.resume_path = Path(resume)
+                # Store a portable string, never a raw Path: the field is
+                # str | None so a USB stick works under any drive letter.
+                default.personal_info.resume_path = make_portable_path(resume)
                 self._repo.save_profile(default)
                 logger.info("Profile '%s' created via onboarding", name)
                 self._load_and_start(name)
@@ -306,13 +307,16 @@ class AutoApplyApp(tk.Tk):
 
     def _open_settings(self) -> None:
         """Opens the Settings Editor modal with the current registry."""
-        if not self.registry:
+        # Bind profile to a local so mypy narrows it for the closure below —
+        # narrowing does not survive into closures for instance attributes.
+        profile = self.profile
+        if not self.registry or profile is None:
             return
 
         def _on_save():
             # Rebuild the registry so effective_config reflects saved changes.
             # Only the UserProfile object is needed; no file‑path is required.
-            self.registry = self._build_registry(self.profile)
+            self.registry = self._build_registry(profile)
             self.profile = self.registry.get_active_profile()
             logger.info("Settings saved — registry rebuilt")
 
@@ -358,6 +362,10 @@ class AutoApplyApp(tk.Tk):
             4. Switch to the guidashboard view.
         """
         logger.info("Session start requested | config=%s", config)
+
+        if self.profile is None:
+            messagebox.showerror("Session Error", "No profile is loaded.")
+            return
 
         try:
             # 1. Build controller (this builds CapabilitiesRegistry internally).

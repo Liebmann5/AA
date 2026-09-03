@@ -442,9 +442,11 @@ class MathPageUnderstandingAdapter:
             )
             analyze_seconds = time.monotonic() - analyze_started
 
+            # `root` is already narrowed non-None above; prefer it over
+            # `structure.dom_root`, which is typed `DOMNode | None`.
             cards, report = resolve_card_group(
                 structure.job_listings,
-                structure.dom_root,
+                root,
                 context.url,
             )
 
@@ -524,7 +526,7 @@ class MathPageUnderstandingAdapter:
                 title=context.page_title,
             )
             return self._build_job_listing_structure(
-                structure, context.url, context.page_title
+                structure, root, context.url, context.page_title
             )
 
         except Exception as exc:
@@ -592,6 +594,7 @@ class MathPageUnderstandingAdapter:
     @staticmethod
     def _build_job_listing_structure(
         structure: WebpageStructure,
+        dom_root: DOMNode,
         page_url: str,
         page_title: str,
     ) -> JobListingStructure:
@@ -602,19 +605,19 @@ class MathPageUnderstandingAdapter:
 
         Args:
             structure:   Analysis result.
+            dom_root:    The extracted DOM root (already narrowed non-None
+                         by the caller; `structure.dom_root` is optional).
             page_url:    URL of the page.
             page_title:  Title of the page.
 
         Returns:
             Populated ``JobListingStructure``.
         """
-        desc_text = ""
-        if structure.dom_root is not None:
-            desc_text = " ".join(
-                n.text.strip()
-                for n in structure.dom_root.iter_nodes()
-                if n.text.strip()
-            )
+        desc_text = " ".join(
+            n.text.strip()
+            for n in dom_root.iter_nodes()
+            if n.text.strip()
+        )
 
         title = page_title
         company = "Unknown"
@@ -624,7 +627,7 @@ class MathPageUnderstandingAdapter:
         if structure.job_listings:
             card = structure.job_listings[0]
             cards, _report = resolve_card_group(
-                [card], structure.dom_root, page_url
+                [card], dom_root, page_url
             )
             if cards:
                 info = cards[0]

@@ -32,15 +32,25 @@ class InteractionPort(ABC):
         """
 
     @abstractmethod
-    def fill(self, element: ElementInterface, value: str) -> None:
+    def fill(self, element: ElementInterface, value: str) -> bool:
         """Fills a text input or textarea with the given value.
 
         The adapter may type character-by-character to simulate human input
         speed.
 
+        Failure is REPORTED, not raised: a single unfillable field in a
+        multi-field form (an optional field, or a honeypot that survived
+        classification) must not abort the entire application the way a failed
+        click on a submit button must. Callers that record evidence of a
+        partial fill MUST check the return value.
+
         Args:
             element: The input element to fill.
             value: The text value to enter.
+
+        Returns:
+            True if the fill completed without error, False if the handler
+            could not apply the value.
         """
 
     @abstractmethod
