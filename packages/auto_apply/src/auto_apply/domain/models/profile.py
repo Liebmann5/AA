@@ -11,6 +11,16 @@ Pydantic V2 Specifics:
 - Uses `model_config = ConfigDict(...)` for configuration.
 - Enables `validate_assignment=True` to ensure data integrity during GUI edits.
 - Uses `mode='before'` for path validators to handle string-to-Path conversion.
+
+Document-path storage contract (resume_path, cover_letter):
+    RELATIVE document values are always stored in POSIX form
+    (``"documents/cover.pdf"``), so a profile written on Windows can be read
+    on Linux and macOS — the USB-stick scenario AA exists for. ABSOLUTE values
+    stay native (machine-specific by design). ``PurePath.as_posix()`` converts
+    only the platform separator, so on POSIX a filename that legitimately
+    contains a backslash is preserved unchanged. The resolver
+    (:func:`_resolve_relative_document_path`) additionally accepts legacy
+    Windows-form values for profiles already written before this rule.
 """
 
 from pathlib import Path
@@ -65,12 +75,14 @@ def make_portable_path(value: str | Path) -> str:
 
     Rules:
       - If the file lives under ``PROFILES_DIR``, store it RELATIVE to
-        ``PROFILES_DIR`` (e.g. ``"resume.pdf"``). ``get_resolved_resume_path()``
-        re-roots it at runtime, so the stored string survives drive-letter
+        ``PROFILES_DIR`` (e.g. ``"resume.pdf"``). The resolved accessors
+        re-root it at runtime, so the stored string survives drive-letter
         changes and profile migration between machines.
-      - Anything outside ``PROFILES_DIR`` is stored as an absolute path
-        string. ``get_resolved_resume_path()`` resolves absolute paths
-        directly.
+      - Relative values are always stored in POSIX form
+        (``"documents/cover.pdf"``), so a profile written on Windows is
+        readable on Linux and macOS.
+      - Absolute values outside ``PROFILES_DIR`` stay native (a Windows
+        absolute path is machine-specific by design).
 
     This is the single helper every writer (GUI settings editor, GUI
     onboarding, CLI profile creation) must use — never store a raw ``Path``.
@@ -79,9 +91,126 @@ def make_portable_path(value: str | Path) -> str:
 
     candidate = Path(value)
     try:
-        return str(candidate.resolve().relative_to(PROFILES_DIR.resolve()))
+        relative = candidate.resolve().relative_to(PROFILES_DIR.resolve())
+        return relative.as_posix()
     except ValueError:
+        if candidate.is_absolute():
+            return str(candidate)
+        return candidate.as_posix()
+
+
+def _storage_form_for_document_path(value: str) -> str:
+    """Storage form for a document path value, preserving relative/absolute shape.
+
+    RELATIVE values are returned in POSIX form (``"documents/cover.pdf"``) so
+    a profile written on Windows can be read on Linux and macOS.
+    ``PurePath.as_posix()`` converts only the platform separator, so on POSIX
+    a filename that legitimately contains a backslash is preserved unchanged.
+    ABSOLUTE values stay native (``expanduser()`` applied), because an
+    absolute path is machine-specific by design.
+
+    Unlike :func:`make_portable_path`, this does NOT re-root values under
+    PROFILES_DIR — it only normalises the separator form, for validators that
+    must not silently relocate user-supplied paths.
+    """
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute():
         return str(candidate)
+    return candidate.as_posix()
+
+
+def _resolve_relative_document_path(root: Path, value: str) -> Path | None:
+    """Resolve a relative document value against a root directory.
+
+    Relative document values are STORED in POSIX form
+    (``"documents/cover.pdf"``), which every platform's ``Path`` accepts
+    natively. Profiles already written on Windows hold Windows-form values
+    (``"documents\\cover.pdf"``) — on POSIX that reads as one literal filename
+    segment, so the separator-normalised form is tried as a fallback.
+
+    Order matters: the raw value is tried first, so a POSIX filename that
+    legitimately contains a backslash keeps its meaning; the Windows-form
+    interpretation is only a fallback when the raw form does not exist. That
+    is the entire tradeoff of accepting legacy Windows-form values, and it is
+    scoped to relative document values only.
+
+    Args:
+        root: The directory to resolve against (PROFILES_DIR).
+        value: The stored relative document value.
+
+    Returns:
+        The absolute Path to the existing file, or None if neither form exists.
+    """
+    raw = root / value
+    if raw.exists():
+        return raw
+    if "\\" in value:
+        normalised = root / value.replace("\\", "/")
+        if normalised.exists():
+            return normalised
+    return None
+
+
+DOCUMENT_FILE_SUFFIXES: frozenset[str] = frozenset({".pdf", ".doc", ".docx", ".txt"})
+"""Suffixes that mark a document field's value as a file path rather than prose."""
+
+
+def is_document_path(value: str | None) -> bool:
+    """True when a document field's value names a file rather than prose.
+
+    This is the SINGLE predicate for the question "does this value name a
+    file?" — defined here once and used by the settings writer, the model
+    validator, and the applications engine, so the rule cannot drift between
+    the places that write a cover letter and the place that attaches it.
+
+    Shape check only — never touches the filesystem. A value like
+    ``"resume.pdf"`` or ``"documents/cover.docx"`` returns True; a sentence,
+    a URL, or any prose returns False. A value containing ``"://"`` is a link,
+    not a local file (AA cannot upload a URL as a file), and a value with a
+    newline is prose even if it happens to end in a document suffix. Whether
+    the named file actually exists is decided by the resolved accessors
+    (``get_resolved_resume_path`` / ``get_resolved_cover_letter_path``), not
+    here.
+
+    Args:
+        value: The stored document value, or None.
+
+    Returns:
+        True if the value has the shape of a file path.
+    """
+    if not value or not value.strip():
+        return False
+    text = value.strip()
+    if "\n" in text or "://" in text:
+        return False
+    return Path(text).suffix.lower() in DOCUMENT_FILE_SUFFIXES
+
+
+def prepare_cover_letter_for_storage(value: str) -> str | None:
+    """Normalise a cover-letter field value for storage.
+
+    ``cover_letter`` is a union of a file path and raw prose. Paths are made
+    portable (USB-drive safe) via :func:`make_portable_path`; prose is stored
+    byte-identical. Running prose through :func:`make_portable_path` silently
+    breaks every URL it contains — pathlib collapses ``https://`` to
+    ``https:/``.
+
+    This is the single implementation of the storage decision, shared by every
+    writer (GUI settings editor, and any future writer), so the decision
+    cannot drift from the single :func:`is_document_path` predicate.
+
+    Args:
+        value: The raw field value from the user.
+
+    Returns:
+        The string to store, or None when the value is empty.
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    if is_document_path(text):
+        return make_portable_path(text)
+    return text
 
 
 #Identification Information
@@ -128,19 +257,34 @@ class PersonalInfo(BaseModel):
     @field_validator('resume_path', mode='before')
     @classmethod
     def validate_resume_exists(cls, v: Any) -> Any:
-        """Validates format without hitting the OS disk to ensure USB portability."""
+        """Normalise the resume path's storage form without touching the disk.
+
+        Existence checks happen at the Interaction Layer, not the Domain
+        Layer. Relative values are stored in POSIX form so a profile written
+        on Windows resolves on Linux and macOS; absolute values stay native.
+        """
         if isinstance(v, (str, Path)):
-            # Just ensure it converts to a string safely. 
-            # Existence checks happen at the Interaction Layer, not the Domain Layer.
-            return str(Path(str(v)).expanduser())
+            return _storage_form_for_document_path(str(v))
         return v
 
     @field_validator('cover_letter', mode='before')
     @classmethod
     def validate_cover_letter(cls, v: Any) -> Any:
-        """Validates format without hitting the OS disk to ensure USB portability."""
+        """Path-normalise ONLY when the value names a file.
+
+        ``cover_letter`` is a union of a file path and raw prose. Path
+        normalisation (pathlib) collapses ``//`` and is wrong for prose — it
+        silently breaks every URL in the value. Because the model runs with
+        ``validate_assignment=True``, this fires on construction AND on every
+        assignment, so prose is stored byte-identical or the bug re-fires on
+        every profile load. Real document paths are stored in POSIX form when
+        relative, native form when absolute (the USB-portability rule).
+        """
         if isinstance(v, (str, Path)) and str(v).strip():
-            return str(Path(str(v)).expanduser())
+            s = str(v)
+            if is_document_path(s):
+                return _storage_form_for_document_path(s)
+            return s
         return v
 
     def get_resolved_resume_path(self) -> Path | None:
@@ -152,7 +296,9 @@ class PersonalInfo(BaseModel):
         This is the portable alternative to accessing ``resume_path`` directly.
         On a USB drive where the drive letter may change between machines,
         storing a relative path like ``"resume.pdf"`` and resolving it at
-        runtime ensures the file is always found.
+        runtime ensures the file is always found. Legacy Windows-form values
+        (``"documents\\resume.pdf"``) resolve via the separator fallback in
+        :func:`_resolve_relative_document_path`.
 
         Returns:
             Absolute Path to the resume file, or None if the path is not set
@@ -175,9 +321,41 @@ class PersonalInfo(BaseModel):
         if candidate.is_absolute():
             return candidate if candidate.exists() else None
 
-        # If relative, resolve against PROFILES_DIR
-        resolved = PROFILES_DIR / candidate
-        return resolved if resolved.exists() else None
+        # If relative, resolve against PROFILES_DIR (raw-first, with a
+        # separator fallback for legacy Windows-written profiles)
+        return _resolve_relative_document_path(PROFILES_DIR, self.resume_path)
+
+    def get_resolved_cover_letter_path(self) -> Path | None:
+        """Returns the absolute path to the cover letter FILE, when the stored
+        value names one.
+
+        ``cover_letter`` is a union of a file path and raw prose. Returns None
+        when it is unset, when it holds prose, or when the named file does not
+        exist — the same re-rooting rule as :meth:`get_resolved_resume_path`:
+        absolute paths are used directly, relative paths are resolved against
+        PROFILES_DIR so a profile survives a USB drive-letter change. Legacy
+        Windows-form values resolve via the separator fallback in
+        :func:`_resolve_relative_document_path`.
+
+        The prose-vs-path decision is the single :func:`is_document_path`
+        predicate, so the engine and the writers agree on what the stored
+        value means.
+
+        Returns:
+            Absolute Path to the cover letter file, or None when there is no
+            file to attach.
+        """
+        if not self.cover_letter or not is_document_path(self.cover_letter):
+            return None
+
+        from auto_apply.domain.config import PROFILES_DIR
+
+        candidate = Path(self.cover_letter)
+
+        if candidate.is_absolute():
+            return candidate if candidate.exists() else None
+
+        return _resolve_relative_document_path(PROFILES_DIR, self.cover_letter)
 
 
 class ProfessionalLinks(BaseModel):

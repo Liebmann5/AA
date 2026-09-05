@@ -64,7 +64,9 @@ import os
 import random
 import re
 import time
+from collections.abc import Callable
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from auto_apply.application.services.company_batch_scheduler import (
@@ -77,7 +79,7 @@ from auto_apply.domain.models.application_evidence import (
 )
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.session_plan import SessionPlan
-from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.profile import PersonalInfo, UserProfile, is_document_path
 from auto_apply.domain.models.ui import (
     InteractionType,
     UIElement,
@@ -90,7 +92,7 @@ from auto_apply.domain.ports.interrupt_policy_port import (
     ApplicationContext,
     Checkpoint,
 )
-from auto_apply.domain.ports.navigation_port import InterruptionHandlerPort
+from auto_apply.domain.ports.navigation_port import InterruptionHandlerPort, NullInterruptionHandler
 from auto_apply.domain.ports.page_understanding_port import (
     FormFieldInfo,
     FormStructure,
@@ -268,6 +270,11 @@ class ApplicationsWorkflow:
         self._attempt_seq: int = 0
         self._attempt_id: str = ""
         self._fields_filled: int = 0
+        self._fields_classified: int = 0
+        self._required_fields_filled: int = 0
+        #: Labels of required fields whose fill failed this attempt. A non-empty
+        #: list at the end of the page loop blocks submission (fail closed).
+        self._failed_required_fields: list[str] = []
         self._gpt4all_invoked: bool = False
         self._session_id: str | None = None
 
@@ -813,6 +820,11 @@ class ApplicationsWorkflow:
     def _fill_standard_fields(self, classifications: dict) -> int:
         """Fill non-custom fields using profile data via SemanticFiller.
 
+        The boolean from ``InteractionPort.fill`` is honoured: a failed fill
+        publishes FORM_FIELD_FAILED and is never counted as filled. A failed
+        REQUIRED field is additionally recorded so the workflow can refuse to
+        submit an application it knows is incomplete (fail closed).
+
         Args:
             classifications: Dict of field element → FieldType.
 
@@ -828,6 +840,7 @@ class ApplicationsWorkflow:
                 continue
 
             label_text = structure_label_pairs.get(field_el, "")
+            is_required = bool(getattr(field_el, "is_required", False))
             try:
                 value = self._semantic_filler.get_value_for_field(
                     field_type, label_text
@@ -839,19 +852,37 @@ class ApplicationsWorkflow:
                 continue
 
             if not value:
+                # A required field with no answer is exactly what
+                # ApplicationEvidence.unknown_required_field exists to record.
+                if is_required:
+                    self._failed_required_fields.append(label_text or type_name)
                 continue
 
             try:
-                self._interaction_port.fill(field_el, str(value))
-                self._event_bus.publish(
-                    Event.FORM_FIELD_FILLED,
-                    {
-                        "field_label": label_text,
-                        "field_type": type_name,
-                        "strategy": "semantic_filler",
-                    },
-                )
-                filled += 1
+                if self._interaction_port.fill(field_el, str(value)):
+                    self._event_bus.publish(
+                        Event.FORM_FIELD_FILLED,
+                        {
+                            "field_label": label_text,
+                            "field_type": type_name,
+                            "strategy": "semantic_filler",
+                        },
+                    )
+                    filled += 1
+                    if is_required:
+                        self._required_fields_filled += 1
+                else:
+                    self._event_bus.publish(
+                        Event.FORM_FIELD_FAILED,
+                        {
+                            "field_label": label_text,
+                            "field_type": type_name,
+                            "strategy": "semantic_filler",
+                            "error": "fill returned False",
+                        },
+                    )
+                    if is_required:
+                        self._failed_required_fields.append(label_text or type_name)
             except Exception as exc:
                 logger.warning(
                     "ApplicationsWorkflow: fill failed | type=%s label=%s error=%s",
@@ -870,6 +901,8 @@ class ApplicationsWorkflow:
                     )
                 except Exception:
                     pass
+                if is_required:
+                    self._failed_required_fields.append(label_text or type_name)
 
         return filled
 
@@ -878,6 +911,10 @@ class ApplicationsWorkflow:
     ) -> int:
         """Generate answers for custom/unknown text fields using GPT4All or SpaCy
         fallback.
+
+        The boolean from ``InteractionPort.fill`` is honoured here exactly as in
+        ``_fill_standard_fields``: a failed fill publishes FORM_FIELD_FAILED and
+        a failed required field is recorded for the fail-closed gate.
 
         Args:
             classifications: Dict of field element → FieldType.
@@ -892,6 +929,7 @@ class ApplicationsWorkflow:
         for field_el, field_type in classifications.items():
             type_name = str(field_type).upper() if field_type else "UNKNOWN"
             label_text = label_pairs.get(field_el, "") or ""
+            is_required = bool(getattr(field_el, "is_required", False))
 
             is_custom = type_name == "CUSTOM_OPEN_ENDED"
             is_substantive_unknown = (
@@ -953,23 +991,43 @@ class ApplicationsWorkflow:
                 answer = best_desc
 
             if not answer:
+                if is_required:
+                    self._failed_required_fields.append(label_text or type_name)
                 continue
 
             try:
-                self._interaction_port.fill(field_el, answer)
-                self._event_bus.publish(
-                    Event.FORM_FIELD_FILLED,
-                    {
-                        "field_label": label_text,
-                        "field_type": type_name,
-                        "strategy": (
-                            "gpt4all"
-                            if self._gpt4all_invoked
-                            else "spacy_fallback"
-                        ),
-                    },
-                )
-                filled += 1
+                if self._interaction_port.fill(field_el, answer):
+                    self._event_bus.publish(
+                        Event.FORM_FIELD_FILLED,
+                        {
+                            "field_label": label_text,
+                            "field_type": type_name,
+                            "strategy": (
+                                "gpt4all"
+                                if self._gpt4all_invoked
+                                else "spacy_fallback"
+                            ),
+                        },
+                    )
+                    filled += 1
+                    if is_required:
+                        self._required_fields_filled += 1
+                else:
+                    self._event_bus.publish(
+                        Event.FORM_FIELD_FAILED,
+                        {
+                            "field_label": label_text,
+                            "field_type": type_name,
+                            "strategy": (
+                                "gpt4all"
+                                if self._gpt4all_invoked
+                                else "spacy_fallback"
+                            ),
+                            "error": "fill returned False",
+                        },
+                    )
+                    if is_required:
+                        self._failed_required_fields.append(label_text or type_name)
             except Exception as exc:
                 logger.warning(
                     "ApplicationsWorkflow: custom fill failed | label=%s error=%s",
@@ -987,28 +1045,60 @@ class ApplicationsWorkflow:
                     )
                 except Exception:
                     pass
+                if is_required:
+                    self._failed_required_fields.append(label_text or type_name)
 
         return filled
 
     def _handle_file_uploads(self, structure) -> None:
-        """Upload resume and cover letter files.
+        """Attach resume and cover-letter documents to upload fields.
+
+        Document values are resolved through the profile's portable-path
+        accessors — the only correct way to read them. A configured document
+        whose file cannot be found becomes evidence and blocks the fail-closed
+        gate, per the ruling:
+
+            state                | DOM required | outcome
+            unset                | no           | proceed, INFO log only
+            unset                | yes          | block (required, unfillable)
+            set, file exists     | either       | upload the resolved absolute path
+            set, file missing    | either       | FORM_FIELD_FAILED + block,
+                                                 | unconditionally
+
+        Set-but-missing blocks even when the DOM does not mark the upload
+        required, because DOM ``required`` is a weak signal on upload controls
+        while employers discard resume-less applications — a person who cannot
+        tell their resume did not attach is the worst-case user this project
+        puts first. Blocking is how they find out.
+
+        The raw-text cover-letter branch honours the ``InteractionPort.fill``
+        boolean exactly as the other fill sites do.
 
         Args:
-            structure: WebpageStructure with file fields.
+            structure: The form-analysis result; its fields may include
+                file-upload controls.
         """
         personal = getattr(self._profile, "personal_info", None)
-        resume_path = getattr(personal, "resume_path", None)
+        resume_stored = getattr(personal, "resume_path", None)
         cover_letter = getattr(personal, "cover_letter", None)
 
         fields = getattr(structure, "fields", []) or []
         for field_el in fields:
             try:
-                el_type = getattr(field_el, "element_type", "") or ""
+                el_type = str(
+                    getattr(field_el, "element_type", "")
+                    or getattr(field_el, "field_type", "")
+                    or ""
+                )
                 el_name = getattr(field_el, "name", "") or ""
-                el_label = getattr(field_el, "label", "") or ""
+                el_label = str(
+                    getattr(field_el, "label", "")
+                    or getattr(field_el, "label_text", "")
+                    or ""
+                )
 
                 is_file = (
-                    el_type == "file"
+                    el_type.lower() in ("file", "file_upload")
                     or "file" in el_name.lower()
                     or "upload" in el_label.lower()
                 )
@@ -1016,29 +1106,212 @@ class ApplicationsWorkflow:
                     continue
 
                 is_resume = any(
-                    kw in (el_name + el_label).lower()
+                    kw in (el_name + " " + el_label).lower()
                     for kw in ("resume", "cv", "curriculum")
                 )
                 is_cover = any(
-                    kw in (el_name + el_label).lower()
+                    kw in (el_name + " " + el_label).lower()
                     for kw in ("cover", "letter", "motivation")
                 )
 
-                if is_resume and resume_path:
-                    self._file_handler.upload(field_el, str(resume_path))
-                elif is_cover and cover_letter:
-                    cover_str = str(cover_letter)
-                    if cover_str.endswith(
-                        (".pdf", ".doc", ".docx", ".txt")
-                    ):
-                        self._file_handler.upload(field_el, cover_str)
-                    else:
-                        self._interaction_port.fill(field_el, cover_str)
+                if is_resume:
+                    self._attach_document(
+                        field_el,
+                        el_label,
+                        stored=resume_stored,
+                        resolver=(
+                            personal.get_resolved_resume_path
+                            if personal is not None
+                            else None
+                        ),
+                        role="RESUME",
+                    )
+                elif is_cover:
+                    self._attach_cover_letter(
+                        field_el,
+                        el_label,
+                        cover_letter=cover_letter,
+                        personal=personal,
+                    )
             except Exception as exc:
                 logger.warning(
-                    "ApplicationsWorkflow: file upload failed for field: %s",
+                    "ApplicationsWorkflow: upload field processing failed | %s",
                     exc,
                 )
+
+    def _attach_document(
+        self,
+        field_el: Any,
+        el_label: str,
+        *,
+        stored: Any,
+        resolver: Callable[[], Path | None] | None,
+        role: str,
+    ) -> None:
+        """Attach one document to one upload field, per the ruling table.
+
+        The portable-path accessor is consulted only when *stored* names a
+        file — that is the caller-side distinction the ruling requires: unset
+        is read from the field itself, and the accessor's contract ("None
+        means no file to attach") stays intact for its existing consumers.
+
+        Args:
+            field_el: The upload control element.
+            el_label: Its visible label, used in evidence.
+            stored: The raw stored value from the profile.
+            resolver: Zero-arg callable returning the resolved absolute Path
+                (or None when the file does not exist).
+            role: "RESUME" or "COVER_LETTER", for evidence and logs.
+        """
+        is_required = bool(getattr(field_el, "is_required", False))
+
+        if stored is None or (isinstance(stored, str) and not stored.strip()):
+            if is_required:
+                self._failed_required_fields.append(el_label or role)
+                self._event_bus.publish(
+                    Event.FORM_FIELD_FAILED,
+                    {
+                        "field_label": el_label,
+                        "field_type": role,
+                        "strategy": "document_upload",
+                        "error": f"no {role.lower()} is configured in the profile",
+                    },
+                )
+                logger.warning(
+                    "ApplicationsWorkflow: required %s upload has no file "
+                    "configured in the profile | label=%s",
+                    role.lower(),
+                    el_label,
+                )
+            else:
+                logger.info(
+                    "ApplicationsWorkflow: no %s configured; optional upload "
+                    "skipped | label=%s",
+                    role.lower(),
+                    el_label,
+                )
+            return
+
+        resolved = resolver() if resolver is not None else None
+
+        if resolved is None:
+            # Set but the file cannot be found — block unconditionally.
+            self._event_bus.publish(
+                Event.FORM_FIELD_FAILED,
+                {
+                    "field_label": el_label,
+                    "field_type": role,
+                    "strategy": "document_upload",
+                    "error": f"{role.lower()} file not found: {stored}",
+                },
+            )
+            self._failed_required_fields.append(el_label or role)
+            logger.warning(
+                "ApplicationsWorkflow: %s file not found — blocking "
+                "submission | stored=%s",
+                role.lower(),
+                stored,
+            )
+            return
+
+        try:
+            self._file_handler.upload(field_el, str(resolved))
+        except Exception as exc:
+            self._event_bus.publish(
+                Event.FORM_FIELD_FAILED,
+                {
+                    "field_label": el_label,
+                    "field_type": role,
+                    "strategy": "document_upload",
+                    "error": str(exc)[:200],
+                },
+            )
+            if is_required:
+                self._failed_required_fields.append(el_label or role)
+
+    def _attach_cover_letter(
+        self,
+        field_el: Any,
+        el_label: str,
+        *,
+        cover_letter: Any,
+        personal: PersonalInfo | None,
+    ) -> None:
+        """Upload a cover-letter file, or fill a cover-letter text field.
+
+        cover_letter is a union of a file path and raw prose. Paths go through
+        the same upload ruling as the resume; prose is typed into the field
+        byte-identical to what the user wrote.
+        """
+        is_required = bool(getattr(field_el, "is_required", False))
+
+        if cover_letter is None or (
+            isinstance(cover_letter, str) and not cover_letter.strip()
+        ):
+            if is_required:
+                self._failed_required_fields.append(el_label or "COVER_LETTER")
+                self._event_bus.publish(
+                    Event.FORM_FIELD_FAILED,
+                    {
+                        "field_label": el_label,
+                        "field_type": "COVER_LETTER",
+                        "strategy": "document_upload",
+                        "error": "no cover letter is configured in the profile",
+                    },
+                )
+                logger.warning(
+                    "ApplicationsWorkflow: required cover-letter field has no "
+                    "cover letter configured | label=%s",
+                    el_label,
+                )
+            else:
+                logger.info(
+                    "ApplicationsWorkflow: no cover letter configured; "
+                    "optional field skipped | label=%s",
+                    el_label,
+                )
+            return
+
+        if is_document_path(cover_letter):
+            self._attach_document(
+                field_el,
+                el_label,
+                stored=cover_letter,
+                resolver=(
+                    personal.get_resolved_cover_letter_path
+                    if personal is not None
+                    else None
+                ),
+                role="COVER_LETTER",
+            )
+            return
+
+        # Raw prose: type it into the field, exactly as written.
+        try:
+            if not self._interaction_port.fill(field_el, cover_letter):
+                self._event_bus.publish(
+                    Event.FORM_FIELD_FAILED,
+                    {
+                        "field_label": el_label,
+                        "field_type": "COVER_LETTER",
+                        "strategy": "raw_text",
+                        "error": "fill returned False",
+                    },
+                )
+                if is_required:
+                    self._failed_required_fields.append(el_label or "COVER_LETTER")
+        except Exception as exc:
+            self._event_bus.publish(
+                Event.FORM_FIELD_FAILED,
+                {
+                    "field_label": el_label,
+                    "field_type": "COVER_LETTER",
+                    "strategy": "raw_text",
+                    "error": str(exc)[:200],
+                },
+            )
+            if is_required:
+                self._failed_required_fields.append(el_label or "COVER_LETTER")
 
     def _navigate_multi_page_flow(self) -> bool:
         """Detect and click the Next/Continue button.
@@ -1295,13 +1568,17 @@ class ApplicationsWorkflow:
         outcome for an install with no approver wired, so the research dataset
         lost these counters on exactly the runs a cautious user produces.
 
+        ``fields_classified`` and ``required_fields_filled`` are now separate
+        counters — two concepts that used to be stamped with one shared value
+        by construction.
+
         Returns:
             The counter fields to merge into any ApplicationEvidence update.
         """
         return {
             "pages_navigated": self._pages_navigated,
-            "fields_classified": self._fields_filled,
-            "required_fields_filled": self._fields_filled,
+            "fields_classified": self._fields_classified,
+            "required_fields_filled": self._required_fields_filled,
             "used_gpt4all": self._gpt4all_invoked,
         }
 
@@ -1598,8 +1875,8 @@ class ApplicationsWorkflow:
             "url_changed_after_submit": url_changed,
             "outcome": outcome,
             "confidence": confidence,
-            "required_fields_filled": self._fields_filled,
-            "fields_classified": self._fields_filled,
+            "required_fields_filled": self._required_fields_filled,
+            "fields_classified": self._fields_classified,
             "pages_navigated": self._pages_navigated,
             "used_gpt4all": self._gpt4all_invoked,
         })
@@ -1770,6 +2047,9 @@ class ApplicationsWorkflow:
         self._current_job = job
         self._pages_navigated = 0
         self._fields_filled = 0
+        self._fields_classified = 0
+        self._required_fields_filled = 0
+        self._failed_required_fields = []
         self._gpt4all_invoked = False
         self._session_id = session_id
 
@@ -1845,6 +2125,7 @@ class ApplicationsWorkflow:
                     structure, job, page_index=self._pages_navigated
                 )
                 classifications = self._classify_all_fields(structure)
+                self._fields_classified += len(classifications)
 
                 # ── Lazy scroll to top before filling ────────────────────
                 self._lazy_scroll_to_top()
@@ -1871,6 +2152,30 @@ class ApplicationsWorkflow:
                 has_next = self._navigate_multi_page_flow()
                 if not has_next:
                     break
+
+            # ── Required-field gate (fail closed) ────────────────────────
+            # A required field that could not be filled means the application
+            # is provably incomplete. Submitting it is irreversible, burns the
+            # per-company cap and cooldown, and produces an employer-side
+            # rejection on record — so this blocks before the submit step.
+            # Optional-field failures are recorded (FORM_FIELD_FAILED) but
+            # never reach this gate.
+            if self._failed_required_fields:
+                logger.warning(
+                    "ApplicationsWorkflow: aborting before submit — required "
+                    "field(s) could not be filled | job=%s fields=%s",
+                    job.title,
+                    self._failed_required_fields,
+                )
+                evidence = evidence.model_copy(update={
+                    "outcome": "FAILED_REQUIRED_FIELD",
+                    "unknown_required_field": self._failed_required_fields[0],
+                    "submit_clicked": False,
+                    "confidence": 0.90,
+                    **self._run_statistics(),
+                })
+                self._record_application_outcome(evidence)
+                return evidence
 
             evidence = self._submit_application(job, evidence)
             self._record_application_outcome(evidence)

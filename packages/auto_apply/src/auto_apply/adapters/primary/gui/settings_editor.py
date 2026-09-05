@@ -34,6 +34,7 @@ from auto_apply.domain.models.profile import (
     UserProfile,
     WorkplaceType,
     make_portable_path,
+    prepare_cover_letter_for_storage,
 )
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
@@ -428,9 +429,14 @@ class SettingsEditor(tk.Toplevel):
                 make_portable_path(resume_path) if resume_path else None
             )
 
-            cl_path = self._vars["cover_letter"].get().strip()
+            # cover_letter is a union: a file path OR raw prose. Paths are
+            # made portable; prose is stored byte-identical. Running prose
+            # through make_portable_path silently breaks every URL it
+            # contains (pathlib collapses "https://" to "https:/").
             self.profile.personal_info.cover_letter = (
-                make_portable_path(cl_path) if cl_path else None
+                prepare_cover_letter_for_storage(
+                    self._vars["cover_letter"].get()
+                )
             )
 
             # -- Persist to disk -------------------------------------------
