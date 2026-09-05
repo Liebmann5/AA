@@ -1,30 +1,42 @@
 """Shared AST binding helpers for the architecture pins (Batch 1, Stage B).
 
-Three questions the pins keep needing answered, in one dependency-free,
-AST-only module:
+Questions the pins keep needing answered, in one dependency-free, AST-only
+module:
 
-    top_level_bindings(path)            — which names does this module bind
-                                          at module scope?
+    top_level_bindings(path)             — which names does this module bind
+                                           at module scope?
     name_used_outside_import(tree, name) — is this name referenced in an
-                                          executable position anywhere in
-                                          this tree?
+                                           executable position anywhere in
+                                           this tree?
     explicit_base_names(class_node)      — dotted names of a class's explicit
-                                          base classes.
+                                           base classes.
+    iter_scope(node)                     — descendants of a node without
+                                           entering nested scopes.
+    iter_scopes(tree)                    — the module body and every
+                                           function as independent scopes.
+    scope_assignments(scope)             — names assigned exactly once in a
+                                           scope, name → value expression.
 
-Deliberately nothing else lives here. The port pin (Stage A) does not import
-this module yet — it is a separate stage and may adopt these helpers in a
-later batch.
+The scope helpers are generic machinery, not event-specific: any pin that
+resolves call arguments against local assignments (ternary-holding locals,
+single-assignment indirection) should use them rather than re-implementing
+scope-walking. The event-specific resolution contract (the three allowed
+reference forms) lives in the pin that owns it — test_event_wiring.py.
 """
 
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
 from pathlib import Path
 
 __all__ = [
     "top_level_bindings",
     "name_used_outside_import",
     "explicit_base_names",
+    "iter_scope",
+    "iter_scopes",
+    "scope_assignments",
 ]
 
 
@@ -168,3 +180,49 @@ def explicit_base_names(class_node: ast.ClassDef) -> list:
         if dotted:
             names.append(dotted)
     return names
+
+
+def iter_scope(node: ast.AST) -> Iterator:
+    """Yield descendant nodes of *node* WITHOUT entering nested scopes.
+
+    A nested function's locals are not locals of the outer function, and the
+    outer function's are not locals of the nested one — so scope walking must
+    prune at ``FunctionDef`` / ``AsyncFunctionDef`` / ``ClassDef`` /
+    ``Lambda`` boundaries. ``ast.walk`` has no pruning; that is the only
+    reason this exists.
+    """
+    for child in ast.iter_child_nodes(node):
+        yield child
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        yield from iter_scope(child)
+
+
+def iter_scopes(tree: ast.Module) -> Iterator:
+    """Yield the module body and every function/method as independent scopes.
+
+    The module body is yielded first and yields only module-level nodes
+    (``iter_scope`` prunes its functions). Each function is then yielded as
+    its own scope, including nested functions — which are walked once, when
+    yielded, never twice.
+    """
+    yield tree
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield node
+
+
+def scope_assignments(scope: ast.AST) -> dict[str, ast.expr]:
+    """Names assigned EXACTLY ONCE in *scope*, name → value expression.
+
+    A name assigned twice is deliberately not recorded: resolving it would
+    mean guessing which value reaches a given call site, and the pins that
+    use this treat ambiguity as fail-loud, never as a guess.
+    """
+    counts: dict[str, list[ast.expr]] = {}
+    for node in iter_scope(scope):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    counts.setdefault(target.id, []).append(node.value)
+    return {name: values[0] for name, values in counts.items() if len(values) == 1}

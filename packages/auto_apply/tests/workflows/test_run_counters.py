@@ -1,4 +1,3 @@
-
 """Pins for run counters surviving every outcome (Stage 7e).
 
 The live run walked all three pages of the wizard — two `Next →` clicks, both
@@ -198,14 +197,15 @@ def test_a_single_page_form_counts_zero_advances():
 def test_the_statistics_helper_reports_the_live_counters():
     workflow = _workflow(_WizardBrowser())
     workflow._pages_navigated = 4
-    workflow._fields_filled = 7
+    workflow._fields_classified = 12
+    workflow._required_fields_filled = 7
     workflow._gpt4all_invoked = True
 
     stats = workflow._run_statistics()
 
     assert stats == {
         "pages_navigated": 4,
-        "fields_classified": 7,
+        "fields_classified": 12,
         "required_fields_filled": 7,
         "used_gpt4all": True,
     }
