@@ -9,8 +9,7 @@
 #
 # Dependencies install via `uv sync` — hypothesis, mypy, ruff and pytest-mock
 # are PEP 735 dependency-groups, which pip cannot install (collection aborts,
-# it does not skip). `uv sync` honors the committed uv.lock; commit it after
-# the first sync if it is not yet tracked.
+# it does not skip). `uv sync` honors the committed uv.lock.
 
 name: CI
 
@@ -25,6 +24,15 @@ concurrency:
 
 env:
   PYTHONIOENCODING: utf-8
+  # Every leg uses a uv-MANAGED interpreter, never the runner's system Python.
+  # Measured 2026-09-05: ubuntu-latest ships Python 3.12, so uv reused it on
+  # that leg — and Debian splits tkinter into python3-tk, which is not
+  # installed, so five GUI modules failed to import. The 3.10 leg passed
+  # because no system 3.10 exists, so uv downloaded a managed build that
+  # bundles tkinter. Same runner, two different interpreters, one red leg.
+  # only-managed makes all six legs identical, so an environment difference
+  # cannot masquerade as a code difference.
+  UV_PYTHON_PREFERENCE: only-managed
 
 jobs:
   gates:
@@ -41,8 +49,9 @@ jobs:
 
     steps:
       # Full tree required: two pins read docs/adr/012_fail_closed_submission_gate.md
-      # from disk, and the import probe imports all 260 modules (needs tkinter,
-      # which uv's standalone Python bundles on all three OSes).
+      # from disk, and the import probe imports all 260 modules — including
+      # five that need tkinter, which the uv-managed builds bundle and a
+      # Debian system Python does not.
       - name: Check out repository
         uses: actions/checkout@v4
 
