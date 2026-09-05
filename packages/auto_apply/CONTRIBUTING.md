@@ -210,7 +210,7 @@ Do not edit a version range in `pyproject.toml` and push without running the gat
 
 CI is **reporting-only** until it has reported green at least once on all three operating systems. The flip event is explicit: **the first push on which the `gates` job is green on every matrix leg.** At that point, enable branch protection requiring `gates` before merge, and record the date here.
 
-Flip recorded on: ____________
+Flip recorded on: 2026-09-05
 
 ---
 
