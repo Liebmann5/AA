@@ -1,0 +1,77 @@
+# AA's four gates, on every push, on all three operating systems.
+#
+# Gate 1 (pytest) contains the boundary-count and architecture pins.
+# Gates 3 and 4 are deliberately ASYMMETRIC: --explicit-package-bases is the
+# flag that renamed every module to src.auto_apply.* and blinded the src/
+# gate for weeks; it must NEVER be added to gate 3, and must NEVER be removed
+# from gate 4 (tests/ fails on 'Duplicate module named conftest' without it).
+# tests/infrastructure/test_ci_workflow.py enforces both. Do not tidy this.
+#
+# Dependencies install via `uv sync` — hypothesis, mypy, ruff and pytest-mock
+# are PEP 735 dependency-groups, which pip cannot install (collection aborts,
+# it does not skip). `uv sync` honors the committed uv.lock; commit it after
+# the first sync if it is not yet tracked.
+
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  gates:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # 3.10 is the requires-python floor (ruff is the only thing holding
+        # it); 3.12 is the mypy config's python_version. Both are exercised.
+        python: ["3.10", "3.12"]
+
+    steps:
+      # Full tree required: two pins read docs/adr/012_fail_closed_submission_gate.md
+      # from disk, and the import probe imports all 260 modules (needs tkinter,
+      # which uv's standalone Python bundles on all three OSes).
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python ${{ matrix.python }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Sync workspace dependencies (uv, never pip)
+        run: uv sync
+
+      # -rs surfaces the per-job skip count. It is surfaced, never asserted:
+      # roughly ten tests skip without a Chrome driver and run with one.
+      - name: "Gate 1/4 — pytest suite (includes boundary and architecture pins)"
+        working-directory: packages/auto_apply
+        run: uv run pytest tests -q -p no:cacheprovider -rs
+
+      # if: always() so a red gate never hides the status of the others.
+      - name: "Gate 2/4 — ruff F821 (used-but-never-defined)"
+        if: always()
+        working-directory: packages/auto_apply
+        run: uv run ruff check src --select F821 --output-format concise
+
+      - name: "Gate 3/4 — mypy src/ (NO --explicit-package-bases)"
+        if: always()
+        working-directory: packages/auto_apply
+        run: uv run mypy --config-file ../../pyproject.toml src/auto_apply
+
+      - name: "Gate 4/4 — mypy tests/ (WITH --explicit-package-bases)"
+        if: always()
+        working-directory: packages/auto_apply
+        run: uv run mypy --config-file ../../pyproject.toml --explicit-package-bases tests
