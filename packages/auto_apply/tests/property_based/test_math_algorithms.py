@@ -153,7 +153,6 @@ try:
     def test_hungarian_always_produces_valid_assignment(n: int, costs: list) -> None:
         """Hungarian algorithm must always produce a valid (non-negative cost) assignment."""
         # Build a valid n×n cost matrix
-        import numpy as np
         size = min(n, len(costs), max(len(row) for row in costs))
         assume(size >= 1)
         matrix = [[costs[i % len(costs)][j % len(costs[i % len(costs)])]
