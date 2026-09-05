@@ -215,6 +215,12 @@ class Dashboard(ttk.Frame):
         Subscribes to HUMAN_APPROVAL_REQUESTED on the controller's event bus
         so the dashboard can show an approval modal when the agent pauses.
 
+        If a gate is already open — the controller published before this
+        dashboard finished binding, which happens because the orchestrator
+        thread is spawned before the GUI wires — the pending gate is rendered
+        immediately rather than leaving the session waiting on an invisible
+        prompt.
+
         Args:
             controller: The active SessionController for this session.
         """
@@ -226,6 +232,14 @@ class Dashboard(ttk.Frame):
             event_bus.subscribe(Event.HUMAN_APPROVAL_REQUESTED, self._on_approval_requested)
         except Exception:
             pass
+
+        # Render any gate that opened before this dashboard subscribed.
+        try:
+            pending = controller.get_pending_approvals()
+        except Exception:
+            pending = []
+        if pending:
+            self.after(0, self._show_approval_modal, pending[0])
 
     def _on_approval_requested(self, payload: dict) -> None:
         """EventBus handler — called on the agent worker thread.

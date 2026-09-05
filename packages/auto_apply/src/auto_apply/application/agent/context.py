@@ -77,6 +77,9 @@ class SessionStatistics:
             by the form itself (e.g., missing required field with no answer).
         applications_skipped: Applications skipped due to prior-session
             history (already applied). Not a failure — informational.
+        captchas_escalated: CAPTCHA challenges escalated to a human via the
+            HITL gate. Detection signal, kept distinct from generic approvals.
+        provider_timeouts: Provider workers reported stuck by the watchdog.
         start_time: UTC datetime when this session began.
     """
     jobs_discovered:        int = 0
@@ -84,6 +87,8 @@ class SessionStatistics:
     applications_submitted: int = 0
     applications_failed:    int = 0
     applications_skipped:   int = 0
+    captchas_escalated:     int = 0
+    provider_timeouts:      int = 0
     start_time: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -127,6 +132,8 @@ class SessionStatistics:
             "applications_submitted": self.applications_submitted,
             "applications_failed":    self.applications_failed,
             "applications_skipped":   self.applications_skipped,
+            "captchas_escalated":     self.captchas_escalated,
+            "provider_timeouts":      self.provider_timeouts,
             "duration_seconds":       round(self.duration.total_seconds(), 1),
             "duration_str":           self.duration_str,
             "success_rate":           round(self.success_rate, 4),
@@ -142,6 +149,8 @@ class SessionStatistics:
         stats.applications_submitted = data.get("applications_submitted", 0)
         stats.applications_failed    = data.get("applications_failed", 0)
         stats.applications_skipped   = data.get("applications_skipped", 0)
+        stats.captchas_escalated     = data.get("captchas_escalated", 0)
+        stats.provider_timeouts      = data.get("provider_timeouts", 0)
 
         raw_start = data.get("start_time")
         if raw_start:
@@ -207,7 +216,7 @@ class ExecutionContext:
     Passed to every domain engine and service that needs session awareness.
     Holds the user profile, runtime resources, live session statistics,
     the current work unit being processed, pending application batches,
-    and (since Phase 5) an execution map for real‑time observability.
+    and (since Phase 5) an execution map for real‑time observability.
 
     Args:
         profile: The loaded user profile for this session.
@@ -237,7 +246,7 @@ class ExecutionContext:
         # ── Application batch buffers ─────────────────────────────────────
         self.pending_batches: dict[str, list[Job]] = defaultdict(list)
 
-        # ── Execution observability (Phase 5) ─────────────────────────────
+        # ── Execution observability (Phase 5) ─────────────────────────────
         self._execution_map: dict[str, WorkerStatus] = {}
         self._map_lock = threading.Lock()
 
@@ -255,7 +264,8 @@ class ExecutionContext:
         """Increments a session statistic counter. Thread-safe.
 
         Args:
-            category: One of "discovered", "vetted", "applied", "failed", "skipped".
+            category: One of "discovered", "vetted", "applied", "failed",
+                "skipped", "captcha_escalated", "provider_timeout".
             count: Amount to add. Defaults to 1.
         """
         with self._stats_lock:
@@ -269,6 +279,10 @@ class ExecutionContext:
                 self.stats.applications_failed += count
             elif category == "skipped":
                 self.stats.applications_skipped += count
+            elif category == "captcha_escalated":
+                self.stats.captchas_escalated += count
+            elif category == "provider_timeout":
+                self.stats.provider_timeouts += count
             else:
                 logger.warning(
                     "ExecutionContext.update_stats: unknown category '%s'", category
@@ -319,7 +333,7 @@ class ExecutionContext:
         return self.stats.duration.total_seconds()
 
     # =========================================================================
-    # EXECUTION OBSERVABILITY — Worker Map (Phase 5)
+    # EXECUTION OBSERVABILITY — Worker Map (Phase 5)
     # =========================================================================
 
     def register_worker(

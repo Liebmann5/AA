@@ -340,6 +340,12 @@ class AutoApplyApp(tk.Tk):
         """Shows the live session gui dashboard."""
         self._clear_view()
         self._guidashboard = GUIDashboard(self._main_container)
+        # bind_session wires the dashboard to HUMAN_APPROVAL_REQUESTED on the
+        # session's event bus — without it the GUI never shows HITL prompts
+        # (the modal existed but was never connected, so the HITL gate's only
+        # release on GUI was the 300 s timeout).
+        if self.controller is not None:
+            self._guidashboard.bind_session(self.controller)
         self._guidashboard.pack(fill=tk.BOTH, expand=True)
         self._poll_guidashboard()
 

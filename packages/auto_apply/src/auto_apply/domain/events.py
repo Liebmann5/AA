@@ -177,10 +177,12 @@ class Event(Enum):
     REDIRECT_TO_LIST_DETECTED = auto()
     """ApplicationEngine detected a redirect to a job listing page instead of a form.
 
-    The orchestrator should enqueue a Discovery WorkUnit for the URL rather than
-    retrying the application. Engines never call each other directly.
+    Consumed by the orchestrator (_on_redirect_to_list_detected), which enqueues
+    a DISCOVER_COMPANY WorkUnit for the listing URL so its jobs flow through
+    the normal discover → vet → apply pipeline instead of retrying the failed
+    application. Engines never call each other directly.
 
-    Payload: {'url': str, 'job_title': str, 'company': str}
+    Payload: {'url': str, 'job_title': str}
     """
 
     FORM_FIELD_FILLED = auto()
@@ -223,9 +225,16 @@ class Event(Enum):
     """
 
     CAPTCHA_REQUIRES_MANUAL_SOLVE = auto()
-    """Auto-resolution failed. The GUI must prompt the user to solve manually.
+    """Auto-resolution failed or no resolver is configured; a human must solve.
 
-    Payload: {'url': str, 'captcha_type': str, 'screenshot_path': str}
+    The event is the distinct evidence record for a CAPTCHA escalation —
+    encounter/escalation rate is a detection signal and stays separate from
+    generic approval metrics. Consumed by the orchestrator's recorder handler
+    (_on_captcha_manual_solve_requested). The pause/prompt that follows is
+    owned by the shared HITL approval channel (HUMAN_APPROVAL_REQUESTED), so
+    there is exactly one release path — no unrecoverable pause.
+
+    Payload: {'url': str, 'captcha_type': str, 'task_id': str}
     """
 
     BOT_DETECTION_TRIGGERED = auto()
@@ -312,8 +321,11 @@ class Event(Enum):
 
     PROVIDER_TIMED_OUT = auto()
     """A provider worker thread has not sent a heartbeat within the configured
-    timeout and is presumed stuck. The watchdog will attempt to recover by
-    re‑queuing the work unit.
+    timeout and is presumed stuck.
+
+    Consumed by the orchestrator (_on_provider_timed_out), which records the
+    timeout as session evidence and reschedules the stuck task for retry when
+    it can be mapped to the currently dispatched work unit.
 
     Payload: {'worker_id': str, 'provider_name': str, 'last_action': str}
     """
