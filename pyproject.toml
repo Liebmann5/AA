@@ -2,34 +2,30 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  AA Monorepo — Workspace Root
 #
-#TODO: Add a [project] table here to make this a real package, so that `pip install .`
-#TODO: Add a [project.optional-dependencies] table here to make this a real package, so that `pip install .[nlp]` works.
-#TODO: Add a [project.scripts] table here to make this a real package, so that `pip install .` installs CLI entry points.
-#TODO: Add the command `uv run python -m spacy download en_core_web_sm` below so users can avoid this extra step themselves!
-#
 #  Tool: uv (https://docs.astral.sh/uv)
 #  Pattern: Virtual workspace root (no [project] table).
 #    The root is a pure coordinator: it cannot be installed, imported, or
 #    published. All real packages live under packages/.
 #
-#  One-time setup for any developer or contributor:
-#    pip install uv          # bootstrap — works on any Python ≥ 3.8
-#    uv sync                 # creates .venv + installs everything
-#    uv sync --extra nlp     # + SpaCy
-#    uv sync --extra ai      # + GPT4All
-#    uv sync --extra browser # + Playwright
-#    uv sync --extra all     # everything
+#  Two audiences, two entry points, one dependency graph:
 #
-#  Worst-case / library user:
-#    pip install auto_apply              # core only  (~30 MB)
-#    pip install "auto_apply[nlp]"       # + SpaCy
-#    pip install "auto_apply[browser]"   # + Playwright
-#    pip install "auto_apply[ai]"        # + GPT4All
-#    pip install "auto_apply[all]"       # everything
-#  ──────────────────────────────────────────────────────────────────────────
-#  NOTE: uv produces a single uv.lock for the entire workspace.  Every member
-#  package agrees on transitive dependency versions — no version drift between
-#  packages/auto_apply and packages/PiServer.
+#    Contributors / CI (development, tests, gates, docs):
+#      pip install uv          # bootstrap — uv is itself pip-installable
+#      uv sync                 # creates .venv, installs members + dev group,
+#                              # honors the committed uv.lock
+#      uv sync --extra nlp     # optional feature extras, opt-in only
+#
+#    End users (just running AA — including worst-case library machines):
+#      pip install auto_apply               # from PyPI (once published), or:
+#      pip install packages/auto_apply      # from a source checkout
+#      auto-apply                           # console script, or:
+#      python -m auto_apply                 # module entry — both are declared
+#
+#    The frozen USB path (launch_portable.sh + PyInstaller) needs neither pip
+#    nor Python on the host.
+#
+#  uv.lock is committed. CI resolves from it; do not float it casually —
+#  bump deliberately with `uv lock --upgrade-package <name>` and commit.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Build System ─────────────────────────────────────────────────────────────
@@ -48,10 +44,15 @@ build-backend = "uv_build"
 members = ["packages/*"]
 
 
-# ── Development Dependency Groups ─────────────────────────────────────────────
-# PEP 735 dependency groups: workspace-wide dev tooling that is NOT shipped
-# with any package.  Use `uv sync --group dev` or just `uv sync` (dev is
-# included by default in a workspace).
+# ── Development Dependency Groups (PEP 735) ──────────────────────────────────
+# Workspace-wide dev tooling, NOT shipped with any package. This is the ONLY
+# declaration of this list anywhere — package optional-dependencies must not
+# repeat it (tests/infrastructure/test_install_commands_exist.py enforces).
+#
+# pip's extras syntax (`pip install -e ".[dev]"`) cannot install this group —
+# extras != groups. Recent pip (25.1+) can read groups via a dedicated
+# `--group` flag, but the documented contributor path is `uv sync`, which is
+# what CI runs. One tool, one declaration, one lockfile, no duplicates.
 [dependency-groups]
 dev = [
     # Testing
@@ -67,8 +68,8 @@ dev = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.5.0",
     "mkdocstrings-python>=1.8.0",
-    # Research/data export (optional but present for all devs)
-    "hypothesis>=6.90.0",       # Property-based testing (P3-9)
+    # Property-based testing (P3-9)
+    "hypothesis>=6.90.0",
 ]
 
 
@@ -104,26 +105,29 @@ ignore = [
 ]
 
 [tool.mypy]
-# 3.12, NOT AA's 3.10 floor. numpy's shipped stubs use PEP 695 `type`
-# statements; under python_version < "3.12" mypy rejects them while PARSING
-# numpy/__init__.pyi and aborts with "errors prevented further checking",
-# so the gate never reaches AA's own code.
+# python_version matches the floor of packages/auto_apply's requires-python
+# (">=3.10"). The gate checks AA against the Python AA supports — not against
+# the newest Python some third-party stub happens to require.
 #
-# A parse error happens before per-module options are consulted. Measured,
-# all of these still fail: [[tool.mypy.overrides]] numpy.* with
-# follow_imports = "skip"; the same with ignore_errors = true;
-# disable_error_code = ["syntax"] plus exclude; and python_version = "3.11".
-# Raising python_version is the only lever that works. Do not re-add an
-# override here — it looks like it should work and does not.
+# follow_imports = "skip": mypy analyzes only the files handed to it
+# (src/auto_apply and tests/) and treats every third-party import as Any.
+# This is the robust resolution of the numpy-stub problem previously
+# documented here: numpy's shipped stubs use PEP 695 `type` syntax that mypy
+# refused to parse under python_version < "3.12", and per-module
+# follow_imports overrides were measured not to help because the parse error
+# precedes override consultation. A global skip precedes parsing, so
+# present-but-irrelevant libraries (numpy arriving transitively via the
+# spacy / pandas / pyarrow extras) cannot break this gate again. AA's only
+# direct numpy import — one unused line in a property test — is gone, so
+# numpy is no longer in the default dependency graph at all.
 #
-# What this gives up: mypy no longer flags post-3.10 syntax in AA's own
-# source. RUFF HOLDS THAT LINE INSTEAD — it reports `type` aliases as
-# "invalid-syntax: Cannot use `type` alias statement on Python 3.10" under
-# the target-version it resolves from packages/auto_apply/pyproject.toml's
-# requires-python = ">=3.10", and it does so regardless of --select, so the
-# existing F821 lint gate already catches it. The two move together: if the
-# supported floor changes, change requires-python, not just this line.
-python_version      = "3.12"
+# Tradeoff, stated plainly: misuse of third-party APIs inside AA is now
+# opaque to this gate. AA's own cross-module calls are still fully checked —
+# all AA modules are in the checked set, and
+# tests/infrastructure/test_mypy_gate.py's canary exercises exactly that.
+# ruff's F821 gate still catches used-but-never-defined names.
+python_version      = "3.10"
 strict              = false
+follow_imports      = "skip"
 ignore_missing_imports = true
 plugins             = ["pydantic.mypy"]

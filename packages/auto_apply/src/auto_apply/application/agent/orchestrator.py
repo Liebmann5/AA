@@ -90,7 +90,7 @@ class AgentOrchestrator:
           permanently failed and logged for telemetry analysis.
         - Cross-session dedup: APPLY tasks check applied_jobs before
           submitting — AA never applies to the same URL twice.
-        - Provider watchdog (Phase 5): A ProviderWatchdog thread monitors
+        - Provider watchdog (Phase 5): A ProviderWatchdog thread monitors
           heartbeat of provider workers and publishes PROVIDER_TIMED_OUT when
           a worker appears stuck.
 
@@ -143,7 +143,7 @@ class AgentOrchestrator:
         captcha_resolver: Any | None = None,
         browser_monitor: Any | None = None,
         network_monitor: Any | None = None,
-        watchdog: Any | None = None,              # ← Phase 5: ProviderWatchdog
+        watchdog: Any | None = None,              # ← Phase 5: ProviderWatchdog
         job_posting_resolver: Any | None = None,  # ← JobPostingResolver service
         progress: Any | None = None,  # ← optional SessionProgressDisplay (CLI adapter)
         workflows: dict[str, Any] | None = None,
@@ -217,7 +217,7 @@ class AgentOrchestrator:
         self._network_monitor: Any | None = network_monitor
         self._monitor_threads: list[threading.Thread] = []
 
-        # ── Provider watchdog (Phase 5) ────────────────────────────────────
+        # ── Provider watchdog (Phase 5) ────────────────────────────────────
         self._watchdog: Any | None = watchdog
 
         # Company batching is now delegated to ApplicationsWorkflow's
@@ -248,6 +248,16 @@ class AgentOrchestrator:
         # the orchestrator reads it yet (attached for future consumers).
         self.session_plan: SessionPlan = session_plan
         self.behavior_parameters: BehaviorParameters | None = behavior_parameters
+
+        # ── HITL approval gate ────────────────────────────────────────────
+        # Wired post-construction by SessionController._wire_approval_gate() —
+        # the controller is built around the orchestrator, so the gate cannot
+        # be a constructor dependency. When None, CAPTCHA escalation degrades
+        # to record-and-continue rather than hanging (see _handle_captcha).
+        self._approval_gate: Any | None = None
+
+        # ── Redirect dedupe for the REDIRECT_TO_LIST_DETECTED handler ─────
+        self._seen_redirect_urls: set = set()
 
         # ── Wire EventBus subscriptions ───────────────────────────────────
         self._register_event_handlers()
@@ -863,33 +873,109 @@ class AgentOrchestrator:
         self._session_report.record_application(job, evidence)
 
     def _handle_captcha(self, task: WorkUnit) -> None:
-        """Handles a CAPTCHA interruption by pausing for resolution.
+        """Handles a CAPTCHA interruption with a resolvable outcome.
 
         If a captcha_resolver was injected at construction, attempts automatic
-        resolution. On failure or when no resolver is configured, emits an
-        event so the GUI can prompt the user for manual solving.
+        resolution first. On failure — or when no resolver is configured — the
+        challenge is escalated to the human through the shared HITL approval
+        channel (see _escalate_captcha_to_human). The escalation always has a
+        release path: the HITL gate resumes the session on an answer, skips on
+        timeout, and degrades to continue-without-pausing when no gate is
+        wired. It must never leave the session in an unrecoverable pause.
 
         Args:
             task: WorkUnit whose payload contains CAPTCHA challenge details.
         """
         logger.warning("CAPTCHA encountered")
 
-        if self._captcha_resolver is None:
-            logger.info("No captcha resolver configured — escalating to manual solve")
-            self.event_bus.publish(Event.CAPTCHA_REQUIRES_MANUAL_SOLVE, task.payload)
-            self.pause()
+        if self._captcha_resolver is not None:
+            self.state_machine.transition_to(AgentState.RESOLVING_CAPTCHA)
+            resolved: bool = self._captcha_resolver.resolve(task.payload, driver=self._driver)
+
+            if resolved:
+                logger.info("CAPTCHA resolved automatically")
+                self.state_machine.transition_to(AgentState.RUNNING)
+                return
+
+            logger.warning("Auto-resolution failed — escalating to manual solve")
+            # Return the machine to RUNNING before entering the HITL gate:
+            # RESOLVING_CAPTCHA → AWAITING_HUMAN is not a valid transition,
+            # and RESOLVING_CAPTCHA must not be left dangling afterward.
+            self.state_machine.transition_to(AgentState.RUNNING)
+
+        self._escalate_captcha_to_human(task)
+
+    def _escalate_captcha_to_human(self, task: WorkUnit) -> None:
+        """Escalates a CAPTCHA to the human through the shared HITL channel.
+
+        Publishes CAPTCHA_REQUIRES_MANUAL_SOLVE as the distinct evidence record
+        (consumed by the orchestrator's own recorder handler, so CAPTCHA
+        encounter/escalation stays distinguishable from generic approvals in
+        the research record), then blocks on the HITL approval gate until the
+        user answers or the gate times out.
+
+        The pause and its release are owned by ONE channel — HITL — rather
+        than by an unrecoverable pause(). If no gate is wired (no
+        SessionController), the escalation is recorded and the session
+        continues without pausing: a pause nothing can release is always wrong.
+
+        Args:
+            task: The HANDLE_CAPTCHA WorkUnit being escalated.
+        """
+        payload = task.payload if isinstance(task.payload, dict) else {}
+        url = payload.get("challenge_url") or payload.get("url") or ""
+        challenge_type = payload.get("challenge_type") or payload.get("type") or "unknown"
+
+        self.event_bus.publish(Event.CAPTCHA_REQUIRES_MANUAL_SOLVE, {
+            "url": url,
+            "captcha_type": challenge_type,
+            "task_id": task.id,
+        })
+
+        if self._approval_gate is None:
+            logger.warning(
+                "No HITL gate is wired — cannot prompt for a manual solve. "
+                "CAPTCHA recorded; session continues without pausing."
+            )
             return
 
-        self.state_machine.transition_to(AgentState.RESOLVING_CAPTCHA)
-        resolved: bool = self._captcha_resolver.resolve(task.payload, driver=self._driver)
+        logger.info(
+            "Escalating CAPTCHA to the human | type=%s url=%s",
+            challenge_type,
+            url[:80],
+        )
+        try:
+            choice = self._approval_gate(
+                "A CAPTCHA is blocking the current page. Solve it in the "
+                "browser window, then choose how to continue.",
+                ["solved", "skip", "stop"],
+                checkpoint="CAPTCHA_REQUIRES_MANUAL_SOLVE",
+            )
+        except Exception as exc:
+            logger.error(
+                "HITL gate raised during CAPTCHA escalation | %s — "
+                "recording and continuing without an answer",
+                exc,
+                exc_info=True,
+            )
+            return
 
-        if resolved:
-            logger.info("CAPTCHA resolved automatically")
-            self.state_machine.transition_to(AgentState.RUNNING)
-        else:
-            logger.warning("Auto-resolution failed — pausing for manual intervention")
-            self.event_bus.publish(Event.CAPTCHA_REQUIRES_MANUAL_SOLVE, task.payload)
-            self.pause()
+        # The HITL release path (HUMAN_APPROVAL_GRANTED via provide_approval)
+        # has already restored the pre-HITL state and called stop() on "stop".
+        if self.state_machine.current_state == AgentState.AWAITING_HUMAN:
+            # Timeout path: the gate returned without a grant, so nothing has
+            # transitioned the state machine back. Resume explicitly — a stall
+            # in AWAITING_HUMAN would be the same defect as the old hang.
+            self.state_machine.transition_to(
+                AgentState.RUNNING, triggered_by="captcha_gate_timeout"
+            )
+
+        if choice == "solved":
+            logger.info("User reports CAPTCHA solved — session resumed")
+        elif choice == "skip":
+            logger.info("CAPTCHA task skipped (user choice or gate timeout)")
+        # choice == "stop": stop() was already invoked by
+        # _on_human_approval_granted; the loop will exit on the next iteration.
 
     # =========================================================================
     # BATCH PROCESSING (orchestrator loop helpers)
@@ -1140,6 +1226,21 @@ class AgentOrchestrator:
             )
         return workflow
 
+    def set_approval_gate(self, gate) -> None:
+        """Late-binds the HITL approval gate.
+
+        The gate is owned by SessionController and cannot be injected at
+        construction time (the controller is built around the orchestrator).
+        SessionController calls this during _wire_approval_gate() to give the
+        orchestrator the same release channel the ApplicationsWorkflow uses.
+
+        Args:
+            gate: An approval callable with signature
+                (question: str, options: list[str], checkpoint: str,
+                timeout: float) -> str.
+        """
+        self._approval_gate = gate
+
     # =========================================================================
     # EVENT BUS WIRING
     # =========================================================================
@@ -1159,6 +1260,9 @@ class AgentOrchestrator:
         self.event_bus.subscribe(Event.NETWORK_RESTORED,  self._on_network_restored)
         self.event_bus.subscribe(Event.HUMAN_APPROVAL_REQUESTED, self._on_human_approval_requested)
         self.event_bus.subscribe(Event.HUMAN_APPROVAL_GRANTED,   self._on_human_approval_granted)
+        self.event_bus.subscribe(Event.CAPTCHA_REQUIRES_MANUAL_SOLVE, self._on_captcha_manual_solve_requested)
+        self.event_bus.subscribe(Event.PROVIDER_TIMED_OUT, self._on_provider_timed_out)
+        self.event_bus.subscribe(Event.REDIRECT_TO_LIST_DETECTED, self._on_redirect_to_list_detected)
 
         logger.debug("Orchestrator event handlers registered")
 
@@ -1254,6 +1358,114 @@ class AgentOrchestrator:
         if self.paused:
             self.paused = False
             self.state_machine.transition_to(AgentState.RUNNING)
+
+    def _on_captcha_manual_solve_requested(self, payload: Any) -> None:
+        """Records a manual-solve escalation as session evidence.
+
+        Consumer for CAPTCHA_REQUIRES_MANUAL_SOLVE. It deliberately does NOT
+        pause or prompt: the pause is owned by the HITL gate so there is
+        exactly one release path. This handler keeps CAPTCHA escalations a
+        distinct record from generic approvals — encounter/escalation rate is
+        a detection signal, not an approval metric.
+
+        Args:
+            payload: Dict from _escalate_captcha_to_human with keys
+                ``url``, ``captcha_type``, ``task_id``.
+        """
+        payload = payload or {}
+        self.context.update_stats("captcha_escalated", 1)
+        logger.warning(
+            "Manual CAPTCHA solve required | type=%s url=%s",
+            payload.get("captcha_type", "unknown"),
+            payload.get("url", ""),
+        )
+
+    def _on_provider_timed_out(self, payload: Any) -> None:
+        """Handles a watchdog-reported stuck provider worker.
+
+        Consumer for PROVIDER_TIMED_OUT. Records the timeout as session
+        evidence and attempts recovery: when the stuck worker is the task the
+        loop is currently dispatching, it is rescheduled for retry so the
+        session does not silently lose the work. When the stuck worker cannot
+        be mapped to a task, the timeout is recorded only — fabricating a
+        re-queue would be worse.
+
+        Args:
+            payload: Dict from ProviderWatchdog with keys ``worker_id``,
+                ``provider_name``, ``last_action``.
+        """
+        payload = payload or {}
+        worker_id = payload.get("worker_id", "")
+        provider_name = payload.get("provider_name", "unknown")
+        last_action = payload.get("last_action", "")
+
+        logger.error(
+            "Provider timed out | worker=%s provider=%s last_action=%s",
+            worker_id,
+            provider_name,
+            last_action,
+        )
+        self.context.update_stats("provider_timeout", 1)
+
+        current = self.context.current_work_unit
+        if current is not None and current.id == worker_id:
+            error_msg = (
+                f"provider '{provider_name}' timed out during '{last_action}'"
+            )
+            rescheduled = self.task_queue.reschedule_for_retry(
+                current.id, error_msg
+            )
+            if rescheduled:
+                logger.info(
+                    "Stuck task rescheduled for retry | id=%s", current.id[:8]
+                )
+            else:
+                logger.error(
+                    "Stuck task permanently failed (retry budget exhausted) | id=%s",
+                    current.id[:8],
+                )
+
+    def _on_redirect_to_list_detected(self, payload: Any) -> None:
+        """Handles an application redirect to a job-listing page.
+
+        Consumer for REDIRECT_TO_LIST_DETECTED. Enqueues a DISCOVER_COMPANY
+        WorkUnit for the listing URL so the jobs on it flow through the normal
+        discover → vet → apply pipeline, per the Event docstring, instead of
+        retrying the application that redirected. The same URL is not enqueued
+        twice in one session.
+
+        Args:
+            payload: Dict from ApplicationsWorkflow with keys ``url`` and
+                ``job_title``.
+        """
+        payload = payload or {}
+        url = payload.get("url", "")
+        if not url:
+            logger.warning(
+                "RedirectToListDetected payload had no URL — nothing to enqueue"
+            )
+            return
+
+        if url in self._seen_redirect_urls:
+            logger.debug(
+                "Redirect URL already enqueued this session | url=%s", url[:80]
+            )
+            return
+        self._seen_redirect_urls.add(url)
+
+        company_name = payload.get("company_name") or payload.get("job_title") or "Unknown"
+        logger.info(
+            "Redirect to job list detected — enqueueing company discovery | url=%s",
+            url[:80],
+        )
+        self.task_queue.queue_task(
+            WorkUnit(
+                priority=4,
+                task_type=TaskType.DISCOVER_COMPANY,
+                payload={"careers_url": url, "company_name": company_name},
+                source="redirect_to_list",
+            )
+        )
 
     def _on_human_approval_requested(self, payload: Any) -> None:
         """Handles HUMAN_APPROVAL_REQUESTED: transitions to AWAITING_HUMAN.
@@ -1354,7 +1566,7 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.warning("Failed to start %s | error=%s", name, exc)
 
-        # ── Phase 5: Provider watchdog ───────────────────────────────────
+        # ── Phase 5: Provider watchdog ───────────────────────────────────
         if self._watchdog is not None:
             try:
                 self._watchdog.start()
@@ -1621,7 +1833,7 @@ class AgentOrchestrator:
                 except Exception as exc:
                     logger.debug("Monitor stop error (non-fatal) | error=%s", exc)
 
-        # ── 1a. Stop provider watchdog (Phase 5) ─────────────────────────
+        # ── 1a. Stop provider watchdog (Phase 5) ─────────────────────────
         if self._watchdog is not None:
             try:
                 self._watchdog.stop()

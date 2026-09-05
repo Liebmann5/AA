@@ -14,6 +14,7 @@ Orchestrator Integration Contract:
         - reschedule_for_retry(task_id, error)     -> exponential backoff retry
         - has_applied_previously(job_url) -> bool  -> cross-session dedup check
         - record_application_permanently(...)       -> persist application to log
+        - discard_stale_reactive_tasks() -> int     -> drop ghost reactive tasks at startup
 
     All methods are thread-safe via the connection-per-call model (SQLite
     handles its own locking with WAL mode).
@@ -46,6 +47,13 @@ logger = logging.getLogger(__name__)
 
 # Maximum retry attempts for failed tasks before permanent failure.
 MAX_RETRY_ATTEMPTS: int = 3
+
+# Task types whose payloads reference live browser page state (a challenge
+# iframe, a tab, the page the driver was sitting on). The driver is closed in
+# teardown, so such tasks cannot survive a process restart — restoring them
+# would block the session on a phantom. URL-addressable tasks (APPLY, VET,
+# RESOLVE_JOB_URL) re-navigate fine and are deliberately excluded.
+REACTIVE_TASK_TYPES: tuple[str, ...] = (TaskType.HANDLE_CAPTCHA.value,)
 
 
 class DatabaseManager(WorkQueuePort):
@@ -664,6 +672,51 @@ class DatabaseManager(WorkQueuePort):
             if recovered > 0:
                 logger.info("Recovered %d interrupted tasks", recovered)
             return recovered
+
+    def discard_stale_reactive_tasks(self) -> int:
+        """Marks browser-context-bound reactive tasks from prior sessions as SKIPPED.
+
+        Reactive tasks (see REACTIVE_TASK_TYPES — currently HANDLE_CAPTCHA)
+        are bound to live page state: a challenge iframe, a tab, the page the
+        driver was sitting on when the previous process died. The driver is
+        closed in teardown, so the referent provably no longer exists, and
+        dispatching such a task after a restore would block the session on a
+        CAPTCHA that is not on screen. This method marks every PENDING or
+        IN_PROGRESS task of a reactive type as SKIPPED, with the reason
+        recorded in error_message for postmortem audit.
+
+        Called once at session startup (SessionController._perform_startup_recovery),
+        before any task is dispatched, so a live session's reactive tasks —
+        created only after startup — are never affected.
+
+        Returns:
+            The number of tasks discarded.
+        """
+        discarded = 0
+        reason = "discarded: browser-context-bound task outlived its session"
+        now = datetime.now(timezone.utc).isoformat()
+        with self.get_connection() as conn:
+            for task_type_value in REACTIVE_TASK_TYPES:
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET status = 'SKIPPED',
+                        error_message = ?,
+                        updated_at = ?
+                    WHERE task_type = ?
+                      AND status IN ('PENDING', 'IN_PROGRESS')
+                    """,
+                    (reason, now, task_type_value),
+                )
+                discarded += cursor.rowcount
+        if discarded:
+            logger.warning(
+                "Discarded %d stale reactive task(s) from a previous session "
+                "| types=%s",
+                discarded,
+                list(REACTIVE_TASK_TYPES),
+            )
+        return discarded
 
     # =====================================================================
     # JOB HISTORY OPERATIONS

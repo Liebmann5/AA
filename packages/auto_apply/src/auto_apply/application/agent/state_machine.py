@@ -198,9 +198,17 @@ VALID_TRANSITIONS: frozenset[tuple[AgentState, AgentState]] = frozenset({
     (AgentState.PAUSED,         AgentState.STOPPING),
     (AgentState.PAUSED,         AgentState.FAILED),       # Timeout while paused
 
+    # Bible §5.2 documents RUNNING → RESOLVING_CAPTCHA → RUNNING; this edge
+    # was missing from the table even though _handle_captcha transitions
+    # unconditionally (HANDLE_CAPTCHA tasks are dispatched at RUNNING, since
+    # every handler restores RUNNING before the next dequeue). No other
+    # inbound edges are added: DISCOVERING/VETTING/IDLE cannot dispatch a
+    # HANDLE_CAPTCHA task by construction.
+    (AgentState.RUNNING,        AgentState.RESOLVING_CAPTCHA),
     (AgentState.RESOLVING_CAPTCHA,          AgentState.RUNNING),   # Auto-resolved
     (AgentState.RESOLVING_CAPTCHA,          AgentState.PAUSED),    # Needs manual
     (AgentState.RESOLVING_CAPTCHA,          AgentState.FAILED),
+    (AgentState.RESOLVING_CAPTCHA,          AgentState.STOPPING),  # Stop during resolution
 
     (AgentState.RESOLVING_LOGIC_CONFLICT,   AgentState.RUNNING),   # User chose
     (AgentState.RESOLVING_LOGIC_CONFLICT,   AgentState.PAUSED),

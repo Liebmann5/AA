@@ -53,6 +53,21 @@ class WorkQueuePort(ABC):
         """
 
     @abstractmethod
+    def discard_stale_reactive_tasks(self) -> int:
+        """Marks browser-context-bound reactive tasks as SKIPPED.
+
+        Called once at startup, before any task is dispatched. Reactive tasks
+        (e.g. HANDLE_CAPTCHA) reference live page state — a challenge iframe,
+        a tab, the page the driver was on — that provably does not survive a
+        process restart. Restoring them would block the session on a phantom;
+        discarding them here is the evidence-preserving alternative. Each
+        discarded row keeps an error_message explaining why.
+
+        Returns:
+            The number of tasks discarded.
+        """
+
+    @abstractmethod
     def get_queue_stats(self) -> dict:
         """Returns a summary of work queue status counts.
 

@@ -1,4 +1,5 @@
 #!/bin/bash
+# RETIRED FROM: packages/auto_apply/run.sh
 set -e
 
 echo "--- AutoApply Setup and Launcher for Linux/macOS ---"

@@ -100,9 +100,11 @@ class SessionController:
         self.db = db
         self.orchestrator = orchestrator
         self._agent_thread: threading.Thread | None = None
-        # HITL: maps context_id → (gate_event, chosen_value_holder)
+        # HITL: maps context_id → (gate_event, chosen_value_holder, payload).
+        # The payload is stored so late-binding dashboards can render a gate
+        # that opened before they subscribed (see get_pending_approvals).
         self._pending_approvals: dict[
-            str, tuple[threading.Event, list[str]]
+            str, tuple[threading.Event, list[str], dict]
         ] = {}
         self._approvals_lock = threading.Lock()
 
@@ -554,6 +556,22 @@ class SessionController:
     # HUMAN-IN-THE-LOOP APPROVAL GATE
     # =========================================================================
 
+    def get_pending_approvals(self) -> list[dict]:
+        """Returns a snapshot of the payloads of every currently open HITL gate.
+
+        A dashboard that binds AFTER a gate was published cannot see the
+        publish — but it can read this state and render the open gate
+        immediately. This is what makes subscriber order irrelevant: the
+        gate is readable state, not a one-shot broadcast. Returned payloads
+        are copies so callers cannot mutate controller state.
+
+        Returns:
+            A list of payload dicts (context_id, checkpoint, question,
+            options), one per open gate. Empty when no gate is open.
+        """
+        with self._approvals_lock:
+            return [dict(entry[2]) for entry in self._pending_approvals.values()]
+
     def request_approval(
         self,
         question: str,
@@ -566,6 +584,11 @@ class SessionController:
         Called from the agent worker thread. Blocks for up to *timeout* seconds.
         If the timeout elapses without a response, returns ``"skip"`` so the
         engine can continue rather than hanging indefinitely.
+
+        The gate-open log line includes the current subscriber count for
+        HUMAN_APPROVAL_REQUESTED — a count of 1 means only the orchestrator's
+        own state handler heard it and no UI will render a prompt (the
+        subscription-race signature).
 
         Args:
             question: Human-readable description of what needs approval.
@@ -588,15 +611,15 @@ class SessionController:
             []
         )  # mutable container so the grant side can write
 
-        with self._approvals_lock:
-            self._pending_approvals[context_id] = (gate, choice_holder)
-
         payload = {
             "context_id": context_id,
             "checkpoint": checkpoint,
             "question": question,
             "options": options,
         }
+
+        with self._approvals_lock:
+            self._pending_approvals[context_id] = (gate, choice_holder, payload)
 
         try:
             self.orchestrator.event_bus.publish(
@@ -608,9 +631,13 @@ class SessionController:
             )
 
         logger.info(
-            "SessionController: HITL gate open | context_id=%s question=%r",
+            "SessionController: HITL gate open | context_id=%s question=%r "
+            "subscribers=%d",
             context_id,
             question,
+            self.orchestrator.event_bus.subscriber_count(
+                Event.HUMAN_APPROVAL_REQUESTED
+            ),
         )
         responded = gate.wait(timeout=timeout)
 
@@ -657,7 +684,7 @@ class SessionController:
             )
             return False
 
-        gate, choice_holder = entry
+        gate, choice_holder, _payload = entry
 
         # Publish GRANTED first so orchestrator transitions state machine to
         # RUNNING (or STOPPING) BEFORE the agent thread unblocks and resumes.
@@ -680,12 +707,13 @@ class SessionController:
         return True
 
     def _wire_approval_gate(self) -> None:
-        """Late-binds request_approval into the ApplicationsWorkflow.
+        """Late-binds request_approval into the ApplicationsWorkflow and the
+        orchestrator.
 
         Called after controller construction to resolve the circular dependency:
-        the workflow is built before SessionController exists, so the gate
-        cannot be passed at construction time.  This method is called by the
-        composition root during controller assembly.
+        both the workflow and the orchestrator are built before SessionController
+        exists, so the gate cannot be passed at construction time.  This method
+        is called by the composition root during controller assembly.
         """
         try:
             workflows = getattr(self.orchestrator, "_workflows", {})
@@ -705,16 +733,32 @@ class SessionController:
                 exc,
             )
 
+        try:
+            self.orchestrator.set_approval_gate(self.request_approval)
+            logger.info(
+                "SessionController: approval gate wired into orchestrator"
+            )
+        except Exception as exc:
+            logger.warning(
+                "SessionController: could not wire orchestrator approval "
+                "gate | %s — CAPTCHA escalation will not prompt",
+                exc,
+            )
+
     # =========================================================================
     # CRASH RECOVERY
     # =========================================================================
 
     def _perform_startup_recovery(self) -> None:
-        """Resets tasks stuck in 'IN_PROGRESS' from a previous crashed session.
+        """Resets tasks stuck in 'IN_PROGRESS' from a previous crashed session,
+        and discards browser-context-bound reactive tasks left by that session.
 
-        Called once during construction. If the app died while tasks were
-        running, this ensures they get picked up again. Safe to call on
-        a fresh database (does nothing if no interrupted tasks exist).
+        Called once during construction. Two kinds of leftovers are handled:
+        tasks stuck IN_PROGRESS are re-queued (their work is URL-addressable
+        and can simply restart), and reactive tasks tied to a live page
+        (HANDLE_CAPTCHA) are marked SKIPPED — the page they referenced was
+        closed in teardown, so dispatching them would block on a phantom.
+        Safe to call on a fresh database (both are no-ops when nothing exists).
         """
         try:
             recovered = self.db.recover_interrupted_tasks()
@@ -726,6 +770,23 @@ class SessionController:
         except Exception as exc:
             logger.error(
                 "Startup recovery failed | error=%s — proceeding anyway",
+                exc,
+                exc_info=True,
+            )
+
+        try:
+            discarded = self.db.discard_stale_reactive_tasks()
+            if discarded > 0:
+                logger.warning(
+                    "Discarded %d stale browser-context task(s) from a "
+                    "previous session — the pages they referenced no "
+                    "longer exist",
+                    discarded,
+                )
+        except Exception as exc:
+            logger.error(
+                "Stale reactive task discard failed | error=%s — "
+                "proceeding anyway",
                 exc,
                 exc_info=True,
             )

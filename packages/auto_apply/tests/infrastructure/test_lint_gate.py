@@ -1,4 +1,3 @@
-
 """The lint gate — closing the used-but-never-defined bug class (Stage 6a).
 
 Three times this arc a symbol was used and never imported: ``time`` in the DOM
@@ -46,6 +45,12 @@ def _run_ruff(*args) -> subprocess.CompletedProcess:
         "rather than skips on purpose — a check that silently does nothing is "
         "the exact failure mode it exists to prevent."
     )
+    # pytest.fail is terminal at runtime. The raise below never executes; it
+    # exists so the fall-through is provably terminal in every mypy resolution
+    # regime — including follow_imports = "skip" (PKG-1), under which
+    # pytest.fail resolves as Any rather than NoReturn. Same idiom as
+    # _gates_job in test_ci_workflow.py.
+    raise AssertionError("unreachable")
 
 
 def test_no_undefined_names_anywhere_in_src():

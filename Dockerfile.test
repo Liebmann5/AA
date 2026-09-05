@@ -12,9 +12,17 @@ COPY packages/auto_apply/README.md /workspace/packages/auto_apply/README.md
 COPY packages/auto_apply/src /workspace/packages/auto_apply/src
 COPY packages/auto_apply/tests /workspace/packages/auto_apply/tests
 
+# pytest-mock and hypothesis are required for the suite to COLLECT
+# (tests/property_based imports hypothesis). This image previously installed
+# only pytest and aborted at import time — the same failure class as the
+# retired `[dev]` launcher command. The tools are installed by name here
+# because pip cannot read the workspace's PEP 735 dependency group.
 RUN python -m pip install --upgrade pip \
-    && python -m pip install pytest \
-    && python -m pip install /workspace/packages/auto_apply
+    && python -m pip install \
+         pytest \
+         pytest-mock \
+         hypothesis \
+         /workspace/packages/auto_apply
 
 WORKDIR /workspace/packages/auto_apply
 

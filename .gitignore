@@ -37,15 +37,21 @@ Thumbs.db
 notes/
 *.secret
 
+# --- Tooling caches ---
 .mypy_cache/
 .pytest_cache/
+.hypothesis/
+.ruff_cache/
 
 .env
 output/
 Notes/
+
+# --- Live-run and AI-tooling artifacts ---
 .kimi_out/
 .kimi_backups/
+AA-kimi.txt
+session_log*.txt
 measure_*.txt
+
 packages/auto_apply/dev_data/
-packages/auto_apply/docs/old_retired_files/
-retire.py

@@ -98,7 +98,9 @@ class BrowserStateSnapshot(BaseModel):
         evasion: The intended evasion settings for the run.
     """
     # Using a timezone-aware default (UTC) is a professional best practice.
-    timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.UTC).isoformat())  # noqa: E501
+    # datetime.timezone.utc is the 3.10-safe alias; datetime.UTC exists only
+    # on Python 3.11+ and raises AttributeError on AA's supported floor.
+    timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())  # noqa: E501
     page_url: HttpUrl | None
     is_captcha_present: bool
     network: NetworkProfile

@@ -50,13 +50,28 @@ class CLIDashboard:
         self._subscribe_to_events()
 
     def _subscribe_to_events(self) -> None:
-        """Subscribes to HUMAN_APPROVAL_REQUESTED on the orchestrator event bus."""
+        """Subscribes to HUMAN_APPROVAL_REQUESTED on the orchestrator event bus.
+
+        Also seeds the pending prompt from any gate that is already open.
+        The orchestrator thread can reach a HITL checkpoint before this
+        dashboard is constructed (the thread is spawned first, the dashboard
+        second), and without the seed the prompt would never render — the
+        publish already happened and a broadcast cannot be heard twice.
+        """
         try:
             from auto_apply.domain.events import Event  # noqa: PLC0415
             event_bus = self.controller.orchestrator.event_bus
             event_bus.subscribe(Event.HUMAN_APPROVAL_REQUESTED, self._on_approval_requested)
         except Exception:
             pass
+
+        try:
+            pending = self.controller.get_pending_approvals()
+        except Exception:
+            pending = []
+        if pending:
+            with self._approval_lock:
+                self._pending_approval = pending[0]
 
     def _on_approval_requested(self, payload: dict) -> None:
         """EventBus handler — stores the pending approval payload."""

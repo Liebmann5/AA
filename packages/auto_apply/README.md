@@ -48,7 +48,7 @@ These instructions will get the agent running on your local machine.
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/Liebmann5/AA.git
-    cd Web_Scraper
+    cd AA
     ```
 
 2.  **Install the project:**
@@ -102,6 +102,4 @@ This project is licensed under the MIT License - see the `LICENSE` file for deta
 [black-badge]: https://img.shields.io/badge/code%20style-black-000000.svg
 [black-link]: https://github.com/psf/black
 [docs-badge]: https://img.shields.io/badge/docs-mkdocs-blue.svg
-[docs-link]: https://github.com/Liebmann5/AA/packages/auto_apply/docs
-
----
+[docs-link]: https://github.com/Liebmann5/AA/tree/main/packages/auto_apply/docs
