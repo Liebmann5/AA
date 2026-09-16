@@ -66,7 +66,11 @@ src/profiles/default_profile.json
 .DS_Store
 Thumbs.db
 
-
+# AA's export dialog defaults into the working tree and writes plaintext
+# identity files. See AA_TODO_ADDITIONS.md L-10.
+*.profile.json
+/packages/*.json
+aa_results_*.csv
 
 #---------------------------------------------
 /auto_apply/local_cache/

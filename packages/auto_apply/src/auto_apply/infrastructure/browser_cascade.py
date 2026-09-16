@@ -118,10 +118,21 @@ class BrowserCascade:
         so the caller can publish an appropriate event and inform the user
         which browsers were tried and why each failed.
 
+        The ``"static"`` candidate appended by
+        ``domain/models/browser_candidates.py`` is filtered out here: a
+        non-browser is not a fallback, and logging it as a failure made
+        ``ALL BROWSERS FAILED`` carry a lie. The static discovery mode it fed
+        (STATIC_ASSISTED) is deleted (ruled 2026-09-08); a follow-up prompt
+        owns removing the candidate from the builder itself.
+
         Returns:
             A ready-to-use ResilientDriver, or None if all options failed.
         """
-        candidates = self._registry.get_viable_candidates()
+        candidates = [
+            c
+            for c in self._registry.get_viable_candidates()
+            if c["framework"] != "static"
+        ]
 
         if not candidates:
             logger.error(
@@ -182,11 +193,6 @@ class BrowserCascade:
         framework = candidate["framework"]
         browser = candidate["browser_type"]
         source = candidate["source"]
-
-        if framework == "static":
-            logger.info("BrowserCascade: static candidate — no browser driver will be used")
-            self._attempt_log.append(("static", False, "Static fallback"))
-            return None
 
         provider = self._driver_registry.get(framework)
         if provider is None:

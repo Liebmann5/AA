@@ -9,6 +9,12 @@ with errors="backslashreplace", so logging degrades safely instead of crashing.
 The test reproduces the Windows condition deterministically (a cp1252-backed
 stream) so it fails against the pre-fix handler and passes after — no Windows
 required.
+
+A second regression followed from the same move: when the console handler
+moved from stdout to stderr, the reconfigure moved with it — but the stdout
+reconfigure had been protecting the CLI's OWN print() output (box-drawing,
+check marks) as a side effect, because print() resolves sys.stdout at call
+time. The third pin in this file covers the CLI-print protection directly.
 """
 from __future__ import annotations
 
@@ -70,3 +76,43 @@ def test_setup_logging_console_is_unicode_safe() -> None:
     assert errored is False, "console logging still crashes on a non-ASCII message"
     out = buf.getvalue().decode("utf-8", errors="replace")
     assert "\u2192" in out, "the arrow was dropped rather than rendered"
+
+
+def test_setup_logging_protects_cli_print_characters(tmp_path, monkeypatch) -> None:
+    """After setup_logging(), sys.stdout must encode what the CLI prints.
+
+    The CLI prints box-drawing and status-mark characters that cp1252 cannot
+    encode (─ ═ ✓ →). The stdout protection must leave sys.stdout UTF-8-safe,
+    so print() degrades to backslash escapes instead of raising
+    UnicodeEncodeError on a Windows console or redirected output. This is
+    about the CLI's OWN print() calls, not logging — the two pins above cover
+    the handler.
+    """
+    from auto_apply.infrastructure import logging_setup
+
+    stream, buf = _cp1252_stream()
+    monkeypatch.setattr("sys.stdout", stream)
+    monkeypatch.setattr(
+        "sys.stderr", io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    )
+
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    monkeypatch.setattr(logging_setup, "LOG_DIR", tmp_path)
+    try:
+        logging_setup.setup_logging()
+    finally:
+        root.handlers.clear()
+        for handler in saved_handlers:
+            root.addHandler(handler)
+
+    # The regression this pins: on the regressed code, stdout was left at
+    # cp1252-strict and the first of these raised UnicodeEncodeError.
+    for char in ("\u2500", "\u2550", "\u2713", "\u2192"):
+        print(char)  # must not raise UnicodeEncodeError
+
+    stream.flush()  # TextIOWrapper buffers; without this the BytesIO is empty
+    assert b"\xe2\x94\x80" in buf.getvalue(), (
+        "U+2500 was not rendered as UTF-8 bytes — the character was dropped "
+        "or the stream was never protected"
+    )

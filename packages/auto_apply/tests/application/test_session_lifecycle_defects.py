@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -30,7 +31,17 @@ from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 
 
 def _make_controller() -> SessionController:
-    """Partial SessionController: only what the gate/recovery paths touch."""
+    """Partial SessionController: only what the gate/recovery paths touch.
+
+    The attribute list must track what request_approval and answer_approval
+    write: ``_pending_approvals`` and ``_approvals_lock`` (the gate itself),
+    plus ``_approval_evidence`` and ``_recent_events`` — the AnsweredBy
+    record and the recent-events stream, which the controller grew after
+    this file was first written. Setting them here is not tolerance for a
+    partial constructor; it is the pin's own wiring for the surface it
+    measures. Production code is deliberately NOT shaped around this
+    partial construction.
+    """
     sc = SessionController.__new__(SessionController)
     sc.registry = MagicMock()
     sc.db = MagicMock()
@@ -39,6 +50,8 @@ def _make_controller() -> SessionController:
     sc._agent_thread = None
     sc._pending_approvals = {}
     sc._approvals_lock = threading.Lock()
+    sc._approval_evidence = {}
+    sc._recent_events = deque(maxlen=200)
     return sc
 
 
@@ -138,9 +151,15 @@ def test_cli_dashboard_seeds_pending_gate_on_late_bind():
     # Dashboard binds NOW — after the publish. The old code heard nothing.
     dash = CLIDashboard(sc)
 
-    assert dash._pending_approval is not None
-    assert dash._pending_approval["question"] == "Solve the CAPTCHA?"
-    assert dash._pending_approval["context_id"] == pending[0]["context_id"]
+    # D2 replaced the EventBus subscription with a poll of the port's typed
+    # pending_approvals(). The guarantee is stronger than before — the old
+    # cache could be empty if the dashboard bound after the publish, and a
+    # read through the port cannot be — so the pin follows the read.
+    # It keeps its teeth: remove the poll and current_gate() returns None.
+    gate = dash.current_gate()
+    assert gate is not None, "a dashboard bound after the gate opened missed it"
+    assert gate.question == "Solve the CAPTCHA?"
+    assert gate.context_id == pending[0]["context_id"]
 
     sc.provide_approval(pending[0]["context_id"], "solved")
     t.join(timeout=6.0)

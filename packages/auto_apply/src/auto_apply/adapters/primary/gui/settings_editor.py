@@ -1,10 +1,27 @@
 """Provides a graphical editor for User Profile and Application Settings.
 
 This module implements a Toplevel dialog that allows users to modify their
-configuration (ApplicationConfig, SearchPreferences, Politeness). It reads
-the CapabilitiesRegistry to determine if any settings are locked by an
-AdminPolicy (Library Mode) and disables those UI elements accordingly,
-providing clear visual feedback with a lock icon (🔒).
+configuration (ApplicationConfig, SearchPreferences, Politeness) and their
+identity. It reads the CapabilitiesRegistry to determine if any settings are
+locked by an AdminPolicy (Library Mode) and disables those UI elements
+accordingly, providing clear visual feedback with a lock icon (🔒).
+
+The "About you" tab (first in the notebook) is the profile's repair path:
+every identity field is editable there for the life of the profile, not only
+at creation. Its field list is derived from
+build_ui_schema(UserProfile, "en") — the profile model, not this file, is
+the source of truth for which fields exist. resume_path and cover_letter are
+deliberately NOT repeated there; they already live in the Documents tab, and
+one field must have exactly one editor.
+
+Layout contract (two rules, both load-bearing — see _build_ui's docstring
+and _build_scrollable_tab's docstring for the full reasoning):
+    1. The Save/Cancel button frame packs BEFORE the notebook. Reversing
+       that order makes the buttons vanish on any window smaller than the
+       notebook's requested height — and the test suite cannot see it.
+    2. Tabs with data-driven content (About you, Search) are built inside a
+       scrolling canvas. A 1366x768 laptop is AA's worst-case user; twelve
+       label+entry rows do not fit it otherwise.
 
 Admin Lock Behavior:
     When a field is locked by admin policy, the UI element is disabled (greyed
@@ -24,7 +41,7 @@ Admin Lock Behavior:
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import filedialog, messagebox, ttk
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING, Any, get_args
 
 from auto_apply.adapters.primary.gui.strings import get_strings
 from auto_apply.application.services.ui_schema import UIField, build_ui_schema
@@ -51,6 +68,51 @@ def _field_options(field: UIField | None, fallback: tuple[str, ...]) -> tuple[st
     if field is not None and field.options is not None:
         return field.options
     return fallback
+
+
+# Identity-adjacent schema keys that belong in "About you" even though they
+# are not under personal_info/. These are named explicitly because they are
+# exceptions to the prefix rule — everything else in the tab comes from the
+# "personal_info." schema prefix. legal_info.security_clearance is skipped
+# automatically (it is an optional nested object and the schema yields no
+# leaf for it).
+_ABOUT_YOU_EXTRA_KEYS: tuple[str, ...] = (
+    "legal_info.has_work_authorization",
+    "legal_info.requires_sponsorship",
+    "legal_info.non_compete_agreements",
+    "search_preferences.desired_job_titles",
+)
+
+# Fields that already have an editor in the Documents tab — one field, one
+# editor. Duplicating them here would create two write paths for one field.
+_DOCUMENTS_TAB_KEYS: frozenset[str] = frozenset(
+    {"personal_info.resume_path", "personal_info.cover_letter"}
+)
+
+
+def _about_you_field_keys() -> list[str]:
+    """Return the schema-driven field keys rendered in the "About you" tab.
+
+    Computed from build_ui_schema(UserProfile, "en") at call time: every
+    personal_info.* leaf (minus the two Documents-tab fields), career_summary,
+    and the curated extras above. If the UserProfile model grows a
+    personal_info field, it appears here automatically — the model, not this
+    function, is the source of truth.
+    """
+    keys: list[str] = []
+    try:
+        schema = build_ui_schema(UserProfile, "en")
+    except Exception:
+        schema = []
+    for field in schema:
+        if field.key == "career_summary":
+            keys.append(field.key)
+        elif field.key.startswith("personal_info."):
+            if field.key not in _DOCUMENTS_TAB_KEYS:
+                keys.append(field.key)
+        elif field.key in _ABOUT_YOU_EXTRA_KEYS:
+            keys.append(field.key)
+    return keys
 
 
 class SettingsEditor(tk.Toplevel):
@@ -81,6 +143,7 @@ class SettingsEditor(tk.Toplevel):
         self.grab_set()
 
         self._vars: dict[str, tk.Variable] = {}
+        self._summary_text: tk.Text | None = None
 
         try:
             self._ui_schema: list[UIField] = build_ui_schema(UserProfile, "en")
@@ -94,19 +157,27 @@ class SettingsEditor(tk.Toplevel):
     # =====================================================================
 
     def _build_ui(self) -> None:
-        """Constructs the tabbed interface."""
+        """Constructs the tabbed interface.
+
+        PACK ORDER IS LOAD-BEARING — do not "tidy" it back.
+
+        Tk's packer allocates space in pack order and gives expand=True
+        children only what is LEFT OVER after earlier siblings are
+        allocated. Packing the notebook (fill=BOTH, expand=True) first and
+        the button frame second means that whenever the notebook's requested
+        height exceeds the dialog, the button frame is allocated zero height
+        and the Save/Cancel buttons vanish — while the test suite stays
+        green, because this is a rendered-layout defect no source-level test
+        can see. The button frame and the admin banner are therefore packed
+        BEFORE the notebook so they reserve their space first; the notebook
+        then gets what remains. If you are reading this because the buttons
+        disappeared again: the order below is the fix, not the bug.
+        """
         container = ttk.Frame(self, padding="15")
         container.pack(fill=tk.BOTH, expand=True)
 
-        notebook = ttk.Notebook(container)
-        notebook.pack(fill=tk.BOTH, expand=True)
-
-        self._build_browser_tab(notebook)
-        self._build_search_tab(notebook)
-        self._build_safety_tab(notebook)
-        self._build_documents_tab(notebook)
-
-        # Admin banner (shown only when constraints are active)
+        # Admin banner (shown only when constraints are active) — packs
+        # BEFORE the notebook so it reserves its space too.
         if self.admin_policy.has_any_constraint():
             banner = ttk.Label(
                 container,
@@ -114,9 +185,10 @@ class SettingsEditor(tk.Toplevel):
                 font=("Segoe UI", 9, "italic"),
                 foreground="#B8860B",
             )
-            banner.pack(anchor=tk.W, pady=(10, 0))
+            banner.pack(anchor=tk.W, side=tk.BOTTOM, pady=(10, 0))
 
-        # Footer buttons
+        # Footer buttons — packed BEFORE the notebook, side=BOTTOM, so the
+        # packer reserves their height no matter how tall the tabs get.
         btn_frame = ttk.Frame(container, padding="0 10 0 0")
         btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
         ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
@@ -126,8 +198,162 @@ class SettingsEditor(tk.Toplevel):
             side=tk.RIGHT, padx=5
         )
 
+        notebook = ttk.Notebook(container)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        self._build_about_you_tab(notebook)
+        self._build_browser_tab(notebook)
+        self._build_search_tab(notebook)
+        self._build_safety_tab(notebook)
+        self._build_documents_tab(notebook)
+
+    # =====================================================================
+    # SCROLLING TAB HELPER
+    # =====================================================================
+
+    def _build_scrollable_tab(self, notebook: ttk.Notebook, title: str) -> ttk.Frame:
+        """Create a tab whose content scrolls vertically when it exceeds the window.
+
+        Returns the inner content frame to populate. Tabs with data-driven
+        content (About you, Search) can outgrow a 1366x768 laptop screen —
+        AA's worst-case user — and a tab that cannot scroll hides its own
+        fields. Tabs with fixed small content (Browser, Safety, Documents)
+        are built plain; if one of them ever grows data-driven rows, route it
+        through this helper instead of adding a fixed-height frame.
+
+        The mousewheel is bound only while the pointer is over this tab's
+        canvas, so scrolling one tab never moves another. Button-4/5 are
+        bound alongside MouseWheel because X11 reports wheel events that way
+        and AA targets Linux library machines.
+        """
+        outer = ttk.Frame(notebook)
+        notebook.add(outer, text=title)
+
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        inner = ttk.Frame(canvas, padding="20")
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event) -> None:
+            # Keep the inner frame as wide as the canvas itself.
+            canvas.itemconfigure(window_id, width=event.width)
+
+        inner.bind("<Configure>", _on_inner_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _scroll_units(units: int) -> None:
+            canvas.yview_scroll(units, "units")
+
+        def _on_mousewheel(event) -> None:
+            # Sign-based: macOS deltas are too small for delta/120 math.
+            if event.delta > 0:
+                _scroll_units(-1)
+            elif event.delta < 0:
+                _scroll_units(1)
+
+        def _bind_wheel(_event=None) -> None:
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind_all("<Button-4>", lambda e: _scroll_units(-1))
+            canvas.bind_all("<Button-5>", lambda e: _scroll_units(1))
+
+        def _unbind_wheel(_event=None) -> None:
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        canvas.bind("<Enter>", _bind_wheel)
+        canvas.bind("<Leave>", _unbind_wheel)
+
+        return inner
+
+    # =====================================================================
+    # TAB 0 — ABOUT YOU (identity; the profile's repair path)
+    # =====================================================================
+
+    def _build_about_you_tab(self, notebook: ttk.Notebook) -> None:
+        """Tab 0: every identity field, editable for the life of the profile.
+
+        This is the screen that can always fix a wrong name, email, phone or
+        address — including a profile assembled from the bundled template.
+        The field list is schema-derived (_about_you_field_keys), so the
+        profile model is the single source of truth for which fields exist.
+        Content sits inside the scrolling canvas from _build_scrollable_tab:
+        twelve label+entry rows do not fit a 1366x768 laptop otherwise.
+        """
+        frame = self._build_scrollable_tab(notebook, "About you")
+
+        ttk.Label(
+            frame,
+            text=f"Profile: {self.profile.profile_name}",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor=tk.W)
+        self._add_note(
+            frame,
+            "The profile name is chosen when the profile is created and "
+            "cannot be edited here.",
+        )
+
+        keys = _about_you_field_keys()
+        for key in keys:
+            value = self._resolve_profile_value(key)
+            if key == "career_summary":
+                ttk.Label(frame, text="Career summary:").pack(
+                    anchor=tk.W, pady=(10, 2)
+                )
+                self._summary_text = tk.Text(frame, width=70, height=4, wrap=tk.WORD)
+                self._summary_text.pack(anchor=tk.W, fill=tk.X)
+                if value:
+                    self._summary_text.insert("1.0", str(value))
+                continue
+
+            schema_field = self._schema_field(key)
+            label = schema_field.label if schema_field else key.split(".")[-1].replace("_", " ").title()
+
+            if isinstance(value, bool) or (schema_field and schema_field.kind == "bool"):
+                self._add_checkbox(frame, label, key, bool(value))
+                continue
+
+            if isinstance(value, list):
+                display = ", ".join(str(v) for v in value)
+            else:
+                display = "" if value is None else str(value)
+
+            ttk.Label(frame, text=f"{label}:").pack(anchor=tk.W, pady=(8, 2))
+            var = tk.StringVar(value=display)
+            self._vars[key] = var
+            ttk.Entry(frame, textvariable=var, width=50).pack(anchor=tk.W)
+
+    def _resolve_profile_value(self, key: str) -> Any:
+        """Walk a dotted schema key down the profile object."""
+        node: Any = self.profile
+        for part in key.split("."):
+            node = getattr(node, part, None)
+            if node is None:
+                return None
+        return node
+
+    def _assign_profile_value(self, key: str, value: Any) -> None:
+        """Assign a value back down a dotted schema key, validating via the model."""
+        parts = key.split(".")
+        node: Any = self.profile
+        for part in parts[:-1]:
+            node = getattr(node, part)
+        setattr(node, parts[-1], value)
+
+    @staticmethod
+    def _split_csv(text: str) -> list[str]:
+        return [t.strip() for t in text.split(",") if t.strip()]
+
     def _build_browser_tab(self, notebook: ttk.Notebook) -> None:
-        """Tab 1: Browser Configuration."""
+        """Tab: Browser Configuration."""
         frame = ttk.Frame(notebook, padding="20")
         notebook.add(frame, text="Browser Engine")
 
@@ -175,9 +401,13 @@ class SettingsEditor(tk.Toplevel):
         self._add_note(frame, "Adds random pauses and mouse movements to avoid detection.")  # noqa: E501
 
     def _build_search_tab(self, notebook: ttk.Notebook) -> None:
-        """Tab 2: Job Search Preferences."""
-        frame = ttk.Frame(notebook, padding="20")
-        notebook.add(frame, text="Search Criteria")
+        """Tab: Job Search Preferences.
+
+        Scrollable like About you: the checkbox lists are enum-driven and
+        grow with the domain model, so a fixed-height frame would eventually
+        hide options on a small screen.
+        """
+        frame = self._build_scrollable_tab(notebook, "Search Criteria")
 
         prefs = self.profile.search_preferences
 
@@ -216,7 +446,7 @@ class SettingsEditor(tk.Toplevel):
             )
 
     def _build_safety_tab(self, notebook: ttk.Notebook) -> None:
-        """Tab 3: Rate Limiting & Safety.
+        """Tab: Rate Limiting & Safety.
 
         All fields in this tab are candidates for admin locking because they
         govern device compliance and internet conduct.
@@ -260,7 +490,7 @@ class SettingsEditor(tk.Toplevel):
         self._add_checkbox(frame, robots_label, "robots_txt", robots_val, state=robots_state)  # noqa: E501
 
     def _build_documents_tab(self, notebook: ttk.Notebook) -> None:
-        """Tab 4: Resume & Cover Letter Management."""
+        """Tab: Resume & Cover Letter Management."""
         frame = ttk.Frame(notebook, padding="20")
         notebook.add(frame, text="Documents")
 
@@ -361,7 +591,7 @@ class SettingsEditor(tk.Toplevel):
         ttk.Label(
             parent, text=text,
             font=("Segoe UI", 8, "italic"), foreground="gray",
-        ).pack(anchor=tk.W, padx=20, pady=(0, 10))
+        ).pack(anchor=tk.W, padx=0, pady=(0, 10))
 
     def _browse_file(self, var: tk.StringVar, filetypes: list) -> None:
         """Opens a file dialog and sets the result into the given StringVar."""
@@ -380,8 +610,31 @@ class SettingsEditor(tk.Toplevel):
         the user's base profile from being overwritten with the admin's
         enforced temporary value. When the policy file is removed, the user's
         original preference is restored automatically.
+
+        Identity fields (About you tab) are assigned through the model, which
+        validates on assignment — an invalid email or empty required name
+        surfaces here as a dialog, and nothing is written to disk.
         """
         try:
+            # -- About you tab (identity fields) -----------------------------
+            for key in _about_you_field_keys():
+                if key == "career_summary":
+                    if self._summary_text is not None:
+                        self.profile.career_summary = self._summary_text.get(
+                            "1.0", "end-1c"
+                        ).strip()
+                    continue
+                var = self._vars.get(key)
+                if var is None:
+                    continue
+                current = self._resolve_profile_value(key)
+                if isinstance(current, bool):
+                    self._assign_profile_value(key, bool(var.get()))
+                elif isinstance(current, list):
+                    self._assign_profile_value(key, self._split_csv(str(var.get())))
+                else:
+                    self._assign_profile_value(key, str(var.get()).strip())
+
             # -- Browser tab (skip admin-locked fields) --------------------
             if not self.admin_policy.is_field_locked("force_headless"):
                 self.profile.app_config.headless_mode = self._vars["headless_mode"].get()

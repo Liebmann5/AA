@@ -7,6 +7,7 @@ end. It captures everything the user needs to review:
   - What was applied to and what the evidence was
   - What failed and why
   - How long each task took (per-task duration tracking)
+  - How the session ended (queue-drained completion vs. user stop)
 
 The report is:
   - Written as JSON to ~/.auto_apply/reports/session_{id}.json
@@ -18,6 +19,7 @@ The report is:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +27,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from auto_apply.domain.models.application_evidence import ApplicationEvidence
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -90,7 +94,7 @@ class SessionReport:
     """Comprehensive record of a single AutoApply session.
 
     Built incrementally during the session. Finalized and written to disk
-    when the session ends.
+    when the session ends — whether it drains its queue or is stopped.
     """
 
     session_id: str = ""
@@ -101,6 +105,11 @@ class SessionReport:
     finished_at: str | None = None
     duration_seconds: float = 0.0
     mode: str = "discovery"  # discovery | direct | vet | company
+    # How the run ended: "queue_drained" when the orchestrator exhausted all
+    # work and completed on its own; "stopped" when stop() was called (user
+    # interrupt or a monitor-triggered shutdown). A report that is never
+    # finalized keeps the default.
+    completion_state: str = "stopped"
     report_path: Path | None = None
 
     # Discovery stats
@@ -252,9 +261,21 @@ class SessionReport:
         )
 
     def finalize(self, duration_seconds: float) -> None:
-        """Mark the session as complete."""
+        """Mark the session as complete.
+
+        Coerces the duration to a plain float at this boundary. A degraded
+        caller — a test double, a broken context — must not be able to turn
+        a successful queue drain into a report that is never written: the
+        save() that follows calls round() on this value, and a non-numeric
+        duration there is currently swallowed by _teardown's non-fatal
+        handler, losing the report entirely. Degrading to 0.0 keeps the
+        report; losing it is the worse outcome.
+        """
         self.finished_at = datetime.now(timezone.utc).isoformat()
-        self.duration_seconds = duration_seconds
+        try:
+            self.duration_seconds = float(duration_seconds)
+        except (TypeError, ValueError):
+            self.duration_seconds = 0.0
 
     def save(self, reports_dir: Path) -> Path:
         """Write the report to disk as a JSON file.
@@ -275,6 +296,7 @@ class SessionReport:
             "finished_at": self.finished_at,
             "duration_seconds": round(self.duration_seconds, 1),
             "mode": self.mode,
+            "completion_state": self.completion_state,
             "discovery": {
                 "raw_results_found": self.raw_results_found,
                 "new_jobs_identified": self.new_jobs_identified,
@@ -334,7 +356,15 @@ class SessionReport:
                 if self.average_application_seconds is not None
                 else None
             ),
-            # Backward-compatible keys (used by GUI/CLI dashboard polling)
+            # NOT backward-compatible keys — do not delete (checked 2026-09-16).
+            # These were shims for untyped dashboard polling and stage U5 was
+            # planned to remove them. They have since become part of the typed
+            # model: jobs_discovered is a field on SessionSnapshot AND
+            # SessionSummary (ui_contract.py:370, :413), duration_str is a
+            # computed property (:431), and both are read by
+            # checkpoint_manager.py:452 and by the summary construction in
+            # session_controller.py. Removing them breaks the checkpoint
+            # manager. The comment was the stale thing, not the keys.
             "jobs_discovered": self.raw_results_found,
             "duration_str": (
                 f"{int(self.duration_seconds // 3600):02d}:"
@@ -343,3 +373,75 @@ class SessionReport:
             ),
             "report_path": str(self.report_path) if self.report_path else None,
         }
+
+    # ── Reading saved reports back ───────────────────────────────────────
+
+    @classmethod
+    def load(cls, path: Path) -> dict[str, Any] | None:
+        """Read one saved session report JSON file.
+
+        Returns the parsed dict, or None when the file is missing, unreadable,
+        or not a session report at all. A corrupt file must never kill a
+        history listing — it is skipped and logged, not surfaced as an error.
+        """
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug("SessionReport.load: skipping %s (%s)", path, exc)
+            return None
+        if not isinstance(data, dict) or "session_id" not in data:
+            return None
+        return data
+
+    @classmethod
+    def list_reports(cls, reports_dir: Path) -> list[dict[str, Any]]:
+        """List every saved session report in a directory, newest file first.
+
+        Each returned dict carries the report's parsed fields plus a
+        ``report_path`` key pointing at the file it came from. Unreadable
+        files are skipped (see :meth:`load`). An absent directory yields an
+        empty list, never an error.
+        """
+        reports_dir = Path(reports_dir)
+        if not reports_dir.is_dir():
+            return []
+
+        def _mtime(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        def _sort_key(entry: dict[str, Any]) -> tuple[str, str, float]:
+            """Newest first, keyed on the SESSION's time, not the file's.
+
+            st_mtime is a property of the file. Two reports written inside one
+            filesystem timestamp tick — routine on Windows — tie and sort
+            arbitrarily, and copying a reports directory anywhere rewrites
+            every mtime to the copy time. Neither is what a user means by
+            "newest". ``started_at`` is an ISO-8601 string, so it sorts
+            lexicographically in chronological order, and it travels with the
+            data onto a USB stick.
+
+            The filename stamp (session_<id>_<YYYYMMDD>_<HHMMSS>.json) is the
+            fallback for reports written before started_at existed; mtime is
+            the last resort, kept so ordering never becomes undefined.
+            """
+            started = str(entry.get("started_at") or "")
+            path = Path(str(entry.get("report_path") or ""))
+            stem_stamp = ""
+            bits = path.stem.split("_")
+            if len(bits) >= 3:
+                stem_stamp = f"{bits[-2]}_{bits[-1]}"
+            return (started, stem_stamp, _mtime(path))
+
+        entries: list[dict[str, Any]] = []
+        for path in reports_dir.glob("session_*.json"):
+            data = cls.load(path)
+            if data is None:
+                continue
+            data["report_path"] = str(path)
+            entries.append(data)
+
+        entries.sort(key=_sort_key, reverse=True)
+        return entries

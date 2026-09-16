@@ -15,6 +15,15 @@ Design notes:
       (ApplicationEngine) receives it via constructor injection.
     - ProfileBasedInterruptPolicy is the default concrete implementation and
       lives here because it depends only on stdlib and domain models.
+
+Autonomy note (stage E1):
+    ``ProfileBasedInterruptPolicy.is_autonomous`` is the single answer to
+    "will AA submit without asking?" — computed with the exact parse and
+    fallback the constructor applies, so the controller's session snapshot,
+    the surfaces' state display, and the pins all agree. The fallback is
+    load-bearing: an empty or unparseable checkpoint list resolves to
+    DEFAULT_CHECKPOINTS, which includes BEFORE_FORM_SUBMIT, so a typo or an
+    empty value can never read as "submit without asking."
 """
 
 from __future__ import annotations
@@ -108,25 +117,64 @@ class ProfileBasedInterruptPolicy:
         Checkpoint.ON_SUSPICIOUS_REDIRECT,
     })
 
+    @staticmethod
+    def _parse(configured_checkpoints: list[str] | None) -> frozenset[Checkpoint]:
+        """Resolve a checkpoint-name list into the active set, with fallback.
+
+        The fallback is load-bearing: an EMPTY result (None, [], or a list of
+        names that are not valid checkpoints) resolves to DEFAULT_CHECKPOINTS,
+        which includes BEFORE_FORM_SUBMIT — so a typo or an empty value can
+        never read as "submit without asking."
+
+        Args:
+            configured_checkpoints: The raw list from the profile, or None.
+
+        Returns:
+            The resolved checkpoint set.
+        """
+        if not configured_checkpoints:
+            return ProfileBasedInterruptPolicy.DEFAULT_CHECKPOINTS
+        parsed: set[Checkpoint] = set()
+        for name in configured_checkpoints:
+            try:
+                parsed.add(Checkpoint[name.upper()])
+            except KeyError:
+                continue
+        return frozenset(parsed) if parsed else ProfileBasedInterruptPolicy.DEFAULT_CHECKPOINTS
+
     def __init__(self, configured_checkpoints: list[str] | None = None) -> None:
+        self._active = self._parse(configured_checkpoints)
         if configured_checkpoints:
-            parsed: set[Checkpoint] = set()
             for name in configured_checkpoints:
                 try:
-                    parsed.add(Checkpoint[name.upper()])
+                    Checkpoint[name.upper()]
                 except KeyError:
                     logger.warning(
                         "ProfileBasedInterruptPolicy: unknown checkpoint %r — ignored",
                         name,
                     )
-            self._active = frozenset(parsed) if parsed else self.DEFAULT_CHECKPOINTS
-        else:
-            self._active = self.DEFAULT_CHECKPOINTS
 
         logger.debug(
             "ProfileBasedInterruptPolicy: active checkpoints=%s",
             [c.name for c in self._active],
         )
+
+    @classmethod
+    def is_autonomous(cls, configured_checkpoints: list[str] | None) -> bool:
+        """True iff a policy built from these checkpoints would submit without asking.
+
+        This is THE answer to "will AA submit without asking?" — computed with
+        the exact parse and fallback the constructor applies, so every consumer
+        (the controller's session snapshot, the surfaces' state display, and
+        the pins) answers identically.
+
+        Args:
+            configured_checkpoints: The raw list from the profile, or None.
+
+        Returns:
+            True when BEFORE_FORM_SUBMIT is not in the resolved set.
+        """
+        return Checkpoint.BEFORE_FORM_SUBMIT not in cls._parse(configured_checkpoints)
 
     def should_pause(self, checkpoint: Checkpoint, ctx: ApplicationContext) -> bool:
         """Returns True if *checkpoint* is in the active set."""

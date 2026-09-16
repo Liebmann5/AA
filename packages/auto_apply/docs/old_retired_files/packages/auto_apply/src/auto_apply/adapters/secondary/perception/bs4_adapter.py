@@ -1,3 +1,5 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/perception/bs4_adapter.py
+
 """Secondary adapter: PerceptionPort backed by BeautifulSoup static HTML parsing.
 
 This adapter provides a zero-browser perception path for worst-case environments

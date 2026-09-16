@@ -1,4 +1,3 @@
-
 """Pins for DOM readiness — the primitive that never existed (Stage 2a).
 
 ``ApplicationsWorkflow`` called ``self._dom_observer.wait_for_dom_stable(...)``
@@ -206,10 +205,18 @@ def test_the_observer_budgets_are_read_from_config():
     assert "dom_stabilization_poll_interval_s" in source
 
 
-def test_static_mode_still_builds_with_no_driver_and_no_observer():
-    """Behaviour-preserving: the reorder must not break the zero-browser path."""
-    from auto_apply.infrastructure.composition_root import build_orchestrator
-    from auto_apply.infrastructure.registry import CapabilitiesRegistry
+def test_an_exhausted_cascade_refuses_instead_of_building_without_a_driver():
+    """The old zero-browser fallback is gone: an exhausted cascade refuses.
+
+    Pre-P6 this pinned that build_orchestrator kept going with driver=None and
+    no DOMObserver — a session that could not do anything. The fallback was
+    never real (no static discovery exists), so build_orchestrator now raises
+    BrowserSetupError on the refusal path before any session machinery is
+    constructed.
+    """
+    from auto_apply.domain.exceptions import BrowserSetupError  # noqa: PLC0415
+    from auto_apply.infrastructure.composition_root import build_orchestrator  # noqa: PLC0415
+    from auto_apply.infrastructure.registry import CapabilitiesRegistry  # noqa: PLC0415
 
     from tests.infrastructure.test_reproducibility import _minimal_profile
 
@@ -219,6 +226,5 @@ def test_static_mode_still_builds_with_no_driver_and_no_observer():
         "auto_apply.infrastructure.composition_root.BrowserCascade.acquire_driver",
         return_value=None,
     ):
-        orchestrator = build_orchestrator(registry)
-
-    assert orchestrator is not None
+        with pytest.raises(BrowserSetupError):
+            build_orchestrator(registry)

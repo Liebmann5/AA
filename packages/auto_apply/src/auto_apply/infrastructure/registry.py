@@ -410,6 +410,11 @@ class CapabilitiesRegistry:
                 logger.debug("Admin policy override | key=%s value=%s", key, value)
 
         if is_low_resource:
+            # NOTE: "static_fetch" was removed from these overrides on
+            # 2026-09-08 together with the STATIC_ASSISTED mode. Low-resource
+            # mode now only tightens pacing, caps, and stealth — it never
+            # selects a degraded discovery strategy, because a no-browser
+            # session is refused at startup rather than degraded into one.
             low_resource_overrides = {
                 "max_applications_per_session": min(
                     merged.get("max_applications_per_session", 50), 25
@@ -418,7 +423,6 @@ class CapabilitiesRegistry:
                     merged.get("max_discovery_results_per_query", 30), 15
                 ),
                 "min_action_delay_ms": max(merged.get("min_action_delay_ms", 500), 800),
-                "discovery_strategy": "static_fetch",
                 "enable_fingerprint_spoofing": False,
             }
             merged.update(low_resource_overrides)
@@ -460,11 +464,16 @@ class CapabilitiesRegistry:
         return True
 
     def discovery_requires_live_browser(self) -> bool:
-        """Returns True if the active discovery strategy requires a live browser."""
-        return (
-            self._effective_config.get("discovery_strategy", "live_browser")
-            != "static_fetch"
-        )
+        """Returns True. The static-fetch discovery strategy is deleted
+        (ruled 2026-09-08): a no-browser session is refused at startup, so
+        discovery always requires a live browser.
+
+        This method remains only because orchestrator._requires_browser and
+        the RegistryPort declaration still reference it — a follow-up prompt
+        owns collapsing those call sites. It must not regain a
+        ``discovery_strategy`` branch.
+        """
+        return True
 
     # =========================================================================
     # NEW: FRAMEWORK NATIVE BROWSERS MAP
@@ -678,6 +687,14 @@ class CapabilitiesRegistry:
         Called once in build_orchestrator() after the driver is (or isn't) created.
         The result is injected into the orchestrator and never changes.
 
+        STATIC_ASSISTED is deleted (ruled 2026-09-08): when the cascade
+        exhausts, build_orchestrator refuses before this method is reached, so
+        ``driver_available=False`` is only ever seen by construction-time paths
+        (tests). The profile it produces is honest about that: an empty
+        ``allowed_task_types`` — the orchestrator requires a live browser for
+        every task type, and the profile must say so rather than promise a
+        static mode that does not exist.
+
         Args:
             driver_available: Whether a live browser driver was successfully created.
 
@@ -705,13 +722,13 @@ class CapabilitiesRegistry:
             pass
 
         max_workers = self.get_effective_config("discovery.max_concurrent_sources", 1)
-        if not driver_available:
-            max_workers = 0  # No browser = no browser-based discovery
 
         return ResolvedCapabilityProfile(
             has_browser=driver_available,
             browser_framework="selenium" if driver_available else None,
-            max_browser_workers=max(1, int(max_workers)),
+            max_browser_workers=(
+                max(1, int(max_workers)) if driver_available else 0
+            ),
             has_spacy=has_spacy,
             has_gpt4all=has_gpt4all,
             has_research_consent=self.is_research_enabled(),

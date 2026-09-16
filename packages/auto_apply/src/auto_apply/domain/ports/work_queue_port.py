@@ -7,7 +7,9 @@ infrastructure/composition_root.py.
 """
 
 from abc import ABC, abstractmethod
+from typing import Any
 
+from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.work_unit import WorkUnit
 
 
@@ -104,3 +106,27 @@ class WorkQueuePort(ABC):
     @abstractmethod
     def has_applied_previously(self, job_url: str) -> bool:
         """True if this URL was successfully applied in any prior session."""
+
+    @abstractmethod
+    def record_job_discovery(self, job_obj: Any, session_id: str | None = None) -> bool:
+        """Persists a newly discovered job to the job-history log, idempotently.
+
+        Returns True when a new row was created, False when the URL was
+        already known. Implemented by DatabaseManager; called by
+        DiscoveryWorkflow before the execution-mode branch so discovery
+        results survive DISCOVER_ONLY sessions.
+        """
+
+    @abstractmethod
+    def get_jobs_for_session(self, session_id: str, status: str | None = None) -> list[Job]:
+        """Returns every job recorded for one session, newest first.
+
+        The read side of discovery persistence: a run's finds are reachable
+        even when the session never vets or applies (DISCOVER_ONLY) and even
+        if the process dies before the session report is written.
+
+        Args:
+            session_id: The session whose discovery history to read.
+            status: Optional status filter (e.g. "DISCOVERED" for found-but-
+                not-applied jobs). None returns every status for the session.
+        """

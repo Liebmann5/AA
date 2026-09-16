@@ -1,5 +1,15 @@
+
 # AutoApply (AA) — Architecture Bible
-**Version 1.0 | June 2026 | Author: Nicholas Liebmann**
+**Version 1.1 | September 2026 | Author: Nicholas Liebmann**
+
+> **1.1 (2026-09-16)** — records the frontend arc: a typed UI port, both
+> surfaces on it, discovery output that survives a run, an activity stream,
+> and the safety pins. Corrects claims 1.0 made about work that has since
+> landed (SessionPlan, the IDLE transition, List Mode) and about work that has
+> not. Suite at close of the arc: **1384 passed, 2 skipped**.
+>
+> Chains A–E landed between 2026-09-15 and 2026-09-16. Stage U5 was planned as
+> a deletion and is **cancelled** — see the note in §24.3.
 
 > This document is the single authoritative reference for every architectural decision,
 > layer boundary, subsystem contract, control flow, and integration rule in AA.
@@ -33,6 +43,8 @@
 20. [Integration Guide](#20-integration-guide)
 21. [Issue Triage and Priority Register](#21-issue-triage-and-priority-register)
 22. [Future Roadmap](#22-future-roadmap)
+23. [Pydantic — Standardization Reference](#23-pydantic--standardization-reference)
+24. [The UI Port Layer](#24-the-ui-port-layer)
 
 ---
 
@@ -109,7 +121,15 @@ These six rules, if violated, mean the code must be fixed before merging:
 │  PRIMARY ADAPTERS (Driving)                                       │
 │  GUI (tkinter)  │  CLI (argparse)  │  Tests (pytest)              │
 └────────────────────────┬─────────────────────────────────────────┘
-                         │ calls
+                         │ calls (through UIPort — see §24)
+┌────────────────────────▼─────────────────────────────────────────┐
+│  UI PORT (Driving Port)          domain/ports/ui_port.py          │
+│  A Protocol the application satisfies STRUCTURALLY — no wrapper.  │
+│  Commands, queries and a polled stream, all typed. The DTOs live  │
+│  in domain/models/ui_contract.py and carry data only: no driver,  │
+│  no repository, no profile object crosses it.                     │
+└────────────────────────┬─────────────────────────────────────────┘
+                         │ satisfied by SessionController
 ┌────────────────────────▼─────────────────────────────────────────┐
 │  APPLICATION LAYER                                                │
 │  AgentOrchestrator  │  StateMachine  │  EventBus                  │
@@ -555,7 +575,14 @@ Playwright: `return not page.is_closed()`
 Add `_is_navigating: bool` flag: set to `True` at start of `get()`, `False` on
 completion. Health monitor must not emit `BROWSER_UNHEALTHY` while `_is_navigating` is True.
 
-### 6.5 SessionPlan (To Be Added)
+### 6.5 SessionPlan
+
+> **1.1:** built and live. `SessionExecutionMode` carries eight members and the
+> pipeline honours them at every branch point (`orchestrator.py:633, :677,
+> :784, :832`; `vetting_workflow.py:435, :452`; `discovery_workflow.py:388`).
+> Three are selectable by a user — see §24.3. A `SessionRequest` also carries
+> `providers` and `max_results`, and `_rebuild_plan_for_request` refreshes the
+> plan reference the workflows hold, which before Chain B they never saw.
 
 `SessionPlan` is a frozen, serializable configuration object assembled by
 `build_orchestrator()` before anything else runs. It is the single authoritative
@@ -999,8 +1026,21 @@ publish APPLICATION_SUBMITTED / APPLICATION_FAILED
 Current `VALID_TRANSITIONS` must include:
 ```python
 AgentState.DISCOVERING: {AgentState.RUNNING, AgentState.IDLE, AgentState.ERROR_RECOVERY, AgentState.STOPPING},
-# ↑ IDLE must be here — currently missing, causes stuck-in-DISCOVERING bug
 ```
+
+> **1.1 — fixed.** The `DISCOVERING → IDLE` edge is present; the
+> stuck-in-DISCOVERING bug is gone. **A different edge is missing, and it is
+> live:** `IDLE → ERROR_RECOVERY` is not in the table, so when the browser dies
+> while the agent is idle the health monitor fires, the orchestrator attempts
+> recovery, and the transition is refused. Observed three times in one run:
+>
+> ```
+> StateMachine: invalid transition blocked | IDLE → ERROR_RECOVERY
+> ```
+>
+> Worse, the orchestrator pauses its own loop anyway, so the dashboard reads
+> `PAUSED` while `AgentState` is `IDLE` — the two vocabularies diverge in front
+> of the user. Tracked as **L-4**.
 
 ### 11.4 Redirect Handling
 
@@ -1490,10 +1530,25 @@ For this software to be cited in academic research:
 
 ### 19.2 "List Mode" (Discovery Only)
 
-When `applications.max_applications_per_session: 0` or when launched with `--list-only`:
-AA runs Discovery + Vetting but never applies. The output is a list of job links
-that match the user's criteria, saved to a file. This is the "research for users"
-feature mentioned in the issue list.
+> **1.1 — superseded.** There is no `--list-only` flag and there never was
+> (`grep -c "list-only" main.py` → 0). The mechanism is
+> `SessionExecutionMode`, and it is now selectable from both surfaces:
+>
+> | What the user picks | Mode | Stops after |
+> |---|---|---|
+> | "Just collect the links" | `DISCOVER_ONLY` | discovery |
+> | "Collect and check them" | `DISCOVER_AND_VET` | vetting |
+> | "Collect, check, and apply" | `FULL_PIPELINE` | submission |
+>
+> `DISCOVER_ONLY` is **structurally incapable** of queueing an APPLY task, which
+> matters beyond convenience: AA has no `--dry-run` anywhere, so this mode is
+> the only guarantee that a run cannot submit. The alpha usability protocol
+> depends on it — a scripted task list must not fire real applications at real
+> employers on a volunteer's identity.
+>
+> Discovered jobs are persisted at discovery rather than at vetting, so a
+> collect-only run's results survive it, and both surfaces can show and export
+> them. Before that change the mode found jobs and discarded them.
 
 ### 19.3 Profile Data Fields
 
@@ -2296,3 +2351,192 @@ Self-updating code is inherently dangerous, triggers antivirus software (breakin
    - If running from PyInstaller USB: "Update available. Please download the latest .zip from GitHub."
 4. **No Code Mutations:** AA will *never* attempt to overwrite its own executable or run `git pull` on behalf of the user.
 
+---
+
+## 24. The UI Port Layer
+
+> Added in 1.1. Everything in this section was built between 2026-09-15 and
+> 2026-09-16 and is covered by pins. Where a claim is not yet pinned it says so.
+
+### 24.1 Why it exists
+
+Before this layer, the entire UI-to-backend interface was one untyped dict.
+`initialize_session(ui_config: dict[str, Any])` read two keys; the CLI wizard
+wrote five different ones and `startup.py` passed them through untranslated.
+
+The consequences were not cosmetic:
+
+- **Every answer a CLI user typed was discarded.** `input` was absent, so
+  `raw_input` was `""`, so the seeder fell through to the profile's saved job
+  titles. The run looked normal. Confirmed by execution: the wizard collects
+  one location and the queue contained two.
+- **The paste-your-own-links mode could not start.** The wizard emitted
+  `"direct_links"`; the dispatch table knew `direct`. `ValueError`.
+- **Nineteen green tests protected the mismatch.** They asserted the shape of
+  the dict and not one checked that a consumer read it.
+
+That is THE ROOT — shape checked, binding not — reproduced in the frontend.
+The port is the fix, and it is a fix by construction: a misspelled mode is now
+a construction error at the boundary, not a runtime branch.
+
+### 24.2 The seam
+
+**`domain/ports/ui_port.py`** — a `@runtime_checkable` `Protocol`, satisfied
+**structurally** by `SessionController`. There is no `UIPortAdapter` class; if
+one appears, the design was implemented wrong (P8).
+
+It is a **driving** port: a primary adapter calls in and the application
+implements, the opposite arrow from AA's other 35 ports. The boundary pin
+already permits this — `tests/test_architecture.py:119-125` allows
+`adapters_primary → domain`, and `:109-111` allows `application → domain`.
+
+**`domain/models/ui_contract.py`** — frozen, validated DTOs. `SessionRequest`,
+`SessionSnapshot`, `SessionSummary`, `QueueSnapshot`, `ApprovalRequest`,
+`SessionEventRecord`, `SessionHistoryEntry`. The port carries **data only**:
+no driver, no repository, no profile object crosses it, pinned by
+`test_ui_port_type_hints_are_data_only`.
+
+### 24.3 A session is two axes, not one
+
+The old four "modes" conflated where a run *starts* with where it *stops*.
+
+    ENTRY (what gets seeded)          EXIT (where the pipeline stops)
+    EntryPoint.SEARCH                 SessionExecutionMode, 8 members
+    EntryPoint.DIRECT_URLS            of which 3 are offered to a user
+    EntryPoint.VET_URLS
+    EntryPoint.COMPANY_PAGES
+
+`_seed_direct_apply_tasks` and `_seed_vet_tasks` were the same function
+differing in four literals, two of which (`next_task`, `skip_vetting`) *were*
+the exit axis written out longhand. They are now one seeder parameterised by
+`execution_mode`. The priority split (1 for pasted apply-URLs, 3 for
+vet-URLs) is real behaviour and is derived, not hardcoded.
+
+**Legacy labels map through one table.** `_LEGACY_ENTRY_TO_EXECUTION_MODE`
+gives each old `mode` string the execution mode that reproduces its historical
+semantics — `direct` → `APPLY_ONLY`, `vet` → `VET_AND_APPLY` (legacy `vet`
+applied to whatever passed; `VET_ONLY` would have silently narrowed it). Every
+door reads that one table, pinned by
+`test_dict_and_private_shim_agree_on_execution_mode_for_every_label`.
+
+> **The dict path survives deliberately, and stage U5 is cancelled.** Measured
+> 2026-09-16: no production caller passes a dict any more — `cli/startup.py`
+> and `gui/app.py` both pass a `SessionRequest`. But eight pins in
+> `tests/application/test_ui_port_conformance.py` exercise the dict path *on
+> purpose*, including the guard that legacy `{"mode": "discovery", "input":
+> "X"}` still queues exactly what it queued before the port existed. Those pins
+> are the evidence that Chain A did not break the ~1,200 tests that predated
+> it. Deleting the shim deletes that evidence, so the shim stays: a pinned
+> compatibility surface with no production caller, not debt awaiting removal.
+>
+> The same applies to the four keys in `session_report.get_stats()` that U5 was
+> to delete. They are now typed fields on `SessionSnapshot` and
+> `SessionSummary` and are read by the checkpoint manager. See the comment at
+> `session_report.py:359`.
+
+### 24.4 Output, history and custody
+
+- Discovered jobs are persisted **at discovery**. They were previously written
+  only by `vetting_workflow.py:363`, so any mode that skipped vetting found
+  jobs and discarded them.
+- Sessions that drain their queue are recorded as completed. Previously a
+  report existed only if the user killed the run, so history was a biased
+  sample of abandonments.
+- `SessionReport.list_reports` sorts by the session's own `started_at`, not by
+  file mtime. mtime is a property of the file: copy a reports directory to a
+  USB stick and every timestamp becomes the copy time. For a tool whose story
+  is "take your data with you", that was wrong on principle as well as flaky.
+- `export_profile` exists and is symmetric with `import_profile`. It refuses
+  to overwrite without an explicit flag, refuses path traversal, and does not
+  mutate the stored profile or its encryption state.
+
+**Known gap:** the export dialog opens at the repository root and describes
+its output as *"plaintext JSON — readable on any machine, no password
+needed"*, phrased as reassurance. An unencrypted identity file written
+wherever the picker points is the wrong default for a tool used on borrowed
+machines. Tracked; the confirmation should read as a warning and the dialog
+should default outside the working tree.
+
+### 24.5 The activity stream
+
+47 `Event` members, ~50 publish sites, and — before this work — one subscriber
+on each surface, for one event. The Activity panel was a widget with a write
+method nobody called, fed by a logging bridge that was never constructed.
+
+Now: the controller subscribes, projects each event to a small `ActivityKind`,
+renders the sentence **once in the application layer**, and both surfaces poll
+`recent_events()` through the port. Neither adapter composes its own wording,
+so the two cannot describe the same event two different ways.
+
+**Both surfaces poll; neither subscribes.** Both already ran refresh loops
+(CLI 1.0 s, GUI 500 ms), so this removed the last two push paths rather than
+adding polling. A subscription would import `domain.events` and reach
+`orchestrator.event_bus` — exactly the coupling the port removes — and would
+have to be unwound at U4. Polling the HITL gate costs at most ~1 s of notice
+against a gate that holds for up to 300 s.
+
+`UIMessageHandler` was retired to `docs/old_retired_files/`.
+
+### 24.6 Safety pins
+
+`tests/architecture/test_safety_pins.py`, plus pins in the files named below.
+
+| Rule | Pin | Kind |
+|---|---|---|
+| port carries data, never live objects | `test_ui_port_type_hints_are_data_only` | teeth |
+| commands frozen, validated on construction | `test_ui_contract.py` | teeth |
+| no applicant PII in the activity stream | `test_no_pii_in_the_activity_stream` | teeth |
+| every gate answer stamped human/policy/timeout | `test_ui_port_conformance.py` | teeth |
+| export refuses overwrite and traversal | `test_results_surface.py` | teeth |
+| export does not mutate encryption state | `test_results_surface.py` | teeth |
+| print sites outside the primary adapters | `test_print_sites_outside_the_primary_adapters` | **ratchet** |
+| primary adapters do not reach past the domain | `test_primary_adapters_do_not_reach_past_the_domain` | **ratchet** |
+
+**The two ratchets are debt, honestly recorded.** Neither can be zero today,
+and a pin that fails on arrival is not a pin, so each asserts the *current*
+inventory exactly — a new violation fails, and clearing one also fails until
+the map is updated, which forces the count down deliberately rather than
+letting it drift either way.
+
+- **Prints:** 44 real calls outside `adapters/primary`. 39 are in `main.py`,
+  the process entry point, exempt by design — it prints before any surface
+  exists. The other five are debt: four in `session_controller` are the
+  Profile Check advisory, which goes to stdout and therefore **a GUI user
+  never sees it**.
+- **Reach:** 12 imports across 6 files. Four import `SessionController`
+  directly — the concrete class the port replaces. **Stage U4 drives this to
+  empty** by retyping both surfaces against `UIPort`; until then `UIPort`
+  itself carries a WIRE-LATER exemption in both `KNOWN_UNWIRED_PORTS` and
+  `KNOWN_UNREACHABLE`, because structural satisfaction means nothing imports
+  it yet.
+
+### 24.7 Autonomy
+
+The backend already honours a deliberate choice to run without a pre-submit
+pause: removing `BEFORE_FORM_SUBMIT` from `human_review_checkpoints` is
+*"a deliberate, sovereign choice to run autonomously"*
+(`applications_workflow.py:1858-1870`), and `ProfileBasedInterruptPolicy` is
+built **once** at `composition_root.py:420` and held by the workflow — nothing
+re-reads the profile mid-run.
+
+What does not exist yet: any control on either surface, any visible state, the
+two required warnings, or a recorded automation intensity. The standing ruling
+is that autonomy **must remain available**, that enabling it prompts **two**
+warnings naming different consequences, and that when it is off it is off with
+no reachable path. A blanket ban was proposed once and overruled; it is not to
+be re-proposed.
+
+### 24.8 What this layer does not yet do
+
+- The port is 15 methods and session-shaped. Identity and custody parity
+  cannot be pinned until it widens.
+- The GUI still cannot switch profiles; it loads `user_profiles[0]`.
+- Post-submission outcome tracking is **deferred, not cut**. Three things must
+  stay true so it remains possible: the `attempt_id` + `page_index` join key
+  must not be dropped, `applied_jobs` must stay durable, and the session
+  summary must remain a projection over stored records rather than a computed
+  snapshot.
+- Company names arrive truncated to a single character from LinkedIn and
+  Glassdoor cards (10 of 14 in one run), and the exported `source` column
+  always reads `history` because `get_recent_jobs` rehydrates with that
+  literal. Both were invisible until results had a surface.

@@ -1,3 +1,5 @@
+# RETIRED FROM: packages/auto_apply/tests/adapters/test_bs4_adapter.py
+
 """Unit tests for adapters/secondary/perception/bs4_adapter.py.
 
 The HTTPClientPort is mocked so no real network I/O occurs.

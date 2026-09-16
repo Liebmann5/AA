@@ -17,6 +17,7 @@ Example:
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 from auto_apply.application.services.i18n import configure_locale
 from auto_apply.application.services.mathematical_web_analyzer import MathematicalWebAnalyzer
@@ -25,6 +26,7 @@ from auto_apply.domain.config import (
     IS_FROZEN,
     USER_DATA_DIR,
 )
+from auto_apply.domain.exceptions import BrowserSetupError
 from auto_apply.domain.models.timing import BehaviorParameters
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.navigation_port import InterruptionHandlerPort, NullInterruptionHandler
@@ -43,6 +45,7 @@ if TYPE_CHECKING:
     #from auto_apply.application.agent.task_kernel import TaskKernel
     from auto_apply.domain.models.profile import UserProfile
     from auto_apply.application.services.session_controller import SessionController
+    from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
 # Re-export so existing callers don't break.
 __all__ = ["CapabilitiesRegistry", "build_orchestrator", "build_session", "build_session_controller"]
@@ -93,6 +96,14 @@ def build_orchestrator(  # noqa: PLR0914
 
     Returns:
         A fully wired AgentOrchestrator ready to call ``.run()``.
+
+    Raises:
+        BrowserSetupError: When the browser cascade ran and no driver could be
+            acquired. STATIC_ASSISTED and the static-fetch discovery strategy
+            are deleted (ruled 2026-09-08): a degraded session that can only
+            idle and fail is worse for the user than an accurate refusal up
+            front. Callers that pass ``driver=None`` explicitly (construction-
+            only paths and tests) bypass this refusal by sentinel.
     """
     # ── 0. Browser cascade → driver or None ──────────────────────────────────
     from auto_apply.adapters.secondary.browser.playwright_adapter import (  # noqa: PLC0415
@@ -152,10 +163,13 @@ def build_orchestrator(  # noqa: PLR0914
         cascade = BrowserCascade(registry, driver_registry=driver_registry, adapter_map=adapter_map)
         driver = cascade.acquire_driver()
 
-    if driver is None:
-        logger.info(
-            "build_orchestrator: no browser driver — falling back to static perception"
-        )
+    if driver is None and not _cascade_skipped:
+        # The cascade ran and could not produce a driver. STATIC_ASSISTED and
+        # the static-fetch discovery strategy are deleted (ruled 2026-09-08):
+        # a degraded session that can only idle and fail is worse for the user
+        # than an accurate refusal up front. Refuse here, before any session
+        # machinery is constructed.
+        _refuse_no_browser(registry, cascade)
 
     # ── Audit observer (defined before its first use) ─────────────────────
     # Observation only: records what extraction saw, never changes it.
@@ -298,7 +312,7 @@ def build_orchestrator(  # noqa: PLR0914
 
     from auto_apply.domain.ports.perception_port import PerceptionPort  # noqa: PLC0415
 
-    perception_port: PerceptionPort
+    perception_port: PerceptionPort | None
 
     if driver is not None:
         perception_strategy = registry.get_effective_config("perception_strategy", "math")
@@ -314,18 +328,13 @@ def build_orchestrator(  # noqa: PLR0914
         else:
             perception_port = DOMScanner(driver)
     else:
-        # Zero-browser fallback: static HTML perception via BeautifulSoup.
-        from auto_apply.adapters.secondary.network.urllib_http_client import (  # noqa: PLC0415
-            UrllibHTTPClient,
-        )
-        from auto_apply.adapters.secondary.perception.bs4_adapter import (  # noqa: PLC0415
-            BS4PerceptionAdapter,
-        )
-
-        perception_port = BS4PerceptionAdapter(UrllibHTTPClient())
-        logger.info(
-            "build_orchestrator: no browser driver — using BS4PerceptionAdapter (static HTML only)"
-        )
+        # Explicit driver=None (construction-only callers and tests): no
+        # perception adapter is constructed. BS4PerceptionAdapter's only
+        # consumer was this branch; it is retired with the static mode.
+        # Both workflows already degrade correctly on a None perception port
+        # (VettingWorkflow returns the job title; ApplicationsWorkflow guards
+        # every scan_page call).
+        perception_port = None
 
     # ── The shared element-interaction tool ───────────────────────────────────
     # PageActionService owns every click, all pacing, and the seeded RNG; the
@@ -933,7 +942,87 @@ def build_orchestrator(  # noqa: PLR0914
     return orchestrator
 
 
-def build_session_controller(profile: "UserProfile") -> "SessionController":
+def _refuse_no_browser(registry: CapabilitiesRegistry, cascade: BrowserCascade) -> None:
+    """Refuse to build a session when no browser can be launched.
+
+    Prints an actionable refusal to the user's terminal and raises
+    BrowserSetupError so entry points exit non-zero. Detects and informs only —
+    it downloads, installs, and modifies nothing on the user's machine.
+
+    A 3-second accurate refusal is better for the worst-case user than a
+    22-second session that idles and reports a failure they have to read a
+    traceback to understand.
+    """
+    message_lines = [
+        "",
+        "AutoApply could not start: no usable browser was found on this machine.",
+        "",
+    ]
+
+    attempt_log = cascade.get_attempt_log()
+    if attempt_log:
+        message_lines.append("Browsers tried:")
+        for browser_name, succeeded, error in attempt_log:
+            detail = f" — {error}" if error else ""
+            message_lines.append(f"    [FAILED] {browser_name}{detail}")
+    else:
+        message_lines.append(
+            "No browser or browser framework was detected on this machine, "
+            "so nothing could be tried."
+        )
+
+    message_lines += [
+        "",
+        "AutoApply automates real websites and cannot run without a browser.",
+        "What you can do:",
+        "  1. Install Chrome, Firefox, or Edge (Safari on macOS), then run again.",
+        "  2. Point AA at a portable browser binary instead:",
+        "       AA_BROWSER_BINARY_PATH=/path/to/chrome-or-chromium",
+        "       AA_FIREFOX_BINARY_PATH=/path/to/firefox",
+        "     Snap-installed Firefox: point AA_FIREFOX_BINARY_PATH at the real",
+        "     in-snap executable, e.g. /snap/firefox/current/usr/lib/firefox/firefox",
+    ]
+
+    policy = registry.get_admin_policy()
+    # Bound to a typed local and tested with `is not None`: a getattr-with-
+    # default guard was opaque to mypy here (list[str] | None reaching join).
+    # Semantics: None is the ONLY "no restriction" state per AdminPolicy's own
+    # contract ("None = all permitted"). An empty list is NOT "no restriction"
+    # — it is the most restrictive policy there is, an administrator allowing
+    # nothing, and silencing it would hide the reason AA cannot start from the
+    # exact managed-machine user this refusal exists to inform.
+    allowed_browsers: list[str] | None = (
+        policy.allowed_browsers if policy is not None else None
+    )
+    if allowed_browsers is not None:
+        if allowed_browsers:
+            message_lines += [
+                "",
+                "Note: an admin policy on this machine restricts browsers to: "
+                + ", ".join(allowed_browsers)
+                + ". Only those will be tried.",
+            ]
+        else:
+            message_lines += [
+                "",
+                "Note: an admin policy on this machine allows NO browsers. "
+                "The policy must be corrected or removed before AutoApply "
+                "can start.",
+            ]
+    message_lines.append("")
+
+    message = "\n".join(message_lines)
+    logger.error(
+        "build_orchestrator: refusing startup — no browser available"
+    )
+    print(message, file=sys.stderr)
+    raise BrowserSetupError(message)
+
+
+def build_session_controller(
+    profile: "UserProfile",
+    profile_repo: "ProfileRepositoryPort | None" = None,
+) -> "SessionController":
     """Factory that builds a fully‑wired SessionController for *profile*.
 
     This is the single entry point used by the GUI and CLI launch sequences.
@@ -943,6 +1032,9 @@ def build_session_controller(profile: "UserProfile") -> "SessionController":
 
     Args:
         profile: A loaded and validated UserProfile.
+        profile_repo: Optional ProfileRepositoryPort for custody operations
+            (export_profile). The CLI and GUI pass the repository they already
+            own; without it, controller.export_profile raises a clear error.
 
     Returns:
         A SessionController instance ready to call ``.initialize_session()``.
@@ -961,6 +1053,7 @@ def build_session_controller(profile: "UserProfile") -> "SessionController":
         registry=registry,
         db=orchestrator.task_queue,      # DatabaseManager implements WorkQueuePort
         orchestrator=orchestrator,
+        profile_repo=profile_repo,
     )
 
     # 4. Post‑construction initialisation (previously inside from_profile)

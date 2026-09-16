@@ -10,6 +10,13 @@ In this regression pass we add integration-style verifications that the
 orchestrator's dispatch table, resolver, scheduler, browser-readiness
 checks, and HITL wiring are intact after the URL resolution and company‑batch
 decomposition.
+
+C1 change note (2026-09): the discovery-counter assertions that used to live
+here (update_stats called with the VET enqueue count inside the discovery
+handlers) moved out with the counter wiring — counters now arrive via the
+JOBS_DISCOVERED event and are pinned in
+tests/workflows/test_discovery_persistence.py. The delegation assertions are
+unchanged.
 """
 
 import threading
@@ -62,7 +69,9 @@ def test_handle_discovery_delegates_and_maps_query_to_title():
     assert received[0].title == "python engineer"
     assert received[0].location == "NYC"
     assert args_kwargs["execution_mode"] == SessionExecutionMode.FULL_PIPELINE
-    orch.context.update_stats.assert_called_with("discovered", 3)
+    # Counters moved out of the handler in C1: they now arrive via the
+    # JOBS_DISCOVERED event (pinned in tests/workflows/test_discovery_persistence.py).
+    orch.context.update_stats.assert_not_called()
     orch.task_queue.queue_task.assert_not_called()
 
 
@@ -93,7 +102,9 @@ def test_handle_company_discovery_delegates_to_scrape_entrypoint():
     discovery.discover_company_page.assert_called_once_with(
         "https://acme.com/jobs", "Acme"
     )
-    orch.context.update_stats.assert_called_with("discovered", 2)
+    # Counters moved out of the handler in C1: they now arrive via the
+    # JOBS_DISCOVERED event (pinned in tests/workflows/test_discovery_persistence.py).
+    orch.context.update_stats.assert_not_called()
     orch.task_queue.queue_task.assert_not_called()
 
 

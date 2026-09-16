@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from auto_apply.domain.config import DB_PATH, IS_FROZEN
+from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
 
@@ -505,7 +506,6 @@ class DatabaseManager(WorkQueuePort):
             if task_type in (TaskType.VET, TaskType.APPLY, TaskType.HANDLE_CAPTCHA) and isinstance(payload_data, dict):
                 # If the dictionary has job attributes, convert it back into a Job model
                 if "url" in payload_data and "title" in payload_data:
-                    from auto_apply.domain.models.job import Job
                     payload_data = Job(**payload_data)
 
             # ── Validate recovered payload ────────────────────────────────────
@@ -722,14 +722,29 @@ class DatabaseManager(WorkQueuePort):
     # JOB HISTORY OPERATIONS
     # =====================================================================
 
-    def record_job_discovery(self, job_obj: Any) -> bool:
-        """Records a newly discovered job to prevent reprocessing.
+    def record_job_discovery(self, job_obj: Any, session_id: str | None = None) -> bool:
+        """Records a newly discovered job for session history and reporting.
 
-        Uses INSERT OR IGNORE so duplicate URLs are silently skipped
-        without raising an exception.
+        This table is history, not a reprocessing guard. Skip decisions live
+        elsewhere: the in-session DeduplicationManager (fresh per workflow),
+        the permanent applied_jobs table (cross-session dedup, successful
+        submissions only), and was_applied / the throttling counts, which
+        filter on status='APPLIED'. A DISCOVERED row must never be read as a
+        reason to skip — the only reader that would (is_job_processed, any
+        status) has no callers in the current tree.
+
+        Attribution is first-seen: a URL keeps the session_id of the session
+        that recorded it first (url_hash is the primary key; later sightings
+        of the same URL are ignored).
+
+        Uses INSERT OR IGNORE so repeat sightings of the same URL are
+        idempotent — re-finding a known job is the normal case, not a failure.
 
         Args:
             job_obj: A Job model object, or any object with url/company/title attrs.
+            session_id: Optional session identifier. Populated by
+                DiscoveryWorkflow from the SessionPlan; legacy callers may
+                omit it (the column stays NULL).
 
         Returns:
             True if the job was new and recorded. False if it already existed.
@@ -742,21 +757,13 @@ class DatabaseManager(WorkQueuePort):
 
         try:
             with self.get_connection() as conn:
-                # OR IGNORE, because re-finding a job you already know is the
-                # normal case, not a failure. A bare INSERT raised
-                # IntegrityError on every repeat search and surfaced as two
-                # ERROR lines ("Database transaction failed" plus "Failed to
-                # record job discovery"), which is how a routine no-op came to
-                # look like data loss in the log. rowcount now carries the
-                # answer the docstring already promised: 1 for new, 0 for
-                # already known.
                 cursor = conn.execute(
                     """
                     INSERT OR IGNORE INTO job_history
-                        (url_hash, url, company, title, status, applied_at)
-                    VALUES (?, ?, ?, ?, 'DISCOVERED', ?)
-                    """,  # noqa: E501
-                    (url_hash, url, company, title, now),
+                        (url_hash, url, company, title, status, applied_at, session_id)
+                    VALUES (?, ?, ?, ?, 'DISCOVERED', ?, ?)
+                    """,
+                    (url_hash, url, company, title, now, session_id),
                 )
                 return cursor.rowcount > 0
         except sqlite3.Error as exc:
@@ -817,3 +824,47 @@ class DatabaseManager(WorkQueuePort):
                 (url,),
             )
             return cursor.fetchone() is not None
+
+    def get_jobs_for_session(self, session_id: str, status: str | None = None) -> list[Job]:
+        """Returns every job recorded for one session, newest first.
+
+        The read side of the C1 ruling: discovery persists with session_id
+        populated, so a run's finds are reachable even when the session never
+        vets or applies (DISCOVER_ONLY) and even if the process dies before
+        the session report is written.
+
+        Attribution is first-seen: a URL carries the session_id of the
+        session that recorded it first (url_hash is the job_history primary
+        key; later sightings of the same URL are ignored by
+        record_job_discovery).
+
+        Args:
+            session_id: The session whose discovery history to read.
+            status: Optional status filter (e.g. "DISCOVERED" for found-but-
+                not-applied jobs). None returns every status for the session.
+
+        Returns:
+            Job objects rehydrated from job_history, URLs intact.
+        """
+        jobs: list[Job] = []
+        with self.get_connection() as conn:
+            if status is None:
+                rows = conn.execute(
+                    "SELECT * FROM job_history WHERE session_id = ? "
+                    "ORDER BY applied_at DESC",
+                    (session_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM job_history WHERE session_id = ? "
+                    "AND status = ? ORDER BY applied_at DESC",
+                    (session_id, status),
+                ).fetchall()
+        for row in rows:
+            jobs.append(Job(
+                title=row["title"],
+                company=row["company"] or "Unknown",
+                url=row["url"],
+                source="history",
+            ))
+        return jobs

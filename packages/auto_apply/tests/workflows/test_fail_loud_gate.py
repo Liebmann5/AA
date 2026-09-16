@@ -197,8 +197,14 @@ def test_the_cli_summary_reports_blocked_separately_from_failed():
     """
     source = CLI.read_text(encoding="utf-8", errors="ignore")
 
-    assert 'stats.get("submissions_blocked_by_gate"' in source
-    assert 'stats.get("gate_block_remedy"' in source
+    # C2 replaced the untyped stats dict with the typed SessionSummary the
+    # port returns, so these reads moved from stats.get("x") to summary.x.
+    # The behaviour this pin protects is unchanged — blocked is still reported
+    # separately from failed — so the pin follows the read. It does not
+    # license dropping either value: both asserts below still fail loudly if
+    # the CLI stops surfacing them.
+    assert "summary.submissions_blocked_by_gate" in source
+    assert "summary.gate_block_remedy" in source
     assert "Blocked (awaiting review)" in source
     assert "Applications failed" in source
 

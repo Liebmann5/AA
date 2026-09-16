@@ -9,6 +9,18 @@ Key Features:
 - Internationalization (I18n) ready via `strings` injection.
 - Accessibility (a11y) friendly using native `ttk` widgets and semantic grouping.
 - Thread-safe logging display.
+
+Activity stream (stage D2):
+- The Activity panel is fed from the PORT, not the EventBus. `feed_activity()`
+  diffs the controller's `recent_events()` window and writes each new record
+  through `log_message()` — the writer this panel has always had — formatted
+  by the shared `ui_contract.format_activity_line` so the GUI and the CLI
+  print the same line for the same record.
+- The HITL modal is triggered by the application's poll of
+  `controller.pending_approvals()` (gui/app.py) and consumes the
+  `ApprovalRequest` DTO directly. There is NO direct EventBus subscription
+  anywhere in this module: U4's import ban (adapters may only import the port
+  and domain.models.*) is satisfied by construction, not by hope.
 """
 
 import tkinter as tk
@@ -17,6 +29,12 @@ from tkinter.scrolledtext import ScrolledText
 from typing import TYPE_CHECKING, Any
 
 from auto_apply.adapters.primary.gui.strings import get_strings
+from auto_apply.domain.models.ui_contract import (
+    ApprovalRequest,
+    SessionEventRecord,
+    activity_new,
+    format_activity_line,
+)
 
 if TYPE_CHECKING:
     from auto_apply.application.services.session_controller import SessionController
@@ -26,7 +44,8 @@ class Dashboard(ttk.Frame):
     """The central UI component for real-time monitoring and control.
 
     This view is responsible for visualization only. It accepts status updates
-    and log messages from the `SessionController`.
+    and log messages from the `SessionController` (via the application layer's
+    poll loop) and from `feed_activity()`.
 
     Attributes:
         strings (Dict[str, str]): Localized text resources.
@@ -48,6 +67,17 @@ class Dashboard(ttk.Frame):
         # We pass 'None' to auto-detect OS language
         self.strings = get_strings(lang_code=None)
         self._session_controller: "SessionController | None" = None
+
+        # Activity stream diff state: the last record written to the panel,
+        # so each feed writes only what's new (activity_new replays the window
+        # if that record has fallen out of the bounded deque).
+        self._last_activity_record: SessionEventRecord | None = None
+
+        # Re-entry guard for the HITL modal: gui/app.py polls pending gates
+        # every 500 ms, and wait_window() runs the Tk event loop while the
+        # modal is open — without this flag the poll would stack a new modal
+        # on top of the open one every tick.
+        self._approval_modal_open: bool = False
 
         self._configure_layout()
         self._build_header_section()
@@ -194,6 +224,10 @@ class Dashboard(ttk.Frame):
         on the Tk main thread via after(0, ...) to avoid cross-thread Tk
         access violations.
 
+        This is the panel's single writer: feed_activity() calls it, and so
+        may any future producer — there is exactly one path into the log
+        viewer.
+
         Args:
             message (str): The text to log.
             level (str): The log level (INFO, WARNING, ERROR, SUCCESS) for coloring.
@@ -207,96 +241,109 @@ class Dashboard(ttk.Frame):
         self.log_viewer.configure(state='disabled')
         self.log_viewer.yview(tk.END)
 
+    # ── Activity stream feed (D2) ─────────────────────────────────────────────
+
+    def feed_activity(self, records: tuple[SessionEventRecord, ...]) -> None:
+        """Writes the stream's new records into the Activity panel.
+
+        Called from gui/app.py's 500 ms poll with the controller's full
+        recent_events() window. Diffs against the last record displayed
+        (activity_new replays the window if that record fell out of the
+        bounded deque or a new session started) and writes each new record
+        through log_message(), formatted by the shared
+        ui_contract.format_activity_line — identical to what the CLI prints
+        for the same record.
+
+        An empty tuple (no session yet) is a no-op, never an error.
+        """
+        for record in activity_new(records, self._last_activity_record):
+            self.log_message(format_activity_line(record), record.level)
+            self._last_activity_record = record
+
     # ── HITL approval modal ───────────────────────────────────────────────────
 
     def bind_session(self, controller: "SessionController") -> None:
         """Connects the dashboard to an active SessionController.
 
-        Subscribes to HUMAN_APPROVAL_REQUESTED on the controller's event bus
-        so the dashboard can show an approval modal when the agent pauses.
-
-        If a gate is already open — the controller published before this
-        dashboard finished binding, which happens because the orchestrator
-        thread is spawned before the GUI wires — the pending gate is rendered
-        immediately rather than leaving the session waiting on an invisible
-        prompt.
+        Stores the controller so the approval modal can call
+        ``provide_approval``. Nothing is subscribed and nothing is seeded:
+        gui/app.py polls ``controller.pending_approvals()`` every 500 ms,
+        which catches a gate opened before this dashboard was built with at
+        most one tick of delay — the seed the old push-based bind needed
+        (because a broadcast cannot be heard twice) is no longer needed,
+        because gate state is now polled, not broadcast.
 
         Args:
             controller: The active SessionController for this session.
         """
-        from auto_apply.domain.events import Event  # noqa: PLC0415
-
         self._session_controller = controller
-        try:
-            event_bus = controller.orchestrator.event_bus
-            event_bus.subscribe(Event.HUMAN_APPROVAL_REQUESTED, self._on_approval_requested)
-        except Exception:
-            pass
 
-        # Render any gate that opened before this dashboard subscribed.
-        try:
-            pending = controller.get_pending_approvals()
-        except Exception:
-            pending = []
-        if pending:
-            self.after(0, self._show_approval_modal, pending[0])
+    def show_approval(self, approval: ApprovalRequest) -> None:
+        """Shows the HITL modal for one open gate, unless one is already open.
 
-    def _on_approval_requested(self, payload: dict) -> None:
-        """EventBus handler — called on the agent worker thread.
-
-        Schedules the modal creation on the Tk main thread via after().
+        Called from gui/app.py's poll when pending_approvals() is non-empty.
+        The re-entry flag prevents a stacked modal every poll tick while the
+        user is still reading the first one.
         """
-        self.after(0, self._show_approval_modal, payload)
+        if self._approval_modal_open or self._session_controller is None:
+            return
+        self._show_approval_modal(approval)
 
-    def _show_approval_modal(self, payload: dict) -> None:
+    def _show_approval_modal(self, approval: ApprovalRequest) -> None:
         """Creates and shows the HITL approval modal dialog.
 
-        Must be called on the Tk main thread (guaranteed by after() scheduling).
+        Must be called on the Tk main thread. Blocks the calling poll with
+        wait_window() — which runs the Tk event loop, so stats and stream
+        polls continue to fire inside it — until the user chooses an option
+        or closes the window (treated as skip, same as the old modal).
         """
         if self._session_controller is None:
             return
 
-        context_id: str = payload.get("context_id", "")
-        question: str = payload.get("question", "The agent needs your approval.")
-        options: list[str] = payload.get("options", ["approve", "skip"])
-        checkpoint: str = payload.get("checkpoint", "")
+        self._approval_modal_open = True
+        try:
+            modal = tk.Toplevel(self)
+            modal.title("Agent Approval Required")
+            modal.resizable(False, False)
+            modal.grab_set()
 
-        modal = tk.Toplevel(self)
-        modal.title("Agent Approval Required")
-        modal.resizable(False, False)
-        modal.grab_set()
+            ttk.Label(
+                modal,
+                text=f"Checkpoint: {approval.checkpoint}",
+                font=("Segoe UI", 9, "italic"),
+            ).pack(padx=20, pady=(15, 0))
 
-        ttk.Label(
-            modal,
-            text=f"Checkpoint: {checkpoint}",
-            font=("Segoe UI", 9, "italic"),
-        ).pack(padx=20, pady=(15, 0))
+            ttk.Label(
+                modal,
+                text=approval.question,
+                wraplength=360,
+                justify=tk.LEFT,
+                font=("Segoe UI", 10),
+            ).pack(padx=20, pady=10)
 
-        ttk.Label(
-            modal,
-            text=question,
-            wraplength=360,
-            justify=tk.LEFT,
-            font=("Segoe UI", 10),
-        ).pack(padx=20, pady=10)
+            ttk.Separator(modal, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10)
 
-        ttk.Separator(modal, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10)
+            btn_frame = ttk.Frame(modal, padding="10 10 10 15")
+            btn_frame.pack(fill=tk.X)
 
-        btn_frame = ttk.Frame(modal, padding="10 10 10 15")
-        btn_frame.pack(fill=tk.X)
+            def _choose(choice: str) -> None:
+                modal.grab_release()
+                modal.destroy()
+                if self._session_controller is not None:
+                    self._session_controller.provide_approval(
+                        approval.context_id, choice
+                    )
 
-        def _choose(choice: str) -> None:
-            modal.grab_release()
-            modal.destroy()
-            if self._session_controller is not None:
-                self._session_controller.provide_approval(context_id, choice)
+            for option in approval.options:
+                ttk.Button(
+                    btn_frame,
+                    text=option.capitalize(),
+                    command=lambda o=option: _choose(o),  # type: ignore[misc]
+                ).pack(side=tk.LEFT, padx=5)
 
-        for option in options:
-            ttk.Button(
-                btn_frame,
-                text=option.capitalize(),
-                command=lambda o=option: _choose(o),  # type: ignore[misc]
-            ).pack(side=tk.LEFT, padx=5)
-
-        modal.protocol("WM_DELETE_WINDOW", lambda: _choose("skip"))
-        modal.wait_window()
+            modal.protocol("WM_DELETE_WINDOW", lambda: _choose("skip"))
+            modal.wait_window()
+        finally:
+            # Clear even if the window is destroyed by something other than
+            # _choose — otherwise the gate would never be shown again.
+            self._approval_modal_open = False

@@ -16,15 +16,30 @@ Supported config keys for create():
     rotate_user_agent       bool  — pick a random UA from the built-in list
 
 Portable-mode environment variables (set by launch_portable.bat / .sh):
-    AA_BROWSER_BINARY_PATH   — path to portable Chromium binary
     AA_CHROMEDRIVER_PATH     — path to portable ChromeDriver binary
     USER_DATA_DIR            — persistent browser profile directory on the drive
+    AA_BROWSER_BINARY_PATH   — path to portable Chromium binary (Chromium
+                               launches only; the portable launcher's candidate
+                               list is Chrome-only, and geckodriver must never
+                               be handed a Chromium path)
+    AA_FIREFOX_BINARY_PATH   — path to a Firefox binary (Firefox launches only)
+
+Snap-installed Firefox (Ubuntu's default packaging) is a special case:
+geckodriver rejects the /usr/bin/firefox wrapper with "binary is not a
+Firefox executable".  When no explicit binary is configured, the provider
+resolves the real in-snap executable automatically and points geckodriver's
+--profile-root at a directory under the user's home, which snap confinement
+can read.  If that resolution fails, set AA_FIREFOX_BINARY_PATH to the real
+in-snap executable; a Firefox-shaped AA_BROWSER_BINARY_PATH is accepted as a
+fallback.  Detection is filesystem-existence only — AA never carries a list
+of distributions it recognises and never shells out to `snap`.
 """
 
 import importlib.util
 import logging
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +52,22 @@ _USER_AGENTS: list[str] = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
 ]
+
+# Canonical locations of the real executable inside a snap-installed Firefox.
+# snapd mounts snaps at /snap on Ubuntu and at /var/lib/snapd/snap on most
+# other distributions; checking both covers every distro without a distro list.
+_SNAP_FIREFOX_CANDIDATES: tuple[str, ...] = (
+    "/snap/firefox/current/usr/lib/firefox/firefox",
+    "/var/lib/snapd/snap/firefox/current/usr/lib/firefox/firefox",
+)
+
+# Wrapper links whose presence indicates a snap Firefox install.  GeckoDriver
+# rejects these with "binary is not a Firefox executable" — they must be
+# resolved through to the in-snap executable above.
+_SNAP_FIREFOX_LINKS: tuple[str, ...] = (
+    "/snap/bin/firefox",
+    "/var/lib/snapd/snap/bin/firefox",
+)
 
 
 class SeleniumProvider:
@@ -152,6 +183,74 @@ class SeleniumProvider:
         return None
 
     @staticmethod
+    def _get_firefox_binary_path(config: dict) -> str | None:
+        """Resolve the path to the Firefox binary.
+
+        Priority:
+            1. ``AA_FIREFOX_BINARY_PATH`` env var (Firefox-specific escape hatch)
+            2. ``config["firefox_binary_path"]``
+            3. ``AA_BROWSER_BINARY_PATH`` env var, ONLY when its basename names
+               a Firefox executable — the generic variable is Chromium-scoped
+               by convention (the portable launcher's candidate list is
+               Chrome-only) and must never hand a Chromium path to geckodriver
+            4. ``None`` (caller falls through to snap detection / PATH)
+
+        A set-but-missing path warns and falls through, matching the shape of
+        the Chrome resolver's env-var warning.  All checks are filesystem
+        existence and filename shape only — never an execution.
+        """
+        env_fx = os.environ.get("AA_FIREFOX_BINARY_PATH")
+        if env_fx:
+            p = Path(env_fx)
+            if p.exists():
+                logger.info(
+                    "SeleniumProvider: using Firefox binary from "
+                    "AA_FIREFOX_BINARY_PATH: %s",
+                    p,
+                )
+                return str(p)
+            logger.warning(
+                "AA_FIREFOX_BINARY_PATH set but file not found: %s "
+                "— falling back to snap detection / system Firefox",
+                env_fx,
+            )
+
+        config_fx = config.get("firefox_binary_path")
+        if config_fx:
+            if Path(config_fx).exists():
+                return str(config_fx)
+            logger.warning(
+                "config['firefox_binary_path'] set but file not found: %s "
+                "— falling back to snap detection / system Firefox",
+                config_fx,
+            )
+
+        generic = os.environ.get("AA_BROWSER_BINARY_PATH")
+        if generic:
+            if "firefox" in Path(generic).name.lower():
+                p = Path(generic)
+                if p.exists():
+                    logger.info(
+                        "SeleniumProvider: using Firefox binary from "
+                        "AA_BROWSER_BINARY_PATH: %s",
+                        p,
+                    )
+                    return str(p)
+                logger.warning(
+                    "AA_BROWSER_BINARY_PATH names a Firefox path that does "
+                    "not exist: %s — falling back",
+                    generic,
+                )
+            else:
+                logger.debug(
+                    "AA_BROWSER_BINARY_PATH (%s) is not Firefox-shaped — "
+                    "ignoring it for the Firefox launch",
+                    generic,
+                )
+
+        return None
+
+    @staticmethod
     def _get_browser_profile_path(config: dict) -> str | None:
         """Resolve the Chromium user-data-dir path.
 
@@ -209,6 +308,36 @@ class SeleniumProvider:
             return str(config_driver)
 
         return None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Snap Firefox detection (filesystem checks only — never shells out)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _detect_snap_firefox() -> str | None:
+        """Return the real executable inside a snap-installed Firefox, or None.
+
+        Detection is filesystem-existence only: AA never string-matches a
+        distro name and never shells out to ``snap``.  Both of snapd's
+        canonical mount points are checked (/snap on Ubuntu,
+        /var/lib/snapd/snap on most other distributions), so any distro is
+        covered without an allow-list.
+        """
+        for candidate in _SNAP_FIREFOX_CANDIDATES:
+            p = Path(candidate)
+            if p.is_file() and os.access(p, os.X_OK):
+                return str(p)
+        return None
+
+    @staticmethod
+    def _snap_firefox_present() -> bool:
+        """True when a snap Firefox wrapper link exists on this machine.
+
+        Used to decide whether a launch failure is the known snap-wrapper
+        failure ("binary is not a Firefox executable") so the error can name
+        the real cause and the remedy instead of repeating geckodriver.
+        """
+        return any(Path(link).exists() for link in _SNAP_FIREFOX_LINKS)
 
     # ── Per-browser constructors ──────────────────────────────────────────────
 
@@ -280,7 +409,14 @@ class SeleniumProvider:
         height: int,
         config: dict,
     ) -> Any:
-        """Construct a Firefox driver with fingerprinting-resistance preferences."""
+        """Construct a Firefox driver with fingerprinting-resistance preferences.
+
+        Handles snap-installed Firefox (Ubuntu's default): resolves the real
+        in-snap executable when no explicit binary is configured, and points
+        geckodriver's --profile-root at a directory under the user's home,
+        which snap confinement can read.  Binary resolution is Firefox-scoped:
+        a Chromium-scoped AA_BROWSER_BINARY_PATH is never inherited.
+        """
         from selenium.webdriver import FirefoxOptions  # noqa: PLC0415
         from selenium import webdriver  # noqa: PLC0415
 
@@ -297,12 +433,25 @@ class SeleniumProvider:
         opts.set_preference("media.peerconnection.enabled", False)
         opts.set_preference("general.useragent.override", self._get_user_agent(config))
 
-        import locale  # noqa: PLC0415
+        # Resolve the browser's Accept-Language from the SAME normaliser the
+        # i18n service uses (domain.services.locale_normalization). This was
+        # previously a second answering site via locale.getdefaultlocale() —
+        # an API deprecated since 3.11 and removed in 3.15 — and it produced
+        # different answers from i18n.detect_locale on the same machine.
+        import locale as _locale  # noqa: PLC0415
 
+        from auto_apply.domain.services.locale_normalization import (  # noqa: PLC0415
+            normalize_locale,
+        )
+
+        locale_str = "en-US"
         try:
-            locale_str = (locale.getdefaultlocale()[0] or "en-US").replace("_", "-")
+            normalised = normalize_locale(_locale.getlocale()[0])
+            if normalised is not None:
+                lang, country = normalised
+                locale_str = f"{lang}-{country}" if country else lang
         except Exception:
-            locale_str = "en-US"
+            pass
         lang_prefix = locale_str.split("-")[0]
         accept_lang = f"{locale_str},{lang_prefix};q=0.9,en-US;q=0.8,en;q=0.7"
         opts.set_preference("intl.accept_languages", accept_lang)
@@ -329,7 +478,76 @@ class SeleniumProvider:
 
             opts.profile = FirefoxProfile(profile_path)
 
-        return webdriver.Firefox(options=opts)
+        # ── Resolve the real Firefox binary ─────────────────────────────────
+        # Precedence:
+        #   1. AA_FIREFOX_BINARY_PATH env var / config key (Firefox-specific)
+        #   2. a Firefox-shaped AA_BROWSER_BINARY_PATH (never a Chromium path)
+        #   3. a snap-installed Firefox's in-snap executable (Linux only)
+        #   4. None — let Selenium Manager / geckodriver pick from PATH
+        binary_path = self._get_firefox_binary_path(config)
+        snap_in_use = False
+        service = None
+
+        if binary_path is None and sys.platform.startswith("linux"):
+            snap_binary = self._detect_snap_firefox()
+            if snap_binary is not None:
+                binary_path = snap_binary
+            elif self._snap_firefox_present():
+                raise RuntimeError(
+                    "Firefox is installed as a snap, but the real in-snap "
+                    "executable could not be found at any of "
+                    f"{list(_SNAP_FIREFOX_CANDIDATES)}. GeckoDriver cannot "
+                    "drive the /snap/bin/firefox wrapper. Set "
+                    "AA_FIREFOX_BINARY_PATH to the real executable, e.g. "
+                    "AA_FIREFOX_BINARY_PATH="
+                    "/snap/firefox/current/usr/lib/firefox/firefox "
+                    "(a Firefox-shaped AA_BROWSER_BINARY_PATH is also "
+                    "accepted), or install a deb build of Firefox instead."
+                )
+
+        if binary_path:
+            opts.binary_location = binary_path
+            logger.info("SeleniumProvider: Firefox binary: %s", binary_path)
+            snap_in_use = (
+                "/snap/firefox/" in binary_path
+                or binary_path in _SNAP_FIREFOX_CANDIDATES
+            )
+
+        if snap_in_use:
+            # Snap confinement: the snap cannot read geckodriver's default
+            # temp profile directory (its /tmp is a private namespace), so the
+            # service needs --profile-root somewhere under the user's home.
+            from selenium.webdriver.firefox.service import (  # noqa: PLC0415
+                Service as FirefoxService,
+            )
+
+            profile_root = Path.home() / ".auto_apply" / "gecko-profile-root"
+            if not profile_root.is_dir():
+                profile_root.mkdir(parents=True, exist_ok=True)
+                logger.info(
+                    "SeleniumProvider: created geckodriver profile root for "
+                    "snap Firefox: %s",
+                    profile_root,
+                )
+            service = FirefoxService(
+                service_args=["--profile-root", str(profile_root)]
+            )
+
+        try:
+            if service is not None:
+                return webdriver.Firefox(service=service, options=opts)
+            return webdriver.Firefox(options=opts)
+        except Exception as exc:
+            if snap_in_use or self._snap_firefox_present():
+                raise RuntimeError(
+                    f"Snap-confined Firefox could not start ({exc}). A snap "
+                    "Firefox requires geckodriver under /snap/bin and a "
+                    "--profile-root inside your home directory. If this "
+                    "persists, set AA_FIREFOX_BINARY_PATH to the real in-snap "
+                    "executable (/snap/firefox/current/usr/lib/firefox/firefox) "
+                    "or install a deb build of Firefox."
+                ) from exc
+            raise
 
     def _create_edge(
         self,

@@ -215,6 +215,85 @@ class ProfileRepository:
             raise ValueError(f"Invalid profile format: {exc}") from exc
         return self.save_profile(profile)
 
+    def export_profile(self, name: str, destination_dir: Path, overwrite: bool = False) -> Path:
+        """Writes a plaintext JSON copy of a stored profile to a user-chosen directory.
+
+        The custody complement of :meth:`import_profile`: a person who can
+        bring a profile in can take one away — which matters on a borrowed or
+        library machine, where the profile store is not theirs.
+
+        Exported files are **plaintext JSON BY DESIGN** — portable to any
+        machine, any repository, any vault state. The stored profile and its
+        encryption state are never touched. Two guards make the silent-
+        downgrade defect in this file's history (a wizard writing plaintext
+        bytes over the stored encrypted profile) unexpressible:
+
+            1. The destination may never resolve inside ``storage_dir`` — an
+               export cannot target the store, so it cannot overwrite it.
+            2. An existing destination file is only replaced when the caller
+               passed ``overwrite=True`` explicitly.
+
+        The write itself goes through the repository's own atomic writer —
+        this method never writes bytes outside that one path.
+
+        Args:
+            name: The stored profile's name (its file stem), e.g. ``"ada"``.
+            destination_dir: An existing directory the user chose — their own
+                media, typically. The export is written as ``<name>.json``
+                inside it.
+            overwrite: Replace an existing destination file. Defaults to False.
+
+        Returns:
+            The absolute path of the written file.
+
+        Raises:
+            ValueError: For a path-traversal name or destination, a
+                destination that is not an existing directory, a destination
+                inside the profile store, or a profile that cannot be loaded.
+            FileExistsError: When the destination file exists and
+                ``overwrite`` is False.
+        """
+        clean = str(name).strip()
+        if not clean or "/" in clean or "\\" in clean or ".." in clean:
+            raise ValueError(f"not a plain profile name: {name!r}")
+
+        destination_dir = Path(destination_dir)
+        if ".." in destination_dir.parts:
+            raise ValueError(
+                "destination contains '..' — exports only write inside a plain directory"
+            )
+        if not destination_dir.is_dir():
+            raise ValueError(
+                f"destination is not an existing directory: {destination_dir}"
+            )
+
+        target = destination_dir / f"{clean}.json"
+        storage_root = self.storage_dir.resolve()
+        target_resolved = target.resolve()
+        if target_resolved == storage_root or storage_root in target_resolved.parents:
+            raise ValueError(
+                "refusing to export into the profile store — exports go to a "
+                "user-chosen directory outside it (Never-Touch-The-Store)"
+            )
+
+        if target.exists() and not overwrite:
+            raise FileExistsError(
+                f"{target} already exists — pass overwrite=True to replace it"
+            )
+
+        profile = self.load_profile(clean)
+        if profile is None:
+            raise ValueError(f"profile '{clean}' could not be loaded for export")
+
+        # Plaintext by design (see the docstring). The vault, if any, is only
+        # ever used to READ the stored profile; nothing encrypted is written
+        # here, and nothing plaintext is written into the store.
+        self._atomic_write_text(
+            target, profile.model_dump_json(indent=2, by_alias=True)
+        )
+        logger.info("Profile exported: %s → %s", clean, target)
+        return target
+
     def delete_profile(self, name: str) -> bool:
         """Delete a profile by name.
 

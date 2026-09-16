@@ -85,11 +85,17 @@ class AgentOrchestrator:
           safe driver teardown + restart.
         - Network failure: Detected by NetworkHealthMonitor. The orchestrator
           pauses the event loop and waits for reconnection before resuming.
-        - Task failure: Failed tasks are re-queued with incremented retry
-          count up to MAX_TASK_RETRIES. After exhaustion they are marked
-          permanently failed and logged for telemetry analysis.
+        - Task failure: Resolved by the single path ``_resolve_task_failure``.
+          Retryable task types are returned to PENDING with exponential
+          backoff through the queue's own ``reschedule_for_retry`` — same
+          task id, persisted across restarts. Exhaustion marks the task
+          permanently failed and is counted once under ``tasks_exhausted``.
         - Cross-session dedup: APPLY tasks check applied_jobs before
           submitting — AA never applies to the same URL twice.
+        - In-session dedup (level 1): APPLY task acceptance is marked
+          atomically via ``DeduplicationManager.check_and_mark`` so the same
+          job is never attempted twice within one session, even when the
+          first attempt was blocked and never recorded as a submission.
         - Provider watchdog (Phase 5): A ProviderWatchdog thread monitors
           heartbeat of provider workers and publishes PROVIDER_TIMED_OUT when
           a worker appears stuck.
@@ -259,6 +265,12 @@ class AgentOrchestrator:
         # ── Redirect dedupe for the REDIRECT_TO_LIST_DETECTED handler ─────
         self._seen_redirect_urls: set = set()
 
+        # ── APPLY-task ids already accepted this session. A retry arrives
+        # with the SAME id; this set is what lets the in-session dedup
+        # (level 1 in _is_duplicate_task) tell a returning retry from a
+        # genuinely new duplicate attempt of the same URL.
+        self._accepted_apply_ids: set[str] = set()
+
         # ── Wire EventBus subscriptions ───────────────────────────────────
         self._register_event_handlers()
 
@@ -281,12 +293,15 @@ class AgentOrchestrator:
             1. Pause check — if paused, sleep and retry.
             2. Batch readiness — if a company bucket is full, flush it now.
             3. Dequeue next WorkUnit — highest priority first.
-            4. Queue-empty handling — flush remaining buffers, then idle.
+            4. Queue-empty handling — flush remaining buffers; when nothing is
+               pending anywhere, record the session as completed and exit.
             5. Deduplication check — skip if URL already seen or applied.
             6. Browser readiness — initialize or restart driver if needed.
             7. Network readiness — pause if offline, wait for reconnection.
             8. Dispatch — route WorkUnit to the correct handler.
-            9. Mark complete in the database.
+            9. Mark complete — only when dispatch actually succeeded; failure
+               resolution is owned by _dispatch_task / _resolve_task_failure
+               and must never be overwritten here.
             10. Checkpoint — auto-save if interval threshold is met.
 
         Raises:
@@ -345,7 +360,21 @@ class AgentOrchestrator:
                                 self._process_batch(company_key, jobs, batch_scheduler)
                             continue
 
-                        # Truly idle — nothing pending anywhere.
+                        # Nothing buffered. If nothing is pending anywhere —
+                        # including tasks waiting out a retry backoff — the
+                        # session has genuinely finished: record it as
+                        # completed and exit, rather than idling forever and
+                        # being recorded only as abandoned (predicate 19).
+                        if self.task_queue.get_queue_stats().get("pending", 0) == 0:
+                            logger.info(
+                                "Work queue drained — session complete | %s",
+                                self.context.stats.summary_line(),
+                            )
+                            self._session_report.completion_state = "queue_drained"
+                            break
+
+                        # Pending work exists but none is dispatchable yet
+                        # (e.g. retry backoff). Idle until it becomes eligible.
                         logger.debug("Work queue empty, idling...")
                         self.state_machine.transition_to(AgentState.IDLE)
                         if self._progress is not None:
@@ -399,10 +428,16 @@ class AgentOrchestrator:
                         detail = _task_detail(task)
                         self._progress.update(task.task_type.name, detail)
 
-                    self._dispatch_task(task)
+                    dispatch_succeeded = self._dispatch_task(task)
 
-                    # ── 9. Mark complete ──────────────────────────────────────
-                    self.task_queue.mark_task_complete(task.id)
+                    # ── 9. Mark complete — only when dispatch succeeded ───────
+                    # Failure resolution is owned by _dispatch_task /
+                    # _resolve_task_failure: a rescheduled task is already
+                    # PENDING-with-backoff in the DB and a failed task already
+                    # carries its FAILED record. Overwriting either here is the
+                    # erased-retry defect this branch exists to prevent.
+                    if dispatch_succeeded:
+                        self.task_queue.mark_task_complete(task.id)
 
                     # ── 10. Auto-checkpoint ───────────────────────────────────
                     self.checkpoint_manager.record_action_and_maybe_save(self.context)
@@ -490,22 +525,22 @@ class AgentOrchestrator:
     # TASK DISPATCHING
     # =========================================================================
 
-    def _dispatch_task(self, task: WorkUnit) -> None:
+    def _dispatch_task(self, task: WorkUnit) -> bool:
         """Routes a WorkUnit to the correct domain engine handler.
 
         This is the central routing table. Adding a new task type requires
         only adding a new branch here and a new _handle_* method below.
 
-        On failure, retryable task types (APPLY, RESOLVE_JOB_URL) are
-        automatically rescheduled with exponential backoff via
-        task_queue.reschedule_for_retry(). Non-retryable types are marked
-        failed permanently.
+        Failure resolution has exactly one owner: this method. On a handler
+        exception, the failure is resolved immediately via
+        ``_resolve_task_failure`` — the DB-backed path with real backoff and
+        preserved task identity — and False is returned. ``run()`` marks a
+        task complete only when this returns True, so a rescheduled task is
+        never relabelled COMPLETED and a failed task's record is never erased.
 
-        Per-task duration is logged and tracked for session observability
-        (Wave M).
-
-        Args:
-            task: The WorkUnit to process.
+        Returns:
+            True when the handler completed successfully; False when the
+            handler raised and the failure was resolved here.
 
         Raises:
             RuntimeError: If the TaskType is not recognized. This is a
@@ -573,6 +608,7 @@ class AgentOrchestrator:
                 "Task complete | type=%s duration=%.1fs id=%s",
                 task.task_type.name, duration, task.id[:8],
             )
+            return True
         except Exception as exc:
             duration = time.monotonic() - start_time
             error_msg = f"{type(exc).__name__}: {exc}"
@@ -581,28 +617,11 @@ class AgentOrchestrator:
                 task.task_type.name, task.id[:8], duration, error_msg,
                 exc_info=True,
             )
-
-            # ── Retry logic: only certain task types are retryable ─────────
-            retryable = task.task_type in {
-                TaskType.APPLY,
-                TaskType.RESOLVE_JOB_URL,
-            }
-            if retryable:
-                rescheduled = self.task_queue.reschedule_for_retry(
-                    task.id, error_msg,
-                )
-                if not rescheduled:
-                    logger.warning(
-                        "Task permanently failed after max retries | type=%s id=%s",
-                        task.task_type.name, task.id[:8],
-                    )
-            else:
-                # Non-retryable types: mark as permanently failed immediately
-                self.task_queue.mark_task_failed(task.id, error_msg)
-                logger.debug(
-                    "Non-retryable task %s marked failed | id=%s",
-                    task.task_type.name, task.id[:8],
-                )
+            # One owner, one mechanism. The rescheduled-vs-terminal outcome is
+            # persisted inside _resolve_task_failure; the loop above only needs
+            # to know this task is NOT complete.
+            self._resolve_task_failure(task, exc)
+            return False
 
     # =========================================================================
     # DOMAIN ENGINE HANDLERS
@@ -636,9 +655,11 @@ class AgentOrchestrator:
         """Runs job discovery for a search query and enqueues results.
 
         Delegates to DiscoveryWorkflow.run(), which fans out to all active
-        providers, pre-filters, deduplicates, and enqueues a VET WorkUnit per
-        unique job — so this handler only builds SearchInstruction objects
-        from the task payload and records the resulting count.
+        providers, pre-filters, deduplicates, persists, and enqueues a VET
+        WorkUnit per unique job — so this handler only builds SearchInstruction
+        objects from the task payload. Discovery counters are incremented by
+        the JOBS_DISCOVERED event handler, not here, so DISCOVER_ONLY runs
+        count too.
 
         Args:
             task: WorkUnit whose payload is a dict with optional keys:
@@ -676,8 +697,6 @@ class AgentOrchestrator:
         )
 
         logger.info("Discovery complete | enqueued=%d", enqueued)
-        self.context.update_stats("discovered", enqueued)
-        self._session_report.raw_results_found += enqueued
 
         self.state_machine.transition_to(AgentState.RUNNING, triggered_by="_handle_discovery")
 
@@ -686,7 +705,9 @@ class AgentOrchestrator:
 
         Used when the user provides a company careers URL directly, or when
         a SERP result redirects to a company's own job board. All discovered
-        jobs are routed through vetting before application.
+        jobs are routed through vetting before application. Discovery
+        counters are incremented by the JOBS_DISCOVERED event handler, not
+        here.
 
         Args:
             task: WorkUnit whose payload is:
@@ -701,7 +722,8 @@ class AgentOrchestrator:
         logger.info("Deep-scanning company careers page | company=%s", company_name)
 
         # DiscoveryWorkflow scrapes the single URL, then runs the same
-        # pre-filter → dedup → classify → enqueue-VET tail as the SERP path.
+        # pre-filter → dedup → persist → classify → enqueue-VET tail as the
+        # SERP path.
         enqueued: int = workflow.discover_company_page(
             careers_url,
             company_name,
@@ -713,8 +735,6 @@ class AgentOrchestrator:
             company_name,
             enqueued,
         )
-        self.context.update_stats("discovered", enqueued)
-        self._session_report.raw_results_found += enqueued
 
         self.state_machine.transition_to(AgentState.RUNNING, triggered_by="_handle_company_discovery")
 
@@ -1121,8 +1141,16 @@ class AgentOrchestrator:
                         "Application timing | job=%s duration=%.1fs",
                         job.title, app_duration,
                     )
+                elif evidence.is_blocked:
+                    # An access barrier or trap prevented submission. Its own
+                    # population: a blocked attempt is not a failed attempt.
+                    self.context.update_stats("blocked", 1)
+                elif evidence.outcome in ("USER_SKIPPED", "SUBMISSION_GATE_BLOCKED"):
+                    # User/policy choice, not a failure. Recorded in evidence
+                    # and in the session report; counted nowhere here.
+                    pass
                 else:
-                    self.context.update_stats("failed", 1)
+                    self.context.update_stats("unsuccessful", 1)
 
                 # ── Rich emoji log (A2) — single INFO-level line per application
                 status_emoji = (
@@ -1141,7 +1169,9 @@ class AgentOrchestrator:
 
             except Exception as exc:
                 app_duration = time.monotonic() - app_start
-                self.context.update_stats("failed", 1)
+                # An unhandled exception during the attempt — its own
+                # population, distinct from an outcome-level failure.
+                self.context.update_stats("errored", 1)
                 logger.error(
                     "Application exception | title=%s duration=%.1fs error=%s",
                     job.title, app_duration, exc,
@@ -1258,6 +1288,7 @@ class AgentOrchestrator:
         self.event_bus.subscribe(Event.BROWSER_DEAD,      self._on_browser_dead)
         self.event_bus.subscribe(Event.NETWORK_UNHEALTHY, self._on_network_unhealthy)
         self.event_bus.subscribe(Event.NETWORK_RESTORED,  self._on_network_restored)
+        self.event_bus.subscribe(Event.JOBS_DISCOVERED,   self._on_jobs_discovered)
         self.event_bus.subscribe(Event.HUMAN_APPROVAL_REQUESTED, self._on_human_approval_requested)
         self.event_bus.subscribe(Event.HUMAN_APPROVAL_GRANTED,   self._on_human_approval_granted)
         self.event_bus.subscribe(Event.CAPTCHA_REQUIRES_MANUAL_SOLVE, self._on_captcha_manual_solve_requested)
@@ -1358,6 +1389,30 @@ class AgentOrchestrator:
         if self.paused:
             self.paused = False
             self.state_machine.transition_to(AgentState.RUNNING)
+
+    def _on_jobs_discovered(self, payload: Any) -> None:
+        """Handles JOBS_DISCOVERED: increments discovery counters from the event.
+
+        DiscoveryWorkflow publishes this event once per pass with the unique
+        found count in every execution mode. Counters used to be incremented
+        by the task handlers from the VET enqueue total, which is 0 when
+        vetting is skipped — DISCOVER_ONLY runs looked empty in both the
+        saved report and the live dashboard despite finding jobs.
+
+        Args:
+            payload: Dict from DiscoveryWorkflow with key "count" (unique
+                jobs found this pass).
+        """
+        count = 0
+        if isinstance(payload, dict):
+            try:
+                count = int(payload.get("count", 0))
+            except (TypeError, ValueError):
+                count = 0
+        if count <= 0:
+            return
+        self.context.update_stats("discovered", count)
+        self._session_report.raw_results_found += count
 
     def _on_captcha_manual_solve_requested(self, payload: Any) -> None:
         """Records a manual-solve escalation as session evidence.
@@ -1581,13 +1636,37 @@ class AgentOrchestrator:
     def _is_duplicate_task(self, task: WorkUnit) -> bool:
         """Returns True if this task's job URL was already seen or applied.
 
-        Deduplication runs at two levels:
-            1. In-session: ``DeduplicationManager`` tracks URLs seen since
-               this orchestrator instance started. Prevents double-processing
-               when discovery results overlap across providers.
+        Deduplication runs at two levels, both of which are now real:
+
+            1. In-session (APPLY-scoped): the first acceptance of a URL for an
+               APPLY task is marked atomically via
+               ``DeduplicationManager.check_and_mark`` — one call, no
+               check-then-mark race. Any repeat within this session is a
+               duplicate. Scope and exemptions, deliberately:
+                 - VET is excluded: marking at VET would make the subsequent
+                   APPLY of the same job collide with its own vetting.
+                 - Retries are exempt: a task id already accepted this session
+                   (``self._accepted_apply_ids``) is the SAME task returning
+                   after a failed attempt, not a new duplicate. Exempting by
+                   task id — not by URL — is what keeps the retry system and
+                   the dedup system from cancelling each other.
+               This level exists because cross-session dedup (level 2)
+               deliberately ignores blocked attempts, so a blocked job could
+               otherwise be re-attempted repeatedly inside one session —
+               measured at 3 of 15 jobs attempted twice in one run.
+               DiscoveryWorkflow owns its own DeduplicationManager instance
+               (injected by composition_root) for discovery-time dedup; this
+               one is the dispatch-level second line for jobs that arrive
+               without passing through SERP dedup (RESOLVE_JOB_URL, company
+               discovery, redirect-to-list re-enqueues).
+
             2. Cross-session: ``task_queue.has_applied_previously()`` checks
                the persistent ``applied_jobs`` table. Prevents re-applying to
-               jobs from prior sessions after a restart.
+               jobs from prior sessions after a restart. Deliberately returns
+               True only for SUBMITTED/PROBABLY_SUBMITTED — blocked jobs stay
+               retriable across sessions BY DESIGN (a barrier today may be
+               gone next week). Level 1 above is what bounds retries WITHIN
+               one session.
 
         Non-job tasks (DISCOVER, HANDLE_CAPTCHA) always return False —
         deduplication only applies to tasks whose payload is a ``Job``.
@@ -1606,9 +1685,11 @@ class AgentOrchestrator:
         if not url:
             return False
 
-        # 1. In-session deduplication.
-        if self.dedup_manager.is_duplicate(url):
-            return True
+        # 1. In-session deduplication (APPLY-scoped, retry-exempt).
+        if task.task_type == TaskType.APPLY and task.id not in self._accepted_apply_ids:
+            if not self.dedup_manager.check_and_mark(url):
+                return True
+            self._accepted_apply_ids.add(task.id)
 
         # 2. Cross-session persistence check via the permanent applied_jobs table.
         try:
@@ -1631,16 +1712,30 @@ class AgentOrchestrator:
     def _handle_task_error(
         self, task: WorkUnit | None, exc: Exception
     ) -> None:
-        """Handles a task-level exception with retry logic.
+        """Handles exceptions raised by the main loop OUTSIDE dispatch.
 
-        On each failure the retry counter (stored in ``task.context_data``)
-        is incremented. Tasks below ``MAX_TASK_RETRIES`` are re-queued at
-        reduced priority. Tasks that exhaust their retries are marked
-        permanently failed and logged for telemetry.
+        These are environmental failures — browser-readiness, dedup-check,
+        network-readiness — raised between dequeue and dispatch, or by the
+        batch-processing paths (``_process_ready_batch``, the flush loops)
+        before a task has been dequeued this iteration. They are resolved by
+        the SAME single path used for in-dispatch failures:
+        ``_resolve_task_failure``. The retryable set is the same, the backoff
+        is the same, the task id is the same.
+
+        What was removed and why: this method previously ran a SECOND retry
+        system alongside the DB-backed one — it counted in
+        ``context_data["retry_count"]``, re-queued the work as a NEW WorkUnit
+        with a NEW id (while logging the OLD id), applied no backoff (four
+        attempts landed inside one second on a real run), and its
+        ``retry_count <= MAX_TASK_RETRIES`` comparison produced four retries
+        and the arithmetically impossible log fraction ``retry=4/3``. That
+        system is deleted. The DB-backed reschedule is the one surviving
+        mechanism: it persists across restarts, carries real backoff, and
+        preserves task identity.
 
         Args:
             task: The WorkUnit that failed, or None if the error occurred
-                before a task was dequeued (e.g., in a health check).
+                before a task was dequeued (e.g., in a batch-flush path).
             exc: The exception that was raised.
         """
         if task is None:
@@ -1651,61 +1746,74 @@ class AgentOrchestrator:
             )
             return
 
-        context_data: dict = dict(task.context_data or {})
-        retry_count: int = int(context_data.get("retry_count", 0)) + 1
-
         logger.error(
-            "Task error | type=%s id=%s retry=%d/%d error=%s",
+            "Task error outside dispatch | type=%s id=%s error=%s",
             task.task_type.name,
             task.id,
-            retry_count,
-            self.MAX_TASK_RETRIES,
             exc,
             exc_info=True,
         )
+        self._resolve_task_failure(task, exc)
 
-        # Mark the current task record complete so it doesn't stay stuck.
-        try:
-            self.task_queue.mark_task_complete(task.id, skipped=True)
-        except Exception as mark_exc:
+    def _resolve_task_failure(self, task: WorkUnit, exc: Exception) -> bool:
+        """The single failure-resolution path for every failed task.
+
+        Retryable task types (``APPLY``, ``RESOLVE_JOB_URL``) are returned to
+        PENDING with exponential backoff through
+        ``task_queue.reschedule_for_retry`` — the same task id, persisted
+        across restarts. The backoff policy is the queue's own; nothing here
+        invents a new one. Non-retryable types are marked failed (terminal in
+        practice — nothing re-queues a FAILED record).
+
+        Retry counting lives in the queue: ``reschedule_for_retry`` increments
+        the row's ``retry_count`` 1→2→3 across three reschedules when
+        ``MAX_RETRY_ATTEMPTS = 3`` and makes the fourth failure terminal, so
+        "three retries" means three retries and the logged fractions
+        (``retry 1/3``, ``2/3``, ``3/3``) are arithmetically possible.
+        Exhaustion marks the task PERMANENTLY_FAILED, counts it exactly once
+        under the ``tasks_exhausted`` counter, and publishes
+        TASK_PERMANENTLY_FAILED.
+
+        Args:
+            task: The WorkUnit that failed.
+            exc: The exception that was raised.
+
+        Returns:
+            True when the task was rescheduled for another attempt,
+            False when it is terminal.
+        """
+        error_msg = f"{type(exc).__name__}: {exc}"
+        retryable = task.task_type in {TaskType.APPLY, TaskType.RESOLVE_JOB_URL}
+        if retryable:
+            rescheduled = self.task_queue.reschedule_for_retry(
+                task.id, error_msg
+            )
+            if rescheduled:
+                return True
+
             logger.warning(
-                "Could not mark failed task complete | id=%s error=%s",
-                task.id, mark_exc,
-            )
-
-        if retry_count <= self.MAX_TASK_RETRIES:
-            # Re-queue with incremented retry count and slightly lower priority
-            # so healthy tasks process first.
-            context_data["retry_count"] = retry_count
-            retry_task = WorkUnit(
-                priority=max(task.priority - 1, 0),
-                task_type=task.task_type,
-                payload=task.payload,
-                source=f"retry:{task.source}",
-                context_data=context_data,
-            )
-            try:
-                self.task_queue.queue_task(retry_task)
-                logger.info(
-                    "Task re-queued | id=%s type=%s retry=%d",
-                    task.id, task.task_type.name, retry_count,
-                )
-            except Exception as queue_exc:
-                logger.error(
-                    "Could not re-queue failed task | id=%s error=%s",
-                    task.id, queue_exc,
-                )
-        else:
-            logger.error(
-                "Task permanently failed (retries exhausted) | id=%s type=%s",
-                task.id,
+                "Task permanently failed after max retries | type=%s id=%s",
                 task.task_type.name,
+                task.id[:8],
             )
-            self.context.update_stats("failed", 1)
+            self.context.update_stats("task_exhausted", 1)
             self.event_bus.publish(
                 Event.TASK_PERMANENTLY_FAILED,
-                {"task_id": task.id, "task_type": task.task_type.name, "error": str(exc)},
+                {
+                    "task_id": task.id,
+                    "task_type": task.task_type.name,
+                    "error": error_msg,
+                },
             )
+            return False
+
+        self.task_queue.mark_task_failed(task.id, error_msg)
+        logger.debug(
+            "Non-retryable task %s marked failed | id=%s",
+            task.task_type.name,
+            task.id[:8],
+        )
+        return False
 
     # =========================================================================
     # NETWORK PAUSE
@@ -1795,8 +1903,8 @@ class AgentOrchestrator:
         """Cleans up all resources after the event loop exits.
 
         Called exactly once at the end of ``run()``, whether the loop exited
-        cleanly (``stop()`` called) or due to an unhandled exception. Ordering
-        matters:
+        cleanly (``stop()`` called or the queue drained) or due to an
+        unhandled exception. Ordering matters:
             0. Shutdown workflows that may still hold background threads.
             1. Transition to STOPPED state (signals all observers that the
                session has ended). Routes through STOPPING first in case an
