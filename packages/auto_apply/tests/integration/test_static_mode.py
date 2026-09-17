@@ -73,6 +73,21 @@ def test_profile(minimal_profile_dict) -> UserProfile:
 
 
 @pytest.fixture
+def headless_profile(minimal_profile_dict) -> UserProfile:
+    """test_profile, launching headless — for tests that start a REAL browser.
+
+    A headed launch needs a display. CI's ubuntu runners have Chrome, Firefox
+    and Edge installed but no X server, so every headed launch exits at startup
+    and the cascade refuses with BrowserSetupError, while the headless driver in
+    test_form_filling.py starts the same Chrome on the same runner and passes.
+    Headless keeps the boot path real on any machine that has a browser.
+    """
+    profile_dict = dict(minimal_profile_dict)
+    profile_dict["app_config"] = {"headless_mode": True}
+    return UserProfile.model_validate(profile_dict)
+
+
+@pytest.fixture
 def no_browser_capability() -> ResolvedCapabilityProfile:
     """A capability profile representing the no-browser environment.
 
@@ -307,9 +322,13 @@ class TestSessionControllerWithWorkingCascade:
     intended refusal. They are not environment-independent, and they are kept
     deliberately: the full user-facing boot path is exactly what should be
     exercised here.
+
+    They launch HEADLESS (headless_profile): "launchable" depends on a display
+    as well as a browser, and a headed launch on a display-less Linux host
+    fails exactly like a missing browser.
     """
 
-    def test_build_session_controller_succeeds(self, test_profile, tmp_path):
+    def test_build_session_controller_succeeds(self, headless_profile, tmp_path):
         """build_session_controller must succeed when the cascade can launch a browser."""
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
@@ -318,12 +337,12 @@ class TestSessionControllerWithWorkingCascade:
 
         from auto_apply.infrastructure.composition_root import build_session_controller
 
-        controller = build_session_controller(test_profile)
+        controller = build_session_controller(headless_profile)
         assert controller is not None
         assert controller.registry is not None
         assert controller.orchestrator is not None
 
-    def test_initialize_session_discovery_mode(self, test_profile, tmp_path):
+    def test_initialize_session_discovery_mode(self, headless_profile, tmp_path):
         """initialize_session must return >= 0 tasks in discovery mode."""
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
@@ -332,7 +351,7 @@ class TestSessionControllerWithWorkingCascade:
 
         from auto_apply.infrastructure.composition_root import build_session_controller
 
-        controller = build_session_controller(test_profile)
+        controller = build_session_controller(headless_profile)
         task_count = controller.initialize_session({
             "mode": "discovery",
             "input": "Software Engineer",
