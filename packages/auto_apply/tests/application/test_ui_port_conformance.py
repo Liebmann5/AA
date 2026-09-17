@@ -572,17 +572,28 @@ def _is_data_type(t: object) -> bool:
         return True
     if t is Path:
         return True
+    # Order matters, and not for style. On Python 3.9/3.10
+    # `isinstance(tuple[str, ...], type)` is True — it only became False in
+    # 3.11 (gh-88790). Checking isinstance first sent every parameterised
+    # generic into the class branch, where it failed both issubclass tests and
+    # returned False without ever reaching the tuple check. That rejected all
+    # four tuple[...] methods on UIPort under 3.10, which is the requires-python
+    # floor, while passing on 3.12. Testing the origin first is correct on every
+    # version: get_origin() is None for a plain class, so real classes still
+    # reach the isinstance branch below.
+    origin = get_origin(t)
+    if origin is tuple:
+        return all(a is Ellipsis or _is_data_type(a) for a in get_args(t))
+    if origin is Union or origin is UnionType:
+        return all(_is_data_type(a) for a in get_args(t))
+    if origin is not None:
+        return False        # any other container is a data-shape violation
     if isinstance(t, type):
         if issubclass(t, Enum):
             return True
         if issubclass(t, BaseModel) and t.__module__ == _UI_CONTRACT_MODULE:
             return True
         return False
-    origin = get_origin(t)
-    if origin is tuple:
-        return all(a is Ellipsis or _is_data_type(a) for a in get_args(t))
-    if origin is Union or origin is UnionType:
-        return all(_is_data_type(a) for a in get_args(t))
     return False
 
 
