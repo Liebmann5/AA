@@ -1,3 +1,5 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/domain/ports/http_client_port.py
+
 """Defines the contract for making HTTP GET requests.
 
 Implementations live in ``adapters/secondary/network/``. The default is a

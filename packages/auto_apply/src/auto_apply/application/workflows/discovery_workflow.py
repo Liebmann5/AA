@@ -6,16 +6,20 @@ What this engine does:
     locations, deduplicate by URL, classify by ATS platform, and enqueue each
     unique candidate as a VET WorkUnit for the Vetting engine to process.
 
-9-step sequence:
-    1. _initialize_sources       — filter providers by runtime availability
+10-step sequence:
+    1. _initialize_sources       — filter providers by the session plan's
+                                   active_providers (stage U3: a SessionRequest
+                                   naming one engine runs one engine), then by
+                                   runtime availability
     2. _build_search_instructions — cross-product of titles × locations × workplace types
     3. _execute_serp_discovery   — fan out to all active providers via ThreadPoolExecutor
     4. _scrape_company_pages     — optional direct-careers-page mining
     5. _prefilter_with_spacy     — drop blocked vocab/company/location matches cheaply
     6. _normalize_and_deduplicate — skip URL-duplicates, emit TASK_SKIPPED_DUPLICATE
-    7. _classify_job_source      — stamp job.metadata["ats"] and ["provider"]
-    8. _enqueue_vet_tasks        — push WorkUnit(VET) into task queue
-    9. _emit_completion_summary  — publish DISCOVERY_COMPLETE with aggregate stats
+    7. _persist_discovered_jobs  — record unique jobs with session_id (mode-independent)
+    8. _classify_job_source      — stamp job.metadata["ats"] and ["provider"]
+    9. _enqueue_vet_tasks        — push WorkUnit(VET) into task queue
+    10. _emit_completion_summary — publish DISCOVERY_COMPLETE with aggregate stats
 
 All configuration comes from the frozen SessionPlan, never from a raw dict.
 """
@@ -78,7 +82,10 @@ class DiscoveryWorkflow:
         Args:
             profile: The active user profile.
             providers: list[DiscoveryProviderPort] — job-search adapters.
-            task_queue: WorkQueuePort — receives VET WorkUnits.
+            task_queue: WorkQueuePort — receives VET WorkUnits. Also serves as
+                the discovery persistence sink: ``record_job_discovery`` is
+                called on it concretely before the execution-mode branch so
+                results survive DISCOVER_ONLY sessions.
             event_bus: EventBus — receives discovery events.
             dedup: DeduplicationManager — URL fingerprinting and seen-URL tracking.
             text_matcher: TextMatcher — entity extraction for pre-filtering.
@@ -137,7 +144,23 @@ class DiscoveryWorkflow:
 
     def _initialize_sources(self) -> list:
         active = []
+        # Stage U3: the fan-out honors the session plan's active_providers.
+        # Empty tuple means "not declared" — the plan default stands, and an
+        # empty allowed set never filters (fail-open: it cannot zero out a
+        # session). A provider is only ever excluded on evidence — a real
+        # string name not in the allowed set — never on a mock or an unknown
+        # attribute type.
+        allowed = {a.lower() for a in self._plan.active_providers}
         for provider in self._providers:
+            name = getattr(provider, "name", None)
+            if allowed and isinstance(name, str) and name.lower() not in allowed:
+                logger.info(
+                    "DiscoveryWorkflow: skipping provider %s — not in the "
+                    "session plan's active providers %s",
+                    name,
+                    sorted(allowed),
+                )
+                continue
             needs_browser = getattr(provider, "requires_live_browser", False)
             if needs_browser and not self._has_live_browser:
                 logger.info(
@@ -372,6 +395,43 @@ class DiscoveryWorkflow:
             unique.append(job)
         return unique
 
+    def _persist_discovered_jobs(self, jobs: list[Job]) -> int:
+        """Persist each unique discovered job with the current session id.
+
+        Called before the execution-mode branch so discovery results survive
+        even when the session never vets or applies (DISCOVER_ONLY) — and
+        even if the process dies mid-run: the rows are on disk the moment the
+        provider's results are deduplicated.
+
+        The table is history, not a reprocessing guard (see
+        DatabaseManager.record_job_discovery). INSERT OR IGNORE keeps repeat
+        sightings idempotent across sessions; a URL keeps the session_id of
+        the session that recorded it first.
+
+        Returns:
+            Count of newly recorded rows.
+        """
+        session_id = self._plan.session_id
+        recorded = 0
+        for job in jobs:
+            try:
+                if self._task_queue.record_job_discovery(job, session_id=session_id):
+                    recorded += 1
+            except Exception as exc:
+                logger.warning(
+                    "DiscoveryWorkflow: failed to persist discovered job | url=%s error=%s",
+                    job.url,
+                    exc,
+                )
+        if recorded or jobs:
+            logger.info(
+                "DiscoveryWorkflow: persisted %d/%d discovered jobs | session=%s",
+                recorded,
+                len(jobs),
+                session_id,
+            )
+        return recorded
+
     def _classify_job_source(self, jobs: list[Job]) -> None:
         for job in jobs:
             if not hasattr(job, "metadata"):
@@ -411,13 +471,6 @@ class DiscoveryWorkflow:
                     "DiscoveryWorkflow: failed to enqueue job=%s error=%s",
                     job.url, exc,
                 )
-
-        try:
-            self._event_bus.publish(
-                Event.JOBS_DISCOVERED, {"count": enqueued, "source": "discovery"}
-            )
-        except Exception:
-            pass
 
         # --- Research observation for each job -------------------------------------------------
         if self._research_observer is not None:
@@ -475,7 +528,15 @@ class DiscoveryWorkflow:
 
         jobs = self._prefilter_with_spacy(jobs)
         jobs = self._normalize_and_deduplicate(jobs)
+        self._persist_discovered_jobs(jobs)
         self._classify_job_source(jobs)
+        # JOBS_DISCOVERED carries the unique found count in every mode.
+        try:
+            self._event_bus.publish(
+                Event.JOBS_DISCOVERED, {"count": len(jobs), "source": "discovery"}
+            )
+        except Exception:
+            pass
         # respect plan mode
         return self._enqueue_vet_tasks(jobs, self._plan.execution_mode)
 
@@ -524,6 +585,12 @@ class DiscoveryWorkflow:
         all_jobs = self._normalize_and_deduplicate(all_jobs)
         stats.deduped_dropped = (stats.raw_found - stats.prefiltered_dropped) - len(all_jobs)
 
+        # ── Persist before the mode branch (C1) ─────────────────────────────
+        # A job is persisted the moment it is known, so results survive
+        # DISCOVER_ONLY sessions and process death alike. This is history,
+        # not a skip list.
+        self._persist_discovered_jobs(all_jobs)
+
         self._classify_job_source(all_jobs)
 
         # Verify the output is real before enqueueing: valid fields, no
@@ -539,6 +606,17 @@ class DiscoveryWorkflow:
             logger.info(report.summary())
         else:
             logger.warning("%s\n%s", report.summary(), report.details())
+
+        # JOBS_DISCOVERED carries the unique found count in EVERY mode. It
+        # used to be published from _enqueue_vet_tasks with the vet enqueue
+        # count, which is 0 when vetting is skipped — both the controller's
+        # report and the live dashboard recorded zero for DISCOVER_ONLY.
+        try:
+            self._event_bus.publish(
+                Event.JOBS_DISCOVERED, {"count": len(all_jobs), "source": "discovery"}
+            )
+        except Exception:
+            pass
 
         stats.enqueued = self._enqueue_vet_tasks(all_jobs, mode)
         self._emit_completion_summary(stats)

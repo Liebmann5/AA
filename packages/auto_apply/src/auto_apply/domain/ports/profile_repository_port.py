@@ -53,6 +53,30 @@ class ProfileRepositoryPort(Protocol):
         """Copy an external profile file into the managed profile directory."""
         ...
 
+    def export_profile(self, name: str, destination_dir: Path, overwrite: bool = False) -> Path:
+        """Export a stored profile as plaintext JSON to a user-chosen directory.
+
+        The custody complement of import_profile: a person who can bring a
+        profile in can take one away — which matters on a borrowed or library
+        machine, where the profile store is not theirs.
+
+        The exported file is plaintext JSON BY DESIGN (portable to any
+        machine, any repository, any vault state). The stored profile and its
+        encryption state are never touched: the destination may never be
+        inside the profile store, the method never writes bytes back to it.
+
+        Returns:
+            The written file path.
+
+        Raises:
+            ValueError: For a path-traversal name or destination, a
+                destination that is not an existing directory, a destination
+                inside the profile store, or a profile that cannot be loaded.
+            FileExistsError: When the destination file exists and
+                ``overwrite`` is False.
+        """
+        ...
+
     def delete_profile(self, name: str) -> bool:
         """Remove a stored profile. True if something was deleted."""
         ...

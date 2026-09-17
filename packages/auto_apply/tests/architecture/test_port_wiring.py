@@ -167,10 +167,22 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
         "workflows take text_generation_port=None untyped; GPT4AllAdapter "
         "implements it structurally",
     ),
+    "UIPort": (
+        "WIRE-LATER",
+        "structural satisfaction with no wrapper: SessionController satisfies "
+        "UIPort without importing it, so the port name appears in no other "
+        "file until the driving adapters are retyped. Delete when gui/app.py "
+        "and cli/startup.py type against UIPort at stage U4.",
+    ),
 }
 
 # Ceiling, not equality (R-E). A lower count is success.
-MAX_EXEMPTIONS = 22
+# Raised 22 → 23 for UIPort specifically: it is the first port satisfied
+# structurally by a class that does not import it (the no-wrapper design), so
+# its "no consumer" state is a consequence of the design, not a defect. The
+# ceiling comes back down to 22 when gui/app.py and cli/startup.py type
+# against UIPort at stage U4 and the UIPort entry is deleted.
+MAX_EXEMPTIONS = 23
 
 
 # ─────────────────────────────────────────────────────────────────────────────

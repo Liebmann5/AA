@@ -7,8 +7,13 @@ components that need capability awareness.
 The capability profile answers: "Given everything AA knows about this machine
 and this user's settings, what is AA allowed to do right now?"
 
-This is how AA avoids crashes in no-browser mode: APPLY tasks require a
-browser, and the profile says no browser → reject APPLY at queue insertion.
+STATIC_ASSISTED is deleted (ruled 2026-09-08): a mode name with no
+implementation behind it is capability built and never connected. When the
+browser cascade exhausts, build_orchestrator refuses to construct a session
+at all, so ``has_browser=False`` here is only ever produced by construction-
+time paths (tests). The profile is honest about that instead of promising a
+static mode that does not exist: an empty ``allowed_task_types``, because the
+orchestrator requires a live browser for every task type.
 """
 
 from __future__ import annotations
@@ -54,14 +59,25 @@ class ResolvedCapabilityProfile(BaseModel):
         Used by DatabaseManager.queue_task() to reject tasks that require
         unavailable capabilities. String values (not TaskType enum) to avoid
         circular imports.
+
+        With no browser this is the empty set — deliberately. The
+        orchestrator requires a live browser for DISCOVER, DISCOVER_COMPANY,
+        RESOLVE_JOB_URL, VET, APPLY and HANDLE_CAPTCHA alike, so the profile
+        must say "nothing runs" rather than claim a static discovery mode
+        that does not exist. If a follow-up prompt ever makes one task type
+        genuinely browser-free (RESOLVE_JOB_URL's stub path is the candidate),
+        it must update this set AND orchestrator._requires_browser together.
         """
-        allowed = {"discover", "discover_company", "resolve_job_url", "vet"}
-
-        if self.has_browser:
-            allowed.add("apply")
-            allowed.add("handle_captcha")
-
-        return allowed
+        if not self.has_browser:
+            return set()
+        return {
+            "discover",
+            "discover_company",
+            "resolve_job_url",
+            "vet",
+            "apply",
+            "handle_captcha",
+        }
 
     def can_run_task(self, task_type_value: str) -> bool:
         """Returns True if this profile supports the given task type."""
@@ -69,9 +85,15 @@ class ResolvedCapabilityProfile(BaseModel):
 
     @property
     def mode_name(self) -> str:
-        """Human-readable description of the current execution mode."""
+        """Human-readable description of the current execution mode.
+
+        "NO_BROWSER" is not a mode — it is the honest name for a construction
+        that no production path can reach, kept so construction-time callers
+        (tests) get an accurate label instead of the deleted STATIC_ASSISTED
+        promise.
+        """
         if not self.has_browser:
-            return "STATIC_ASSISTED"
+            return "NO_BROWSER"
         if self.is_low_resource and self.max_browser_workers <= 1:
             return "GUIDED_BROWSER"
         if self.max_browser_workers > 2:

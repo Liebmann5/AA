@@ -5,6 +5,9 @@ search, so runs are not always Google-first (a CAPTCHA magnet). With a session
 seed the shuffle is reproducible; without one it is non-deterministic. These pins
 prove reproducibility, per-search variation, and that no provider is lost or the
 input mutated.
+
+Turn 2 (stage U3) adds the fan-out filter pins: the session plan's
+active_providers now constrains which engines run at all.
 """
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ import random
 from unittest.mock import MagicMock
 
 from auto_apply.application.workflows.discovery_workflow import DiscoveryWorkflow
+from auto_apply.domain.models.session_plan import SessionPlan
 
 
 def _workflow(rng):
@@ -22,6 +26,19 @@ def _workflow(rng):
         event_bus=MagicMock(),
         dedup=MagicMock(),
         text_matcher=MagicMock(),
+        provider_order_rng=rng,
+    )
+
+
+def _workflow_with(providers, plan=None, rng=None):
+    return DiscoveryWorkflow(
+        profile=MagicMock(),
+        providers=list(providers),
+        task_queue=MagicMock(),
+        event_bus=MagicMock(),
+        dedup=MagicMock(),
+        text_matcher=MagicMock(),
+        plan=plan,
         provider_order_rng=rng,
     )
 
@@ -80,3 +97,27 @@ def test_default_rng_when_none_still_orders_losslessly():
     )
     ordered = wf._order_providers(_PROVIDERS)
     assert sorted(_names(ordered)) == sorted(_names(_PROVIDERS))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Turn 2 (stage U3): the plan's active_providers filters the fan-out
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_plan_active_providers_filters_the_fan_out():
+    """TEETH: a plan naming one engine fans out to that engine only.
+
+    Fails pre-turn-2 — _initialize_sources ignored the plan entirely and
+    returned every provider it was given, so a SessionRequest naming one
+    engine would have run all three anyway."""
+    providers = [_provider("Google"), _provider("Bing"), _provider("Indeed")]
+    plan = SessionPlan(session_id="pin", active_providers=("bing",))
+    wf = _workflow_with(providers, plan=plan)
+    assert _names(wf._initialize_sources()) == ["Bing"]
+
+
+def test_default_plan_fans_out_to_every_provider():
+    """GUARD: the default plan vocabulary runs every engine — the menu's
+    default choice must not narrow what a user already had."""
+    providers = [_provider("Google"), _provider("Bing"), _provider("Indeed")]
+    wf = _workflow_with(providers)
+    assert _names(wf._initialize_sources()) == ["Google", "Bing", "Indeed"]

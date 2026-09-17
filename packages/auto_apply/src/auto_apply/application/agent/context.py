@@ -73,10 +73,31 @@ class SessionStatistics:
         jobs_discovered: Total job listings found by DiscoveryEngine.
         jobs_vetted: Jobs that passed all VettingEngine filters.
         applications_submitted: Applications successfully submitted.
-        applications_failed: Applications that raised errors or were rejected
-            by the form itself (e.g., missing required field with no answer).
+        applications_blocked: Application attempts that ended in a blocked
+            outcome (``ApplicationEvidence.is_blocked``) — an access barrier
+            or trap prevented submission. A blocked attempt is NOT a failed
+            attempt. One writer: AgentOrchestrator._process_batch.
+        applications_errored: Application attempts that died to an unhandled
+            exception during the attempt. One writer: _process_batch's
+            exception handler.
+        applications_unsuccessful: Application attempts that ended
+            unsuccessfully WITHOUT a blocked outcome and WITHOUT a
+            user-declined outcome. Population: AMBIGUOUS, FAILED_NAVIGATION,
+            FAILED_NO_SUBMIT_BUTTON, ERROR. USER_SKIPPED and
+            SUBMISSION_GATE_BLOCKED are excluded — user/policy choices are
+            not failures. One writer: AgentOrchestrator._process_batch.
+        tasks_exhausted: Tasks of ANY type (DISCOVER, VET, APPLY, ...) whose
+            retry budget was exhausted and which ended permanently failed.
+            This population is deliberately NOT part of applications_failed —
+            an exhausted DISCOVER is not a failed application. One writer:
+            AgentOrchestrator._resolve_task_failure.
         applications_skipped: Applications skipped due to prior-session
             history (already applied). Not a failure — informational.
+            NOTE: restored from checkpoints and kept for back-compat, but it
+            currently has NO writer in production — nothing calls
+            update_stats("skipped"). That is a measured gap, stated here
+            rather than hidden; the category is intentionally not accepted by
+            update_stats so a future writer must add a real call site.
         captchas_escalated: CAPTCHA challenges escalated to a human via the
             HITL gate. Detection signal, kept distinct from generic approvals.
         provider_timeouts: Provider workers reported stuck by the watchdog.
@@ -85,13 +106,37 @@ class SessionStatistics:
     jobs_discovered:        int = 0
     jobs_vetted:            int = 0
     applications_submitted: int = 0
-    applications_failed:    int = 0
+    applications_blocked:   int = 0
+    applications_errored:   int = 0
+    applications_unsuccessful: int = 0
+    tasks_exhausted:        int = 0
     applications_skipped:   int = 0
     captchas_escalated:     int = 0
     provider_timeouts:      int = 0
     start_time: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+
+    @property
+    def applications_failed(self) -> int:
+        """Total unsuccessful application attempts, excluding user-declined outcomes.
+
+        Derived as ``applications_blocked + applications_errored +
+        applications_unsuccessful``. This is exactly the population
+        ``SessionReport.applications_failed`` computes from its records
+        (everything except SUBMITTED, PROBABLY_SUBMITTED, USER_SKIPPED and
+        SUBMISSION_GATE_BLOCKED), so the context counter and the report
+        counter cannot drift apart. It exists for existing readers —
+        checkpoint_manager.py's getattr contract, the session summary line,
+        and success_rate; anything new should consume the breakdown counters,
+        which say *why* attempts failed. It is read-only: the three
+        breakdown counters are the only write path.
+        """
+        return (
+            self.applications_blocked
+            + self.applications_errored
+            + self.applications_unsuccessful
+        )
 
     @property
     def duration(self) -> timedelta:
@@ -131,6 +176,10 @@ class SessionStatistics:
             "jobs_vetted":            self.jobs_vetted,
             "applications_submitted": self.applications_submitted,
             "applications_failed":    self.applications_failed,
+            "applications_blocked":   self.applications_blocked,
+            "applications_errored":   self.applications_errored,
+            "applications_unsuccessful": self.applications_unsuccessful,
+            "tasks_exhausted":        self.tasks_exhausted,
             "applications_skipped":   self.applications_skipped,
             "captchas_escalated":     self.captchas_escalated,
             "provider_timeouts":      self.provider_timeouts,
@@ -142,12 +191,22 @@ class SessionStatistics:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SessionStatistics":
-        """Restores a SessionStatistics instance from a serialized dict."""
+        """Restores a SessionStatistics instance from a serialized dict.
+
+        Legacy checkpoints carried only ``applications_failed``; that value
+        is folded into ``applications_unsuccessful`` so the derived total
+        stays continuous across the counter split.
+        """
         stats = cls()
         stats.jobs_discovered        = data.get("jobs_discovered", 0)
         stats.jobs_vetted            = data.get("jobs_vetted", 0)
         stats.applications_submitted = data.get("applications_submitted", 0)
-        stats.applications_failed    = data.get("applications_failed", 0)
+        stats.applications_blocked   = data.get("applications_blocked", 0)
+        stats.applications_errored   = data.get("applications_errored", 0)
+        stats.applications_unsuccessful = data.get(
+            "applications_unsuccessful", data.get("applications_failed", 0)
+        )
+        stats.tasks_exhausted        = data.get("tasks_exhausted", 0)
         stats.applications_skipped   = data.get("applications_skipped", 0)
         stats.captchas_escalated     = data.get("captchas_escalated", 0)
         stats.provider_timeouts      = data.get("provider_timeouts", 0)
@@ -263,10 +322,32 @@ class ExecutionContext:
     def update_stats(self, category: str, count: int = 1) -> None:
         """Increments a session statistic counter. Thread-safe.
 
+        Valid categories, and only these:
+
+            "discovered"        → jobs_discovered
+            "vetted"            → jobs_vetted
+            "applied"           → applications_submitted
+            "blocked"           → applications_blocked
+            "errored"           → applications_errored
+            "unsuccessful"      → applications_unsuccessful
+            "task_exhausted"    → tasks_exhausted
+            "captcha_escalated" → captchas_escalated
+            "provider_timeout"  → provider_timeouts
+
+        "failed" and "skipped" are deliberately NOT categories: the former is
+        a derived property with no single write path, the latter has no
+        writer in production. Accepting either would be a dead channel.
+
         Args:
-            category: One of "discovered", "vetted", "applied", "failed",
-                "skipped", "captcha_escalated", "provider_timeout".
+            category: One of the nine strings above.
             count: Amount to add. Defaults to 1.
+
+        Raises:
+            ValueError: For an unknown category. This is deliberate: an
+                unknown category here is a typo'd counter name, and
+                "log a warning and continue" is how a measurement vanishes
+                silently from research data. All production callers pass
+                literals, so this only fires on a programming error.
         """
         with self._stats_lock:
             if category == "discovered":
@@ -275,17 +356,26 @@ class ExecutionContext:
                 self.stats.jobs_vetted += count
             elif category == "applied":
                 self.stats.applications_submitted += count
-            elif category == "failed":
-                self.stats.applications_failed += count
-            elif category == "skipped":
-                self.stats.applications_skipped += count
+            elif category == "blocked":
+                self.stats.applications_blocked += count
+            elif category == "errored":
+                self.stats.applications_errored += count
+            elif category == "unsuccessful":
+                self.stats.applications_unsuccessful += count
+            elif category == "task_exhausted":
+                self.stats.tasks_exhausted += count
             elif category == "captcha_escalated":
                 self.stats.captchas_escalated += count
             elif category == "provider_timeout":
                 self.stats.provider_timeouts += count
             else:
-                logger.warning(
-                    "ExecutionContext.update_stats: unknown category '%s'", category
+                raise ValueError(
+                    f"ExecutionContext.update_stats: unknown category "
+                    f"{category!r}. This is a programming error, not a "
+                    f"runtime condition — a typo here silently loses a "
+                    f"measurement. Valid categories: discovered, vetted, "
+                    f"applied, blocked, errored, unsuccessful, task_exhausted, "
+                    f"captcha_escalated, provider_timeout."
                 )
 
     # =========================================================================

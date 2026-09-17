@@ -2,28 +2,34 @@
 
 **Purpose:** single authoritative inventory of everything in AA that is unfinished, broken, deferred, or undecided.
 **Docs caveat:** `docs/adr/*` and the architecture docs are frequently stale. Trust live code, the measurements in this file, and `docs/STATUS.md` over docstrings.
-**As of:** **2026-09-04 (evening)** · **Zero red pins. The CAPTCHA human-in-the-loop round trip works end to end.**
+**As of:** **2026-09-09 (late)** · **NINE RED PINS. Release criterion 3 is un-met and the file says
+deliberate reds still count.** Nineteen files corrected across two kimicli batches; the CLI is usable
+under output redirection for the first time, and `STATIC_ASSISTED` is deleted.
 
-**Measured 2026-09-04 on Nick's machine:** `1,264 passed, 2 skipped, 0 failed` in 114s.
-Verified by execution this revision: Batch 3 applied · **P1-e, P1-f, P1-g, P2-logging all CLOSED** ·
-CI workflow committed · four new document-path defects found and fixed · kimicli measured to discard
-`### PATCH:` blocks silently.
+**Measured 2026-09-09 on Nick's machine:** `1,259 passed, 2 skipped, 9 failed` in 115s.
+Seven of the nine failures are tests asserting the static-mode behaviour that was just deleted — they
+assert something that was never real, and P8 rewrites them. **Two are genuine and were not predicted:**
+a live mypy error in the new refusal path, and three modules the reachability pin correctly caught as
+orphaned by the deletion. Both are named under *The 2026-09-09 batches* below.
+
+**The 1,264 figure carried since 2026-09-04 was stale by 3 and caused four consecutive wrong
+predictions. The green baseline before this batch was 1,268 — predict against that, not 1,264.**
 
 > **Fence convention:** every code block in this file is indented two spaces. A fence at column 0
 > truncates the document when it is emitted through kimicli. Keep the indent.
 
 | Measured | Value | Δ since 2026-09-02 |
 |---|---|---|
-| Test suite | **0 failed / 1,264 passed / 2 skipped** — measured 2026-09-04 | was 1 / 1189 / 1190 |
-| Type gate, `src/` | **0** — Batch 3 applied | was 28 |
+| Test suite | **9 failed / 1,259 passed / 2 skipped** — measured 2026-09-09 (late) | was 0 / 1,268 / 2 |
+| Type gate, `src/` | **1** — `composition_root.py:990`, `", ".join(list[str] | None)` in the new refusal | was 0 |
 | Undefined names (ruff F821) | Clean | unchanged |
 | Hexagonal boundaries | **0**, asserted at equality | unchanged |
-| Modules that raise on real import | **0 of 260** | unchanged |
+| Modules that raise on real import | **0 of 261** · but **3 now unreachable** — `bs4_adapter`, `urllib_http_client`, `http_client_port` | reachability pin red |
 | Both architecture pins | Green, `MAX_EXEMPTIONS` ceilings | unchanged |
 | **Live discovery** | **3 real LinkedIn postings resolved, verified, enqueued** | **was 0, always** |
 | Discovery verification | `[PASS]: 3 jobs \| fields OK \| chrome OK \| dedup OK \| cap OK` | first PASS on real jobs |
 | Harvest cost | **0.4–0.7 s** on `fast:deferred` | was 47–123 s via the miner |
-| Source | ~53,000 LOC · 260 modules · 45 ports · 109 test modules | +3 modules |
+| Source | ~53,000 LOC · 261 modules · 45 ports · 109 test modules | +1 module (`locale_normalization`) |
 | External users | **Zero** | unchanged |
 
 ---
@@ -34,7 +40,7 @@ CI workflow committed · four new document-path defects found and fixed · kimic
 
 1. **One real application submitted end to end** on a live ATS form, gate honoured, complete evidence record written. — **OPEN, and now the top of the list.**
 2. **Discovery yields real jobs on at least one provider**, verified by `DiscoveryVerifier` on a live run. — **✅ MET 2026-09-02, Bing.**
-3. **Zero red pins.** Ruff F821 and the mypy gate green over `src/` **and** `tests/`. — **✅ MET 2026-09-04.** No red pins remain, deliberate or otherwise.
+3. **Zero red pins.** Ruff F821 and the mypy gate green over `src/` **and** `tests/`. — **❌ RE-OPENED 2026-09-09.** Met from 2026-09-04 until the STATIC_ASSISTED deletion landed. Nine failures: seven tests asserting deleted behaviour, one real mypy error, one reachability pin correctly flagging three orphaned modules. **A deliberate red is still a red** — this criterion does not re-close until P8 lands.
 4. **One clean run on worst-case hardware** (the ASUS CX1100CN, 4 GB), from the USB stick, logs captured. — OPEN.
 5. **Repo hygiene:** one canonical repo URL across `README.md` / `CITATION.cff` / `pyproject.toml`; LICENSE present; CI green on Windows, Linux **and macOS**. — **PARTIAL.** `.github/workflows/ci.yml` committed 2026-09-04 (3 OSes × Python 3.10/3.12, `uv sync`, four gates as named steps, reporting-only until first all-green). Still open: commit `uv.lock`, canonical URL, and the packaging cleanup below.
    *(macOS added 2026-09-04: excluding it is AA choosing which operating systems its users are allowed to have, which contradicts AA's first principle.)*
@@ -84,6 +90,113 @@ eleven.** Still open: **T-1**.
 
 ---
 
+# The Predicate Enumeration *(new, 2026-09-08 — the instrument)*
+
+> **THE ROOT, generalised: a predicate answered independently in more than one place, with nothing
+> checking the answers against each other.**
+
+The three notations that produced this framing were the capability profile disagreeing with the
+orchestrator about whether DISCOVER needs a browser, the event bus publishing to nobody, and the
+state machine requesting transitions its own table forbids. They are the same defect in three
+languages. The unit of work is therefore not "bugs" but **duplicated predicates**, and this table is
+the census. Ranked by blast radius: rows 1–7 can silently produce a wrong result a user acts on.
+
+**Verification column is honest.** `exec` means proven by running code or reading both sites with
+line numbers. `read` means asserted from the source by Kimi and not independently checked.
+
+| # | Predicate | Answering sites | Status | Ver. |
+|---|---|---|---|---|
+| 1 | Should this failed task be retried? | `orchestrator.py` `_dispatch_task` / `run()` / `_resolve_task_failure` · `database.py` `reschedule_for_retry` | **CLOSED 2026-09-09 (P5).** `_dispatch_task` now owns the failure outcome and `run()` marks a task complete only when dispatch succeeded, so the DB-backed retry and its backoff are live for the first time. The second, `context_data`-based retry path is deleted; the `<=` off-by-one and the new-id-per-retry churn went with it. **Unproven live — no test covers the new path.** | exec |
+| 2 | Is a live browser available for discovery? | `registry.py` · `capability_profile.py` · `session_plan.py` · `orchestrator.py:1181` | **CLOSED 2026-09-09 (P6).** Cascade exhaustion refuses startup with `BrowserSetupError` before a session is constructed. `STATIC_ASSISTED` and `static_fetch` are deleted; `has_browser=False` now yields an empty `allowed_task_types` and mode `NO_BROWSER`. `discovery_requires_live_browser()` survives returning `True` unconditionally — an honest bridge until a follow-up collapses its call sites in `orchestrator.py`. | exec |
+| 3 | Is the browser usable right now? | `orchestrator.py:1181` (None-check only) · `browser_monitor.py` `is_healthy()` · `resilient_driver.py` `is_alive()` | **OPEN.** Presence is not liveness — this is CB-10's mechanism. | exec |
+| 4 | What kind of CAPTCHA is this? | `applications_workflow.py:1419` (writes `challenge_type`) · `orchestrator.py:929` (reads it correctly) · `captcha_adapter.py:52` (read `"type"` — wrong key) | **CLOSED 2026-09-09.** Was `"unknown"` on 100% of calls, making the `audio` branch unreachable. Proven before and after by execution. | exec |
+| 5 | What is a failure? | `orchestrator.py` (four writers) · `context.py` · `session_report.py:137` | **HALF CLOSED 2026-09-09 (P5).** `context.py` now carries `applications_blocked`, `applications_errored`, `applications_unsuccessful` and `tasks_exhausted` — one writer each, populations documented — with `applications_failed` derived from the first three so it cannot drift from `SessionReport`. `update_stats` now raises on an unknown category instead of warning and discarding. **Still open:** `session_report.py`, `dashboard.py` and the GUI compute their own populations, and the four new counters have no reader outside `to_dict`. | exec |
+| 6 | Is this application finished? | `applications_workflow.py:1436` (terminal outcome recorded) · `:1413` (queues a task presuming it is not) | **OPEN.** Measured gap between the two on a live run: mean 62.8 s, max 110 s. | exec |
+| 7 | Has AA applied to this job before? | `applied_jobs` via `record_application_permanently` · `job_history` via `mark_applied` · `batch_scheduler.is_duplicate` · `throttling_filter` | **OPEN.** Two stores, two vocabularies, two write paths, each in its own swallowing try/except. | read |
+| 8 | Where does a form field's answer come from? | `semantic_filler.py:21` `_DIRECT_MAPPINGS` · `rule_based_adapter.py:463` `_flatten_profile` | **OPEN.** Two independently maintained profile→answer maps over the same fields. Agree today by coincidence of authorship. | exec |
+| 9 | Have we seen this URL? | `composition_root.py:699` · `orchestrator.py:211` · `database.py:569` | **CLOSED 2026-09-09 (P5).** Level 1 is real: `_is_duplicate_task` uses `check_and_mark` (APPLY-scoped, retry-exempt) instead of a read that could never return True. **Unproven live.** | exec |
+| 10 | How does a suspended application resume? | `task_payloads.py:63` `parent_task_id` · `applications_workflow.py:1424-1425` `return_state`/`return_url` | **OPEN.** Two unwired resume mechanisms for one job. `parent_task_id` appears exactly once in the codebase — its own declaration. | exec |
+| 11 | What type is a WorkUnit payload? | `orchestrator.py:654`, `:927`, `:1890` · `captcha_adapter.py:52` | **OPEN.** Constructed as a pydantic model, arrives as a dict; `get_next_task` rehydrates only `Job`. Four independent `isinstance` guesses. | exec |
+| 12 | Is this page a block or challenge? | `applications_workflow.py` (raw substring scan) · `evasion/detection.py:74` `DefaultDetectionStrategy` · `evasion/manager.py:37` | **INSTRUMENTED 2026-09-09 (P4) — NOT YET ANSWERED.** Both verdicts are logged side by side with form/iframe counts, and `page_source` is dumped to `dev_data/detector_samples/` on disagreement, capped at 20 files across all sessions. **A single live run is the deliverable.** Note P4 added a temporary *third* instance — a 1:1 inline mirror of the weighted strategy — because the application layer may not import a secondary adapter (two pins, ceiling 0). It is dated and carries a deletion path. | exec |
+| 13 | What locale is this? | profile `app_config.locale` · `i18n.py` · `selenium_provider.py` — all now via **`domain/services/locale_normalization.py`** | **CLOSED 2026-09-09 (P7).** One normaliser to ISO 639-1 + ISO 3166-1 alpha-2, placed in the domain layer because a secondary adapter importing an application service is a boundary violation at ceiling 0. `C`/`POSIX` and Windows language names map correctly; unrecognised values fall back without fabricating a file lookup and log what the OS actually said. `getdefaultlocale` is gone, so the Python 3.15 removal no longer bites. `configure()` is idempotent, which kills the three-configures-in-13-seconds spam. | exec |
+| 14 | Is this environment low-resource? | `registry.py:73-75` thresholds, compared at `:311-313` with strict `<` · `capability_profile.py:73` | **OPEN, but less urgent since 2026-09-09.** RAM `< 2048`, cores `< 2`, disk `< 512`. The ASUS CX1100CN (4 GB, 2 cores) trips none of them, so the low-resource path cannot fire on the machine AA was designed for. With `static_fetch` deleted, a mis-firing threshold can no longer select a dead discovery mode — the question is now only about worker counts and browser choice. Criterion 4's USB run is the evidence that would settle where the thresholds belong. | exec |
+| 15 | Must we throttle requests to this domain? | `network/throttler.py` + `network/robots.py` (built) · `base_provider.py:87` `safe_navigate` | **OPEN.** The docstring promises rate limiting and page-safety validation across ~20 lines; the body is `self.browser.get(url)` in a try/except and `return True`. | exec |
+| 16 | Is this event heard? | publishers vs `subscribe()` | **OPEN.** 243 orphaned publications across 8 types in one 22-minute run: `TASK_SKIPPED_DUPLICATE` 113, `DISCOVERY_COMPLETE` 24, `JOBS_DISCOVERED` 24, `BROWSER_HEALTHY` 19, `APPLICATION_FAILED` 18, `JOB_VETTED_PASS` 18, `JOB_VETTED_FAIL` 14, `CAPTCHA_DETECTED` 13. | exec |
+| 17 | Does this transition exist? | `state_machine.py` `VALID_TRANSITIONS` vs call sites | **OPEN.** `PAUSED → ERROR_RECOVERY` and `RESOLVING_CAPTCHA → AWAITING_HUMAN` have no edge; the second is worked around with an artificial RUNNING hop. Refusals warn instead of erroring, so the machine carries on with its state lying. | read |
+| 18 | Is research enabled? | `registry.is_research_enabled()` · `ResearchConsentManager.is_active()` | Judgement, not defect — possibly a deliberate two-key system. Flagged because nothing says so either way. | read |
+| 19 | Has the session ended? | `orchestrator.run()` (idles forever on an empty queue) · dashboards · `_teardown` | **OPEN.** No session self-completes, so the SessionReport is only written when the user kills the run. | read |
+| 20 | Is the page ready? | `dom_observer.wait_for_dom_stable` · `resilient_driver._wait_for_ready_state` · `behavior.simulate_idle_time` | Near-cosmetic; three definitions for three moments. Listed for completeness. | read |
+| 21 | What does `save_profile` return? | `profile_repository_port.py:44` (`-> object`, deliberately loose) · `profile_repository.py:171` (`-> Path`) · `profile_wizard.py` (needs a `Path`) | **OPEN, narrowed at the boundary 2026-09-09.** Found *by* the fix for row 10's sibling. Tightening the port breaks no caller in the tree (`settings_editor.py`, `app.py` onboarding, `import_profile`, `startup.py` — all single positional arg). | exec |
+
+**How to use this table:** the graph is the instrument, criterion 1 is the ordering. Fix the rows on
+the path to one submitted application first. Do not treat it as a backlog to burn down.
+
+---
+
+# The 2026-09-09 batches — nineteen files, and the nine reds they left
+
+Two kimicli batches. **Batch A** (three sessions, manifests `d0ef6dc0`, `8d15876b`, `a3cf6995`,
+`8c05cf1a`) made the CLI usable: nine files plus a pin, taking the suite from 1,264 to a verified
+1,268 green. **Batch B** (one session, manifest `b7ebbb8d`, $6.71 over five calls) applied ten files
+against predicates 1, 5, 9, 12, 13 and CB-8, and left the suite at 1,259/2/9.
+
+**Batch B files:** `applications_workflow.py` (2458→2729) · `orchestrator.py` (1897→1964) ·
+`context.py` (468→558) · `composition_root.py` (996→1063) · `registry.py` (749→766) ·
+`browser_cascade.py` (304→310) · `capability_profile.py` (79→102) · `i18n.py` (444→514) ·
+`selenium_provider.py` (660→673) · **new** `domain/services/locale_normalization.py` (198).
+
+## The nine failures, with dispositions — this is P8's work order
+
+**Seven assert behaviour that was never real.** Static discovery had no provider; these tests pinned
+a mode name, not a capability.
+
+  1. `tests/integration/test_static_mode.py::TestStaticCapabilityProfile::test_discover_allowed_in_static_mode` — delete or invert.
+  2. `  same file ::test_vet_allowed_in_static_mode` — delete or invert.
+  3. `  same file ::test_mode_name_is_static_assisted` — rewrite to `NO_BROWSER`.
+  4. `  same file ::TestWorkUnitRejectionStaticMode::test_database_manager_allows_discover_in_static_mode` — invert: DISCOVER must now be **rejected** with an empty `allowed_task_types`.
+  5. `tests/infrastructure/test_interaction_tool_wiring.py::test_static_mode_builds_without_a_tool_and_without_raising` — rewrite to assert `BrowserSetupError`.
+  6. `tests/adapters/test_dom_readiness.py::test_static_mode_still_builds_with_no_driver_and_no_observer` — same disposition.
+  7. `tests/infrastructure/test_reproducibility.py::TestCompositionRootNamespacing::test_build_orchestrator_make_rng_called_with_at_least_four_namespaces` — different in kind: its fake `acquire_driver` returns `None`, so the refusal fires inside a harness rather than a product path. Make the fake return a driver, or assert the RNG namespaces before the refusal.
+
+**Two are genuine and were NOT predicted. Both are P8's first job.**
+
+  8. `tests/infrastructure/test_mypy_gate.py::test_mypy_src_passes` — a real type error in shipped code:
+
+         composition_root.py:990: error: Argument 1 to "join" of "str" has
+         incompatible type "list[str] | None"; expected "Iterable[str]"
+
+     `_refuse_no_browser` guards with `getattr(policy, "allowed_browsers", None)`, which mypy cannot
+     narrow, then passes the attribute to `", ".join(...)`. A local variable and an explicit `is not
+     None` check fixes it. **This is a live defect in the refusal path, not a test problem.**
+
+  9. `tests/architecture/test_module_reachability.py::test_every_src_module_is_reachable_from_an_entry_point` —
+     three modules orphaned by the deletion and correctly caught:
+     `adapters/secondary/perception/bs4_adapter.py`, `adapters/secondary/network/urllib_http_client.py`,
+     `domain/ports/http_client_port.py`. **The pin did its job.** P6 named the retirement and did not
+     perform it — it is a manual `retire.py` step to `docs/old_retired_files/` with a ledger entry,
+     per R-18. Nothing is deleted.
+
+## What the batch left unproven
+
+The retry reconciliation, the counter split and dedup level 1 all have **zero test coverage** — they
+are correct by reading and by one another's construction, not by execution. P4's instrumentation has
+never run against a live page. **Nothing in this batch has been proven on a real site.**
+
+## Two prompt-writing lessons, both cheap to repeat
+
+**Kimi types against the implementation signature when the caller holds the port.** It annotated a
+callable `-> Path` from `ProfileRepository` while `startup.py` passes it through
+`ProfileRepositoryPort`, which declares `-> object`. Check port declarations before accepting any
+`Callable[...]` annotation.
+
+**A prompt instruction can collide with a pin, and the pin should win.** P4 was told to import
+`DefaultDetectionStrategy` into `applications_workflow.py`. That is an application→adapters import,
+which two pins forbid at ceiling 0. Kimi refused, mirrored the logic inline instead, and flagged the
+cost — a temporary third instance of the very predicate it was measuring. **The prompt was wrong and
+the model was right.** Check the boundary table when a prompt names an import.
+
+---
+
 # Critical Blockers
 
 ## CB-1 — Google yields nothing — root-caused, measured, bounded
@@ -105,7 +218,15 @@ only opaque wrappers, so it buys nothing without following each one over the net
 Google web search has real anchors and would work through today's code unchanged; (C) drop Google.
 **Only A preserves R-1, and A is now the weakest of the three on evidence.**
 
-## CB-8 — The static path: three answers to one question
+## ~~CB-8 — The static path: three answers to one question~~ — **CLOSED 2026-09-09 (P6)**
+Ruled 2026-09-08: **delete the pretence.** A mode name with no implementation behind it is capability
+built and never connected — THE ROOT, flavour one. Cascade exhaustion now refuses startup with an
+actionable terminal message and `BrowserSetupError`; `STATIC_ASSISTED`, `static_fetch` and the
+`"static"` cascade candidate are gone. **R-12 and R-13 are answered by the deletion.** Still open:
+`domain/models/browser_candidates.py:35` still appends the `"static"` candidate (filtered at the
+cascade instead, because P6 did not own that file), and `orchestrator._requires_browser` /
+`_ensure_browser_active` are untouched by design. Historical detail retained below.
+
 - `registry.py:706` sets `has_browser` from the cascade's real result and drives `STATIC_ASSISTED`.
 - `registry.py:413-422` sets `discovery_strategy = static_fetch` **only** inside `if is_low_resource:`.
 - `registry.py:463` and `session_plan.py:189` read only `discovery_strategy`.
@@ -224,10 +345,11 @@ Unchanged.
 ## P3 — DISCOVER dispatches at priority 5
 A **live wiring bug on the GUI queueing path**, not a stale row — two sessions produced two different new task ids, both at priority 5, where `TaskPriority.DISCOVER` is 100.
 
-## P3 — i18n locale resolution — **fifth sighting**
-`locales/english.json` and `locales/none.json`, three warnings every run since 2026-08-11. A language
-*name* and the literal `none` used where a code belongs. Three lines of noise in the first log a new
-user reads.
+## ~~P3 — i18n locale resolution~~ — **CLOSED 2026-09-09 (P7), after six sightings**
+`locales/english.json`, `locales/c.json` and `locales/none.json` — a language *name*, a POSIX
+placeholder and a literal `none`, all used where an ISO code belongs, warning on every run since
+2026-08-11. Now one normaliser in `domain/services/locale_normalization.py`, consumed by both
+`i18n.py` and `selenium_provider.py`. See predicate 13.
 
 ---
 
@@ -292,6 +414,17 @@ matched; the string "PATCH" appears nowhere in 1,648 lines. **The block accounti
 PATCH support** — any unrecognised shape vanishes the same way. Prompt written:
 `prompt_patch_support.txt`. Note `kimicli.py` is in `PROTECTED`, so the fix is hand-applied.
 
+**Second measurement, 2026-09-09 — a truncated emission is silent too.** A resume turn that runs out
+of output budget mid-file leaves the opening ```` ```python ```` with no closing fence, so
+`FILE_BLOCK` matches nothing for it and the earlier files stage without a word about the missing one.
+A prompt demanding two files staged one. The tell is an **odd fence count** in the reply. The lost
+file was `context.py`, and applying the staged half alone would have been worse than the defect it
+fixed — the emitted `orchestrator.py` wrote six stat categories the un-emitted `context.py` was to
+define, so every failure count in the product would have silently become zero. **Standing check:
+after every call, compare the staged-file count against the count the prompt demanded, and treat any
+shortfall as truncation until proven otherwise.** Recovery is a same-session resume naming only the
+missing file and forbidding re-emission of the staged ones — measured 98% cached, $0.47.
+
 ---
 
 # PKG-1 — Packaging, entry points and environment *(new, 2026-09-04 — NEXT)*
@@ -328,24 +461,43 @@ which audits this same graph.
 
 # Next Steps
 
-1. **PKG-1 — packaging and entry points.** Everything below depends on the dependency graph being
-   honest, and it is the last thing standing between a stranger and a working checkout.
-2. **CB-9 — `resolved=0` everywhere.** Settle whether the resolver is broken or was never
-   load-bearing. This is CB-1's real question and it touches AA's central claim.
-3. **One real application** (criterion 1). Both known reasons the run would produce a wrong record
-   are now closed. **Note:** the log shows Bing yielding 8 real jobs, so there is something to apply
-   to.
-4. **CB-10 — a dead driver produced a PASS verdict on zero jobs.** Verification must fail loudly
-   when the browser is gone.
-5. **`uv.lock` committed + CI flipped to blocking** on its first all-green run across three OSes.
-6. **T-1 — kimicli block accounting.** Cheap, hand-applied, protects every change after it.
-7. **The docs/ revamp** (`prompt_docs_revamp.txt`) — needs a docs-inclusive dump first; the current
-   one carries 2 of ~55 files.
-8. **The disposable-execution architecture research** (`prompt_execution_architecture.txt`), after
-   PKG-1. Bears on criterion 4 and on the macOS window.
-9. **CB-8 / R-12 + R-13**, then **CB-1 / R-16**.
-10. **The USB run** (criterion 4) — measurement first.
-11. **Honest README + `DISCLAIMER.md`**, tag **v0.1.0**, five people, `v0.1.1`, **stop and rest.**
+1. **P8 — get back to green. Nothing else starts until criterion 3 is met again.** Two real fixes
+   (the `composition_root.py:990` mypy error, the three orphaned modules retired via `retire.py`)
+   and seven test rewrites, all with dispositions written out under *The 2026-09-09 batches*.
+   **Fresh kimicli session** — the P4–P7 conversation is at ~975k tokens and a sixth turn would be
+   capped. Regenerate `AA-kimi.txt` first: nineteen files changed and one module is new.
+2. **Run P4's instrumentation once, live.** One short session answers predicate 12: whether 13 of
+   18 blocked applications were real gates or a substring scan inventing them. **Everything about
+   gate-crossing waits on this**, and the scaffolding is already in the tree with a deletion path.
+3. **The CAPTCHA suspend/resume contract (predicate 10).** Ruled option A — synchronous, in place,
+   implemented as a resolver behind the existing `ResolutionInterface` port. Needs P4's measurement
+   first, and collides with `orchestrator.py`, so it is its own session.
+4. **One real application** (criterion 1). Nothing in the 2026-09-09 batches has been proven on a
+   real site; the retry reconciliation, the counter split and dedup level 1 have zero coverage.
+5. **CB-9 — `resolved=0` everywhere**, 180/180 samples in the 2026-09-08 run.
+6. **Predicate 3** — presence is not liveness; `_ensure_browser_active` is a None-check while a
+   health monitor sits unconsulted. This is CB-10's mechanism.
+7. **Predicate 15** — `safe_navigate`'s docstring promises rate limiting and page-safety checks its
+   body does not perform. The throttler and robots policy are built and unconsulted.
+8. **`uv.lock` committed + CI flipped to blocking.**
+9. **T-1 — kimicli block accounting**, now with two measured failure modes: unrecognised block
+   shapes, and silent truncation. Cheap, hand-applied, protects every change after it.
+10. **The USB run** (criterion 4) — measurement first. It is also the evidence that would settle
+    predicate 14's thresholds.
+11. **Honest README + `DISCLAIMER.md`** — must carry the measured ChromeOS boundary: AA requires a
+    local shell and a Python interpreter; crosh provides neither and Crostini is disabled by policy
+    on most managed school and library devices. **AA cannot run on a locked-down managed Chromebook.**
+    A measured limit of the platform, not a bug in AA — and a research finding about who automation
+    tooling structurally excludes.
+
+**Applied 2026-09-08/09, do not re-run:** `P1_enumeration_and_challenge_type.md` ·
+`P2_environment.md` + `P2fix_portable_firefox.md` + `P2fix2_stdout_encoding.md` ·
+`P3_cli_ux.md` + `P3fix_vault_downgrade.md` + `P3fix2_save_callable_typing.md` ·
+`P4_detector_instrumentation.md` · `P5_orchestrator_retries_counters_dedup.md` +
+`P5cont_context_py.md` · `P6_delete_static_assisted.md` · `P7_locale_predicate.md`.
+
+**Standing check, learned the hard way:** after every kimicli call, compare the staged-file count
+against the count the prompt demanded. A shortfall means truncation, and truncation is silent.
 
 **Applied 2026-09-04, do not re-run:** `prompt_documents.txt` (P1-f) · `prompt_events.txt` (P1-g)
 · `prompt_ci.txt` (CI). Written and not yet run: `prompt_patch_support.txt` (T-1),
@@ -372,7 +524,7 @@ change per stage · verify by execution · own mistakes plainly.
 
 # Appendix B — "Built and never connected"
 
-**Canonical. Count: 19, of which 6 are closed.**
+**Canonical. Count: 21, of which 6 are closed.**
 
 | # | Instance | Status |
 |---|---|---|
@@ -387,6 +539,9 @@ change per stage · verify by execution · own mistakes plainly.
 | 17 | `FeedbackRepositoryPort` — adapter built and constructed, no consumer | open, exempted `WIRE-LATER` |
 | 18 | ~~`fast_extractor` passed by one provider of three~~ | **CLOSED, Batch 2** |
 | **19** | *(new)* **`DiscoveryObservation`** — the record is built and emitted; `ResearchSignalAggregator.observe_discovery` logs and counts but **writes no rows**. The consumer batch is unwritten. | open, **by design and disclosed** |
+
+| **20** | *(new, 2026-09-09)* **`bs4_adapter` · `urllib_http_client` · `http_client_port`** — orphaned by the STATIC_ASSISTED deletion; the reachability pin caught all three. Retirement to `docs/old_retired_files/` is a manual `retire.py` step, not yet done. | open, **red pin** |
+| **21** | *(new, 2026-09-09)* **The four new failure counters** — `applications_blocked`, `applications_errored`, `applications_unsuccessful`, `tasks_exhausted` are written with one writer each and read by nothing outside `to_dict`. Deliberate: `session_report.py`, `dashboard.py` and the GUI are a follow-up's scope. | open, **by design and disclosed** |
 
 **Outside AA:** `kimicli.py` defined `APPLIER_CONTRACT` and no code path read it — **fixed
 2026-09-02**. The defect class is a property of how work is done, not of this codebase.
@@ -420,6 +575,37 @@ change per stage · verify by execution · own mistakes plainly.
 
 ---
 
+## kimicli cost model — measured 2026-09-08/09
+
+**Fresh calls never hit the context cache.** Two non-resumed calls against an identical prefix
+(same dump, same TODO, same rules) nine minutes apart both reported **0% cached** at ~$2.70 each.
+Every cache hit on record is a `--resume` turn. The prompt text sits inside the cached region, so a
+differing prompt breaks the prefix by construction.
+
+**A resume only hits if it is fired within minutes.** Three resumes sent shortly after the previous
+turn ran 97% / 95% / 98% cached at $0.54–0.59. A fourth on the same session, sent after a gap spent
+applying files and running the suite, ran **0% cached, $2.61**. The TTL, not the resume mechanism,
+is the binding constraint.
+
+**Therefore:** write every prompt in a chain before firing any of them, fire them back-to-back in
+one sitting, and save applies and test runs for afterwards. Editing this file invalidates the prefix,
+so batch TODO edits to a moment when the cache is already cold. **Measured on the P4–P7 chain: one
+fresh call plus four resumes at 93% / 96% / 97% / 98% cached cost $6.71 total, against roughly $14
+if each had been fresh.**
+
+**The window fills, and the cap arrives silently.** On a long resume chain the preflight starts
+capping output as the conversation grows — "capping output at 113,895" by turn 4, 73,678 by turn 5,
+against a ~1.05M window. A four-to-five-turn chain on a ~975k-token conversation is at the ceiling.
+**That cap is what truncated `context.py` mid-file.** Start a fresh session rather than adding a
+sixth turn, and regenerate the dump first so the new session sees current code.
+
+Also measured: preflight's local token estimate runs 22–27% high · default `reasoning effort = max`
+bills as output (~10–40k tokens, $0.15–0.60 per call) · **PowerShell has no backslash escape, so any
+`\"` inside a `"..."` argument silently terminates the string and the rest is parsed as PowerShell.**
+Pass anything with embedded quotes as a script file, never as `python -c`.
+
+---
+
 ## Rulings — status
 
 | # | Section | Status | Decision |
@@ -427,6 +613,7 @@ change per stage · verify by execution · own mistakes plainly.
 | R-1 | CB-1 | **RULED** | Strengthen the *general* capability; do not special-case Google. **Honoured throughout the URL arc.** |
 | R-2 … R-11 | various | **RULED** | Flush per round · AD-1 Option C · humanised default · P3 reclassification · spaCy guard · both layers · identity vs shape · exceptions renamed · repo URL · keep-all-with-exemptions |
 | R-15 | P1-b | **SUPERSEDED** | Was "delete all four"; **all four recovered and retired 2026-09-02.** Nothing is deleted. |
+| **R-12 / R-13** | CB-8 | **RULED 2026-09-08 · BUILT 2026-09-09 (P6)** | **Delete the pretence.** Static discovery was never implemented — no provider exists that runs without a driver. A missing browser becomes an explained refusal at startup, not a degraded session that idles. Option A (build static discovery) does not earn the word "mode" until a spike measures whether plain-HTTP discovery yields anything at all. The single source of truth is the cascade's real result, consumed at the composition root. |
 | R-17 | Pins | **RULED · BUILT** | `MAX_EXEMPTIONS`, a ceiling. A lower count is success. |
 | R-18 | Retirement | **RULED · BUILT** | Nothing is deleted. `docs/old_retired_files/` + ledger. **Check it before building.** |
 | **R-5** | P1-a | **RULED · BUILT (Batch 3)** | **Narrow `ILogicSolver` to the implemented contract** — `solve(aom_nodes) -> dict[str, str]`. A port is a promise to consumers; the only honest promise is the implemented one. A future generic ASP consumer gets a *separate* port, never a widened union. `asp_adapter.py` needed no change: the error was in the port. |
@@ -436,8 +623,6 @@ change per stage · verify by execution · own mistakes plainly.
 
 | # | Question |
 |---|---|
-| **R-12** | **The static path** (CB-8): real discovery / direct-URL only / nothing useful. Do not default to the first. |
-| **R-13** | **One truth about the browser** (CB-8): what becomes the single source, and who owns it. |
 | **R-16** | **The Google fork** (CB-1): (A) second hop — now measured to yield only opaque wrappers · (B) ordinary web search, which has real anchors and would work through today's code · (C) drop Google. Only A preserves R-1, and A is now the weakest on evidence. |
 | **R-19** | **The scroll cadence** (AD-10): keep the teleport, adopt AD-1's `ScrollCadence`, or take an interim viewport-height step? **Four runs with no `/sorry/` weaken the CB-2 justification**, so this is now a stealth-posture question rather than a rate-limit fix. |
 | **R-20** | *(new)* **Client-rendered / virtualized boards.** A learned identity attribute can point at a recycled row — a wrong-URL failure with no visible symptom. What detects such a page, and what is the smallest staleness guard? Scoped, not built. |

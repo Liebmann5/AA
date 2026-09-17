@@ -64,11 +64,6 @@ ENTRY_POINTS = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
-    "auto_apply.adapters.primary.gui.ui_handler": (
-        "WIRE-LATER",
-        "UIMessageHandler logging bridge; the GUI builds the dashboard "
-        "directly in gui/app.py and this handler is constructed nowhere",
-    ),
     "auto_apply.adapters.secondary.browser.browser_lifecycle": (
         "WIRE-LATER",
         "BrowserManager context manager; the orchestrator closes the driver "
@@ -285,6 +280,13 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "unreachable because TextGenerationPort has no consumer (workflows "
         "take text_generation_port untyped) — same fact, two pins",
     ),
+    "auto_apply.domain.ports.ui_port": (
+        "WIRE-LATER",
+        "structural satisfaction with no wrapper: SessionController satisfies "
+        "UIPort without importing it, so the module has zero inbound import "
+        "edges until the driving adapters are retyped. Delete when gui/app.py "
+        "and cli/startup.py type against UIPort at stage U4.",
+    ),
     "auto_apply.domain.retry": (
         "RETIRE-CANDIDATE",
         "retry decorator; 0 importers, no standing ruling",
@@ -316,6 +318,12 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
 }
 
 # Ceiling, not equality (R-E). A lower count is success.
+# Was 50, raised to 51 for auto_apply.domain.ports.ui_port (U3 structural
+# satisfaction), dropped back to 50 when UIMessageHandler was retired (D2):
+# its writer path was never wired, and the port activity stream superseded it.
+# The file moves to docs/old_retired_files/ via retire.py — a manual step the
+# maintainer runs; this entry is removed in anticipation of that move, and the
+# pin fails loudly naming ui_handler.py if the move has not happened yet.
 MAX_EXEMPTIONS = 50
 
 
@@ -366,13 +374,13 @@ def _scan() -> dict:
                             "auto_apply."
                         ):
                             raw_edges.add(alias.name)
-                elif isinstance(node,ast.ImportFrom):
+                elif isinstance(node, ast.ImportFrom):
                     if node.level == 0:
-                       base = node.module
-                       if not base or not (
-                           base == "auto_apply" or base.startswith("auto_apply.")
-                       ):
-                           continue
+                        base = node.module
+                        if not base or not (
+                            base == "auto_apply" or base.startswith("auto_apply.")
+                        ):
+                            continue
                     else:
                         # Relative import. src/ has only two (network/__init__.py)
                         # and dropping them makes robots + throttler look orphaned.
@@ -384,14 +392,14 @@ def _scan() -> dict:
                         if up > len(parts):
                             continue  # relative import above src/; skip
                         if up:
-                            parts = parts[: len(parts) -up]
+                            parts = parts[: len(parts) - up]
                         if node.module:
                             parts = parts + node.module.split(".")
                         base = ".".join(parts) if parts else ""
                         if not base:
                             continue  # relative import to src/ itself; skip
                     raw_edges.add(base)
-                    # ` from pkg import name` imports pkg/name.py as a side effect.
+                    # `from pkg import name` imports pkg/name.py as a side effect.
                     # Without this edge, modules imported that way look unreachable.
                     for alias in node.names:
                         if alias.name != "*":

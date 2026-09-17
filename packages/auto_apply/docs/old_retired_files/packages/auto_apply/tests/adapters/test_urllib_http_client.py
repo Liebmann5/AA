@@ -1,3 +1,5 @@
+# RETIRED FROM: packages/auto_apply/tests/adapters/test_urllib_http_client.py
+
 """Unit tests for adapters/secondary/network/urllib_http_client.py.
 
 urllib.request is patched so no real network I/O occurs.

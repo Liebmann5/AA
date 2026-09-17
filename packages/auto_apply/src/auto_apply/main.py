@@ -15,7 +15,16 @@ Startup Sequence:
     5. Launch the selected interface or print configuration summary.
 
 The GUI is imported lazily to avoid requiring Tkinter on headless systems
-where only CLI mode is used.
+where only CLI mode is used. When tkinter is missing entirely (Debian and
+Ubuntu ship it as the separate apt package python3-tk; uv-managed CPython
+builds on those platforms do not include it), the GUI attempt prints an
+actionable, platform-specific remedy to stderr and continues into the CLI
+instead of killing the session. The ImportError is inspected first — the
+Tk remedy is printed only for genuine tkinter failures; any other missing
+module is named plainly, because a confidently wrong diagnosis is worse
+than none. Measured fact: a complete run reaches profile creation, registry
+build, browser cascade, orchestrator and teardown on a machine with no Tk
+at all.
 
 Usage:
     python -m auto_apply                  # Launches GUI (default)
@@ -44,9 +53,9 @@ if TYPE_CHECKING:
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Pre-import argument parsing — must run BEFORE any auto_apply imports.
-# domain/config.py resolves paths at import time, so the AA_DATA_DIR and
-# AA_RANDOM_SEED env vars must be set before the first import of any
-# auto_apply module.
+# domain/config.py computes USER_DATA_DIR and friends at import time, so the
+# AA_DATA_DIR and AA_RANDOM_SEED env vars must be set before the first
+# import of any auto_apply module.
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _pre_import_parse() -> None:
@@ -95,11 +104,105 @@ from auto_apply.infrastructure.logging_setup import setup_logging
 from auto_apply.infrastructure.composition_root import build_session
 
 
+def _tk_install_hint() -> str:
+    """Return the platform-specific command that installs tkinter.
+
+    tkinter is a stdlib C extension, not a PyPI package, so neither pip nor
+    uv can install it; it ships as an OS package (Debian/Ubuntu python3-tk,
+    Fedora python3-tkinter, Homebrew python-tk) or inside the Windows
+    python.org installer. The hint is derived from sys.platform. Linux names
+    both common package managers because AA must not maintain a list of
+    distributions it recognises.
+    """
+    if sys.platform == "darwin":
+        return "Install it with:  brew install python-tk"
+    if sys.platform.startswith("linux"):
+        return (
+            "Install it with:  sudo apt install python3-tk      (Debian/Ubuntu)\n"
+            "                 sudo dnf install python3-tkinter (Fedora/RHEL)"
+        )
+    if sys.platform == "win32":
+        return (
+            "Windows python.org installers include tkinter — re-run the "
+            "installer and tick 'tcl/tk and IDLE'."
+        )
+    return "Install your platform's Tk bindings for Python (often named python3-tk)."
+
+
+def _is_tkinter_failure(exc: ImportError) -> bool:
+    """True when the import failure is specifically about tkinter.
+
+    Checked against ImportError.name first, then the message text, so a lazy
+    import failing anywhere inside the GUI is not misdiagnosed as a missing
+    Tk install.
+    """
+    name = (getattr(exc, "name", None) or "").lower()
+    if name in ("tkinter", "_tkinter"):
+        return True
+    return "tkinter" in str(exc).lower()
+
+
+def _missing_module_name(exc: ImportError) -> str:
+    """Best-effort name of the module that failed to import."""
+    name = getattr(exc, "name", None)
+    if name:
+        return str(name)
+    text = str(exc)
+    marker = "No module named "
+    if marker in text:
+        return text.split(marker, 1)[1].strip().strip("'\"")
+    return ""
+
+
+def _handle_missing_gui_dependencies(exc: ImportError, profile_override) -> None:
+    """Route an ImportError from the GUI path honestly, then continue to the CLI.
+
+    Principle 1: AA accommodates the user. The CLI is fully functional
+    without Tk — a complete run has been measured end-to-end on a machine
+    with no Tk at all — so the session continues either way. But the remedy
+    printed must match the cause: a tkinter failure gets the OS-package hint;
+    any other failing import is named plainly with no hint, because
+    installing python3-tk would not fix it. A confidently wrong diagnosis is
+    worse than none.
+    """
+    if _is_tkinter_failure(exc):
+        message = (
+            f"\nThe GUI could not start: {exc}\n"
+            f"{_tk_install_hint()}\n\n"
+            "Continuing in the command-line interface instead — same session,\n"
+            "same profile, nothing else to type.\n"
+            "Next time, run with --cli to skip the GUI attempt.\n"
+        )
+        print(message, file=sys.stderr)  # noqa: T201
+        logging.error("GUI dependencies missing (tkinter): %s", exc)
+    else:
+        missing = _missing_module_name(exc)
+        message = (
+            f"\nA GUI dependency failed to import: {missing or exc}\n"
+            "This is not a tkinter problem, so installing an OS Tk package\n"
+            "will not fix it.\n"
+            "Continuing in the command-line interface instead — same session,\n"
+            "same profile, nothing else to type.\n"
+            "Next time, run with --cli to skip the GUI attempt.\n"
+        )
+        print(message, file=sys.stderr)  # noqa: T201
+        logging.critical(
+            "GUI dependency import failed (not tkinter): %s", exc, exc_info=True
+        )
+    launch_cli(
+        profile_repo_factory=build_session,
+        profile_override=profile_override,
+    )
+
+
 def launch_gui(profile_repo, profile_override=None) -> None:
     """Imports and launches the graphical interface.
 
     Tkinter is imported lazily here so that CLI-only users on headless
-    systems don't need it installed.
+    systems don't need it installed. When tkinter is absent, the ImportError
+    path prints an actionable remedy to stderr and falls through to the CLI
+    rather than killing the session. Non-tkinter import failures are named
+    plainly instead of being misdiagnosed as a missing Tk install.
 
     Args:
         profile_repo: An initialized ProfileRepository.
@@ -120,8 +223,7 @@ def launch_gui(profile_repo, profile_override=None) -> None:
         )
         app.mainloop()
     except ImportError as exc:
-        logging.error("GUI dependencies missing: %s", exc)
-        sys.exit(1)
+        _handle_missing_gui_dependencies(exc, profile_override)
     except Exception as exc:
         logging.critical("GUI crashed: %s", exc, exc_info=True)
         sys.exit(1)
@@ -195,6 +297,18 @@ def _print_check_config(profile_repo) -> None:
     env = registry.get_environment_capabilities()
     admin = registry.get_admin_policy()
 
+    import importlib.util  # noqa: PLC0415
+
+    try:
+        tk_status = (
+            "available"
+            if importlib.util.find_spec("tkinter") is not None
+            and importlib.util.find_spec("_tkinter") is not None
+            else "MISSING (GUI unavailable — CLI unaffected; see INSTALL.md)"
+        )
+    except Exception:
+        tk_status = "unknown (could not probe)"
+
     print("\nAutoApply — Environment Configuration Check\n")
     print(f" Platform          : {env.os_name} ({env.os_version})")
     print(f" Python version    : {PlatformInspector.inspect().python_version}")
@@ -204,6 +318,7 @@ def _print_check_config(profile_repo) -> None:
     print(f" Low-resource mode : {env.is_low_resource}")
     print(f" Browsers detected : {env.available_browsers or 'none'}")
     print(f" Tools available   : {env.available_tools or 'none'}")
+    print(f" Tkinter (GUI)     : {tk_status}")
     if admin and admin.has_any_constraint():
         print(f" Admin policy      : active ({admin.policy_version})")
     else:

@@ -1,10 +1,20 @@
-"""Static mode (no browser) end-to-end test.
+"""The no-browser contract: what AA does when no browser can be launched.
 
-Verifies that a worst-case user (no Chrome, no Playwright, no internet) can:
-  - Run AA without crashing
-  - Build an orchestrator in static mode (driver=None)
-  - Reject APPLY tasks when capability profile has no browser
-  - Build a session controller without a live browser
+For years this file pinned "static mode" — a fallback that claimed AA could
+run with no browser at all. That mode never existed: no discovery provider
+runs without a driver, so STATIC_ASSISTED was a name with no capability
+behind it. The pretence was deleted 2026-09-09 (predicate 2 / P6); this file
+now pins the honest contract that replaced it:
+
+    * has_browser=False yields an EMPTY allowed_task_types and the mode name
+      NO_BROWSER on ResolvedCapabilityProfile;
+    * DatabaseManager.queue_task rejects DISCOVER for the same reason it
+      already rejected APPLY;
+    * an explicit driver=None still builds — a construction-time sentinel the
+      suite relies on (documented, and called out as an open question), while
+      a cascade that actually ran and exhausted refuses startup with
+      BrowserSetupError (pinned in test_interaction_tool_wiring.py and
+      test_dom_readiness.py).
 
 No browser. No internet. No API keys. Safe to run in CI.
 
@@ -14,17 +24,13 @@ Run:
 
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from auto_apply.domain.models.capability_profile import ResolvedCapabilityProfile
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import UserProfile
-from auto_apply.domain.models.session_plan import SessionPlan
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 
 
@@ -36,7 +42,7 @@ from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 def minimal_profile_dict() -> dict:
     """A minimal valid profile dict for building a UserProfile."""
     return {
-        "profile_name": "static-test-user",
+        "profile_name": "no-browser-test-user",
         "personal_info": {
             "first_name": "Test",
             "last_name": "User",
@@ -62,13 +68,32 @@ def minimal_profile_dict() -> dict:
 
 @pytest.fixture
 def test_profile(minimal_profile_dict) -> UserProfile:
-    """A fully validated UserProfile for static mode tests."""
+    """A fully validated UserProfile for the no-browser tests."""
     return UserProfile.model_validate(minimal_profile_dict)
 
 
 @pytest.fixture
-def static_capability() -> ResolvedCapabilityProfile:
-    """A capability profile representing static (no-browser) mode."""
+def headless_profile(minimal_profile_dict) -> UserProfile:
+    """test_profile, launching headless — for tests that start a REAL browser.
+
+    A headed launch needs a display. CI's ubuntu runners have Chrome, Firefox
+    and Edge installed but no X server, so every headed launch exits at startup
+    and the cascade refuses with BrowserSetupError, while the headless driver in
+    test_form_filling.py starts the same Chrome on the same runner and passes.
+    Headless keeps the boot path real on any machine that has a browser.
+    """
+    profile_dict = dict(minimal_profile_dict)
+    profile_dict["app_config"] = {"headless_mode": True}
+    return UserProfile.model_validate(profile_dict)
+
+
+@pytest.fixture
+def no_browser_capability() -> ResolvedCapabilityProfile:
+    """A capability profile representing the no-browser environment.
+
+    With no browser available, every task type must be refused — there is no
+    static fallback anymore.
+    """
     return ResolvedCapabilityProfile(
         has_browser=False,
         browser_framework=None,
@@ -84,49 +109,74 @@ def static_capability() -> ResolvedCapabilityProfile:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tests — Static Capability Profile
+# Tests — No-Browser Capability Profile
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestStaticCapabilityProfile:
-    """Verify the capability profile correctly gates task types."""
+class TestNoBrowserCapabilityProfile:
+    """The capability profile must refuse every task type with no browser.
 
-    def test_apply_task_not_allowed_in_static_mode(self, static_capability):
-        """APPLY task must be rejected when capability profile has no browser."""
-        assert "apply" not in static_capability.allowed_task_types, (
-            "Static mode must not allow APPLY tasks — forms cannot be filled "
-            "without a live browser"
-        )
+    The APPLY assertions hold on both the old and new trees (APPLY was never
+    allowed without a browser, static or not) — they are characterization of
+    the retained contract, not inversions. The DISCOVER/VET/mode-name pins
+    discriminate: they fail against the pre-P6 static-mode world for exactly
+    the reason their names give.
+    """
 
-    def test_apply_rejected_by_can_run_task(self, static_capability):
-        """can_run_task('apply') must return False in static mode."""
-        assert static_capability.can_run_task("apply") is False
+    def test_apply_task_not_allowed_without_browser(self, no_browser_capability):
+        """APPLY must be refused — forms cannot be filled without a browser."""
+        assert "apply" not in no_browser_capability.allowed_task_types
 
-    def test_discover_allowed_in_static_mode(self, static_capability):
-        """DISCOVER task must still be allowed in static mode."""
-        assert "discover" in static_capability.allowed_task_types
+    def test_apply_rejected_by_can_run_task(self, no_browser_capability):
+        """can_run_task('apply') must return False with no browser."""
+        assert no_browser_capability.can_run_task("apply") is False
 
-    def test_vet_allowed_in_static_mode(self, static_capability):
-        """VET task must still be allowed in static mode."""
-        assert "vet" in static_capability.allowed_task_types
+    def test_discover_not_allowed_without_browser(self, no_browser_capability):
+        """INVERTED: DISCOVER used to be 'allowed' in static mode.
 
-    def test_mode_name_is_static_assisted(self, static_capability):
-        """The mode name should indicate static/assisted operation."""
-        assert static_capability.mode_name == "STATIC_ASSISTED"
+        The fallback that supposedly ran it was never implemented — no
+        discovery provider exists that runs without a driver. With no browser,
+        discovery must be refused like everything else.
+        """
+        assert "discover" not in no_browser_capability.allowed_task_types
+        assert no_browser_capability.can_run_task("discover") is False
 
-    def test_max_browser_workers_is_zero(self, static_capability):
+    def test_vet_not_allowed_without_browser(self, no_browser_capability):
+        """INVERTED: VET used to be 'allowed' in static mode.
+
+        Vetting reads a live page; without a browser there is nothing to read.
+        """
+        assert "vet" not in no_browser_capability.allowed_task_types
+        assert no_browser_capability.can_run_task("vet") is False
+
+    def test_mode_name_is_no_browser(self, no_browser_capability):
+        """The mode name reports NO_BROWSER, not the deleted STATIC_ASSISTED."""
+        assert no_browser_capability.mode_name == "NO_BROWSER"
+
+    def test_max_browser_workers_is_zero(self, no_browser_capability):
         """No browser workers available when has_browser is False."""
-        assert static_capability.max_browser_workers == 0
+        assert no_browser_capability.max_browser_workers == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tests — build_orchestrator with driver=None
+# Tests — build_orchestrator with the driver=None sentinel
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestBuildOrchestratorStaticMode:
-    """Verify the composition root can build an orchestrator without a browser."""
+class TestBuildOrchestratorWithoutDriverSentinel:
+    """An explicit driver=None still builds: the construction-time sentinel.
 
-    def test_build_orchestrator_static_mode_succeeds(self, test_profile, tmp_path):
-        """build_orchestrator(driver=None) must succeed without crashing."""
+    build_orchestrator(registry, driver=None) skips the browser cascade, so
+    the startup refusal does NOT fire here. That sentinel is what most of the
+    suite relies on to exercise the wiring graph without a browser; the
+    refusal itself is pinned separately in test_interaction_tool_wiring.py
+    and test_dom_readiness.py. Whether the sentinel should exist at all is an
+    open question (predicate 2) — these tests pin what it currently does, not
+    what it should do.
+    """
+
+    def test_build_orchestrator_without_driver_sentinel_succeeds(
+        self, test_profile, tmp_path
+    ):
+        """build_orchestrator(registry, driver=None) must complete without crashing."""
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
         import logging
@@ -145,11 +195,14 @@ class TestBuildOrchestratorStaticMode:
             pytest.fail(f"build_orchestrator(driver=None) raised: {exc}")
 
         assert orchestrator is not None, (
-            "build_orchestrator must return a valid orchestrator even without a browser"
+            "build_orchestrator must return a valid orchestrator when the "
+            "driver=None sentinel skips the cascade"
         )
 
-    def test_build_orchestrator_static_has_workflows(self, test_profile, tmp_path):
-        """The static orchestrator must have all three workflow keys."""
+    def test_build_orchestrator_without_driver_has_workflows(
+        self, test_profile, tmp_path
+    ):
+        """The sentinel-built orchestrator must have all three workflow keys."""
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
         import logging
@@ -168,7 +221,9 @@ class TestBuildOrchestratorStaticMode:
         assert "VettingWorkflow" in workflows
         assert "ApplicationsWorkflow" in workflows
 
-    def test_build_orchestrator_static_session_plan_type(self, test_profile, tmp_path):
+    def test_build_orchestrator_without_driver_session_plan_type(
+        self, test_profile, tmp_path
+    ):
         """The session plan must be the canonical SessionPlan from session_plan.py."""
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
@@ -195,20 +250,24 @@ class TestBuildOrchestratorStaticMode:
 # Tests — WorkUnit Queue Rejection
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestWorkUnitRejectionStaticMode:
-    """APPLY WorkUnits must be rejected at queue insertion in static mode."""
+class TestWorkUnitRejectionWithoutBrowser:
+    """queue_task must reject both APPLY and DISCOVER when no browser exists.
 
-    def test_database_manager_rejects_apply_in_static_mode(
-        self, test_profile, tmp_path, static_capability
+    DatabaseManager is a singleton: every DB-touching test re-sets the
+    capability profile before asserting, so test order cannot leak state from
+    one test into another.
+    """
+
+    def test_database_manager_rejects_apply_without_browser(
+        self, test_profile, tmp_path, no_browser_capability
     ):
-        """DatabaseManager.set_capability_profile must gate APPLY tasks."""
-        import os
+        """APPLY WorkUnits must be rejected at queue insertion with no browser."""
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
         from auto_apply.adapters.secondary.persistence.database import DatabaseManager
 
         db = DatabaseManager()
-        db.set_capability_profile(static_capability)
+        db.set_capability_profile(no_browser_capability)
 
         job = Job(
             title="Engineer",
@@ -225,36 +284,52 @@ class TestWorkUnitRejectionStaticMode:
                 source="test",
             ))
 
-    def test_database_manager_allows_discover_in_static_mode(
-        self, test_profile, tmp_path, static_capability
+    def test_database_manager_rejects_discover_without_browser(
+        self, test_profile, tmp_path, no_browser_capability
     ):
-        """DISCOVER tasks must still be allowed in static mode."""
-        import os
+        """INVERTED: DISCOVER WorkUnits used to be queued in static mode.
+
+        The static fallback that supposedly ran them is deleted, so the gate
+        that already rejected APPLY must reject DISCOVER the same way.
+        """
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
         from auto_apply.adapters.secondary.persistence.database import DatabaseManager
 
         db = DatabaseManager()
-        db.set_capability_profile(static_capability)
+        db.set_capability_profile(no_browser_capability)
 
-        # DISCOVER should NOT raise — allowed in static mode
-        db.queue_task(WorkUnit(
-            priority=5,
-            task_type=TaskType.DISCOVER,
-            payload={"query": "Engineer", "location": "Remote"},
-            source="test",
-        ))
+        with pytest.raises(ValueError, match="capability profile"):
+            db.queue_task(WorkUnit(
+                priority=5,
+                task_type=TaskType.DISCOVER,
+                payload={"query": "Engineer", "location": "Remote"},
+                source="test",
+            ))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tests — SessionController in Static Mode
+# Tests — SessionController on a machine with a working cascade
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSessionControllerStaticMode:
-    """SessionController must function correctly in static mode."""
+class TestSessionControllerWithWorkingCascade:
+    """build_session_controller exercises the full build path on this machine.
 
-    def test_build_session_controller_static_mode(self, test_profile, tmp_path):
-        """build_session_controller must succeed with a static-mode profile."""
+    NOTE — environment-dependent: build_session_controller calls
+    build_orchestrator(registry) with NO driver argument, so the cascade runs
+    for real. On a machine with a launchable browser these tests build; on a
+    machine without one they now fail on BrowserSetupError — which is the
+    intended refusal. They are not environment-independent, and they are kept
+    deliberately: the full user-facing boot path is exactly what should be
+    exercised here.
+
+    They launch HEADLESS (headless_profile): "launchable" depends on a display
+    as well as a browser, and a headed launch on a display-less Linux host
+    fails exactly like a missing browser.
+    """
+
+    def test_build_session_controller_succeeds(self, headless_profile, tmp_path):
+        """build_session_controller must succeed when the cascade can launch a browser."""
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
         import logging
@@ -262,12 +337,12 @@ class TestSessionControllerStaticMode:
 
         from auto_apply.infrastructure.composition_root import build_session_controller
 
-        controller = build_session_controller(test_profile)
+        controller = build_session_controller(headless_profile)
         assert controller is not None
         assert controller.registry is not None
         assert controller.orchestrator is not None
 
-    def test_initialize_session_discovery_mode(self, test_profile, tmp_path):
+    def test_initialize_session_discovery_mode(self, headless_profile, tmp_path):
         """initialize_session must return >= 0 tasks in discovery mode."""
         os.environ["AA_DATA_DIR"] = str(tmp_path)
 
@@ -276,14 +351,14 @@ class TestSessionControllerStaticMode:
 
         from auto_apply.infrastructure.composition_root import build_session_controller
 
-        controller = build_session_controller(test_profile)
+        controller = build_session_controller(headless_profile)
         task_count = controller.initialize_session({
             "mode": "discovery",
             "input": "Software Engineer",
         })
 
-        # In static mode with no providers (no browser), this may return 0
-        # but must NOT raise an exception.
+        # In a no-provider environment (no browser on this machine), this may
+        # return 0 but must NOT raise an exception.
         assert isinstance(task_count, int)
         assert task_count >= 0
 

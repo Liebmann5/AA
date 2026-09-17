@@ -65,7 +65,7 @@ import random
 import re
 import time
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -269,6 +269,9 @@ class ApplicationsWorkflow:
         #: two attempts at the same job do not merge into one set of rows.
         self._attempt_seq: int = 0
         self._attempt_id: str = ""
+        #: TEMPORARY (predicate 12): one-shot warning flag for the
+        #: detector-sample dump cap. Delete with the diagnostic block.
+        self._p12_dump_cap_logged: bool = False
         self._fields_filled: int = 0
         self._fields_classified: int = 0
         self._required_fields_filled: int = 0
@@ -1400,6 +1403,27 @@ class ApplicationsWorkflow:
                     ind for ind in captcha_indicators if ind in page_source.lower()
                 )
                 current_url = getattr(self._browser, "current_url", job.url)
+                # ── TEMPORARY DIAGNOSTIC (predicate 12, 2026-09-09) ─────
+                # Measure both block verdicts for this page; the behavior
+                # below is unchanged. Delete with the helpers at the bottom
+                # of _handle_interruptions when the weighted detector is
+                # wired in via a port.
+                try:
+                    weighted_verdict = self._p12_weighted_verdict()
+                    self._p12_log_block_comparison(
+                        verdict_context="captcha-substring",
+                        matched=matched_indicator,
+                        current_url=current_url,
+                        page_source=page_source,
+                        weighted=weighted_verdict,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "ApplicationsWorkflow: captcha block-comparison "
+                        "failed (non-fatal): %s",
+                        exc,
+                    )
+                # ── END TEMPORARY DIAGNOSTIC ─────────────────────────────
                 logger.info(
                     "ApplicationsWorkflow: CAPTCHA detected | url=%s",
                     current_url,
@@ -1444,6 +1468,23 @@ class ApplicationsWorkflow:
 
             if form_count == 0 and job_link_count > 5:
                 current_url = getattr(self._browser, "current_url", "")
+                # ── TEMPORARY DIAGNOSTIC (predicate 12, 2026-09-09) ─────
+                try:
+                    weighted_redirect_verdict = self._p12_weighted_verdict()
+                    self._p12_log_block_comparison(
+                        verdict_context="suspicious-redirect",
+                        matched="redirect-heuristic",
+                        current_url=current_url,
+                        page_source=page_source,
+                        weighted=weighted_redirect_verdict,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "ApplicationsWorkflow: redirect block-comparison "
+                        "failed (non-fatal): %s",
+                        exc,
+                    )
+                # ── END TEMPORARY DIAGNOSTIC ─────────────────────────────
                 logger.info(
                     "ApplicationsWorkflow: suspicious redirect detected | url=%s",
                     current_url,
@@ -1481,6 +1522,236 @@ class ApplicationsWorkflow:
             )
 
         return True
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TEMPORARY DIAGNOSTIC — predicate 12 (added 2026-09-09)
+    #
+    # Measurement scaffolding, not a feature. It answers one question for one
+    # live run: how often does the raw substring scan in _handle_interruptions()
+    # call a page "blocked" when a stricter, multi-signal check says it is not?
+    # It changes nothing: same return values, same events, same queued tasks,
+    # same outcomes. It is written to be deleted in one edit.
+    #
+    # Why this mirrors instead of importing: DefaultDetectionStrategy
+    # (adapters/secondary/evasion/detection.py:74) is the canonical weighted
+    # detector, but the hexagonal boundary pins —
+    # tests/test_architecture.py::test_hexagonal_import_boundaries and the
+    # violation-count pin in tests/adapters/test_extraction_observer.py — are
+    # asserted at exactly ZERO application→adapters imports, and "zero red
+    # pins" is release criterion 3. Importing the strategy here would break
+    # the suite to add scaffolding. So the weighted verdict below is a 1:1
+    # inline mirror of that strategy's algorithm (keyword lists and weights
+    # from detection_config.json's "default" strategy: url 30, title 30,
+    # iframe 40, text 40, threshold 60). This is a bounded third instance of
+    # the block-detection predicate; it must be deleted and the call sites
+    # switched to the injected strategy when DefaultDetectionStrategy is
+    # wired in through a port (a later prompt owns composition_root.py). If
+    # detection_config.json's keywords change before that wiring lands, this
+    # mirror drifts — it is correct as of 2026-09-09.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    _P12_URL_KEYWORDS: tuple = (
+        "/sorry/", "/challenge/", "/verify/", "/human-challenge/",
+        "/cdn-cgi/", "/checkpoint/", "blocked", "denied",
+    )
+    _P12_TITLE_KEYWORDS: tuple = (
+        "verify you are human", "are you a robot", "checking your browser",
+        "attention required", "access denied", "bot verification",
+        "security check",
+    )
+    _P12_IFRAME_KEYWORDS: tuple = (
+        "recaptcha", "hcaptcha", "turnstile", "funcaptcha", "arkose",
+    )
+    _P12_TEXT_KEYWORDS: tuple = (
+        "i'm not a robot", "i am not a robot", "unusual traffic",
+        "prove you're human", "verify that you are not a robot",
+        "complete the security check", "cloudflare",
+        "your ip has been flagged",
+    )
+    _P12_CONFIDENCE_THRESHOLD: int = 60
+    _P12_DUMP_CAP: int = 20
+    _P12_DUMP_DIR_NAME: str = "detector_samples"
+
+    def _p12_weighted_verdict(self) -> bool | None:
+        """TEMPORARY (predicate 12): mirror of DefaultDetectionStrategy.
+
+        Computes the same weighted multi-signal verdict as
+        DefaultDetectionStrategy.is_challenge_present()
+        (adapters/secondary/evasion/detection.py:74) using the same
+        keywords and weights. Returns True/False, or None when the verdict
+        cannot be computed. Never raises.
+        """
+        try:
+            browser = self._browser
+            if browser is None:
+                return None
+            from auto_apply.domain.types import Locator  # noqa: PLC0415
+
+            confidence = 0
+
+            # URL keywords — weight 30.
+            try:
+                current_url = (getattr(browser, "current_url", "") or "").lower()
+                if any(k in current_url for k in self._P12_URL_KEYWORDS):
+                    confidence += 30
+            except Exception:
+                pass
+
+            # Title keywords — weight 30.
+            try:
+                title = (getattr(browser, "title", "") or "").lower()
+                if any(k in title for k in self._P12_TITLE_KEYWORDS):
+                    confidence += 30
+            except Exception:
+                pass
+
+            # Challenge iframe — weight 40. A merely-loaded vendor library
+            # is a <script>, not an <iframe>; this is the check that
+            # separates "presented" from "loaded", the false positive under
+            # measurement.
+            try:
+                for keyword in self._P12_IFRAME_KEYWORDS:
+                    if browser.find_elements(
+                        Locator.XPATH,
+                        f"//iframe[contains(@src, '{keyword}')]",
+                    ):
+                        confidence += 40
+                        break
+            except Exception:
+                pass
+
+            # Challenge text on the page — weight 40.
+            try:
+                text_conditions = " or ".join(
+                    f"contains(., '{kw}')" for kw in self._P12_TEXT_KEYWORDS
+                )
+                deep_scan_xpath = (
+                    "//body//*[not(self::script or self::style)]"
+                    f"[text()[{text_conditions}]]"
+                )
+                if browser.find_elements(Locator.XPATH, deep_scan_xpath):
+                    confidence += 40
+            except Exception:
+                pass
+
+            return confidence >= self._P12_CONFIDENCE_THRESHOLD
+        except Exception as exc:
+            logger.debug(
+                "ApplicationsWorkflow: weighted block verdict unavailable "
+                "(non-fatal): %s",
+                exc,
+            )
+            return None
+
+    def _p12_log_block_comparison(
+        self,
+        *,
+        verdict_context: str,
+        matched: str,
+        current_url: str,
+        page_source: str,
+        weighted: bool | None,
+    ) -> None:
+        """TEMPORARY (predicate 12): log both verdicts; dump on disagreement.
+
+        Never raises. ``weighted`` is the multi-signal verdict (None when it
+        could not be computed). The substring/heuristic verdict is True by
+        construction of both call sites, so ``agree=yes`` means both agree
+        the page is a challenge and ``agree=no`` means only the raw scan
+        flagged it — exactly the population this run exists to measure.
+        """
+        try:
+            form_count = page_source.lower().count("<form")
+            iframe_count = page_source.lower().count("<iframe")
+            page_bytes = len(page_source)
+            if weighted is None:
+                weighted_str = "unavailable"
+                agree = "unknown"
+            else:
+                weighted_str = str(weighted).lower()
+                agree = "yes" if weighted else "no"
+            logger.info(
+                "ApplicationsWorkflow: block-detector comparison | url=%s "
+                "context=%s substring=%s weighted=%s agree=%s "
+                "forms=%d iframes=%d page_bytes=%d",
+                current_url,
+                verdict_context,
+                matched,
+                weighted_str,
+                agree,
+                form_count,
+                iframe_count,
+                page_bytes,
+            )
+            if weighted is False:
+                # Raw scan said blocked; weighted says it is not a
+                # challenge. Persist the page for triage.
+                self._p12_dump_sample(current_url, page_source, verdict_context)
+        except Exception as exc:
+            logger.debug(
+                "ApplicationsWorkflow: block-detector comparison failed "
+                "(non-fatal): %s",
+                exc,
+            )
+
+    def _p12_dump_sample(
+        self, current_url: str, page_source: str, verdict_context: str
+    ) -> None:
+        """TEMPORARY (predicate 12): persist a disagreement page for triage.
+
+        Bounded to _P12_DUMP_CAP files in the sample directory total (not
+        merely per session — accumulation across sessions is what actually
+        fills a USB stick). Logs once per session when the cap is reached.
+        Never raises.
+        """
+        try:
+            from auto_apply.domain.config import USER_DATA_DIR  # noqa: PLC0415
+
+            dump_dir = USER_DATA_DIR / self._P12_DUMP_DIR_NAME
+            try:
+                existing = (
+                    len(list(dump_dir.glob("*.html"))) if dump_dir.is_dir() else 0
+                )
+            except Exception:
+                existing = 0
+            if existing >= self._P12_DUMP_CAP:
+                if not self._p12_dump_cap_logged:
+                    self._p12_dump_cap_logged = True
+                    logger.warning(
+                        "ApplicationsWorkflow: detector sample cap (%d files) "
+                        "reached in %s — further disagreements are logged "
+                        "but not dumped.",
+                        self._P12_DUMP_CAP,
+                        dump_dir,
+                    )
+                return
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            url_hash = hashlib.sha256(
+                (current_url or "unknown").encode("utf-8", errors="replace")
+            ).hexdigest()[:12]
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            sample_path = dump_dir / f"{stamp}_{url_hash}.html"
+            header = (
+                f"<!-- detector-sample | url: {current_url}\n"
+                f"     context: {verdict_context} | substring/heuristic: "
+                f"blocked | weighted: not-blocked\n"
+                f"     captured: {stamp} | predicate 12 temporary diagnostic\n"
+                f"-->\n"
+            )
+            sample_path.write_text(
+                header + page_source, encoding="utf-8", errors="replace"
+            )
+            logger.info(
+                "ApplicationsWorkflow: block-detector disagreement — page "
+                "dumped for triage | path=%s",
+                sample_path,
+            )
+        except Exception as exc:
+            logger.debug(
+                "ApplicationsWorkflow: detector sample dump failed "
+                "(non-fatal): %s",
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Submission gate

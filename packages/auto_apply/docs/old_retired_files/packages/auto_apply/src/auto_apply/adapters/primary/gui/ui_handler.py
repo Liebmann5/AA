@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/primary/gui/ui_handler.py
 """Provides a custom logging handler to redirect log messages to the Tkinter UI.
 
 This module contains the `UIMessageHandler`, a custom class that inherits from

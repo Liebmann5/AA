@@ -1,3 +1,5 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/network/urllib_http_client.py
+
 """HTTPClientPort adapter backed by stdlib urllib — zero extra dependencies.
 
 This is the default HTTP client for worst-case environments (no ``requests``

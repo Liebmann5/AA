@@ -1,4 +1,3 @@
-
 """Pins for composition-root construction of the PageActionService tool (Stage 1).
 
 ``PageActionService`` is 876 lines of port-only, config-driven, seeded browser
@@ -12,7 +11,9 @@ These pins hold the tool on the live path:
     * it receives a namespaced seeded RNG (never a bare ``random.Random()``),
     * it is handed to the ``InteractionExecutor`` that every engine already
       receives as ``interaction_port``,
-    * and its absence in static (no-driver) mode is still a clean build.
+    * and an exhausted cascade refuses startup before any of it is built —
+      the replacement for the old "static fallback builds anyway" pin, which
+      asserted a fallback that never actually existed.
 """
 import ast
 import pathlib
@@ -83,15 +84,19 @@ def test_the_tool_is_injected_into_the_interaction_executor():
     )
 
 
-def test_static_mode_builds_without_a_tool_and_without_raising():
-    """Worst-case degradation: no driver → no tool, no crash, no browser calls.
+def test_an_exhausted_cascade_refuses_before_any_tool_is_built():
+    """No driver from the cascade → BrowserSetupError, before the tool exists.
 
-    ``interaction_port`` is already None without a driver; this pin proves the
-    new construction does not introduce a driver assumption into the static
-    (zero-browser) path that worst-case users depend on.
+    Pre-P6 this pinned the static fallback: build_orchestrator quietly
+    continued with driver=None and nobody was told — a session that could not
+    discover, vet or apply to anything. That fallback was never real (no
+    static discovery provider exists), so build_orchestrator now raises
+    BrowserSetupError on the refusal path instead of building an idle session.
     """
+    import pytest  # noqa: PLC0415
     from unittest.mock import patch
 
+    from auto_apply.domain.exceptions import BrowserSetupError  # noqa: PLC0415
     from auto_apply.infrastructure.composition_root import build_orchestrator
     from auto_apply.infrastructure.registry import CapabilitiesRegistry
 
@@ -103,6 +108,5 @@ def test_static_mode_builds_without_a_tool_and_without_raising():
         "auto_apply.infrastructure.composition_root.BrowserCascade.acquire_driver",
         return_value=None,
     ):
-        orchestrator = build_orchestrator(registry)
-
-    assert orchestrator is not None
+        with pytest.raises(BrowserSetupError):
+            build_orchestrator(registry)

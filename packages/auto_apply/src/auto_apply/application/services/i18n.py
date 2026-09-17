@@ -46,6 +46,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from auto_apply.domain.services.locale_normalization import normalize_locale
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,6 +126,7 @@ class _LocaleState:
         self.is_rtl: bool = False
         self._strings: dict[str, str] = {}
         self._fallback_strings: dict[str, str] = {}
+        self._configured: bool = False
 
     def configure(
         self,
@@ -137,9 +140,20 @@ class _LocaleState:
         Called once at startup by SessionController. After this call,
         all get_text() and format_*() calls use the configured locale.
 
+        Idempotency: repeated bare calls (every get_strings() invocation is
+        one) used to re-run detection and re-log "Locale configured" — the
+        measured source of three configurations in the first 13 seconds of a
+        run. A no-arg call after any successful configuration is a no-op:
+        no re-detection, no file re-reads, no duplicate log line. An explicit
+        language/country/currency always applies.
+
         Args:
             language: ISO 639-1 language code (e.g., "en", "es", "ja").
-                If None, auto-detected from the OS.
+                If None, auto-detected from the OS. Any other value is
+                normalised through domain.services.locale_normalization —
+                an unrecognised value (e.g. the string "None" from a
+                hand-edited profile) is treated as unset and detected,
+                never fabricated into a lookup for locales/<garbage>.json.
             country: ISO 3166-1 country code (e.g., "US", "GB", "JP").
                 If None, auto-detected from the OS.
             currency: ISO 4217 currency code (e.g., "USD", "GBP").
@@ -147,13 +161,39 @@ class _LocaleState:
             locales_dir: Path to the directory containing locale JSON files.
                 If None, uses the default resources/locales/ directory.
         """
+        if (
+            self._configured
+            and locales_dir is None
+            and language is None
+            and country is None
+            and currency is None
+        ):
+            return
+
+        # Normalise an explicit language value through the same ISO
+        # normaliser the OS-detection path uses, so "en-US", "English" and
+        # "en" resolve identically here and in every other caller.
+        if language is not None:
+            explicit = normalize_locale(language)
+            if explicit is None:
+                logger.info(
+                    "Locale value %r is not a recognised ISO locale code — "
+                    "ignoring it and detecting from the OS instead",
+                    language,
+                )
+                language = None
+            else:
+                language = explicit[0]
+                if country is None:
+                    country = explicit[1]
+
         if language is None or country is None:
             detected_lang, detected_country = detect_locale()
             language = language or detected_lang
             country = country or detected_country
 
         self.language_code = language.lower()
-        self.country_code = country.upper()
+        self.country_code = (country or "US").upper()
         self.is_rtl = self.language_code in RTL_LANGUAGES
 
         # Resolve currency
@@ -172,11 +212,21 @@ class _LocaleState:
 
         self._fallback_strings = _load_string_bundle(locales_dir / "en.json")
         if self.language_code != "en":
-            self._strings = _load_string_bundle(
-                locales_dir / f"{self.language_code}.json"
-            )
+            bundle_path = locales_dir / f"{self.language_code}.json"
+            if bundle_path.is_file():
+                self._strings = _load_string_bundle(bundle_path)
+            else:
+                # A valid ISO code with no translation file is a different
+                # fact from an unrecognised OS locale — say so honestly.
+                logger.info(
+                    "No translation file for locale %r — falling back to English",
+                    self.language_code,
+                )
+                self._strings = self._fallback_strings
         else:
             self._strings = self._fallback_strings
+
+        self._configured = True
 
         logger.info(
             "Locale configured | lang=%s country=%s currency=%s rtl=%s",
@@ -388,21 +438,40 @@ def get_available_currencies() -> dict[str, str]:
 def detect_locale() -> tuple[str, str]:
     """Detects the OS locale and returns (language_code, country_code).
 
+    Delegates normalisation to domain.services.locale_normalization — the
+    single answering site for "what locale is this?", shared with the
+    browser providers. Values the OS reports that cannot be mapped to a real
+    ISO code (e.g. the C/POSIX locales, which mean "no locale") fall back to
+    the default WITHOUT fabricating a lookup for a locale file that cannot
+    exist, and the log names what the OS actually reported rather than
+    claiming a locale file is missing — those are different facts.
+
     Returns:
-        A tuple of (language, country) strings. Falls back to ("en", "US")
-        if detection fails.
+        A tuple of (language, country) strings, e.g. ("en", "US").
+        Falls back to ("en", "US") when the OS value is unusable.
     """
+    raw: str | None = None
     try:
         raw = locale.getlocale()[0]
-        if raw:
-            parts = raw.replace("-", "_").split("_")
-            lang = parts[0].lower()
-            country = parts[1].upper() if len(parts) > 1 else "US"
-            return lang, country
     except Exception:
-        logger.debug("Locale auto-detection failed — falling back to en_US")
+        raw = None
 
-    return "en", "US"
+    normalised = normalize_locale(raw)
+    if normalised is None:
+        if raw:
+            logger.info(
+                "OS locale %r could not be mapped to an ISO locale code — "
+                "using the default locale (en, US)",
+                raw,
+            )
+        else:
+            logger.info(
+                "No OS locale detected — using the default locale (en, US)"
+            )
+        return "en", "US"
+
+    lang, country = normalised
+    return lang, country or "US"
 
 
 def _load_string_bundle(path: Path) -> dict[str, str]:

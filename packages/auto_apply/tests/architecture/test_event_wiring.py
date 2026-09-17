@@ -110,45 +110,26 @@ _EVENTS_MODULE = _SRC_DIR / "domain" / "events.py"
 _DELIBERATELY_UNEXEMPTED: dict[str, str] = {}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Exemption inventory — 13 published-never-subscribed telemetry events plus
-# the 24 enum members nothing uses yet. Every entry is (tag, proof). Wiring
-# an event deletes its entry; the count can only fall.
+# Exemption inventory — 4 published-never-subscribed telemetry events plus
+# the 24 enum members nothing uses yet (28 total). Every entry is (tag, proof).
+# Wiring an event deletes its entry; the count can only fall.
+#
+# Down from 37: APPLICATION_SUBMITTED, APPLICATION_FAILED, JOB_VETTED_PASS,
+# JOB_VETTED_FAIL, JOBS_DISCOVERED, DISCOVERY_COMPLETE, PROVIDER_BENCHED and
+# TASK_PERMANENTLY_FAILED were deleted 2026-09-09 when SessionController's
+# _subscribe_session_events began listening for them (its subscriptions are
+# written out one per line for exactly this pin — see session_controller.py).
+# Down from 29: TASK_SKIPPED_DUPLICATE was deleted when SessionController
+# subscribed to it for the D1 activity projection.
 # ─────────────────────────────────────────────────────────────────────────────
 
 KNOWN_UNWIRED_EVENTS: dict[str, tuple[str, str]] = {
-    # ── Published-never-subscribed telemetry (13) ────────────────────────────
+    # ── Published-never-subscribed telemetry (4) ────────────────────────────
     "CAPTCHA_DETECTED": (
         "WIRE-LATER",
         "Published by ApplicationsWorkflow before enqueueing HANDLE_CAPTCHA; "
         "the task queue is the actual hand-off mechanism, the event is "
         "informational telemetry with no consumer yet.",
-    ),
-    "APPLICATION_FAILED": (
-        "WIRE-LATER",
-        "Published via ternary in applications_workflow.py; stats already "
-        "flow via update_stats, so the event is currently redundant telemetry.",
-    ),
-    "APPLICATION_SUBMITTED": (
-        "WIRE-LATER",
-        "Same shape as APPLICATION_FAILED.",
-    ),
-    "JOB_VETTED_PASS": (
-        "WIRE-LATER",
-        "Published via ternary in vetting_workflow.py; stats flow via "
-        "update_stats('vetted'), so the event awaits a dashboard/research "
-        "consumer that does not exist yet.",
-    ),
-    "JOB_VETTED_FAIL": (
-        "WIRE-LATER",
-        "Same shape as JOB_VETTED_PASS.",
-    ),
-    "JOBS_DISCOVERED": (
-        "WIRE-LATER",
-        "Published by DiscoveryWorkflow after enqueueing VET tasks; no consumer.",
-    ),
-    "DISCOVERY_COMPLETE": (
-        "WIRE-LATER",
-        "Aggregate stats payload published per discovery round; no consumer.",
     ),
     "FORM_FIELD_FILLED": (
         "WIRE-LATER",
@@ -160,20 +141,6 @@ KNOWN_UNWIRED_EVENTS: dict[str, tuple[str, str]] = {
     "FORM_FIELD_FAILED": (
         "WIRE-LATER",
         "Same retired subscriber as FORM_FIELD_FILLED.",
-    ),
-    "TASK_PERMANENTLY_FAILED": (
-        "WIRE-LATER",
-        "Published by orchestrator._handle_task_error after retry exhaustion; "
-        "no consumer.",
-    ),
-    "TASK_SKIPPED_DUPLICATE": (
-        "WIRE-LATER",
-        "Published by DiscoveryWorkflow on dedup skip; no consumer.",
-    ),
-    "PROVIDER_BENCHED": (
-        "WIRE-LATER",
-        "Published by the degradation detector; benching is already logged "
-        "at WARNING (fail-loud in logs), so the event is dashboard telemetry.",
     ),
     "BROWSER_HEALTHY": (
         "WIRE-LATER",
@@ -259,7 +226,9 @@ KNOWN_UNWIRED_EVENTS: dict[str, tuple[str, str]] = {
 
 # Ceiling, not equality. A lower count is success — remove entries as events
 # get wired. Only a newly unwired event may push the count up, with a reason.
-MAX_EXEMPTIONS = 37
+# Was 37; dropped to 29 alongside the 2026-09-09 deletions; dropped to 28 when
+# TASK_SKIPPED_DUPLICATE became subscribed by SessionController (D1).
+MAX_EXEMPTIONS = 28
 
 
 # ─────────────────────────────────────────────────────────────────────────────

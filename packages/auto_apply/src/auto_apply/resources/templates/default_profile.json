@@ -13,7 +13,7 @@
     "country": "United Kingdom",
     "pronouns": "None",
     "citizenships": ["UK", "US"],
-    "resume_path": "C:\Users\SexySlowOldman\Documents\Resume.pdf",
+    "resume_path": "C:\\Users\\SexySlowOldman\\Documents\\Resume.pdf",
     "cover_letter": "Test 1 2 1 2"
   },
   "links": {
@@ -90,7 +90,7 @@
     "use_proxies": false,
     "daily_application_limit": 200,
     "enable_behavior_humanization": true,
-    "human_review_checkpoints": true,
+    "human_review_checkpoints": true
   },
   "politeness_settings": {
     "respect_robots_txt": false

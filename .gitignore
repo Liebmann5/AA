@@ -55,3 +55,10 @@ session_log*.txt
 measure_*.txt
 
 packages/auto_apply/dev_data/
+
+# Exported profiles carry real name, email, phone and address.
+# AA's export dialog can write anywhere, including here.
+*.profile.json
+packages/*.json
+/aa_results_*.csv
+packages/**/aa_results_*.csv

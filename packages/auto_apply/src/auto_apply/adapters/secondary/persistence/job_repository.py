@@ -159,7 +159,7 @@ class JobRepository(JobRepositoryPort):
         jobs = []
         with self.db.get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM job_history ORDER BY last_updated DESC LIMIT ?",
+                "SELECT * FROM job_history ORDER BY applied_at DESC LIMIT ?",
                 (limit,)
             ).fetchall()
 
@@ -171,3 +171,11 @@ class JobRepository(JobRepositoryPort):
                     source="history",
                 ))
         return jobs
+
+    def get_jobs_for_session(self, session_id: str, status: str | None = None) -> list[Job]:
+        """Returns every job recorded for one session, newest first.
+
+        Delegates to DatabaseManager.get_jobs_for_session — the SQL lives in
+        exactly one place (the DB), and this adapter stays a semantic facade.
+        """
+        return self.db.get_jobs_for_session(session_id, status=status)

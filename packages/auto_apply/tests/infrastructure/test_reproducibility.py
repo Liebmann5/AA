@@ -364,7 +364,7 @@ class TestCompositionRootNamespacing:
 
     def test_build_orchestrator_make_rng_called_with_at_least_four_namespaces(self):
         """Verify that ``make_rng()`` is invoked with at least four different
-        namespace strings during a normal (non‑static, driver‑provided) build.
+        namespace strings during a normal (driver‑provided) build.
         """
         bp_mock = MagicMock(wraps=_make_session_behavior(0))
         bp_mock.make_rng = MagicMock(
@@ -382,13 +382,20 @@ class TestCompositionRootNamespacing:
             container. Exercising both lambdas directly here proves they're
             each still correctly wired to a namespaced make_rng() call,
             without depending on a real browser being present.
+
+            Returns a MagicMock driver: every attribute downstream is a
+            stubbed MagicMock, so no real browser, network, or session is
+            dragged into the test. Pre-P6 this returned None with a comment
+            about falling back to static mode; that fallback is deleted, and
+            None now triggers the startup refusal, so the driver must be
+            truthy for the build to reach the downstream make_rng call sites.
             """
             raw = MagicMock()
             raw._pw_browser = MagicMock()
             raw._pw_playwright = MagicMock()
             self._adapter_map["selenium"](raw)
             self._adapter_map["playwright"](raw)
-            return None  # fall back to static mode; only the RNG wiring matters here
+            return MagicMock()
 
         with (
             patch(
@@ -419,8 +426,8 @@ class TestCompositionRootNamespacing:
             # bp_mock. Wire the classmethod's return value explicitly.
             mock_bp_cls.from_config.return_value = bp_mock
 
-            # We call build_orchestrator with a real‑enough registry and a
-            # mock driver so that the adapter/injector paths execute.
+            # We call build_orchestrator with a real‑enough registry so that
+            # the adapter/injector paths execute.
             from auto_apply.infrastructure.composition_root import build_orchestrator
             from auto_apply.infrastructure.registry import CapabilitiesRegistry
 
