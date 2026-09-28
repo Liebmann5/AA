@@ -40,6 +40,7 @@ from auto_apply.domain.services.job_lifecycle_tracker import (
     days_live,
     update_lifecycle,
 )
+from auto_apply.domain.services.research_identity import resolve_research_salt
 from auto_apply.domain.services.research_statistics import percentile
 from auto_apply.domain.services.signal_detectors import (
     DetectionContext,
@@ -153,6 +154,12 @@ CREATE INDEX IF NOT EXISTS idx_outcomes_platform ON application_outcomes(platfor
 """
 
 
+#: user_version value stamping the item-4a company-identity migration. Rows
+#: written before it carry company_id values minted under the two retired
+#: constructions and are nulled exactly once, at first open.
+_COMPANY_IDENTITY_MIGRATION_VERSION: int = 3
+
+
 class ResearchSignalAggregator(ResearchObserverPort):
     """Daemon-thread adapter that persists research signals to SQLite.
 
@@ -214,18 +221,74 @@ class ResearchSignalAggregator(ResearchObserverPort):
         self._discovery_observation_count: int = 0
 
         if self._enabled:
+            # The salt is resolved HERE — at adapter construction, not at the
+            # first observation (item 4a, ruling R1). Every downstream path
+            # into the detectors wraps detection in try/except
+            # (run_all_detectors swallows per-detector; the workflows swallow
+            # per observation), so a salt that first failed inside
+            # compute_company_id would degrade to a run that produces zero
+            # research rows while looking healthy. ResearchSaltError must
+            # propagate out of this constructor: composition_root.py has not
+            # been re-verified for this change, and any wrapper there that
+            # catches it and degrades to NullResearchObserver re-creates the
+            # silent shape this raise exists to prevent.
+            resolve_research_salt()
             self._initialize_db()
 
     def _initialize_db(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist, then run the one-time migration."""
         try:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             with self._get_connection() as conn:
                 conn.executescript(_SCHEMA_SQL)
+                self._null_legacy_company_ids(conn)
             logger.info("ResearchSignalAggregator | DB initialized at %s", self._db_path)
         except Exception as exc:
             logger.error("ResearchSignalAggregator | DB init failed: %s", exc)
             self._enabled = False
+
+    def _null_legacy_company_ids(self, conn: sqlite3.Connection) -> None:
+        """NULL every pre-migration research ``company_id``, exactly once.
+
+        Rows written before item 4a carry a company_id minted under one of
+        the two retired constructions — HMAC-SHA256 with a possibly-default
+        salt (detector path) or SHA-256(name + salt) (application path).
+        Neither value can be re-derived (the names were never stored) and the
+        two schemes cannot join to each other or to new rows. A value that
+        cannot join, sitting in a column whose whole purpose is joining, is
+        plausible-looking data that would be counted as data — so, per the
+        FetchedDescription precedent, it is made visibly absent. Everything
+        else on the row (signal type, severity, dates, evidence) survives;
+        corpus counts remain valid. Old provenance signatures also survive:
+        the signed content assembled in _write_batch does not cover
+        company_id.
+
+        Idempotent via ``PRAGMA user_version``: runs only when the database
+        predates the marker, is a no-op on an empty or freshly created
+        database, and never touches rows written afterwards.
+        job_lifecycles.company_id and form_observations.company_id need no
+        migration: nothing has ever written them (_save_lifecycle hardcodes
+        NULL; observe_form never passes a company_id).
+        """
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= _COMPANY_IDENTITY_MIGRATION_VERSION:
+            return
+        conn.execute(
+            "UPDATE research_signals SET company_id = NULL "
+            "WHERE company_id IS NOT NULL"
+        )
+        conn.execute(
+            "UPDATE application_outcomes SET company_id = NULL "
+            "WHERE company_id IS NOT NULL"
+        )
+        conn.execute(
+            f"PRAGMA user_version = {_COMPANY_IDENTITY_MIGRATION_VERSION}"
+        )
+        logger.info(
+            "ResearchSignalAggregator | nulled legacy company_id values "
+            "(item 4a migration, user_version -> %d)",
+            _COMPANY_IDENTITY_MIGRATION_VERSION,
+        )
 
     @contextmanager
     def _get_connection(self):

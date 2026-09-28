@@ -60,7 +60,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import random
 import re
 import time
@@ -103,6 +102,7 @@ from auto_apply.domain.ports.research_port import (
     ResearchObserverPort,
 )
 from auto_apply.domain.services.posting_observation import infer_jurisdiction
+from auto_apply.domain.services.research_identity import compute_company_id
 from auto_apply.application.services.page_analysis_router import (
     PageAnalysisRouter,
     PageAnalysisTier,
@@ -2256,10 +2256,7 @@ class ApplicationsWorkflow:
         # ── New research observer: application outcome observation ────────
         if self._research_observer is not None:
             try:
-                salt = os.environ.get("AA_RESEARCH_SALT", "default_dev_salt")
-                company_id = hashlib.sha256(
-                    (job.company or "").lower().encode() + salt.encode()
-                ).hexdigest()[:16]
+                company_id = compute_company_id(job.company)
                 outcome_obs = ApplicationOutcomeObservation(
                     platform=getattr(job, "source", "unknown"),
                     company_id=company_id,

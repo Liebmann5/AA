@@ -82,8 +82,10 @@ def test_aggregator_observation_with_start_then_stop(aggregator):
 # Consent gate tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_aggregator_consent_gate():
+def test_aggregator_consent_gate(monkeypatch):
     """ResearchSignalAggregator only runs when consent is active."""
+    # An enabled aggregator resolves AA_RESEARCH_SALT at construction (item 4a).
+    monkeypatch.setenv("AA_RESEARCH_SALT", "consent-gate-test-salt")
     repo = InMemoryConsentRepository()
     mgr = ResearchConsentManager(repo)
     assert not mgr.is_active()

@@ -9,7 +9,8 @@ The three company identities, all real and all correct in their own lane:
 
   RESEARCH    a salted digest of the company name, written to the ``company_id``
               column of ``research_signals`` and ``application_outcomes``.
-              TWO INCOMPATIBLE SCHEMES exist today — see the ratchet below.
+              ONE SCHEME since item 4a — HMAC-SHA256, minted only in
+              domain/services/research_identity.py; see the ratchet below.
   THROTTLING  the RAW company name, used by ``throttling_filter`` for the
               per-company cap and cooldown. Must never be hashed: the cap is
               a user-facing promise, not a research measurement.
@@ -33,10 +34,13 @@ Four instruments, honestly labelled:
            the inventory moves on purpose, in the change that moves it.
 
   TEETH    test_research_company_identity_has_one_definition
+           Carried ``xfail(strict=True)`` until item 4a landed; strict turned
+           the XPASS into a failure and the marker was deleted in the change
+           that collapsed the two schemes. Now live and must stay live.
   TEETH    test_posting_identity_has_exactly_one_definition
-           Both assert the END state and therefore FAIL TODAY, so both carry
-           ``xfail(strict=True)``. Strict matters: when the work lands, these
-           XPASS, pytest turns an unexpected pass into a failure, and the
+           Still asserts the END state and still FAILS TODAY, so it keeps its
+           ``xfail(strict=True)``. Strict matters: when the work lands, it
+           XPASSes, pytest turns an unexpected pass into a failure, and the
            change that fixed the defect is forced to delete its own marker.
            A pin that can be silently outgrown is not a pin.
 
@@ -46,8 +50,10 @@ Four instruments, honestly labelled:
            silently change how many applications a user may send.
 
   GUARD    test_the_identity_scan_finds_the_known_sites
+  GUARD    test_the_identity_scan_no_longer_sees_the_retired_sites
            A scan that stopped finding anything would pass all three ratchets
-           by accident.
+           by accident; the retired sites must stay retired, because the day
+           one of them reappears, the join key has forked again.
 """
 from __future__ import annotations
 
@@ -346,19 +352,24 @@ def _consumer_sites(target_suffix: str) -> dict[str, int]:
 
 # ── RATCHET: who mints a research company identity ───────────────────────────
 #
-# TWO schemes writing ONE column. hmac-sha256(key=salt, msg=name) and
-# sha256(name + salt) are different digests of the same input, so a row from
-# the detector path can never join a row from the application path, on tables
-# that carry idx_signals_company and idx_outcomes_company precisely so they
-# can. Item 4 collapses these to the HMAC construction, which is the one that
-# uses the salt as a key rather than as appended data.
+# ONE scheme, ONE site. Item 4a collapsed the two constructions — hmac-sha256
+# (key=salt, msg=name) in the detector path and sha256(name + salt) in the
+# application path — into compute_company_id in research_identity.py. Rows
+# the two old schemes produced are nulled by the aggregator's one-time
+# migration.
+#
+# The salt source reads "none" because the scan cannot follow
+# resolve_research_salt() — the os.environ.get lives one call away BY DESIGN,
+# so that no hashing site can ever read (or default) the salt itself. "none"
+# is the assertion here, not a gap: any FUTURE site reporting a readable salt
+# source has re-inlined what item 4a removed. The limit worth naming: a
+# hard-coded literal salt would ALSO report "none" — the scan cannot tell
+# centralised resolution from a buried literal, so read this file's diff
+# whenever this map changes.
 #
 EXPECTED_COMPANY_IDENTITY_SITES: dict[str, IdentitySite] = {
-    "application/workflows/applications_workflow.py": IdentitySite(
-        sites=1, scheme="sha256-concat", salt="AA_RESEARCH_SALT"
-    ),
-    "domain/services/signal_detectors/base.py": IdentitySite(
-        sites=1, scheme="hmac-sha256", salt="<RESEARCH_SALT_ENV_VAR>"
+    "domain/services/research_identity.py": IdentitySite(
+        sites=1, scheme="hmac-sha256", salt="none"
     ),
 }
 
@@ -366,10 +377,11 @@ EXPECTED_COMPANY_IDENTITY_SITES: dict[str, IdentitySite] = {
 def test_research_company_identity_sites() -> None:
     """RATCHET: the exact set of places that mint a research ``company_id``.
 
-    Two today, with two different constructions. This asserts them exactly so
-    a third cannot arrive quietly — which is how the second one arrived. The
-    salt source is part of the map because a site that hard-coded its salt
-    would hash identically to nothing else and look perfectly fine.
+    One today, by construction. This asserts it exactly so a second cannot
+    arrive quietly — which is how the retired sha256-concat site arrived.
+    The salt source is part of the map because a site that hard-coded its
+    salt would hash identically to nothing else and look perfectly fine; see
+    the comment above the map for what "none" certifies and what it cannot.
     """
     actual = _identity_sites("company_id")
     assert actual == EXPECTED_COMPANY_IDENTITY_SITES, (
@@ -385,15 +397,6 @@ def test_research_company_identity_sites() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Two incompatible research company hashes exist today (item 4 "
-        "collapses them to HMAC-SHA256). When it lands this XPASSes, strict "
-        "turns that into a failure, and this marker must be deleted in the "
-        "same change."
-    ),
-)
 def test_research_company_identity_has_one_definition() -> None:
     """TEETH: one column, one construction, one salt source.
 
@@ -473,10 +476,14 @@ def test_posting_identity_sites() -> None:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "posting_hash has never been computed anywhere (item 2 mints it in a "
-        "domain module, once the description is actually available). When it "
-        "lands this XPASSes, strict turns that into a failure, and this "
-        "marker must be deleted in the same change."
+        "posting_hash has never been computed anywhere. Item 4a ruled the "
+        "basis — (title, company, normalised description body), specified in "
+        "that call's Part B — but deferred minting until the "
+        "stability/distinctness check in the ruling has been run against "
+        "real pages: the basis is settled, the evidence for it is not. When "
+        "minting lands in research_identity.compute_posting_hash this "
+        "XPASSes, strict turns that into a failure, and this marker must be "
+        "deleted in the same change."
     ),
 )
 def test_posting_identity_has_exactly_one_definition() -> None:
@@ -493,10 +500,10 @@ def test_posting_identity_has_exactly_one_definition() -> None:
         "It is a join key across discovery, vetting and application; it needs "
         "exactly one definition."
     )
-    module = SRC / "domain" / "services" / "posting_identity.py"
+    module = SRC / "domain" / "services" / "research_identity.py"
     assert module.exists(), (
         "the posting identity is computed somewhere other than "
-        "domain/services/posting_identity.py. A join key that three layers "
+        "domain/services/research_identity.py. A join key that three layers "
         "read belongs in the domain, not inside whichever workflow happened "
         "to need it first."
     )
@@ -523,8 +530,8 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     "application/workflows/applications_workflow.py": ["hashlib.sha256"],
     "domain/models/math_dom.py": ["hashlib.md5"],
     "domain/models/timing.py": ["hashlib.sha256"],
+    "domain/services/research_identity.py": ["hmac.new"],
     "domain/services/signal_detectors/__init__.py": ["hashlib.sha256"],
-    "domain/services/signal_detectors/base.py": ["hmac.new"],
     "domain/services/structural_hashing.py": ["hashlib.md5"],
 }
 
@@ -640,16 +647,15 @@ def test_throttling_filter_keeps_the_raw_company_name() -> None:
 @pytest.mark.parametrize(
     "known_site",
     [
-        "domain/services/signal_detectors/base.py",
-        "application/workflows/applications_workflow.py",
+        "domain/services/research_identity.py",
     ],
 )
 def test_the_identity_scan_finds_the_known_sites(known_site: str) -> None:
-    """GUARD: the walk still reaches both known company-hash sites.
+    """GUARD: the walk still reaches the one known company-hash site.
 
     A scan that silently stopped parsing ``src`` would satisfy every ratchet
-    above by finding nothing. These two sites are the reason this file exists;
-    if the scan cannot see them, the instrument is broken, not the code.
+    above by finding nothing. This site is the reason this file exists; if
+    the scan cannot see it, the instrument is broken, not the code.
     """
     assert known_site in _identity_sites("company_id"), (
         f"the identity scan no longer finds {known_site}. Either the site "
@@ -658,17 +664,41 @@ def test_the_identity_scan_finds_the_known_sites(known_site: str) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "retired_site",
+    [
+        "domain/services/signal_detectors/base.py",
+        "application/workflows/applications_workflow.py",
+    ],
+)
+def test_the_identity_scan_no_longer_sees_the_retired_sites(retired_site: str) -> None:
+    """GUARD: the two retired minting sites stay retired.
+
+    These modules held the two incompatible constructions item 4a collapsed.
+    They still bind ``company_id`` — as forwarders, not minters — and the
+    scan must keep distinguishing the two, because the day one of them
+    reappears in this map is the day the join key forked again.
+    """
+    assert retired_site not in _identity_sites("company_id"), (
+        f"{retired_site} is minting a research company_id again. Item 4a "
+        "collapsed that construction into domain/services/research_identity.py; "
+        "whatever changed there must delegate to compute_company_id, not "
+        "re-inline a digest."
+    )
+
+
 def test_the_digest_scan_covers_both_hash_families() -> None:
     """GUARD: the widest scan sees the structural family and the research one.
 
-    ``structural_hashing`` is the math subsystem's; ``signal_detectors/base``
-    is research's. One scan covering both is what makes
+    ``structural_hashing`` is the math subsystem's; ``research_identity`` is
+    research's — it was ``signal_detectors/base`` until item 4a moved the
+    company hash out of it. One scan covering both is what makes
     ``test_hash_families_stay_disjoint`` meaningful.
     """
     modules = _digest_modules()
     assert "domain/services/structural_hashing.py" in modules, (
         "the digest scan lost the structural hash family"
     )
-    assert "domain/services/signal_detectors/base.py" in modules, (
+    assert "domain/services/research_identity.py" in modules, (
         "the digest scan lost the research hash family"
     )

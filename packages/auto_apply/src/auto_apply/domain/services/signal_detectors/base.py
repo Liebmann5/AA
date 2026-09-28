@@ -7,21 +7,18 @@ This makes every detector testable without a browser, a database, or a network.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
-import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Protocol, runtime_checkable
 
 from auto_apply.domain.constants import (
-    RESEARCH_SALT_ENV_VAR,
     RESEARCH_SCHEMA_VERSION,
     SEVERITY_FLAG,
     SEVERITY_CONCERN,
     SEVERITY_VIOLATION,
 )
+from auto_apply.domain.services.research_identity import compute_company_id
 
 
 @dataclass(frozen=True)
@@ -90,15 +87,6 @@ class ResearchSignal:
         Returns:
             A new ResearchSignal with anonymized company_id.
         """
-        company_id: str | None = None
-        if company_name:
-            salt = os.environ.get(RESEARCH_SALT_ENV_VAR, "default_dev_salt")
-            company_id = hmac.new(
-                salt.encode(),
-                company_name.lower().encode(),
-                hashlib.sha256,
-            ).hexdigest()[:16]
-
         return cls(
             signal_id=str(uuid.uuid4()),
             signal_type=signal_type,
@@ -107,7 +95,7 @@ class ResearchSignal:
             evidence_text=evidence_text[:200],
             platform=platform,
             jurisdiction=jurisdiction,
-            company_id=company_id,
+            company_id=compute_company_id(company_name),
             job_category=job_category,
         )
 

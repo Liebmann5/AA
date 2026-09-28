@@ -114,13 +114,17 @@ class ApplicationOutcomeObservation:
 
     Attributes:
         platform: ATS or job board identifier.
-        company_id: Anonymized company identifier (already hashed).
+        company_id: Anonymized company identifier (already hashed), or None
+            when the posting carried no company name. None is deliberate: the
+            retired hashing site digested the empty string, so an absent
+            company arrived in the corpus as a real, joinable identity shared
+            by every company-less posting. The column is nullable.
         submitted_date: Date the application was submitted.
         acknowledgment_received: Whether ANY response was received within 30 days.
         acknowledgment_date: Date of acknowledgment, if received.
     """
     platform: str
-    company_id: str
+    company_id: str | None
     submitted_date: date
     acknowledgment_received: bool = False
     acknowledgment_date: date | None = None

@@ -48,12 +48,19 @@ def consent_db(tmp_path):
 
 
 @pytest.fixture
-def aggregator(tmp_path):
+def aggregator(tmp_path, monkeypatch):
     """A ResearchSignalAggregator backed by a fresh SQLite database.
 
     The aggregator is *not* started; call ``.start()`` in tests that need the
     background daemon thread.
+
+    The salt is set here rather than in an autouse fixture, so that every
+    construction site states the dependency: since item 4a an enabled
+    aggregator resolves AA_RESEARCH_SALT at construction and raises
+    ResearchSaltError without one. A test that wants the unset case unsets it
+    itself — see tests/research/test_research_identity.py.
     """
+    monkeypatch.setenv("AA_RESEARCH_SALT", "conftest-research-salt")
     return ResearchSignalAggregator(
         db_path=tmp_path / "research_signals.db",
         consent_version="v2.1",

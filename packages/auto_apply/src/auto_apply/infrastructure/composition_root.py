@@ -479,6 +479,13 @@ def build_orchestrator(  # noqa: PLR0914
     research_observer: ResearchObserverPort = NullResearchObserver()
 
     if registry.is_research_enabled():
+        # Imported BEFORE the try so the `except ResearchSaltError` clause below
+        # can never evaluate an unbound name: an early failure inside the try
+        # would otherwise raise NameError from the handler itself.
+        from auto_apply.domain.services.research_identity import (  # noqa: PLC0415
+            ResearchSaltError,
+        )
+
         try:
             from auto_apply.adapters.secondary.research.sqlite_consent_repository import (  # noqa: PLC0415
                 SqliteConsentRepository,
@@ -512,6 +519,18 @@ def build_orchestrator(  # noqa: PLR0914
                 )
             else:
                 logger.info("Research disabled: consent not granted by user")
+        except ResearchSaltError:
+            # NOT swallowed. Every other research-init failure degrades to
+            # NullResearchObserver, which is right: a broken research database
+            # should not stop someone applying for jobs. A missing salt is
+            # different. The operator granted research consent, so rows WILL be
+            # written; without a salt the retired code wrote them under a
+            # literal published in this source tree, which is not
+            # anonymisation. The remedy is one environment variable, and a
+            # warning here reaches a log a GUI user never opens — so the
+            # session refuses to start, the way it already refuses when no
+            # browser is available.
+            raise
         except Exception as _exc:
             logger.warning(
                 "Research observer failed to initialize — using NullResearchObserver: %s",

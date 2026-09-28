@@ -170,10 +170,30 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+#: Chars per token, measured against the tokenizer on this repository:
+#:     item 2   est 55,533 (@3.6)   exact 40,521   ->  4.93
+#:     item 4a  est 69,665 (@3.6)   exact 51,621   ->  4.86
+#: The old 3.6 was chosen to err high and did, by about a third, on every
+#: per-attachment line of the preflight table that a send decision is made
+#: from. Re-measure and update this if the ratio drifts; the preflight prints
+#: estimate-vs-exact on every call precisely so the drift stays visible.
+EST_CHARS_PER_TOKEN = 4.9
+
+#: The estimate also backs the context-window guard when --no-count is set,
+#: and a LOW reading is the dangerous one there: the request fails after the
+#: dump has been built and sent. A calibrated estimator is as likely to sit
+#: under the truth as over it, so the guard applies this margin explicitly
+#: rather than depending on the estimator being quietly pessimistic.
+EST_WINDOW_SAFETY = 1.35
+
+
 def est_tokens(text: str) -> int:
-    """Local estimate. Code packs denser than prose; 3.6 chars/token is a
-    closer fit for a repo dump than the usual 4.0 and errs on the high side."""
-    return int(len(text) / 3.6) if text else 0
+    """Local estimate, calibrated (see EST_CHARS_PER_TOKEN).
+
+    Used for the cost table and the spend guard. The context-window check
+    scales this by EST_WINDOW_SAFETY when no exact count is available.
+    """
+    return int(len(text) / EST_CHARS_PER_TOKEN) if text else 0
 
 
 def money(x: float) -> str:
@@ -183,6 +203,23 @@ def money(x: float) -> str:
 def cost_of(prompt: int, cached: int, completion: int) -> float:
     fresh = max(prompt - cached, 0)
     return (cached * PRICE_IN_CACHED + fresh * PRICE_IN_FRESH + completion * PRICE_OUT) / 1e6
+
+
+def _attach_label(p: Path) -> str:
+    """The name an attachment is announced under: its repo-relative path.
+
+    The attachment name is the ONLY place the model learns where a file lives.
+    Announcing the bare basename means a model asked to emit
+    ``### EDIT: <full path>`` blocks has to guess each directory. On item 4a it
+    guessed ``tests/pins/`` for a file in ``tests/architecture/`` and the whole
+    batch was correctly rejected — six good files thrown away over a path the
+    model was never told. Falls back to the basename for a file outside the
+    project root, where no relative path exists.
+    """
+    try:
+        return p.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except (ValueError, OSError):
+        return p.name
 
 
 def read_text(p: Path) -> str:
@@ -1757,8 +1794,21 @@ class Applier:
         # suffix match - and even then every anchor must still match there.
         if prop.kind == "edit" and not exists:
             hits = self.index.suffix_matches(rel) if "/" in rel else []
+            how = "unique path-suffix match"
+            if len(hits) != 1:
+                # The suffix rule recovers a DROPPED PREFIX only. A model that
+                # guessed a wrong MIDDLE directory - tests/pins/x.py for a file
+                # in tests/architecture/ - matches no suffix, and that threw
+                # away a whole good batch once. Fall back to a unique basename.
+                # Safe for the same reason: a repathed edit still goes through
+                # _plan_edit, so every SEARCH must resolve in the candidate or
+                # the batch is rejected. The content is the proof, not the name.
+                # basename_matches is a superset of suffix_matches, so an
+                # ambiguous suffix can never become a unique basename here.
+                hits = self.index.basename_matches(rel.rsplit("/", 1)[-1])
+                how = "unique basename match"
             if len(hits) == 1:
-                pl.notes.append(f"path corrected: {rel} -> {hits[0]} (unique match; every SEARCH "
+                pl.notes.append(f"path corrected: {rel} -> {hits[0]} ({how}; every SEARCH "
                                 f"must still match there)")
                 rel = hits[0]
                 target = safe_target(self.root, rel)
@@ -2731,7 +2781,29 @@ def options_from_args(args: argparse.Namespace) -> ApplyOptions:
     )
 
 
+def _preview_path(session, source: Optional[Path]) -> Path:
+    """Where this apply's diff is written.
+
+    A session keeps its own directory, so the diff lives beside the reply it
+    came from. A FILE-based apply used to write OUT_DIR/preview_apply.diff
+    unconditionally, which meant the next FILE-based apply silently destroyed
+    the record of the previous one. Keyed to the source file's stem instead,
+    and kept next to that file when it already sits under .kimi_out.
+    """
+    if session is not None:
+        return session.dir / "preview_apply.diff"
+    if source is None:
+        return OUT_DIR / "preview_apply.diff"
+    name = f"preview_apply_{source.stem}.diff"
+    try:
+        inside = str(source.resolve().parent).startswith(str(OUT_DIR.resolve()))
+    except OSError:
+        inside = False
+    return (source.resolve().parent if inside else OUT_DIR) / name
+
+
 def run_apply(proposals: List[Proposal], args: argparse.Namespace, *,
+             preview_source: Optional[Path] = None,
               blocking: Optional[List[str]] = None, session: Optional["Session"] = None,
               meta: Optional[Dict[str, Any]] = None) -> int:
     blocking = blocking or []
@@ -2767,7 +2839,7 @@ def run_apply(proposals: List[Proposal], args: argparse.Namespace, *,
         print("\nThe reply itself had problems that no later turn fixed:")
         for b in blocking:
             print(f"  !! {b}")
-    preview = (session.dir if session else OUT_DIR) / "preview_apply.diff"
+    preview = _preview_path(session, preview_source)
     changed_lines = applier.write_preview(plans, preview)
 
     if bad or (blocking and not getattr(args, "accept_parse_errors", False)):
@@ -3029,7 +3101,9 @@ def build_context(args: argparse.Namespace) -> Context:
             logger.warning("skipping duplicate attachment: %s", p.name)
             continue
         seen_attach.add(digest)
-        user_chunks.append(f"<attachment name=\"{p.name}\">\n{body}\n</attachment>")
+        user_chunks.append(
+            f"<attachment name=\"{_attach_label(p)}\">\n{body}\n</attachment>"
+        )
         parts.append((f"attach {p.name}", est_tokens(body)))
 
     prompt_text = ""
@@ -3298,7 +3372,12 @@ def preflight(ctx: Context, kimi: Kimi, args: argparse.Namespace) -> bool:
         if exact:
             print(f"  {'input (exact)':<{width}}  {exact:>10,} tok"
                   f"   [tokenizer; local estimate was off by {abs(exact - est) / max(exact, 1):.0%}]")
-    n_in = exact or est
+    # An exact count is authoritative. Without one, guard the window on a
+    # pessimistic reading: est_tokens is calibrated, not conservative.
+    n_in = exact if exact else int(est * EST_WINDOW_SAFETY)
+    if not exact:
+        print(f"  {'window guard uses':<{width}}  {n_in:>10,} tok"
+              f"   [estimate x{EST_WINDOW_SAFETY}; no tokenizer count this call]")
 
     if n_in > CONTEXT_WINDOW:
         print(f"\n  STOP: {n_in:,} tokens exceeds the {CONTEXT_WINDOW:,} context window.")
@@ -3530,7 +3609,9 @@ def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
         chunks: List[str] = []
         for spec in pending_attachments:
             p = Path(spec)
-            chunks.append(f"<attachment name=\"{p.name}\">\n{read_text(p)}\n</attachment>")
+            chunks.append(
+                f"<attachment name=\"{_attach_label(p)}\">\n{read_text(p)}\n</attachment>"
+            )
         pending_attachments.clear()
         chunks.append(line)
         session.messages.append({"role": "user", "content": "\n\n".join(chunks)})
@@ -3754,6 +3835,48 @@ def run_selftest() -> int:
         check("a mis-pathed new file that duplicates an existing one is refused",
               any("mis-pathed" in x for x in mis[0].problems))
 
+        # ---- 8b. an EDIT naming a wrong MIDDLE directory: recovered by
+        # basename, but ONLY because its anchors still match there. This is
+        # the failure that threw away a 23-block batch before the fallback
+        # existed: tests/pins/x.py for a file in tests/architecture/ matches
+        # no path suffix, so the suffix rule alone never fired.
+        WRONGDIR_REPLY = '''### EDIT: pkg/WRONG/lib.py
+<<<<<<< SEARCH
+def helper():
+    return 42
+=======
+def helper():
+    return 43
+>>>>>>> REPLACE
+'''
+        NOANCHOR_REPLY = '''### EDIT: pkg/WRONG/lib.py
+<<<<<<< SEARCH
+def absent_function():
+    pass
+=======
+def absent_function():
+    return None
+>>>>>>> REPLACE
+'''
+        wrongdir, _, _ = props_from(WRONGDIR_REPLY)
+        wd = fresh_applier().validate(wrongdir)
+        check("an EDIT naming a wrong directory is re-pointed by unique basename",
+              not wd[0].problems and wd[0].rel == "pkg/lib.py"
+              and any("unique basename match" in n for n in wd[0].notes),
+              f"{wd[0].rel} problems={wd[0].problems}")
+
+        noanchor, _, _ = props_from(NOANCHOR_REPLY)
+        na = fresh_applier().validate(noanchor)
+        check("a re-pointed file is proved by its anchors, never by its name",
+              bool(na[0].problems), f"accepted, problems={na[0].problems}")
+
+        (root / "pkg" / "other" / "lib.py").write_bytes(b"def helper():\n    return 99\n")
+        amb = fresh_applier().validate(wrongdir)
+        check("two files sharing the basename -> refused, candidates named",
+              bool(amb[0].problems) and "does not exist" in amb[0].problems[0],
+              f"problems={amb[0].problems}")
+        (root / "pkg" / "other" / "lib.py").unlink()
+
         # ---- 9. checks that catch a change that parses but cannot run
         br, _, _ = props_from("### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n"
                               "    return compute_answer()\n>>>>>>> REPLACE\n")
@@ -3968,7 +4091,8 @@ def main() -> int:
         print(f"{f.name}: {len(pr.blocks)} block(s) in {len(props)} file(s).")
         for w in pr.warnings:
             print(f"  warning (line {w.line}): {w.message}")
-        return run_apply(props, args, blocking=blocking, meta={"source": f"file {f.name}"})
+        return run_apply(props, args, blocking=blocking, preview_source=f,
+                         meta={"source": f"file {f.name}"})
 
     # ---- API modes -----------------------------------------------------
     if not API_KEY:
