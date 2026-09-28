@@ -127,7 +127,7 @@ dependencies = [
     "cryptography>=42.0.0,<44.0.0",
 
     # ── System Resource Awareness ─────────────────────────────────────────────
-    "psutil>=5.9.0,<7.0.0",
+    "psutil>=5.9.0,<8.0.0",
 
     # ── Formal Logic Reasoning ────────────────────────────────────────────────
     "clingo>=5.7.0",
