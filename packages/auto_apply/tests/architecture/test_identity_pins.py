@@ -524,6 +524,7 @@ def test_posting_identity_has_exactly_one_definition() -> None:
 #
 EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     "adapters/secondary/persistence/database.py": ["hashlib.sha256"],
+    "adapters/secondary/research/research_exporter.py": ["hashlib.sha256"],
     "adapters/secondary/research/signal_aggregator.py": ["hashlib.sha256"],
     "adapters/secondary/security/data_protection.py": ["hashlib.sha256"],
     "application/services/data_processing/deduplication_manager.py": ["hashlib.md5"],

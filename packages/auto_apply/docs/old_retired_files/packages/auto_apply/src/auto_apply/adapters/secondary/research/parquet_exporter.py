@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/research/parquet_exporter.py
 """
 ParquetExporter — exports research data for academic analysis.
 

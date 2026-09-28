@@ -56,7 +56,8 @@ abstract: >
   identify regions, and structural hashing deliberately ignores CSS class names.
   AA implements a hexagonal (ports and adapters) architecture with seeded,
   reproducible execution, and exports consent-gated, anonymised observations as
-  NDJSON, CSV and JSON-LD for archival deposit. AA is pre-alpha software; at the
+  CSV and NDJSON, with Apache Parquet available as an optional dependency, for
+  archival deposit. AA is pre-alpha software; at the
   date of this record it has not yet completed an end-to-end application
   submission, and that result is published rather than withheld.
 preferred-citation:

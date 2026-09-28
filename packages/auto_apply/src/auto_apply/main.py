@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from auto_apply.adapters.secondary.research.parquet_exporter import ExportFormat
+    from auto_apply.adapters.secondary.research.research_exporter import ExportFormat
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -335,53 +335,58 @@ def _parse_export_format(raw: str) -> "ExportFormat":
     """
     if raw == "csv":
         return "csv"
-    if raw == "json":
-        return "json"
+    if raw == "ndjson":
+        return "ndjson"
     if raw == "parquet":
         return "parquet"
-    print(f"Unsupported --export-format {raw!r}. Accepted values: csv, json, parquet.")
+    print(
+        f"Unsupported --export-format {raw!r}. Accepted values: csv, ndjson, parquet."
+    )
     sys.exit(2)
 
 
 def _handle_export_research(args) -> None:
-    """Export all collected research signals and exit.
+    """Export the research database as one verifiable bundle and exit.
 
-    Does not start a job search session.
+    The bundle is a single directory containing every research table, the
+    provenance public key (when one is on record), and an index. Any read
+    failure aborts the export and leaves no artifact behind. A missing
+    optional dependency degrades the requested format to CSV; it never
+    kills the export. Does not start a job search session.
     """
-    from auto_apply.adapters.secondary.research.parquet_exporter import (
-        ExportFormat,
-        ParquetExporter,
+    from auto_apply.adapters.secondary.research.research_exporter import (
+        ExportError,
+        ResearchExporter,
     )
     from auto_apply.domain.config import REPORTS_DIR, RESEARCH_DIR
 
-    exporter = ParquetExporter(
-        db_path=RESEARCH_DIR / "research_signals.db",
-        export_dir=REPORTS_DIR,
-    )
-
     fmt: ExportFormat = _parse_export_format(args.export_format or "csv")
-    print(f"Exporting research signals as {fmt.upper()}...")
+    print(f"Exporting research data as {fmt.upper()}...")
 
+    exporter = ResearchExporter(
+        db_path=RESEARCH_DIR / "research_signals.db",
+        export_root=REPORTS_DIR,
+    )
     try:
-        signals_path = exporter.export_signals(fmt=fmt)
-        print(f"  ✓ Signals exported:        {signals_path}")
-
-        salary_path = exporter.export_salary_corpus(fmt=fmt)
-        print(f"  ✓ Salary corpus exported:  {salary_path}")
-
-        forms_path = exporter.export_form_observations(fmt=fmt)
-        print(f"  ✓ Form observations:       {forms_path}")
-
-        print(f"\n  All files written to: {REPORTS_DIR}")
-
-    except ImportError as exc:
-        print(f"  ✗ Missing dependency: {exc}")
-        print("    Install with: pip install pyarrow")
-        sys.exit(1)
-    except Exception as exc:
+        result = exporter.export(fmt)
+    except ExportError as exc:
         print(f"  ✗ Export failed: {exc}")
         sys.exit(1)
 
+    if result.degraded:
+        print(
+            f"  ! {result.requested_format.upper()} unavailable — wrote "
+            f"{result.format.upper()} instead (optional dependency not installed)"
+        )
+    for table in result.tables:
+        print(f"  ✓ {table.table:<24} {table.rows:>6} rows")
+    if result.verification_status == "ok":
+        print("  ✓ verification.json       (provenance public key included)")
+    else:
+        print("  - verification.json       not written (no provenance key on record)")
+
+    print(f"\n  Export directory: {result.directory}")
+    print(f"  Bundle digest:    {result.bundle_digest}")
     sys.exit(0)
 
 
@@ -516,9 +521,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--export-format",
-        choices=["csv", "json", "parquet"],
+        choices=["csv", "ndjson", "parquet"],
         default="csv",
-        help="Output format for --export-research (default: csv).",
+        help=(
+            "Output format for --export-research: csv (default), ndjson, or "
+            "parquet (requires the optional pyarrow dependency; degrades to "
+            "csv without it)."
+        ),
     )
     parser.add_argument(
         "--encrypt-profile",
