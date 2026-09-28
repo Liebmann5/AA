@@ -189,20 +189,31 @@ incomplete.** AA's defining defect is capability that was built and never
 connected; the documentation equivalent is a document that describes intent as
 achievement.
 
-Rules, enforced by `tests/infrastructure/test_docs_gate.py` (see
-[ADR-017](packages/auto_apply/docs/adr/017_documentation_gate.md)):
+**Enforced by `tests/infrastructure/test_docs_gate.py`** (see
+[ADR-017](packages/auto_apply/docs/adr/017_documentation_gate.md)) — these fail
+the build:
 
 1. Every page under `docs/` carries front matter with `title`, `status`,
    `last_verified` and `audience`.
-2. Every significant claim carries a status marker — `[LIVE]`, `[WIRED]`,
-   `[PARTIAL]`, `[ORPHAN]`, `[PLANNED]` or `[GOAL]`. **A claim with no marker is
-   a defect in the document.**
-3. No document may reference a module that lives in `old_retired_files/`.
-4. Every relative link must resolve, and every documented install command must
-   name an extra that exists.
+2. Every relative link resolves, and every documented install command names an
+   extra that exists. Link *fragments* are not checked; the reason is in
+   [DOCUMENTATION_STANDARDS.md](packages/auto_apply/docs/DOCUMENTATION_STANDARDS.md)
+   §12.
+3. No document references a module that lives in `old_retired_files/` without
+   naming that directory.
+4. The ADR register and the ADR directory agree, and every page is reachable
+   from the site navigation.
 5. Readiness is asserted in exactly one place:
-   [STATUS.md](packages/auto_apply/docs/STATUS.md). Do not restate it elsewhere.
-6. Documents are corrected in the **same** change that makes them false.
+   [STATUS.md](packages/auto_apply/docs/STATUS.md).
+
+**Enforced at review** — no test can check these, and saying otherwise would be
+the same defect this gate exists to remove:
+
+6. Every significant claim carries a status marker — `[LIVE]`, `[WIRED]`,
+   `[PARTIAL]`, `[ORPHAN]`, `[PLANNED]` or `[GOAL]`. **A claim with no marker is
+   a defect in the document.** Deciding which sentences are significant claims
+   is a judgement, not a pattern match.
+7. Documents are corrected in the **same** change that makes them false.
 
 The full conventions are in
 [DOCUMENTATION_STANDARDS.md](packages/auto_apply/docs/DOCUMENTATION_STANDARDS.md).

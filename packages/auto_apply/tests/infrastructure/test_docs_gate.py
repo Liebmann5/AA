@@ -251,7 +251,14 @@ def test_no_document_references_a_retired_module() -> None:
     if not retired_names:
         pytest.skip("retirement directory is empty")
 
-    acknowledging = ("retired", "retirement", "superseded", "old_retired_files")
+    # The acknowledgement is the retirement directory itself, not merely the
+    # word "retired". "Retired" is ordinary English: one unrelated sentence
+    # anywhere in a long document used to hand that whole document a blanket
+    # exemption to name any retired module as though it were live. A document
+    # that legitimately discusses a retired module says where it went.
+    # Measured: all six documents that name one already carry this literal,
+    # so this is strictly tighter with no false positives.
+    acknowledging = ("old_retired_files",)
     offenders: list[str] = []
 
     for path in _all_markdown():

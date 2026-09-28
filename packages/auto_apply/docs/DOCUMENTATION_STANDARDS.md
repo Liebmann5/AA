@@ -232,6 +232,23 @@ true. It checks that documents are internally consistent and structurally
 current. Only a human reading the code can check whether a claim is correct, and
 that is what `last_verified` records.
 
+Two further limits, stated rather than left to be discovered:
+
+- **Link fragments are not validated.** Check 2 resolves the file a link points
+  at and ignores any `#anchor` after it, so a link to a heading that does not
+  exist still passes. This is deliberate. The table of contents in
+  `AA_ARCHITECTURE_BIBLE.md` uses GitHub's double-hyphen slug for headings
+  containing an em-dash, while python-markdown collapses it to a single hyphen;
+  that file is read on GitHub and on this site, and correcting it for one breaks
+  the other. MkDocs reports anchor mismatches at INFO, which is why
+  `validation.anchors` is left at its default — the reason is written into
+  `mkdocs.yml` so nobody raises it and then "fixes" the links into a broken
+  state.
+- **Status markers are not machine-checked.** Section 2 is a rule the gate does
+  not enforce, because deciding which sentences are "significant claims" is a
+  judgement no regular expression should be trusted with. It is enforced at
+  review, and the list in `CONTRIBUTING.md` says so explicitly.
+
 See [ADR-017](adr/017_documentation_gate.md) for why this is a gate rather than
 a checklist.
 
