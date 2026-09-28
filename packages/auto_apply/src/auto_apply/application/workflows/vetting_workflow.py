@@ -6,15 +6,17 @@ What this engine does:
     invoke GPT4All for borderline jobs, persist the outcome, and enqueue approved
     jobs as APPLY WorkUnits.
 
-8-step sequence:
+9-step sequence:
     1. _fetch_job_description           — navigate to job URL via perception port
     2. _parse_with_spacy                — extract skills, experience, metadata via TextMatcher
-    3. _run_filter_chain                — short-circuit on first filter failure (cheapest first)
-    4. _compute_fit_score               — weighted sum over partial filter scores
-    5. _invoke_gpt4all_borderline_reasoning — YES/NO LLM nudge for borderline scores
-    6. _record_vetting_outcome          — persist status, fit_score, rejection_reason
-    7. _enqueue_apply_task              — push APPLY WorkUnit (priority ∝ fit score)
-    8. _emit_vetting_telemetry          — anonymized signal to research_collector
+    3. _observe_job_posting             — JobPostingObservation with the REAL description
+                                          ("" when the fetch fell back to the job title)
+    4. _run_filter_chain                — short-circuit on first filter failure (cheapest first)
+    5. _compute_fit_score               — weighted sum over partial filter scores
+    6. _invoke_gpt4all_borderline_reasoning — YES/NO LLM nudge for borderline scores
+    7. _record_vetting_outcome          — persist status, fit_score, rejection_reason
+    8. _enqueue_apply_task              — push APPLY WorkUnit (priority ∝ fit score)
+    9. _emit_vetting_telemetry          — anonymized signal to research_collector
 
 Inputs:
     profile      — UserProfile (desired titles, skills, experience level)
@@ -45,6 +47,8 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from auto_apply.domain.events import Event
@@ -55,7 +59,16 @@ from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.session_plan import SessionExecutionMode
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.types import JobStatus
-from auto_apply.domain.ports.research_port import NullResearchObserver, ResearchObserverPort
+from auto_apply.domain.ports.research_port import (
+    JobPostingObservation,
+    NullResearchObserver,
+    ResearchObserverPort,
+)
+from auto_apply.domain.services.posting_observation import (
+    infer_jurisdiction,
+    infer_metro_area,
+    looks_like_generic_apply_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +82,30 @@ _EMPLOYMENT_PATTERNS = [
 ]
 _REMOTE_POSITIVE = ["remote", "work from home", "wfh", "fully remote"]
 _REMOTE_NEGATIVE = ["on-site only", "in-office required", "no remote", "onsite only"]
+
+
+@dataclass(frozen=True)
+class FetchedDescription:
+    """The result of fetching a job's description page, WITH its provenance.
+
+    ``text`` is whatever the fetch produced: real page text on success, the
+    job TITLE on every failure path. ``from_page`` records which of the two
+    it is. The two travel in one frozen value because a bare ``str`` return —
+    or a flag a caller may ignore — is how a title came to be recorded as a
+    description: an empty string is visibly absent, but a title-shaped
+    description looks like data and gets counted as data.
+
+    ``for_research()`` is the single place where the fallback becomes an
+    honest empty string: the observation path cannot receive title-shaped
+    text without writing that choice out explicitly.
+    """
+
+    text: str
+    from_page: bool
+
+    def for_research(self) -> str:
+        """The text safe to record as a job description: "" unless it came from the page."""
+        return self.text if self.from_page else ""
 
 
 class VettingWorkflow:
@@ -142,31 +179,38 @@ class VettingWorkflow:
                 return default
         return node
 
-    def _fetch_job_description(self, job: Job) -> str:
+    def _fetch_job_description(self, job: Job) -> FetchedDescription:
         """Navigate to the job URL and extract page text.
 
         Args:
             job: The Job to fetch.
 
         Returns:
-            Page text content, or job title on any failure.
+            A FetchedDescription. ``from_page`` is True only when the
+            perception port returned non-empty page text. On every failure
+            path — no perception port, a navigation/extraction error, or an
+            empty page — ``text`` is the job title and ``from_page`` is
+            False, so a caller can never mistake the fallback for a real
+            description.
         """
         if self._perception_port is None:
-            return job.title or ""
+            return FetchedDescription(text=job.title or "", from_page=False)
 
         try:
             self._perception_port.navigate(job.url)
             # Canonical text path (PerceptionPort.get_page_text): works for both
-            # the live-browser and BS4 zero-browser adapters. Falls back to the
-            # job title if the page yields no extractable text.
+            # the live-browser and BS4 zero-browser adapters.
             text = self._perception_port.get_page_text() or ""
-            return text or (job.title or "")
         except Exception as exc:
             logger.warning(
                 "VettingWorkflow: failed to fetch description | job=%s error=%s",
                 job.url, exc,
             )
-            return job.title or ""
+            return FetchedDescription(text=job.title or "", from_page=False)
+
+        if text:
+            return FetchedDescription(text=text, from_page=True)
+        return FetchedDescription(text=job.title or "", from_page=False)
 
     def _parse_with_spacy(self, job: Job, description: str) -> ParsedJobDescription:
         """Run NLP extraction on the job description and store results in metadata.
@@ -229,6 +273,53 @@ class VettingWorkflow:
             job.metadata["parsed"] = parsed.model_dump()
 
         return parsed
+
+    def _observe_job_posting(self, job: Job, fetch: FetchedDescription) -> None:
+        """Emit the single job-posting research observation for this job.
+
+        Emitted here — not in Discovery — because vetting is the first stage
+        that has the description, and BEFORE the filter chain so a rejected
+        job is still observed with the text its rejection was based on.
+
+        Honesty rules, non-negotiable:
+            * ``job_description`` is the fetched page text, or "" when the
+              fetch fell back to the job title (see FetchedDescription).
+            * ``posting_hash`` stays None (constraint C1): with a title
+              fallback possible, a content hash could collapse distinct
+              postings into one identity and fabricate repetition findings.
+              Real posting identity is item 4's.
+            * salary fields stay None: Job has no salary fields and
+              _parse_with_spacy extracts none.
+
+        Failure containment: a research observation must never fail a vetting
+        run — but it must not fail silently either; silence is how this
+        class's observer sat wired-in and unread. Logged at WARNING with the
+        job URL because that is the level a default-configured run actually
+        surfaces, and because the NullResearchObserver default cannot raise —
+        a WARNING here means a REAL observer is broken.
+        """
+        try:
+            self._research_observer.observe_job_posting(
+                JobPostingObservation(
+                    job_title=job.title,
+                    job_description=fetch.for_research(),
+                    company_name=job.company,
+                    location=job.location,
+                    jurisdiction=infer_jurisdiction(job.location or ""),
+                    salary_min=None,
+                    salary_max=None,
+                    platform=getattr(job, "source", None),
+                    first_seen_date=date.today(),
+                    posting_hash=None,
+                    application_url_is_generic=looks_like_generic_apply_url(job.url),
+                    metro_area=infer_metro_area(job.location or ""),
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "VettingWorkflow: job-posting observation failed (non-fatal) | url=%s error=%s",
+                job.url, exc,
+            )
 
     def _run_filter_chain(
         self, job: Job
@@ -435,7 +526,7 @@ class VettingWorkflow:
     ) -> bool:
         """Vet a single job against the user's profile.
 
-        Executes the 8-step vetting pipeline in order, short-circuiting on first
+        Executes the 9-step vetting pipeline in order, short-circuiting on first
         filter failure. Enqueues an APPLY WorkUnit for approved jobs ONLY if
         the execution mode includes application.
 
@@ -454,8 +545,14 @@ class VettingWorkflow:
             job.title, job.company, mode.value,
         )
 
-        description = self._fetch_job_description(job)
-        self._parse_with_spacy(job, description)
+        fetch = self._fetch_job_description(job)
+        self._parse_with_spacy(job, fetch.text)
+
+        # Observed after the fetch+parse and BEFORE the filter chain, so a
+        # rejected job is still observed with the text its rejection was
+        # based on. Jobs in DISCOVER_ONLY sessions never reach vetting and
+        # emit no observation; that gap is a separate item's, by design.
+        self._observe_job_posting(job, fetch)
 
         passed, reason, partial_scores = self._run_filter_chain(job)
         fit_score = self._compute_fit_score(partial_scores)

@@ -102,6 +102,7 @@ from auto_apply.domain.ports.research_port import (
     FormObservation,
     ResearchObserverPort,
 )
+from auto_apply.domain.services.posting_observation import infer_jurisdiction
 from auto_apply.application.services.page_analysis_router import (
     PageAnalysisRouter,
     PageAnalysisTier,
@@ -2510,7 +2511,7 @@ class ApplicationsWorkflow:
                     platform=platform or "",
                     company_name=job.company,
                     job_title=job.title,
-                    jurisdiction=self._infer_jurisdiction(
+                    jurisdiction=infer_jurisdiction(
                         job.location or ""
                     ),
                     posting_hash=posting_hash,
@@ -2536,78 +2537,6 @@ class ApplicationsWorkflow:
     # ------------------------------------------------------------------
     # Static helper methods for research data extraction
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _infer_jurisdiction(location: str) -> str | None:
-        """Map a raw location string to a jurisdiction code used in
-        pay_transparency_laws.yaml.
-
-        Returns None if no match can be confidently made.
-        """
-        if not location:
-            return None
-        loc = location.lower()
-        if any(
-            term in loc
-            for term in (
-                "ca", "california", "san francisco", "los angeles",
-                "san diego",
-            )
-        ):
-            return "CA"
-        if any(
-            term in loc
-            for term in (
-                "ny", "new york", "nyc", "brooklyn", "queens", "manhattan",
-            )
-        ):
-            return "NYC"
-        if any(
-            term in loc
-            for term in ("wa", "washington", "seattle")
-        ):
-            return "WA"
-        if any(
-            term in loc
-            for term in ("co", "colorado", "denver")
-        ):
-            return "CO"
-        if any(
-            term in loc
-            for term in ("il", "illinois", "chicago")
-        ):
-            return "IL"
-        if any(
-            term in loc
-            for term in ("md", "maryland", "baltimore")
-        ):
-            return "MD"
-        if any(
-            term in loc
-            for term in ("hi", "hawaii", "honolulu")
-        ):
-            return "HI"
-        if any(
-            term in loc
-            for term in ("dc", "washington dc", "washington d.c.")
-        ):
-            return "DC"
-        if any(
-            term in loc
-            for term in ("nj", "new jersey", "newark")
-        ):
-            return "NJ"
-        if any(
-            term in loc
-            for term in ("ma", "massachusetts", "boston")
-        ):
-            return "MA"
-        if any(
-            term in loc
-            for term in ("mn", "minnesota", "minneapolis")
-        ):
-            return "MN"
-        return None
 
     @staticmethod
     def _estimate_completion_minutes(form_structure: FormStructure) -> int:

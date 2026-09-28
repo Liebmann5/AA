@@ -422,10 +422,23 @@ def test_research_company_identity_has_one_definition() -> None:
 #
 EXPECTED_POSTING_IDENTITY_SITES: dict[str, IdentitySite] = {}
 
+# The consumers, and what each one does with a value nothing has ever produced:
+#   signal_aggregator        2 — forwards observation.posting_hash into two records
+#   applications_workflow    2 — reads job.metadata["posting_hash"], forwards it
+#   vetting_workflow         1 — passes posting_hash=None DELIBERATELY. Item 2 moved
+#                                the observation here and declined to mint an identity
+#                                from a description that may be a title fallback;
+#                                test_posting_hash_is_none_on_every_observation in
+#                                tests/workflows/test_vetting_workflow.py is the pin
+#                                that holds that choice. Item 4 turns this site into
+#                                the producer.
+#   signal_detectors/__init__ 1 — the dedup key, so it currently dedups on None
+#
+# discovery_workflow was a consumer (2) until item 2 deleted its observation block.
 EXPECTED_POSTING_CONSUMERS: dict[str, int] = {
     "adapters/secondary/research/signal_aggregator.py": 2,
     "application/workflows/applications_workflow.py": 2,
-    "application/workflows/discovery_workflow.py": 2,
+    "application/workflows/vetting_workflow.py": 1,
     "domain/services/signal_detectors/__init__.py": 1,
 }
 

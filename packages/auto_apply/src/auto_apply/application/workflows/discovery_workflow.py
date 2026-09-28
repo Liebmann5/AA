@@ -29,9 +29,7 @@ from __future__ import annotations
 import logging
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
-from datetime import date
-from urllib.parse import urlparse
+from dataclasses import dataclass
 
 from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
 from auto_apply.application.services.auditing.discovery_verification import DiscoveryVerifier
@@ -42,7 +40,7 @@ from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.models.session_plan import SessionExecutionMode, SessionPlan
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
-from auto_apply.domain.ports.research_port import JobPostingObservation, ResearchObserverPort, NullResearchObserver
+from auto_apply.domain.ports.research_port import ResearchObserverPort, NullResearchObserver
 
 logger = logging.getLogger(__name__)
 
@@ -472,31 +470,6 @@ class DiscoveryWorkflow:
                     job.url, exc,
                 )
 
-        # --- Research observation for each job -------------------------------------------------
-        if self._research_observer is not None:
-            for job in jobs:
-                try:
-                    description = ""  # FIXME: temporary, should be fetched if available
-                    posting_hash = job.metadata.get("posting_hash") if hasattr(job, "metadata") else None
-                    self._research_observer.observe_job_posting(
-                        JobPostingObservation(
-                            job_title=job.title,
-                            job_description=description,
-                            company_name=job.company,
-                            location=job.location,
-                            salary_min=None,
-                            salary_max=None,
-                            platform=getattr(job, "source", None),
-                            first_seen_date=date.today(),
-                            posting_hash=posting_hash,
-                            jurisdiction=self._infer_jurisdiction(job.location or ""),
-                            application_url_is_generic=self._looks_like_generic_apply_url(job.url),
-                            metro_area=self._infer_metro_area(job.location or ""),
-                        )
-                    )
-                except Exception:
-                    pass
-
         return enqueued
 
     def _emit_completion_summary(self, stats: _DiscoveryStats) -> None:
@@ -622,113 +595,6 @@ class DiscoveryWorkflow:
         self._emit_completion_summary(stats)
 
         return stats.enqueued
-
-    # ------------------------------------------------------------------
-    # Research helper methods
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _infer_jurisdiction(location: str) -> str | None:
-        """Map a raw location string to a jurisdiction code used in pay_transparency_laws.yaml.
-
-        Returns None if no match can be confidently made.
-        """
-        if not location:
-            return None
-        loc = location.lower()
-        # State / city shorthand matches
-        if any(term in loc for term in ("ca", "california", "san francisco", "los angeles", "san diego")):
-            return "CA"
-        if any(term in loc for term in ("ny", "new york", "nyc", "brooklyn", "queens", "manhattan")):
-            return "NYC"
-        if any(term in loc for term in ("wa", "washington", "seattle")):
-            return "WA"
-        if any(term in loc for term in ("co", "colorado", "denver")):
-            return "CO"
-        if any(term in loc for term in ("il", "illinois", "chicago")):
-            return "IL"
-        if any(term in loc for term in ("md", "maryland", "baltimore")):
-            return "MD"
-        if any(term in loc for term in ("hi", "hawaii", "honolulu")):
-            return "HI"
-        if any(term in loc for term in ("dc", "washington dc", "washington d.c.")):
-            return "DC"
-        if any(term in loc for term in ("nj", "new jersey", "newark")):
-            return "NJ"
-        if any(term in loc for term in ("ma", "massachusetts", "boston")):
-            return "MA"
-        if any(term in loc for term in ("mn", "minnesota", "minneapolis")):
-            return "MN"
-        return None
-
-    @staticmethod
-    def _infer_metro_area(location: str) -> str | None:
-        """Map a location string to a Metropolitan Statistical Area (MSA) key used in col_index.yaml.
-
-        Returns the exact dictionary key expected by the cost-of-living data, or None if no match.
-        """
-        if not location:
-            return None
-        loc = location.lower()
-        # Prioritize more specific matches first
-        mapping = {
-            ("san francisco", "sf bay", "bay area"): "San Francisco-Oakland-Berkeley, CA",
-            ("san jose", "silicon valley"): "San Jose-Sunnyvale-Santa Clara, CA",
-            ("new york", "nyc", "brooklyn", "queens", "manhattan"): "New York-Newark-Jersey City, NY-NJ",
-            ("los angeles", "la", "santa monica", "culver city"): "Los Angeles-Long Beach-Anaheim, CA",
-            ("seattle", "bellevue"): "Seattle-Tacoma-Bellevue, WA",
-            ("boston", "cambridge", "somerville"): "Boston-Cambridge-Newton, MA-NH",
-            ("washington", "dc", "arlington", "alexandria"): "Washington-Arlington-Alexandria, DC-VA-MD-WV",
-            ("san diego",): "San Diego-Chula Vista-Carlsbad, CA",
-            ("denver", "aurora", "boulder"): "Denver-Aurora-Lakewood, CO",
-            ("austin", "round rock", "georgetown"): "Austin-Round Rock-Georgetown, TX",
-            ("chicago",): "Chicago-Naperville-Elgin, IL-IN-WI",
-            ("portland",): "Portland-Vancouver-Hillsboro, OR-WA",
-            ("miami", "fort lauderdale", "pompano"): "Miami-Fort Lauderdale-Pompano Beach, FL",
-            ("atlanta", "sandy springs", "alpharetta"): "Atlanta-Sandy Springs-Alpharetta, GA",
-            ("dallas", "fort worth", "arlington"): "Dallas-Fort Worth-Arlington, TX",
-            ("phoenix", "mesa", "chandler"): "Phoenix-Mesa-Chandler, AZ",
-            ("minneapolis", "st paul", "bloomington"): "Minneapolis-St. Paul-Bloomington, MN-WI",
-            ("philadelphia", "camden", "wilmington"): "Philadelphia-Camden-Wilmington, PA-NJ-DE-MD",
-            ("charlotte", "concord", "gastonia"): "Charlotte-Concord-Gastonia, NC-SC",
-            ("raleigh", "cary"): "Raleigh-Cary, NC",
-            ("nashville", "murfreesboro", "franklin"): "Nashville-Davidson--Murfreesboro--Franklin, TN",
-            ("columbus",): "Columbus, OH",
-            ("indianapolis", "carmel", "anderson"): "Indianapolis-Carmel-Anderson, IN",
-            ("pittsburgh",): "Pittsburgh, PA",
-            ("st louis", "st. louis"): "St. Louis, MO-IL",
-            ("cincinnati",): "Cincinnati, OH-KY-IN",
-            ("cleveland", "elyria"): "Cleveland-Elyria, OH",
-            ("detroit", "warren", "dearborn"): "Detroit-Warren-Dearborn, MI",
-            ("kansas city",): "Kansas City, MO-KS",
-            ("memphis",): "Memphis, TN-MS-AR",
-            ("oklahoma city",): "Oklahoma City, OK",
-            ("birmingham", "hoover"): "Birmingham-Hoover, AL",
-        }
-        for keywords, msa in mapping.items():
-            if any(kw in loc for kw in keywords):
-                return msa
-        return None
-
-    @staticmethod
-    def _looks_like_generic_apply_url(url: str) -> bool:
-        """Detect if an 'Apply' link is broken or just drops the user on a homepage.
-
-        Returns True if the URL scheme is mailto: or the path is empty / root.
-        """
-        if not url:
-            return False
-        try:
-            parsed = urlparse(url)
-            if parsed.scheme == "mailto":
-                return True
-            # Normalize path to remove trailing slash
-            path = parsed.path.rstrip("/")
-            if not path or path == "":
-                return True
-            return False
-        except Exception:
-            return False
 
     def shutdown(self) -> None:
         """Stop any background threads held by the workflow."""
