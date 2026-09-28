@@ -1,5 +1,24 @@
+---
+title: "ADR‑010: Architecture Audit and Remediation Sprint"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # ADR‑010: Architecture Audit and Remediation Sprint
 
+
+!!! note "Historical record — a changelog, not a decision"
+
+    This ADR records an audit sprint that happened in February 2026. It is
+    accurate for its date and is kept as history.
+
+    **Do not use it as guidance.** Several modules it describes as implemented
+    have since been **retired** — including the BS4 perception adapter, the
+    urllib HTTP client and the UI message handler. See the ledger in
+    `docs/old_retired_files/README.md` and
+    [ADR-013](013_static_path_retirement.md).
 **Status:** Accepted
 **Date:** 2026‑02‑10
 **Deciders:** Nick Liebmann

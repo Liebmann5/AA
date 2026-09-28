@@ -1,5 +1,31 @@
+---
+title: "ADR‑006: BeautifulSoup Zero‑Browser Fallback"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # ADR‑006: BeautifulSoup Zero‑Browser Fallback
 
+
+!!! danger "Superseded by [ADR-013](013_static_path_retirement.md)"
+
+    **This decision was reversed on 2026-09-08.** The static path described
+    below was implemented and then **retired**: `BS4PerceptionAdapter`,
+    `UrllibHTTPClient` and `HTTPClientPort` now live in
+    `docs/old_retired_files/`, and `STATIC_ASSISTED` no longer exists.
+
+    The reason is not that the adapter failed. It is that **no discovery
+    provider existed that could run without a browser**, so the perception
+    adapter was constructed and never reached. A user on a browserless machine
+    got a session that claimed to run and did nothing.
+
+    AA now refuses to start a session when the browser cascade exhausts.
+
+    This record is left unedited, as the ADR rules require. Read
+    [ADR-013](013_static_path_retirement.md) for what is true today, including
+    the seam that keeps the capability recoverable.
 **Status:** Accepted  
 **Date:** 2025‑11‑22  
 **Deciders:** Nick Liebmann  

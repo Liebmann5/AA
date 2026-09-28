@@ -1,3 +1,11 @@
+---
+title: "Signals Taxonomy"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: researchers
+---
+
 # Signals Taxonomy
 
 The Research Module records 29 standardised signal types across eight

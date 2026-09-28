@@ -1,3 +1,11 @@
+---
+title: "Project Setup"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # Project Setup
 
 Setting up a development environment for AutoApply takes about five minutes.

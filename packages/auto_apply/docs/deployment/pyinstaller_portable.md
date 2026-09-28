@@ -1,3 +1,11 @@
+---
+title: "PyInstaller Portable Build"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: operators
+---
+
 # PyInstaller Portable Build
 
 The portable build is the ultimate expression of AA’s “worst‑case first”
@@ -429,7 +437,7 @@ the USB drive and set `AA_PROFILE_PATH` to point to it in the launch script.
 
 ## Next Steps
 
-- [Enterprise Admin Policy](enterprise_admin_policy.md) — mass deployment
+- [Enterprise Admin Policy](../user_guide/admin_policy.md) — mass deployment
   strategies and policy enforcement.
 - [Docker](docker.md) — containerised deployment alternative.
 - [Configuration Reference](../getting_started/configuration.md) — all

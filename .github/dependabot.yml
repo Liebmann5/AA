@@ -1,0 +1,37 @@
+# Dependency update policy.
+#
+# AA pins resolution with a committed uv.lock, and a third-party stub upgrade
+# inside an allowed version range has changed mypy gate results on an otherwise
+# identical tree before. So updates are grouped and monthly, not per-package and
+# daily: every bump must be reviewed against all four gates, and a flood of
+# single-package pull requests guarantees that review stops happening.
+#
+# uv.lock is not yet a Dependabot-supported manifest. These ecosystems cover
+# the parts it does understand; the lockfile is bumped by hand with
+#   uv lock --upgrade-package <name>
+# as documented in CONTRIBUTING.md §7.2.
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/packages/auto_apply"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    groups:
+      runtime:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "build"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 2
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "ci"

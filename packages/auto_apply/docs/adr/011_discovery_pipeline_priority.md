@@ -1,3 +1,10 @@
+---
+title: "ADR‑011: Discovery Pipeline Priority Bands"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
 
 # ADR‑011: Discovery Pipeline Priority Bands
 

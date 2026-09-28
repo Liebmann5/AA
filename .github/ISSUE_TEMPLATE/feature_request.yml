@@ -1,0 +1,84 @@
+name: Feature request
+description: Propose a capability or a change of direction
+title: "[feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before writing: some things are **deliberately excluded** and will not be
+        reopened without new evidence — CAPTCHA solving, storing credentials by
+        default, generating claims about a user, hosted or multi-tenant
+        operation, requiring a cloud AI or API key, and concurrency on the
+        deterministic path. The reasons are in
+        [GOVERNANCE.md](https://github.com/Liebmann5/AA/blob/main/GOVERNANCE.md).
+
+        You are welcome to argue against one of those reasons. Please argue
+        against the reason rather than around it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        Describe the situation, not the solution. What is a person unable to do
+        today, and what do they do instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you considered and rejected
+      description: >
+        And why. A proposal with no rejected alternative has usually not been
+        compared to anything.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: worst-case
+    attributes:
+      label: Effect on the worst-case user
+      description: >
+        AA's first commitment is a 4 GB library computer with no admin rights,
+        no API keys and a USB stick. A change that helps only strong machines is
+        allowed; a change that costs the weak machine anything needs an argument.
+      options:
+        - Helps the worst-case user
+        - Neutral — optional, off by default
+        - Costs the worst-case user something, and here is why it is worth it
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shape
+    attributes:
+      label: Is this a commitment or a capability?
+      description: >
+        A **capability** must not be foreclosed by other decisions, names a seam,
+        and costs almost nothing now. A **commitment** must ship and costs real
+        work. Most good requests are capabilities.
+      options:
+        - Capability — must stay possible, need not ship
+        - Commitment — should actually ship
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: How would we know it works?
+      description: >
+        A requirement without a verification method is a value statement. What
+        test, measurement or observation would prove this is done?
+    validations:
+      required: true

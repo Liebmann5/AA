@@ -1,3 +1,11 @@
+---
+title: "ADR‑007: Pydantic Schema‑Driven User Interface"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # ADR‑007: Pydantic Schema‑Driven User Interface
 
 **Status:** Accepted  

@@ -1,3 +1,11 @@
+---
+title: "Docker"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: operators
+---
+
 # Docker
 
 Run AutoApply in a container — ideal for headless servers, VPS instances,
@@ -246,7 +254,7 @@ environment:
 
 - [PyInstaller Portable Build](pyinstaller_portable.md) — build a standalone
   `.exe` for USB deployment.
-- [Enterprise Admin Policy](enterprise_admin_policy.md) — lock down AA in
+- [Enterprise Admin Policy](../user_guide/admin_policy.md) — lock down AA in
   institutional environments.
 - [Configuration Reference](../getting_started/configuration.md) — all
   environment variables and profile fields.

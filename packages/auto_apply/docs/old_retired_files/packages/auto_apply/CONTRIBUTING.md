@@ -1,3 +1,4 @@
+<!-- RETIRED FROM: packages/auto_apply/CONTRIBUTING.md -->
 # Contributing to AutoApply
 
 Thank you for your interest in contributing! 🎉

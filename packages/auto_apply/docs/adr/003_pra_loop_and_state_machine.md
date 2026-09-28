@@ -1,5 +1,24 @@
+---
+title: "ADR‑003: PRA Loop and Dual State Machines"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # ADR‑003: PRA Loop and Dual State Machines
 
+
+!!! warning "Partially stale — verify before relying on file paths"
+
+    **The decision stands; some references in it do not resolve.** This record
+    names `application/use_cases/applications_use_case.py` and
+    `domain/applications/fsm/universal.py`. **Neither file exists in the tree.**
+
+    The scan-plan-act shape and the dual state machines are real and live. The
+    implementation moved and this record did not follow it. A superseding ADR
+    describing the loop as actually built is listed as outstanding work in the
+    [ADR index](index.md).
 **Status:** Accepted  
 **Date:** 2025‑10‑20  
 **Deciders:** Nick Liebmann  

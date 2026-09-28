@@ -1,3 +1,11 @@
+---
+title: "Developer Guide"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # Developer Guide
 
 Welcome! This guide is for anyone who wants to understand, extend, or

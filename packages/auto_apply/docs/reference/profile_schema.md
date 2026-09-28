@@ -1,3 +1,11 @@
+---
+title: "Profile Format Reference"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: everyone
+---
+
 # Profile Format Reference
 
 Your profile tells AutoApply who you are and what you're looking for.
@@ -311,6 +319,6 @@ python -m auto_apply --profile nick_data
 
 ## Next Steps
 
-- [Running a Job Hunt](running_a_job_hunt.md) — session modes and live monitoring
+- [Running a Job Hunt](../user_guide/running_a_job_hunt.md) — session modes and live monitoring
 - [Configuration Reference](../getting_started/configuration.md) — environment variables and advanced settings
-- [Profiles & Privacy](profiles_and_privacy.md) — encryption, data storage, and PII protection
+- [Profiles & Privacy](../user_guide/profiles_and_privacy.md) — encryption, data storage, and PII protection

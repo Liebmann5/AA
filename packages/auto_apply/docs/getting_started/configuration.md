@@ -1,3 +1,11 @@
+---
+title: "Configuration"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: users
+---
+
 # Configuration
 
 AutoApply is ready to run with zero configuration — the Setup Wizard creates
@@ -208,7 +216,7 @@ A policy can restrict:
 
 The full syntax and deployment instructions are in the
 [Admin Policy Guide](../user_guide/admin_policy.md) and
-[Enterprise Deployment Guide](../deployment/enterprise_admin_policy.md).
+[Enterprise Deployment Guide](../user_guide/admin_policy.md).
 
 ---
 

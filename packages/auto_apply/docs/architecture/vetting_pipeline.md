@@ -1,3 +1,11 @@
+---
+title: "Vetting Pipeline"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # Vetting Pipeline
 
 Discovery finds jobs. The Vetting Pipeline decides which ones are worth

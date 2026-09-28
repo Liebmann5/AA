@@ -1,200 +1,179 @@
-# AutoApply Agent
-
-**An autonomous, open‑source agent for discovering, vetting, and applying for jobs.**
-
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/Liebmann5/AA/blob/main/LICENSE)
-[![Docs](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://github.com/Liebmann5/AA)
-
 ---
-## Shout Outs
-
-<div align="center">
-   CHELSEA DAHL
-
-   <br>
-
-   *This project would've never been possible without the kindness and support of Chelsea, Grant, and everyone else from the Austin, TX office! I could never thank them enough!*
-</div>
-
+title: AutoApply Documentation
+status: reviewed
+last_verified: 2026-09-19
+verified_against: "suite 1384 passed / 2 skipped; CI green on 6 legs"
+audience: everyone
 ---
-## Vision
 
-Job hunting is broken. Candidates spend hours re‑typing the same information into
-dozens of forms, while companies rely on opaque ATS filters that discard qualified
-people for arbitrary reasons. **AutoApply exists to make this process fair, fast,
-and fully automatic — for everyone, regardless of their hardware, budget, or
-technical skill.**
+# AutoApply
 
-We built AA on three non‑negotiable beliefs:
-
-1. **No one should pay to apply for a job.** AA is 100% free and open source.
-2. **The software must work on the weakest machine.** AA’s “worst‑case first”
-   design guarantees that a library computer with 2 GB RAM and no admin rights is
-   a fully supported platform.
-3. **Automation must be safe, transparent, and under the user’s control.**
-   Every submission can be reviewed, paused, or cancelled. No data leaves your
-   device without explicit consent.
+**Deterministic, local, zero-shot comprehension of unfamiliar web interfaces —
+applied to job applications.**
 
 ---
 
-## Current Status
+!!! warning "AutoApply is pre-alpha and has never submitted an application"
 
-**Alpha — actively developed.** The core engine works end‑to‑end on Windows,
-macOS, and Linux. We are currently hardening the portable USB experience,
-completing the tier‑ed dependency system, and writing the final documentation
-you are reading now.
+    The most recent full live run made 18 attempts and produced 0 submissions:
+    13 stopped by CAPTCHA, 5 by login walls. That result is published rather
+    than withheld.
 
-| Feature                      | Status      |
-| ---------------------------- | ----------- |
-| Multi‑provider job discovery | ✅ Stable   |
-| Filtering & vetting pipeline | ✅ Stable   |
-| Form‑filling engine          | ✅ Stable   |
-| Human‑in‑the‑loop checkpoints| ✅ Stable   |
-| GUI (Tkinter) & CLI          | ✅ Stable   |
-| Browser cascade (Selenium → Playwright → static) | ✅ Stable |
-| USB portable mode            | ⚙️ In Progress |
-| PyInstaller one‑file build   | ⚙️ In Progress |
-| Offline NLP (SpaCy)          | ✅ Optional |
-| Offline LLM (GPT4All)        | ✅ Optional |
+    **[STATUS.md](STATUS.md) is the single source of truth for what works.**
+    Every page on this site defers to it.
 
 ---
 
-## Quick Start (30 seconds)
+## The claim
 
-```bash
-pip install auto_apply
-python -m auto_apply
-```
+A local program, on commodity hardware, with no network AI, no API keys and no
+site-specific knowledge, can comprehend an unfamiliar web interface well enough
+to operate it — and produce a verifiable record of what it encountered.
 
-The first launch opens the **Setup Wizard** — you only need to do this once.
-After that, every job hunt is a single click or command.
+AA reads pages *geometrically* rather than through hardcoded selectors:
+Kuhn–Munkres assignment pairs labels with inputs, convex hulls and VIPS-style
+segmentation identify regions, structural hashing deliberately ignores CSS class
+names, entropy and occlusion measures expose honeypots. `[LIVE]`
 
-Already know the drill? Jump to the **[Installation Guide](getting_started/installation.md)**
-for all options (pip, uv, USB portable, PyInstaller .exe).
+There is no per-site selector table, because a selector table cannot describe a
+page nobody has seen. Advice to "just hardcode the selectors for the site that
+is not working" is advice to abandon the claim the project exists to test.
+
+**The constraint is the contribution.** Comprehending a page with a frontier
+model costs a few cents and proves nothing new. Doing it with geometry and
+constraint solving on a four-gigabyte library computer, from a USB stick, with
+no administrator rights, is the novel part — and the only configuration in which
+determinism, reproducibility and research-grade data survive together.
+
+This claim may be false. The counter-arguments are stated at full strength in
+the [Architecture Bible](AA_ARCHITECTURE_BIBLE.md).
 
 ---
 
-## Who Is This For?
+## Three commitments
 
-| You are … | Start here |
-| --------- | ---------- |
-| A job seeker who wants to try AA right now | [Quick Start](getting_started/quick_start.md) |
-| A non‑technical user who needs a step‑by‑step walkthrough | [User Guide](user_guide/index.md) |
-| An IT admin deploying AA in a library, school, or enterprise | [Admin Policy Guide](user_guide/admin_policy.md) |
-| A developer who wants to contribute or extend AA | [Developer Guide](developer_guide/index.md) |
-| A researcher studying the hiring market | [Research Module](research_module/index.md) |
+1. **No one should pay to apply for a job.** AA is free, MIT-licensed, and needs
+   no account, subscription or API key.
+2. **The software must work on the weakest machine.** A shared library computer
+   with 4 GB of RAM and no administrator rights is a supported platform, not an
+   edge case.
+3. **Automation must be transparent and under the user's control.** Every
+   submission can be reviewed, paused or cancelled. Enabling autonomy takes two
+   explicit acknowledgements. Nothing is installed on your device without being
+   asked first.
 
 ---
 
-## How AA Works (the big picture)
+## Start here
+
+| You are… | Go to |
+| --- | --- |
+| Wondering whether AA works yet | [Project Status](STATUS.md) |
+| Installing AA for the first time | [Installation](getting_started/installation.md) |
+| Running your first session | [Quick Start](getting_started/quick_start.md) |
+| Using AA day to day | [User Guide](user_guide/index.md) |
+| Deploying to a library or school | [Admin Policy](user_guide/admin_policy.md) |
+| Contributing code | [Contributing](https://github.com/Liebmann5/AA/blob/main/CONTRIBUTING.md) |
+| Understanding the architecture | [Architecture](architecture/index.md) |
+| Looking something up | [Reference](reference/index.md) |
+| Using AA's research output | [Research Module](research_module/index.md) |
+
+---
+
+## How AA works
 
 ```mermaid
 graph LR
-    A[User Profile] --> B(Discovery Engine)
+    A[User Profile] --> B(Discovery)
     B --> C[Job Listings]
-    C --> D(Vetting Pipeline)
+    C --> D(Vetting)
     D --> E[Approved Jobs]
-    E --> F(Application Engine)
-    F --> G[Submitted Applications]
-    G --> H[Session Report]
+    E --> F(Applications)
+    F --> G[Session Report]
 ```
 
-1. **Discovery** – Searches Google, Bing, Indeed, and company career pages
-   simultaneously. Works with a live browser (Selenium/Playwright) or falls back
-   to static HTML when no browser is available.
-2. **Vetting** – Filters jobs against your preferences (title, location, skills,
-   salary, commute distance). Uses SpaCy for smart matching, or falls back to
-   built‑in string similarity.
-3. **Application** – Fills out forms automatically using your profile data.
-   Pauses at critical checkpoints so you can review before submitting.
-4. **Research (optional)** – If you opt in, AA records anonymised hiring‑market
-   signals that help us study and improve the job market.
+1. **Discovery** searches Google, Bing and Indeed. `[PARTIAL]` — only Bing has
+   yielded real postings in a live run.
+2. **Vetting** filters postings against your profile: title, location, skills,
+   salary, commute. `[LIVE]` SpaCy sharpens the matching when installed;
+   built-in string similarity is used otherwise. `[LIVE]`
+3. **Applications** fill forms from your profile and pause at human-in-the-loop
+   checkpoints. `[WIRED]` Submission is fail-closed: AA refuses rather than
+   submitting work it cannot prove correct. `[LIVE]`
+4. **Research** — if you opt in — records anonymised hiring-market signals.
+   `[LIVE]`, off by default.
+
+The three engines share one priority queue, so a single search flows discover →
+vet → apply before the next search begins ([ADR-011](adr/011_discovery_pipeline_priority.md)).
 
 ---
 
-## Tiered Features — No User Left Behind
+## What AA requires
 
-AA is designed to **degrade gracefully**. The core experience runs on a
-library computer with 2 GB RAM and no GPU. Users with better hardware can
-opt into richer features.
+- Python 3.10 or newer.
+- **A browser.** Chrome, Chromium, Firefox or Edge. AA no longer operates
+  without one; it refuses to start a session rather than pretending
+  ([ADR-013](adr/013_static_path_retirement.md)).
+- Roughly 300 MB of disk for a core install.
+- No administrator rights, no API keys, no network service.
 
-| Tier | Install command | What you get |
-| ---- | --------------- | ------------ |
-| **Core** (default) | `pip install auto_apply` | Selenium‑based automation, static‑HTML fallback, form filling, all vetting filters, research module |
-| **NLP** (recommended) | `pip install "auto_apply[nlp]"` | SpaCy entity extraction, semantic title matching, smarter form‑field classification |
-| **AI** (premium) | `pip install "auto_apply[ai]"` | GPT4All local LLM for answering open‑ended questions and borderline vetting decisions |
-| **Full** | `pip install "auto_apply[full]"` | Everything above, plus offline CAPTCHA solving (experimental) |
+Optional tiers add capability without ever becoming required:
 
-*No internet? AA works fully offline after the initial install. See the
-[Installation Guide](getting_started/installation.md) for details.*
+| Extra | Adds |
+| --- | --- |
+| `nlp` | SpaCy entity extraction and semantic title matching |
+| `semantic` | sentence-transformers role alignment |
+| `browser` | Playwright |
+| `ai` | GPT4All, a local LLM for open-ended answers |
+| `stealth` | undetected-chromedriver |
+| `research` | Parquet export via pyarrow and pandas |
+| `all` | Everything above |
 
----
-
-## USB Portable Mode
-
-Plug AA into any computer and run it directly from a flash drive — no
-installation, no admin rights, no traces left behind.
-
-- **All data stays on the drive** — profiles, databases, logs, and caches.
-- **Portable browsers** are bundled on the drive (Chromium Portable).
-- **Admin policy** files on the drive are automatically respected.
-- **Verification mode** (`--verify-portable`) proves zero host‑machine leakage.
-
-Read the full guide in **[PyInstaller Portable Build](deployment/pyinstaller_portable.md)**.
+Every extra is opt-in, installed by you, downloaded with your knowledge. See
+[Installation](getting_started/installation.md).
 
 ---
 
-## Architecture & Design
+## Portable mode
 
-AA is built with a **hexagonal (ports & adapters) architecture** that keeps
-business logic completely separate from browser automation, persistence, and
-UI code. Every design decision is recorded as an
-**[Architecture Decision Record](adr/index.md)**.
-
-Key principles:
-
-- **Framework‑agnostic** — Selenium, Playwright, or anything that satisfies
-  `BrowserInterface`.
-- **Provider‑agnostic** — new job boards or ATS platforms are added via YAML,
-  not code.
-- **Graceful degradation** — every capability has a lightweight fallback.
-- **Defence in depth** — multi‑layered evasion (fingerprinting, behavioural,
-  network, CAPTCHA).
+AA runs from a USB stick. Profiles, the database, logs and caches stay on the
+drive. `[PARTIAL]` — it runs, and `launch_portable.sh` has known containment
+defects recorded in [STATUS.md](STATUS.md). Do not treat "no traces on the host"
+as proven until that line changes.
 
 ---
 
-## Documentation Map
+## Architecture in one paragraph
 
-| Section | What you'll find |
-| ------- | ---------------- |
-| [Getting Started](getting_started/index.md) | Installation, quick start, profile setup |
-| [User Guide](user_guide/index.md) | How to use AA day‑to‑day, privacy, admin policy |
-| [Developer Guide](developer_guide/index.md) | Setup, testing, contributing, architectural overview |
-| [Architecture Deep Dive](architecture/index.md) | State machines, abstractions, evasion, discovery, vetting, applications |
-| [Deployment](deployment/index.md) | Docker, PyInstaller portable build, enterprise policy |
-| [Research Module](research_module/index.md) | Signal taxonomy, CSV format, privacy guarantees |
-| [API Reference](api_reference/index.md) | Auto‑generated from docstrings |
-| [ADRs](adr/index.md) | Record of every major architectural decision |
-| [FAQ](faq.md) | Common errors and how to fix them |
-| [Glossary](glossary.md) | Definitions of key terms |
+AA is hexagonal. The domain holds pure models, ports and algorithms with no
+knowledge of any framework. The application layer orchestrates workflows.
+Adapters implement ports against Selenium, Playwright, SQLite, Tkinter and the
+terminal. The composition root is the only place that wires them together, and
+layer-boundary violations are asserted at an exact count by an architecture pin.
+
+Read the [architecture section](architecture/index.md) for the parts, and the
+[ADR index](adr/index.md) for why each part is shaped the way it is.
 
 ---
 
-## License & Community
+## Licence and citation
 
-AutoApply is MIT‑licensed. Contributions are welcome — please read the
-[Contribution Guide](developer_guide/contribution_workflow.md) before opening a
-pull request.
+MIT. If you use AA in research, cite it with
+[CITATION.cff](https://github.com/Liebmann5/AA/blob/main/CITATION.cff) and read
+[REPRODUCIBILITY.md](REPRODUCIBILITY.md).
 
-If you find a bug or have a feature idea, open an issue on
-[GitHub](https://github.com/Liebmann5/AA/issues).
-
----
-
-*“The purpose of AA was to provide people/candidates with the same automating computer programs that companies utilize to expedite and simplify the hiring process — then provide the data to build something better.”*
-
+Before your first run, read the
+[disclaimer](https://github.com/Liebmann5/AA/blob/main/DISCLAIMER.md) and
+[ETHICS.md](ETHICS.md). Automating job-board interaction may conflict with a
+site's terms of service, and that decision is yours.
 
 ---
 
-This `index.md` covers the project vision, current status, tiered features, portability, architecture principles, and a full documentation map. I can now move on to any specific file you'd like fleshed out next — for example, the installation guide, the PyInstaller portable build guide, or the first Architecture Decision Record. Just tell me where you want to go.
+> *The purpose of AA was to provide candidates with the same automating programs
+> companies use to expedite hiring — then provide the data to build something
+> better.*
+
+## Acknowledgements
+
+This project would not exist without the kindness and support of Chelsea Dahl,
+Grant, and everyone else from the Austin, TX office.

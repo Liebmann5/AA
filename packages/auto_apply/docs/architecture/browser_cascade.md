@@ -1,3 +1,11 @@
+---
+title: "Browser Cascade"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # Browser Cascade
 
 AutoApply must work on library computers with no admin rights, on machines

@@ -1,3 +1,11 @@
+---
+title: "Architecture Deep Dive"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # Architecture Deep Dive
 
 AutoApply is built on a **hexagonal (ports & adapters) architecture**. Every

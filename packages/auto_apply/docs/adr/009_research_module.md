@@ -1,3 +1,11 @@
+---
+title: "ADR‑009: Consent‑Gated, Zero‑PII Research Module"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # ADR‑009: Consent‑Gated, Zero‑PII Research Module
 
 **Status:** Accepted (updated 2026-07-01)

@@ -1,3 +1,11 @@
+---
+title: "Profiles & Privacy"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: users
+---
+
 # Profiles & Privacy
 
 Your profile is the only personal information AA ever touches. This guide

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Liebmann5/AA/security/advisories/new
+    about: Report privately. Never open a public issue for a security problem.
+  - name: Question or idea
+    url: https://github.com/Liebmann5/AA/discussions
+    about: Ask a question or discuss a direction before it becomes an issue.
+  - name: What actually works right now
+    url: https://github.com/Liebmann5/AA/blob/main/packages/auto_apply/docs/STATUS.md
+    about: AA is pre-alpha. Check STATUS.md before reporting that something does not work.

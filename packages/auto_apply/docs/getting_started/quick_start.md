@@ -1,3 +1,11 @@
+---
+title: "Quick Start"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: users
+---
+
 # Quick Start
 
 Get AutoApply running and complete your first automated job hunt in under five

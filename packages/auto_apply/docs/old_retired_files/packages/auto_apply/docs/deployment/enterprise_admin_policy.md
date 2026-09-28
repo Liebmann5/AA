@@ -1,3 +1,4 @@
+<!-- RETIRED FROM: packages/auto_apply/docs/deployment/enterprise_admin_policy.md -->
 # Enterprise Admin Policy
 
 The **Admin Policy** is the mechanism by which system administrators lock
