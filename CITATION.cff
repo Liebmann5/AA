@@ -3,61 +3,68 @@
 # Standard: Citation File Format (CFF) v1.2.0
 # https://citation-file-format.github.io/
 #
-# FAIR4RS compliance: This file provides the "Findable" and "Reusable"
-# metadata required by the FAIR for Research Software principles.
-# For reproducibility instructions, see:
-#   packages/auto_apply/docs/REPRODUCIBILITY.md
+# FAIR4RS: this file supplies the "Findable" and "Reusable" metadata required
+# by the FAIR for Research Software principles. Reproduction instructions are
+# in packages/auto_apply/docs/REPRODUCIBILITY.md.
+#
+# Version discipline: this file's `version` MUST equal the `version` field in
+# packages/auto_apply/pyproject.toml. They disagreed once (1.0.0-alpha here,
+# 0.1.0 there) and a citation cannot be resolved against a version that was
+# never tagged. tests/infrastructure/test_docs_gate.py pins the equality.
 
 cff-version: 1.2.0
-title: "AutoApply: An Open-Source Automated Job Application Platform
-        with Integrated Hiring System Dysfunction Detection"
+title: "AutoApply: Deterministic Local Web-Interface Comprehension for Job Applications, with Integrated Hiring-System Dysfunction Detection"
 message: >
-  If you use AutoApply in academic research, please cite it using
-  the metadata from this file. If you use the research data collected
-  by the platform, please additionally cite the specific data release DOI.
+  If you use AutoApply in academic research, please cite it using the metadata
+  in this file. If you use the research data the platform collects, please
+  additionally cite the specific data release DOI.
 type: software
 authors:
   - family-names: Liebmann
     given-names: Nicholas
     alias: "Liebmann5"
-    orcid: ""  # TODO: Register at https://orcid.org/ and add your ORCID here
-version: "1.0.0-alpha"
-date-released: "2026-06-10"
+    email: "liebmann.nicholas1@gmail.com"
+    orcid: ""  # TODO: register at https://orcid.org/ and add it here
+version: "0.1.0"
+date-released: "2026-09-19"
 license: MIT
-repository-code: "https://codeberg.org/Liebmann5/AutoApply"
-url: "https://codeberg.org/Liebmann5/AutoApply"
-doi: ""  # TODO: Add after Zenodo release — see https://docs.github.com/en/repositories/archiving-a-github-repository/referencing-and-citing-content
+repository-code: "https://github.com/Liebmann5/AA"
+url: "https://github.com/Liebmann5/AA"
+repository: "https://codeberg.org/Liebmann5/AutoApply"  # mirror
+doi: ""  # TODO: add after Zenodo deposit
 keywords:
   - job application automation
+  - web interface comprehension
+  - document object model analysis
   - hiring discrimination
   - ghost jobs
   - salary transparency
   - applicant tracking systems
   - labor market research
-  - hiring dysfunction
-  - automated testing
   - hexagonal architecture
   - research software engineering
   - reproducible research
   - FAIR4RS
 abstract: >
-  AutoApply (AA) is an open-source automated job application platform that
-  simultaneously serves as a scientific research instrument for studying
-  hiring system dysfunction. AA operates from the candidate's perspective
-  across hundreds of Applicant Tracking System (ATS) platforms, detecting
-  ghost job postings, salary transparency law violations, discriminatory
-  language patterns, qualification inflation, and regulatory non-compliance.
-  The platform implements a hexagonal (Ports and Adapters) architecture with
-  a mathematical DOM perception subsystem, enabling reproducible, seeded
-  execution for research-grade data collection. AA produces publishable
-  datasets on hiring market dysfunction at scales previously impossible
-  through manual academic audit studies.
+  AutoApply (AA) is an open-source job application platform that doubles as a
+  research instrument for studying hiring-system dysfunction. Its central claim
+  is that a local program on commodity hardware, with no network AI, no API keys
+  and no site-specific selectors, can comprehend an unfamiliar web interface well
+  enough to operate it and produce a verifiable record of what it encountered.
+  Page understanding is geometric rather than selector-driven: Kuhn-Munkres
+  assignment pairs labels with inputs, convex hulls and VIPS-style segmentation
+  identify regions, and structural hashing deliberately ignores CSS class names.
+  AA implements a hexagonal (ports and adapters) architecture with seeded,
+  reproducible execution, and exports consent-gated, anonymised observations as
+  NDJSON, CSV and JSON-LD for archival deposit. AA is pre-alpha software; at the
+  date of this record it has not yet completed an end-to-end application
+  submission, and that result is published rather than withheld.
 preferred-citation:
   type: software
-  title: "AutoApply: Automated Job Application Platform and Hiring Dysfunction Research Instrument"
+  title: "AutoApply: Deterministic Local Web-Interface Comprehension for Job Applications"
   authors:
     - family-names: Liebmann
       given-names: Nicholas
   year: 2026
-  version: "1.0.0-alpha"
-  url: "https://codeberg.org/Liebmann5/AutoApply"
+  version: "0.1.0"
+  url: "https://github.com/Liebmann5/AA"

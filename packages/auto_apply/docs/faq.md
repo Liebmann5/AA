@@ -1,3 +1,11 @@
+---
+title: "Frequently Asked Questions"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: users
+---
+
 # Frequently Asked Questions
 
 This page covers the most common issues users encounter when installing or

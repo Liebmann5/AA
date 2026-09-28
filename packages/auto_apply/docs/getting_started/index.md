@@ -1,3 +1,11 @@
+---
+title: "Getting Started"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: users
+---
+
 # Getting Started
 
 Welcome! This guide helps you choose the right first steps based on who you are
@@ -12,10 +20,9 @@ rights.
 You don't need to be technical. Start here:
 
 1. **Install AA** — pick the option that fits your computer:
-   - **I have Python and pip** → [Core install](installation.md#core-install-recommended) (~30 MB)
-   - **I want smarter matching** → [NLP install](installation.md#nlp-install) (adds SpaCy, ~50 MB)
-   - **I want the best AI answers** → [AI install](installation.md#ai-install) (adds GPT4All, ~5 GB)
-   - **I'm using a USB stick / library computer** → [Portable install](installation.md#usb-portable-install)
+   - **I have Python and git** → [install from a source checkout](installation.md#method-1-from-a-source-checkout-recommended-today) (~300 MB). AA is not on PyPI yet, so this is the path.
+   - **I want smarter matching, or local AI answers** → add an [optional feature tier](installation.md#optional-feature-tiers) afterwards. Each one is opt-in, and downloaded only when you ask for it.
+   - **I'm using a USB stick or a library computer** → [portable mode](installation.md#method-3-usb-portable)
 2. **Create your profile** — the Setup Wizard opens automatically on first launch.
    You only need to do this once.
 3. **Run your first job hunt** — follow the [Quick Start](quick_start.md) to see
@@ -32,7 +39,7 @@ no personal data is left behind. Read:
 
 1. [Admin Policy Guide](../user_guide/admin_policy.md) — how to create and
    deploy `aa_policy.json`.
-2. [Enterprise Deployment](../deployment/enterprise_admin_policy.md) — mass
+2. [Enterprise Deployment](../user_guide/admin_policy.md) — mass
    deployment, Group Policy, MDM, and imaging.
 3. [USB Portable Build](../deployment/pyinstaller_portable.md) — build a
    self‑contained package that leaves zero traces on the host.

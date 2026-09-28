@@ -1,3 +1,11 @@
+---
+title: "Running Tests"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # Running Tests
 
 AutoApply’s test suite is built on **pytest**.  Tests live in the `tests/`
@@ -26,43 +34,35 @@ uv run pytest tests/ -v
 
 ---
 
-## Test Organisation
+## Test organisation
 
 ```
 tests/
-├── adapters/
-│   ├── test_bs4_adapter.py
-│   ├── test_cli_wizard.py
-│   ├── test_discovery_providers.py
-│   ├── test_math_dom_adapter.py
-│   ├── test_math_perception_adapter.py
-│   └── test_urllib_http_client.py
-├── application/
-│   ├── test_applications_use_case.py
-│   └── test_vetting_use_case.py
-├── domain/
-│   ├── test_convex_hull.py
-│   ├── test_entropy.py
-│   ├── test_honeypot_detection.py
-│   ├── test_label_input_pairing.py
-│   ├── test_occlusion.py
-│   ├── test_structural_hashing.py
-│   └── test_transformations.py
-├── research/
-│   ├── test_research_anonymizer.py
-│   ├── test_research_collector.py
-│   └── test_research_pipeline.py
-├── workflows/
-│   ├── test_applications_workflow.py
-│   ├── test_discovery_workflow.py
-│   └── test_vetting_workflow.py
-├── conftest.py             # shared fixtures (NodeMap, DOM node builders)
-└── smoke_run.py            # quick wiring smoke test
+├── adapters/          25 modules — browser, discovery, interaction, perception adapters
+├── application/       30 modules — services, agent, session control
+├── architecture/       4 modules — the structural pins: port wiring, module
+│                                   reachability, event wiring, safety pins
+├── benchmarks/                    — ATS form fixtures, run manually
+├── domain/            30 modules — pure mathematics and models; no mocking needed
+├── fixtures/                      — shared data
+├── infrastructure/    19 modules — composition root, registry, config contracts,
+│                                   CI workflow, install commands, the docs gate
+├── integration/        3 modules — real in-memory SQLite, mock orchestrators
+├── property_based/     1 module  — hypothesis
+├── research/           4 modules — anonymiser, pipeline, consent
+├── workflows/         13 modules — discovery, vetting, applications
+├── conftest.py                    — shared fixtures (NodeMap, DOM node builders)
+├── test_architecture.py           — layer-boundary assertions
+└── smoke_run.py                   — quick wiring smoke test
 ```
 
-Each file tests a single module or a small cluster of related modules.
-Tests for domain services (convex hull, entropy, occlusion, etc.) are
-pure mathematics — they need no mocking at all.
+Counts are as of 2026-09-19: **146 test modules, 1384 tests passing, 2 skipped.**
+
+Tests for domain services — convex hull, entropy, occlusion, structural hashing,
+label-input pairing — are pure mathematics and need no mocking at all. That is
+deliberate: the mathematics is the part that must be right on a machine nobody
+has tested.
+
 
 ---
 
@@ -259,21 +259,67 @@ def test_salary_buckets(amount, expected):
 
 ---
 
-## Continuous Integration
+## Continuous integration
 
-We use **GitHub Actions** to run the test suite on every pull request and
-push to `dev` and `main`.  The CI pipeline:
+Four gates run in GitHub Actions on **Linux, Windows and macOS**, on Python
+**3.10 and 3.12** — six legs — on every push and pull request. The workflow is
+`.github/workflows/ci.yml`.
 
-1. Checks out the code.
-2. Installs `uv` and runs `uv sync`.
-3. Runs `ruff check .` (linting).
-4. Runs `black --check .` (formatting).
-5. Runs `uv run pytest tests/ -x -q` (tests).
-6. (Future) Runs integration and smoke tests on a schedule.
+| Gate | Command (from `packages/auto_apply`) | Catches |
+| --- | --- | --- |
+| 1 | `uv run pytest tests -q -p no:cacheprovider -rs` | Behaviour, plus the boundary, architecture and documentation pins |
+| 2 | `uv run ruff check src --select F821 --output-format concise` | Names used but never defined |
+| 3 | `uv run mypy --config-file ../../pyproject.toml src/auto_apply` | Type errors in the source |
+| 4 | `uv run mypy --config-file ../../pyproject.toml --explicit-package-bases tests` | Type errors in the tests |
 
-The CI configuration lives in `.github/workflows/ci.yml`.  You do not
-need to run CI locally, but running `uv run pytest tests/ -x -q` before
-pushing will save you from waiting for CI to catch a broken test.
+Run all four before pushing. They are the exact CI invocations, not
+approximations of them.
+
+### Gates 3 and 4 are deliberately asymmetric
+
+`--explicit-package-bases` must **never** be added to gate 3 and **never**
+removed from gate 4.
+
+The flag once renamed every module to `src.auto_apply.*` and blinded the `src/`
+gate for weeks. Gate 4 needs it, because `tests/` fails on `Duplicate module
+named conftest` without it. `tests/infrastructure/test_ci_workflow.py` asserts
+both halves. Do not tidy this.
+
+### `-rs` is deliberate
+
+It prints the per-file skip summary. Roughly ten tests skip when no Chrome
+driver is available and run when one is. The count is surfaced, never asserted:
+a silent change in what the suite exercises must be visible in the log rather
+than absorbed.
+
+### Dependencies come from `uv sync`, never pip
+
+`hypothesis`, `mypy`, `ruff` and `pytest-mock` are PEP 735 dependency groups,
+which pip cannot install — collection aborts rather than skipping. `uv sync`
+honours the committed `uv.lock`.
+
+A third-party stub upgrade inside an allowed version range has changed gate
+results on an otherwise identical tree before. Bump deliberately:
+
+```bash
+uv lock --upgrade-package beautifulsoup4
+# run both mypy gates locally, fix what surfaces, then commit the new uv.lock
+```
+
+### Every leg uses a uv-managed interpreter
+
+`UV_PYTHON_PREFERENCE: only-managed` is set in the workflow. Measured
+2026-09-05: `ubuntu-latest` ships Python 3.12, so uv reused it — and Debian
+splits tkinter into `python3-tk`, which is not installed, so five GUI modules
+failed to import. The 3.10 leg passed because no system 3.10 exists, so uv
+downloaded a managed build that bundles tkinter. Same runner, two interpreters,
+one red leg. `only-managed` makes all six legs identical, so an environment
+difference cannot masquerade as a code difference.
+
+### CI is blocking
+
+Required since 2026-09-05, the first push green on all six legs.
+
 
 ### Pre‑commit hooks (optional)
 

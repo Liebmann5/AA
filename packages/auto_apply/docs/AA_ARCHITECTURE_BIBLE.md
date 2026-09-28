@@ -1,5 +1,18 @@
+---
+title: "AutoApply (AA) — Architecture Bible"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
 
 # AutoApply (AA) — Architecture Bible
+
+> **Status convention.** Claims in this document should carry a status marker —
+> `[LIVE]`, `[WIRED]`, `[PARTIAL]`, `[ORPHAN]`, `[PLANNED]` or `[GOAL]`. Marking
+> is incomplete: this is a long document and the pass is ongoing, so treat an
+> unmarked claim as unverified rather than as confirmed. Readiness is asserted
+> in [STATUS.md](STATUS.md) and nowhere else, including here.
 **Version 1.1 | September 2026 | Author: Nicholas Liebmann**
 
 > **1.1 (2026-09-16)** — records the frontend arc: a typed UI port, both
@@ -9,7 +22,7 @@
 > not. Suite at close of the arc: **1384 passed, 2 skipped**.
 >
 > Chains A–E landed between 2026-09-15 and 2026-09-16. Stage U5 was planned as
-> a deletion and is **cancelled** — see the note in §24.3.
+> a deletion and is **cancelled** — see the note in §34.3.
 
 > This document is the single authoritative reference for every architectural decision,
 > layer boundary, subsystem contract, control flow, and integration rule in AA.
@@ -44,7 +57,17 @@
 21. [Issue Triage and Priority Register](#21-issue-triage-and-priority-register)
 22. [Future Roadmap](#22-future-roadmap)
 23. [Pydantic — Standardization Reference](#23-pydantic--standardization-reference)
-24. [The UI Port Layer](#24-the-ui-port-layer)
+24. [Hardcoded Values — Centralization Plan](#24-hardcoded-values--centralization-plan)
+25. [Academic Publishability](#25-academic-publishability--complete-requirements)
+26. [Sans-IO Principle Applied to AA](#26-sans-io-principle-applied-to-aa)
+27. [Session Supervisor — Final Validated Design](#27-session-supervisor--final-validated-design)
+28. [Integration Order — The Final Plan](#28-integration-order--the-final-plan)
+29. [Configuration & Pydantic Standardization](#29-configuration--pydantic-standardization)
+30. [System Resilience & Reliability Patterns](#30-system-resilience--reliability-patterns)
+31. [The "Agnostic" Trinity](#31-the-agnostic-trinity)
+32. [Data Safety & Code Quality Standards](#32-data-safety--code-quality-standards)
+33. [Updates & Versioning Strategy](#33-updates--versioning-strategy)
+34. [The UI Port Layer](#34-the-ui-port-layer)
 
 ---
 
@@ -580,7 +603,7 @@ completion. Health monitor must not emit `BROWSER_UNHEALTHY` while `_is_navigati
 > **1.1:** built and live. `SessionExecutionMode` carries eight members and the
 > pipeline honours them at every branch point (`orchestrator.py:633, :677,
 > :784, :832`; `vetting_workflow.py:435, :452`; `discovery_workflow.py:388`).
-> Three are selectable by a user — see §24.3. A `SessionRequest` also carries
+> Three are selectable by a user — see §34.3. A `SessionRequest` also carries
 > `providers` and `max_results`, and `_rebuild_plan_for_request` refreshes the
 > plan reference the workflows hold, which before Chain B they never saw.
 
@@ -1849,7 +1872,7 @@ domain/models/
 
 ## 24. Hardcoded Values — Centralization Plan
 
-### 24.1 The Four Categories
+### 34.1 The Four Categories
 
 **Category 1: Behavioral/timing parameters** — belong in `BehaviorParameters`
 All timing is currently scattered as magic numbers. Examples:
@@ -1888,7 +1911,7 @@ CSS selectors, base URLs, pagination parameters for each search engine belong in
 `resources/engines/google.yaml`, `bing.yaml`, `duckduckgo.yaml`.
 ATS platform identifiers and URL patterns belong in `resources/ats/*.yaml`.
 
-### 24.2 BehaviorParameters Model
+### 34.2 BehaviorParameters Model
 
 ```python
 # domain/models/timing.py
@@ -1942,7 +1965,7 @@ class BehaviorParameters(BaseModel):
         )
 ```
 
-### 24.3 Deterministic Random Usage
+### 34.3 Deterministic Random Usage
 
 When `random_seed` is set, ALL random calls in AA use a seeded `random.Random` instance:
 ```python
@@ -2353,12 +2376,12 @@ Self-updating code is inherently dangerous, triggers antivirus software (breakin
 
 ---
 
-## 24. The UI Port Layer
+## 34. The UI Port Layer
 
 > Added in 1.1. Everything in this section was built between 2026-09-15 and
 > 2026-09-16 and is covered by pins. Where a claim is not yet pinned it says so.
 
-### 24.1 Why it exists
+### 34.1 Why it exists
 
 Before this layer, the entire UI-to-backend interface was one untyped dict.
 `initialize_session(ui_config: dict[str, Any])` read two keys; the CLI wizard
@@ -2379,7 +2402,7 @@ That is THE ROOT — shape checked, binding not — reproduced in the frontend.
 The port is the fix, and it is a fix by construction: a misspelled mode is now
 a construction error at the boundary, not a runtime branch.
 
-### 24.2 The seam
+### 34.2 The seam
 
 **`domain/ports/ui_port.py`** — a `@runtime_checkable` `Protocol`, satisfied
 **structurally** by `SessionController`. There is no `UIPortAdapter` class; if
@@ -2396,7 +2419,7 @@ already permits this — `tests/test_architecture.py:119-125` allows
 no driver, no repository, no profile object crosses it, pinned by
 `test_ui_port_type_hints_are_data_only`.
 
-### 24.3 A session is two axes, not one
+### 34.3 A session is two axes, not one
 
 The old four "modes" conflated where a run *starts* with where it *stops*.
 
@@ -2434,7 +2457,7 @@ door reads that one table, pinned by
 > `SessionSummary` and are read by the checkpoint manager. See the comment at
 > `session_report.py:359`.
 
-### 24.4 Output, history and custody
+### 34.4 Output, history and custody
 
 - Discovered jobs are persisted **at discovery**. They were previously written
   only by `vetting_workflow.py:363`, so any mode that skipped vetting found
@@ -2457,7 +2480,7 @@ wherever the picker points is the wrong default for a tool used on borrowed
 machines. Tracked; the confirmation should read as a warning and the dialog
 should default outside the working tree.
 
-### 24.5 The activity stream
+### 34.5 The activity stream
 
 47 `Event` members, ~50 publish sites, and — before this work — one subscriber
 on each surface, for one event. The Activity panel was a widget with a write
@@ -2477,7 +2500,7 @@ against a gate that holds for up to 300 s.
 
 `UIMessageHandler` was retired to `docs/old_retired_files/`.
 
-### 24.6 Safety pins
+### 34.6 Safety pins
 
 `tests/architecture/test_safety_pins.py`, plus pins in the files named below.
 
@@ -2510,7 +2533,7 @@ letting it drift either way.
   `KNOWN_UNREACHABLE`, because structural satisfaction means nothing imports
   it yet.
 
-### 24.7 Autonomy
+### 34.7 Autonomy
 
 The backend already honours a deliberate choice to run without a pre-submit
 pause: removing `BEFORE_FORM_SUBMIT` from `human_review_checkpoints` is
@@ -2526,7 +2549,7 @@ warnings naming different consequences, and that when it is off it is off with
 no reachable path. A blanket ban was proposed once and overruled; it is not to
 be re-proposed.
 
-### 24.8 What this layer does not yet do
+### 34.8 What this layer does not yet do
 
 - The port is 15 methods and session-shaped. Identity and custody parity
   cannot be pinned until it widens.

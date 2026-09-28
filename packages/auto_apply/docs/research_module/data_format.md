@@ -1,3 +1,11 @@
+---
+title: "Data Format"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: researchers
+---
+
 # Data Format
 
 Research signals are stored in a single, append‑only SQLite database:

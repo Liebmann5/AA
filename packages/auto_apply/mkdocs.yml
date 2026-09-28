@@ -1,17 +1,26 @@
-# -----------------------------------------------------------------------------
-# Site Information
-# -----------------------------------------------------------------------------
-site_name: Auto-Apply
-site_description: 'An autonomous agent for discovering, vetting, and applying for jobs.'
-site_author: 'Nicholas Liebmann'
-repo_url: 'https://github.com/Liebmann5/AA'
+# MkDocs configuration for the AutoApply documentation site.
+#
+# Build:   uv run mkdocs serve      (from packages/auto_apply)
+# Publish: uv run mkdocs build
+#
+# The `nav` below is not decorative. tests/infrastructure/test_docs_gate.py
+# asserts that EVERY page under docs/ appears here. Twenty of fifty-five pages
+# were once unreachable from the site — including all twelve ADRs and the
+# Architecture Bible — because nothing forced the two to agree. Add a page,
+# add a nav entry, in the same change.
 
-# -----------------------------------------------------------------------------
-# Theme Configuration (Material for MkDocs)
-# -----------------------------------------------------------------------------
+site_name: AutoApply
+site_description: >-
+  Deterministic, local, zero-shot comprehension of unfamiliar web interfaces,
+  applied to job applications.
+site_author: Nicholas Liebmann
+repo_url: https://github.com/Liebmann5/AA
+repo_name: Liebmann5/AA
+edit_uri: edit/main/packages/auto_apply/docs/
+copyright: Copyright &copy; 2026 Nicholas Liebmann — MIT Licence
+
 theme:
   name: material
-  logo: assets/logo.svg # (Optional) You can add a logo file later
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -25,68 +34,147 @@ theme:
         name: Switch to light mode
   features:
     - navigation.tabs
+    - navigation.sections
     - navigation.top
+    - navigation.indexes
+    - toc.follow
     - content.code.copy
+    - content.action.edit
+    - search.highlight
+    - search.suggest
 
-# -----------------------------------------------------------------------------
-# Navigation Structure
-# -----------------------------------------------------------------------------
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+
 nav:
   - Home: index.md
-  - Getting Started:
-    - Overview: getting_started/index.md
-    - Installation: getting_started/installation.md
-    - Quick Start: getting_started/quick_start.md
-    - Configuration: getting_started/configuration.md
-  - User Guide:
-    - Overview: user_guide/index.md
-    - Running a Job Hunt: user_guide/running_a_job_hunt.md
-    - Understanding the Output: user_guide/understanding_output.md
-    - Profiles & Privacy: user_guide/profiles_and_privacy.md
-    - Admin Policy: user_guide/admin_policy.md
-  - Developer Guide:
-    - Overview: developer_guide/index.md
-    - Architecture Overview: developer_guide/architecture_overview.md
-    - Contribution Workflow: developer_guide/contribution_workflow.md
-    - Project Setup: developer_guide/project_setup.md
-    - Running Tests: developer_guide/running_tests.md
-    - Adding an ATS Platform: developer_guide/adding_an_ats_platform.md
-  - Architecture Deep Dive:
-    - Overview: architecture/index.md
-    - Agent Lifecycle: architecture/agent_lifecycle.md
-    - Core Abstractions: architecture/core_abstractions.md
-    - Browser Cascade: architecture/browser_cascade.md
-    - Evasion Framework: architecture/evasion_framework.md
-    - Discovery Strategies: architecture/discovery_strategies.md
-    - Vetting Pipeline: architecture/vetting_pipeline.md
-    - Application Engine: architecture/application_engine.md
-  - Architecture Decision Records:
-    - Overview: adr/index.md
-  - Deployment:
-    - Overview: deployment/index.md
-    - Docker: deployment/docker.md
-    - Enterprise Admin Policy: deployment/enterprise_admin_policy.md
-    - PyInstaller Portable Build: deployment/pyinstaller_portable.md
-  - Research Module:
-    - Overview: research_module/index.md
-    - Data Format: research_module/data_format.md
-    - Signals Taxonomy: research_module/signals_taxonomy.md
-  - API Reference: api_reference/index.md
-  - FAQ: faq.md
-  - Glossary: glossary.md
+  - Project Status: STATUS.md
 
-# -----------------------------------------------------------------------------
-# Plugins
-# -----------------------------------------------------------------------------
+  - Getting Started:
+      - Overview: getting_started/index.md
+      - Installation: getting_started/installation.md
+      - Quick Start: getting_started/quick_start.md
+      - Configuration: getting_started/configuration.md
+
+  - User Guide:
+      - Overview: user_guide/index.md
+      - Running a Job Hunt: user_guide/running_a_job_hunt.md
+      - Understanding the Output: user_guide/understanding_output.md
+      - Profiles and Privacy: user_guide/profiles_and_privacy.md
+      - Admin Policy: user_guide/admin_policy.md
+
+  - Reference:
+      - Overview: reference/index.md
+      - Profile Schema: reference/profile_schema.md
+      - Command Line: reference/cli.md
+      - Port Catalogue: reference/ports.md
+      - Glossary: reference/glossary.md
+      - API Reference: api_reference/index.md
+
+  - Developer Guide:
+      - Overview: developer_guide/index.md
+      - Project Setup: developer_guide/project_setup.md
+      - Architecture Overview: developer_guide/architecture_overview.md
+      - Running Tests: developer_guide/running_tests.md
+      - Contribution Workflow: developer_guide/contribution_workflow.md
+      - Adding an ATS Platform: developer_guide/adding_an_ats_platform.md
+      - Documentation Standards: DOCUMENTATION_STANDARDS.md
+
+  - Architecture:
+      - Overview: architecture/index.md
+      - Agent Lifecycle: architecture/agent_lifecycle.md
+      - Core Abstractions: architecture/core_abstractions.md
+      - The UI Port Layer: architecture/ui_port_layer.md
+      - Browser Cascade: architecture/browser_cascade.md
+      - Discovery Strategies: architecture/discovery_strategies.md
+      - Vetting Pipeline: architecture/vetting_pipeline.md
+      - Application Engine: architecture/application_engine.md
+      - Evasion Framework: architecture/evasion_framework.md
+      - Engineering Philosophy: ENGINEERING_PHILOSOPHY.md
+      - Architecture Bible: AA_ARCHITECTURE_BIBLE.md
+
+  - Decisions:
+      - Overview: adr/index.md
+      - "001 Hexagonal architecture": adr/001_hexagonal_architecture.md
+      - "002 Dependency injection": adr/002_dependency_injection_refactor.md
+      - "003 PRA loop and state machines": adr/003_pra_loop_and_state_machine.md
+      - "004 ATS platform registry": adr/004_ats_platform_registry.md
+      - "005 Human in the loop": adr/005_human_in_the_loop.md
+      - "006 Zero-browser fallback (superseded)": adr/006_bs4_zero_browser_fallback.md
+      - "007 Schema-driven UI": adr/007_profile_and_schema_driven_ui.md
+      - "008 Plugin architecture": adr/008_plugin_architecture.md
+      - "009 Research module": adr/009_research_module.md
+      - "010 Remediation changelog": adr/010_remediation_changelog.md
+      - "011 Discovery pipeline priority": adr/011_discovery_pipeline_priority.md
+      - "012 Fail-closed submission gate": adr/012_fail_closed_submission_gate.md
+      - "013 Static path retirement": adr/013_static_path_retirement.md
+      - "014 Typed UI port": adr/014_typed_ui_port.md
+      - "015 Polled UI state": adr/015_polled_ui_state.md
+      - "016 Retirement over deletion": adr/016_retirement_over_deletion.md
+      - "017 Documentation gate": adr/017_documentation_gate.md
+
+  - Research:
+      - Overview: research_module/index.md
+      - Data Format: research_module/data_format.md
+      - Signals Taxonomy: research_module/signals_taxonomy.md
+      - Consent Dialogue: RESEARCH_CONSENT_DIALOG.md
+      - Reproducibility: REPRODUCIBILITY.md
+      - Ethics: ETHICS.md
+
+  - Deployment:
+      - Overview: deployment/index.md
+      - USB Portable Drive: deployment/USB_DRIVE_README.md
+      - PyInstaller Build: deployment/pyinstaller_portable.md
+      - Docker (test image): deployment/docker.md
+
+  - FAQ: faq.md
+
+# Retired documents live under docs/old_retired_files/ so retire.py and the
+# ledger can reach them, but they are history, not documentation. Without this,
+# all seven are copied into the built site and published - including a
+# superseded install guide and a changelog that claimed a release which never
+# happened. They stay on disk; they stop being published.
+exclude_docs: |
+  old_retired_files/
+
+# validation.anchors is deliberately NOT raised to `warn`. The table of
+# contents in AA_ARCHITECTURE_BIBLE.md uses GitHub's double-hyphen slug for
+# headings containing an em-dash; python-markdown collapses it to a single
+# hyphen. That document is read on GitHub and on this site, and the two
+# slugify differently -- correcting it for one breaks the other. The links
+# work where most people read that file. Do not "fix" this into a broken state.
+
 plugins:
-  - search # Built-in search plugin
+  - search
   - mkdocstrings:
-      # This tells the plugin to look for docstrings in your Python code
       handlers:
         python:
-          paths: [src/auto_apply]
-          # We tell it we used Google-style docstrings
+          paths: [src]
           options:
             docstring_style: google
-            show_root_heading: yes
-            show_source: yes
+            show_root_heading: true
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Liebmann5/AA
+      name: AutoApply on GitHub

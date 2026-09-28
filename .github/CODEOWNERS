@@ -1,0 +1,23 @@
+# Code owners for AutoApply.
+# Every path is owned by the maintainer until there is a second maintainer;
+# see GOVERNANCE.md for why that is stated rather than implied.
+
+*                                   @Liebmann5
+
+# Documentation and decision records: same owner, listed separately so that a
+# future split of responsibility is a one-line change rather than a redesign.
+/packages/auto_apply/docs/          @Liebmann5
+/packages/auto_apply/docs/adr/      @Liebmann5
+/README.md                          @Liebmann5
+/CONTRIBUTING.md                    @Liebmann5
+/SECURITY.md                        @Liebmann5
+/GOVERNANCE.md                      @Liebmann5
+
+# Anything that can change what CI proves.
+/.github/workflows/                 @Liebmann5
+/pyproject.toml                     @Liebmann5
+/packages/auto_apply/pyproject.toml @Liebmann5
+/uv.lock                            @Liebmann5
+
+# The retirement directory. Nothing leaves it without review.
+/packages/auto_apply/docs/old_retired_files/ @Liebmann5

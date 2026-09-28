@@ -1,0 +1,62 @@
+name: Documentation problem
+description: Something in the docs is wrong, missing, stale or unclear
+title: "[docs] "
+labels: ["documentation", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation defects are treated as defects, not as tidying.
+
+        AA's stated disease is documents that describe intent as achievement, so
+        **"this says it works and it does not"** is one of the most valuable
+        reports we receive. Please file it.
+
+  - type: input
+    id: page
+    attributes:
+      label: Which page
+      description: Path or URL.
+      placeholder: "packages/auto_apply/docs/user_guide/running_a_job_hunt.md"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem
+      options:
+        - It claims something that is not true
+        - It is out of date with the code
+        - It is missing something a reader needs
+        - It is unclear or ambiguous
+        - A link, command or example is broken
+        - It contradicts another document
+        - Accessibility problem
+    validations:
+      required: true
+
+  - type: textarea
+    id: quote
+    attributes:
+      label: The passage
+      description: Quote the sentence or block.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: reality
+    attributes:
+      label: What is actually true
+      description: >
+        If you know the correct behaviour, say how you established it — reading
+        the code, running it, or a log.
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit you read
+      placeholder: "c415338"

@@ -1,3 +1,4 @@
+<!-- RETIRED FROM: packages/auto_apply/docs/INSTALL.md -->
 # AutoApply — Installation Guide
 
 ## System Requirements

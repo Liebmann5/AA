@@ -1,3 +1,4 @@
+<!-- RETIRED FROM: INSTALL.md -->
 # AutoApply — Installation Guide
 
 ## System Requirements

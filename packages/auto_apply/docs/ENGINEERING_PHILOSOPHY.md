@@ -1,3 +1,11 @@
+---
+title: "AA Engineering Philosophy"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # AA Engineering Philosophy
 
 AA is intended to be a modern, enterprise-grade, industry-current software platform that is useful enough to be understood first as a tool: practical, reliable, respectful, and capable of helping real people under real constraints.

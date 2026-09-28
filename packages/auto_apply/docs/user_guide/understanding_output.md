@@ -1,3 +1,11 @@
+---
+title: "Understanding the Output"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: users
+---
+
 # Understanding the Output
 
 AA produces a wealth of information while it works — live logs, session

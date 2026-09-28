@@ -1,3 +1,11 @@
+---
+title: "Admin Policy"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: users
+---
+
 # Admin Policy
 
 An **Admin Policy** lets a system administrator lock down AutoApply's
@@ -339,6 +347,6 @@ This policy:
 
 - [Configuration Reference](../getting_started/configuration.md) – the full
   list of configurable fields.
-- [Enterprise Deployment](../deployment/enterprise_admin_policy.md) – mass
+- [Deployment Guide](../deployment/index.md) – mass
   deployment strategies and tools.
 - [FAQ](../faq.md) – answers to common admin policy questions.

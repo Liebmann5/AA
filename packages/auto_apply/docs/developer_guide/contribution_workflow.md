@@ -1,3 +1,11 @@
+---
+title: "Contribution Workflow"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # Contribution Workflow
 
 We are excited that you want to contribute to AutoApply. This document
@@ -228,7 +236,7 @@ document before starting implementation.
 
 ## Community standards
 
-By contributing, you agree to abide by our [Code of Conduct](../CODE_OF_CONDUCT.md).
+By contributing, you agree to abide by our [Code of Conduct](https://github.com/Liebmann5/AA/blob/main/CODE_OF_CONDUCT.md).
 We are committed to building a respectful, inclusive community.
 
 ---

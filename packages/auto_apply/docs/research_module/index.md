@@ -1,3 +1,11 @@
+---
+title: "Research Module"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: researchers
+---
+
 # Research Module
 
 AutoApply is not just a job‑hunting tool. It is also a **research instrument**

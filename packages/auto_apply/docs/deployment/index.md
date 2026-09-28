@@ -1,3 +1,11 @@
+---
+title: "Deployment"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: operators
+---
+
 # Deployment
 
 AutoApply is designed to run anywhere — on a personal laptop, a headless
@@ -15,7 +23,7 @@ Choose the guide that matches your environment and needs.
 | ----- | -------- |
 | [Docker](docker.md) | Running AA in a containerised, headless environment. Ideal for servers, VPS, or scheduled cron jobs. |
 | [PyInstaller Portable Build](pyinstaller_portable.md) | Building a standalone `.exe` that runs from a USB drive with **zero installation** and **zero traces** on the host. The recommended way to deploy to library computers, shared machines, or any restricted environment. |
-| [Enterprise Admin Policy](enterprise_admin_policy.md) | IT administrators deploying AA across a fleet. Covers mass deployment via Group Policy, MDM, or imaging, and how to pre‑configure `aa_policy.json` for all users. |
+| [Enterprise Admin Policy](../user_guide/admin_policy.md) | IT administrators deploying AA across a fleet. Covers mass deployment via Group Policy, MDM, or imaging, and how to pre‑configure `aa_policy.json` for all users. |
 
 ---
 
@@ -40,7 +48,7 @@ Choose the guide that matches your environment and needs.
 
     Deploy `aa_policy.json` via Group Policy or MDM to enforce browser
     restrictions, headless mode, rate limits, and data collection policies.
-    → Full guide: [Enterprise Admin Policy](enterprise_admin_policy.md)
+    → Full guide: [Enterprise Admin Policy](../user_guide/admin_policy.md)
 
 ---
 
@@ -57,7 +65,7 @@ Choose the guide that matches your environment and needs.
   USB drive without installing anything or leaving any data behind.
 
 - **I'm an IT administrator.** Start with
-  [Enterprise Admin Policy](enterprise_admin_policy.md) to understand how to
+  [Enterprise Admin Policy](../user_guide/admin_policy.md) to understand how to
   lock down AA, then use the PyInstaller guide to build a custom package for
   your users.
 
@@ -83,5 +91,5 @@ All deployment methods follow the same core rules:
   headless configuration.
 - [PyInstaller Portable Build](pyinstaller_portable.md) — complete guide to
   building and verifying a portable `.exe`.
-- [Enterprise Admin Policy](enterprise_admin_policy.md) — mass deployment
+- [Enterprise Admin Policy](../user_guide/admin_policy.md) — mass deployment
   strategies and policy enforcement.

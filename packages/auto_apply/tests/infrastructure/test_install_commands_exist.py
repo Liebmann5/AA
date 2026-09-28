@@ -35,7 +35,12 @@ _REPO_ROOT = _PACKAGE_DIR.parent.parent               # .../AA (workspace root)
 
 ROOT_PYPROJECT = _REPO_ROOT / "pyproject.toml"
 PACKAGE_PYPROJECT = _PACKAGE_DIR / "pyproject.toml"
-CONTRIBUTING = _PACKAGE_DIR / "CONTRIBUTING.md"
+# Moved to the repository root 2026-09-27, where GitHub's community profile
+# looks for it; the package-level copy is retired. _documented_commands()
+# skips paths that do not exist, so leaving the stale path here silently
+# emptied this pin of the eight `uv sync --extra` commands the contributor
+# guide documents. A pin whose target moved must follow it, not pass quietly.
+CONTRIBUTING = _REPO_ROOT / "CONTRIBUTING.md"
 PACKAGE_README = _PACKAGE_DIR / "README.md"
 ROOT_README = _REPO_ROOT / "README.md"
 

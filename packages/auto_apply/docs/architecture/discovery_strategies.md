@@ -1,3 +1,11 @@
+---
+title: "Discovery Strategies"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: contributors
+---
+
 # Discovery Strategies
 
 The Discovery Engine is AA’s job‑hunting scout. It does not know how to

@@ -1,3 +1,11 @@
+---
+title: "Research Consent Dialog — Exact UI Text (v2.1)"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: researchers
+---
+
 # Research Consent Dialog — Exact UI Text (v2.1)
 
 This document is the AUTHORITATIVE SOURCE for the consent dialog text shown

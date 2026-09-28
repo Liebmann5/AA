@@ -1,3 +1,11 @@
+---
+title: "Reproducibility Guide for AutoApply Research"
+status: needs-review
+last_verified: 2026-09-27
+verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+audience: researchers
+---
+
 # Reproducibility Guide for AutoApply Research
 
 AutoApply is engineered to support **deterministic, reproducible execution** for
@@ -316,7 +324,7 @@ When publishing results derived from AA data, please include:
 
 ## Related Documentation
 
-- [Architecture Bible](../AA_ARCHITECTURE_BIBLE.md) — complete architectural reference
+- [Architecture Bible](AA_ARCHITECTURE_BIBLE.md) — complete architectural reference
 - [Research Module Overview](research_module/index.md) — purpose, ethics, privacy
 - [Signals Taxonomy](research_module/signals_taxonomy.md) — every signal type explained
 - [Data Format](research_module/data_format.md) — detailed schema and analysis examples
