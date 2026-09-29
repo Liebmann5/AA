@@ -171,13 +171,25 @@ def sha256(text: str) -> str:
 
 
 #: Chars per token, measured against the tokenizer on this repository:
-#:     item 2   est 55,533 (@3.6)   exact 40,521   ->  4.93
-#:     item 4a  est 69,665 (@3.6)   exact 51,621   ->  4.86
-#: The old 3.6 was chosen to err high and did, by about a third, on every
-#: per-attachment line of the preflight table that a send decision is made
-#: from. Re-measure and update this if the ratio drifts; the preflight prints
-#: estimate-vs-exact on every call precisely so the drift stays visible.
-EST_CHARS_PER_TOKEN = 4.9
+#:     item 2      est 55,533 (@3.6)   exact  40,521   ->  4.93
+#:     item 4a     est 69,665 (@3.6)   exact  51,621   ->  4.86
+#:     item 5 #1   est 44,684 (@4.9)   exact  48,771   ->  4.49
+#:     full dump   est 850,840 (@4.9)  exact 914,512   ->  4.56
+#:     item 5 #2   est 46,782 (@4.9)   exact  51,412   ->  4.46
+#: The original 3.6 erred high by about a third. 4.9, chosen from the first
+#: two samples, then erred LOW by 7-9% on the next three. Five samples in,
+#: the ratio is not drifting — it is content-dependent, clustering near 4.9
+#: for one attachment mix and near 4.5 for another, so no single constant is
+#: better than roughly +/-5% on both.
+#:
+#: The constant therefore does not chase the mean. est = chars / K, so a
+#: LARGER K under-counts tokens, and under-counting is the dangerous reading:
+#: EST_WINDOW_SAFETY below exists because the window guard fails only after
+#: the dump has been built and sent. 4.45 sits just below the lowest ratio
+#: measured, so the estimate is >= the exact count on every sample so far and
+#: the safety margin compounds on top of that rather than rescuing it.
+#: The preflight prints estimate-vs-exact on every call; add samples here.
+EST_CHARS_PER_TOKEN = 4.45
 
 #: The estimate also backs the context-window guard when --no-count is set,
 #: and a LOW reading is the dangerous one there: the request fails after the
