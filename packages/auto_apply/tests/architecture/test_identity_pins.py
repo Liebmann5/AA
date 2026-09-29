@@ -426,7 +426,14 @@ def test_research_company_identity_has_one_definition() -> None:
 EXPECTED_POSTING_IDENTITY_SITES: dict[str, IdentitySite] = {}
 
 # The consumers, and what each one does with a value nothing has ever produced:
-#   signal_aggregator        2 — forwards observation.posting_hash into two records
+#   signal_aggregator        3 — forwards observation.posting_hash into two records,
+#                                and ctx.posting_hash into the item 5 examination
+#                                record. That third site is where the denominator
+#                                becomes per-posting once item 2 mints an identity;
+#                                until then the column is uniformly NULL, so
+#                                COUNT(DISTINCT posting_hash) over
+#                                detector_examinations returns 0 and the answerable
+#                                denominator is the examination count itself.
 #   applications_workflow    2 — reads job.metadata["posting_hash"], forwards it
 #   vetting_workflow         1 — passes posting_hash=None DELIBERATELY. Item 2 moved
 #                                the observation here and declined to mint an identity
@@ -439,7 +446,7 @@ EXPECTED_POSTING_IDENTITY_SITES: dict[str, IdentitySite] = {}
 #
 # discovery_workflow was a consumer (2) until item 2 deleted its observation block.
 EXPECTED_POSTING_CONSUMERS: dict[str, int] = {
-    "adapters/secondary/research/signal_aggregator.py": 2,
+    "adapters/secondary/research/signal_aggregator.py": 3,
     "application/workflows/applications_workflow.py": 2,
     "application/workflows/vetting_workflow.py": 1,
     "domain/services/signal_detectors/__init__.py": 1,
@@ -447,7 +454,12 @@ EXPECTED_POSTING_CONSUMERS: dict[str, int] = {
 
 
 def test_posting_identity_sites() -> None:
-    """RATCHET: nothing computes ``posting_hash``, and seven places consume it.
+    """RATCHET: nothing computes ``posting_hash``; the consumers are pinned below.
+
+    The count lives in EXPECTED_POSTING_CONSUMERS and nowhere else. It was
+    spelled out here as well and had already drifted — the map summed to six
+    while this line said seven — which is what a second source of truth beside
+    a machine-checked one is for.
 
     Recording the consumers matters as much as recording the (empty) set of
     producers: when item 2 finally mints one, every consumer on this list has

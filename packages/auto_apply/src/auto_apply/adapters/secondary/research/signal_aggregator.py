@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -44,12 +45,36 @@ from auto_apply.domain.services.job_lifecycle_tracker import (
 from auto_apply.domain.services.research_identity import resolve_research_salt
 from auto_apply.domain.services.research_statistics import percentile
 from auto_apply.domain.services.signal_detectors import (
+    OUTCOME_CLEAN,
     DetectionContext,
+    DetectionResult,
+    DetectorOutcome,
     ResearchSignal,
     run_all_detectors,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _DetectorExamination:
+    """Persistence-bound record of one run_all_detectors pass (item 5, O2/O3).
+
+    Built by submit_context from the domain's DetectionResult, carried on the
+    flush queue, written by _write_examination_batch. Only NON-clean outcomes
+    are stored: the roster keeps "clean" derivable as roster-minus-recorded,
+    so a 29-detector clean examination costs one row instead of twenty-nine
+    (item 5, O1).
+    """
+
+    posting_hash: str | None
+    platform: str | None
+    jurisdiction: str | None
+    detectors_roster: tuple[str, ...]
+    detectors_fired: int
+    signals_fired: int
+    detectors_raised: int
+    outcomes: tuple[DetectorOutcome, ...]
 
 # ── SQLite schema (version 2 + provenance columns) ───────────────────────────
 _SCHEMA_SQL = """
@@ -181,6 +206,36 @@ CREATE TABLE IF NOT EXISTS discovery_candidates (
     schema_version   INTEGER DEFAULT 2
 );
 
+-- Detector outcome accounting (item 5): one examination row per detection
+-- pass (the denominator every rate needs), outcome rows for non-clean
+-- outcomes only. detectors_roster is a JSON array of the signal_types that
+-- ran, in registry order, so "clean" stays derivable as roster minus
+-- recorded outcomes even after the registry grows.
+CREATE TABLE IF NOT EXISTS detector_examinations (
+    examination_id     TEXT PRIMARY KEY,
+    posting_hash       TEXT,
+    platform           TEXT,
+    jurisdiction       TEXT,
+    detectors_run      INTEGER NOT NULL,
+    detectors_roster   TEXT NOT NULL,
+    detectors_fired    INTEGER NOT NULL,
+    signals_fired      INTEGER NOT NULL,
+    detectors_raised   INTEGER NOT NULL,
+    examined_date      TEXT NOT NULL,
+    schema_version     INTEGER DEFAULT 2
+);
+
+CREATE TABLE IF NOT EXISTS detector_outcomes (
+    outcome_id         TEXT PRIMARY KEY,
+    examination_id     TEXT NOT NULL REFERENCES detector_examinations(examination_id),
+    signal_type        TEXT NOT NULL,
+    outcome            TEXT NOT NULL,
+    signals_count      INTEGER NOT NULL DEFAULT 0,
+    error_class        TEXT,
+    examined_date      TEXT NOT NULL,
+    schema_version     INTEGER DEFAULT 2
+);
+
 -- ── Provenance metadata table — stores the public key once per installation ──
 CREATE TABLE IF NOT EXISTS research_provenance (
     id                INTEGER PRIMARY KEY CHECK (id = 1),
@@ -199,6 +254,10 @@ CREATE INDEX IF NOT EXISTS idx_outcomes_company ON application_outcomes(company_
 CREATE INDEX IF NOT EXISTS idx_outcomes_platform ON application_outcomes(platform);
 CREATE INDEX IF NOT EXISTS idx_discovery_cards_page ON discovery_cards(page_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_candidates_card ON discovery_candidates(card_id);
+CREATE INDEX IF NOT EXISTS idx_examinations_date ON detector_examinations(examined_date);
+CREATE INDEX IF NOT EXISTS idx_examinations_posting ON detector_examinations(posting_hash);
+CREATE INDEX IF NOT EXISTS idx_outcomes_exam ON detector_outcomes(examination_id);
+CREATE INDEX IF NOT EXISTS idx_outcomes_type ON detector_outcomes(signal_type);
 """
 
 
@@ -253,7 +312,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
         self._consent_version = consent_version
         self._flush_interval = flush_interval_seconds
         self._macro_signal_interval = macro_signal_interval_seconds
-        self._queue: queue.Queue[ResearchSignal | DiscoveryObservation | None] = queue.Queue()
+        self._queue: queue.Queue[ResearchSignal | DiscoveryObservation | _DetectorExamination | None] = queue.Queue()
         self._running = False
         self._thread: threading.Thread | None = None
         self._enabled = consent_version is not None
@@ -267,6 +326,11 @@ class ResearchSignalAggregator(ResearchObserverPort):
 
         # ── Discovery-surface observation counter (§4b) ──────────────────
         self._discovery_observation_count: int = 0
+
+        # Accounting-failure counters (item 5, R2), keyed by site label and
+        # surfaced in get_statistics_summary: a failure in the observation
+        # path becomes a readable fact about the run, not only a log line.
+        self._failures: dict[str, int] = {}
 
         if self._enabled:
             # The salt is resolved HERE — at adapter construction, not at the
@@ -385,16 +449,41 @@ class ResearchSignalAggregator(ResearchObserverPort):
         if not self._enabled:
             return
         try:
-            signals = run_all_detectors(ctx)
-            for signal in signals:
+            result: DetectionResult = run_all_detectors(ctx)
+            for signal in result.signals:
                 self._queue.put_nowait(signal)
-            if signals:
+            # Item 5: the examination itself is a record. One row per
+            # detection pass answers the denominator question (M6) — how
+            # many postings were examined, by which detectors, with what
+            # outcome — which no rate computed from research_signals alone
+            # could support before.
+            self._queue.put_nowait(
+                _DetectorExamination(
+                    posting_hash=ctx.posting_hash,
+                    platform=ctx.platform,
+                    jurisdiction=ctx.jurisdiction,
+                    detectors_roster=result.detectors_run,
+                    detectors_fired=result.detectors_fired,
+                    signals_fired=len(result.signals),
+                    detectors_raised=result.detectors_raised,
+                    outcomes=tuple(
+                        o for o in result.outcomes if o.outcome != OUTCOME_CLEAN
+                    ),
+                )
+            )
+            if result.signals:
                 logger.debug(
                     "ResearchSignalAggregator | %d signals detected for '%s'",
-                    len(signals), ctx.job_title[:50],
+                    len(result.signals), ctx.job_title[:50],
                 )
         except Exception as exc:
-            logger.debug("ResearchSignalAggregator | Detection error: %s", exc)
+            # R2/C2: counted and surfaced via get_statistics_summary; logged
+            # by class name only — str(exc) can quote the posting.
+            self._record_failure("submit_context")
+            logger.exception(
+                "ResearchSignalAggregator | Detection error (%s)",
+                type(exc).__name__,
+            )
 
     # ── ResearchObserverPort implementation ──────────────────────────────────
     # These three methods satisfy domain.ports.research_port.ResearchObserverPort.
@@ -405,6 +494,10 @@ class ResearchSignalAggregator(ResearchObserverPort):
     def is_enabled(self) -> bool:
         """Whether research collection is currently active (consent given)."""
         return self._enabled
+
+    def _record_failure(self, site: str) -> None:
+        """Count an observation-path failure (item 5, R2)."""
+        self._failures[site] = self._failures.get(site, 0) + 1
 
     def observe_job_posting(self, observation: JobPostingObservation) -> None:
         """Process a job posting observation: update lifecycle, build context, detect.
@@ -485,7 +578,12 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     jurisdiction=observation.jurisdiction,
                 )
         except Exception as exc:
-            logger.debug("ResearchSignalAggregator | observe_job_posting error: %s", exc)
+            # Item 5, R2: counted and surfaced; class name only (C2).
+            self._record_failure("observe_job_posting")
+            logger.exception(
+                "ResearchSignalAggregator | observe_job_posting error (%s)",
+                type(exc).__name__,
+            )
 
     def observe_form(self, observation: FormObservation) -> None:
         """Process an application form observation.
@@ -521,7 +619,14 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 estimated_minutes=observation.estimated_completion_minutes,
             )
         except Exception as exc:
-            logger.debug("ResearchSignalAggregator | observe_form error: %s", exc)
+            # Item 5, R2: observe_form feeds the detector chain through
+            # submit_context, so its swallow is the same class as the two
+            # M5 sites; counted and surfaced; class name only (C2).
+            self._record_failure("observe_form")
+            logger.exception(
+                "ResearchSignalAggregator | observe_form error (%s)",
+                type(exc).__name__,
+            )
 
     def observe_application_outcome(
         self, observation: ApplicationOutcomeObservation
@@ -816,7 +921,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
         """Return a summary of accumulated research data.
 
         Returns:
-            Dict with counts by signal type, severity, and jurisdiction.
+            Dict with counts by signal type and severity, the examination
+            denominator (item 5), and in-process accounting-failure counters.
         """
         if not self._enabled:
             return {}
@@ -830,9 +936,23 @@ class ResearchSignalAggregator(ResearchObserverPort):
                        ORDER BY cnt DESC"""
                 )
                 rows = cursor.fetchall()
+                exam_row = conn.execute(
+                    """SELECT COUNT(*) AS examinations,
+                              COALESCE(SUM(detectors_raised), 0) AS raised,
+                              COALESCE(SUM(detectors_fired), 0) AS fired
+                       FROM detector_examinations"""
+                ).fetchone()
                 return {
                     "by_signal_type": [dict(r) for r in rows],
                     "total_signals": sum(r["cnt"] for r in rows),
+                    # Item 5: the denominator, readable back. examinations =
+                    # detection passes recorded; raised/fired = per-detector
+                    # outcomes across those passes; accounting_failures =
+                    # observation-path failures counted in-process (R2).
+                    "examinations": exam_row["examinations"],
+                    "detectors_raised": exam_row["raised"],
+                    "detectors_fired": exam_row["fired"],
+                    "accounting_failures": dict(self._failures),
                 }
         except Exception:
             return {}
@@ -1059,10 +1179,12 @@ class ResearchSignalAggregator(ResearchObserverPort):
     # ── Daemon thread ─────────────────────────────────────────────────────────
 
     def _flush_loop(self) -> None:
-        """Background thread: drain queue, write signals and discovery
-        observations to SQLite, and periodically compute macro-signals."""
+        """Background thread: drain queue; write signals, discovery
+        observations and detector examinations to SQLite; and periodically
+        compute macro-signals."""
         batch: list[ResearchSignal] = []
         discovery_batch: list[DiscoveryObservation] = []
+        examination_batch: list[_DetectorExamination] = []
         while self._running:
             try:
                 item = self._queue.get(timeout=self._flush_interval)
@@ -1070,6 +1192,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     break
                 if isinstance(item, DiscoveryObservation):
                     discovery_batch.append(item)
+                elif isinstance(item, _DetectorExamination):
+                    examination_batch.append(item)
                 else:
                     batch.append(item)
                 # Drain additional items without waiting
@@ -1080,6 +1204,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                             break
                         if isinstance(nxt, DiscoveryObservation):
                             discovery_batch.append(nxt)
+                        elif isinstance(nxt, _DetectorExamination):
+                            examination_batch.append(nxt)
                         else:
                             batch.append(nxt)
                     except queue.Empty:
@@ -1093,6 +1219,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
             if discovery_batch:
                 self._write_discovery_batch(discovery_batch)
                 discovery_batch = []
+            if examination_batch:
+                self._write_examination_batch(examination_batch)
+                examination_batch = []
 
             # ── Periodic macro‑signal computation ────────────────────────
             now = time.monotonic()
@@ -1102,9 +1231,10 @@ class ResearchSignalAggregator(ResearchObserverPort):
 
         # Final flush.
         #
-        # The two local-batch writes below are DEFENCE, not a repair: on
-        # every path out of the loop above, `batch` and `discovery_batch`
-        # are already empty here. Each iteration clears them after writing,
+        # The local-batch writes below are DEFENCE, not a repair: on every
+        # path out of the loop above, `batch`, `discovery_batch` and
+        # `examination_batch` are already empty here. Each iteration clears
+        # them after writing,
         # so they are empty at the top of the next one, and both exits are
         # reached before anything is appended in that iteration — the
         # sentinel `break` sits immediately after the blocking `get`, and
@@ -1122,12 +1252,15 @@ class ResearchSignalAggregator(ResearchObserverPort):
         # stop() posted the sentinel lands there and nowhere else.
         remaining: list[ResearchSignal] = []
         remaining_discovery: list[DiscoveryObservation] = []
+        remaining_examination: list[_DetectorExamination] = []
         while True:
             try:
                 item = self._queue.get_nowait()
                 if item is not None:
                     if isinstance(item, DiscoveryObservation):
                         remaining_discovery.append(item)
+                    elif isinstance(item, _DetectorExamination):
+                        remaining_examination.append(item)
                     else:
                         remaining.append(item)
             except queue.Empty:
@@ -1140,6 +1273,10 @@ class ResearchSignalAggregator(ResearchObserverPort):
             self._write_discovery_batch(discovery_batch)
         if remaining_discovery:
             self._write_discovery_batch(remaining_discovery)
+        if examination_batch:
+            self._write_examination_batch(examination_batch)
+        if remaining_examination:
+            self._write_examination_batch(remaining_examination)
 
     def _ensure_signer(self) -> Any:
         """Lazily initialize the ProvenanceSigner and store the public key.
@@ -1365,4 +1502,92 @@ class ResearchSignalAggregator(ResearchObserverPort):
         except Exception as exc:
             logger.error(
                 "ResearchSignalAggregator | Discovery write batch failed: %s", exc
+            )
+
+    def _write_examination_batch(self, examinations: list[_DetectorExamination]) -> None:
+        """Persist detector examinations (item 5): one examination row plus
+        one row per non-clean outcome, in a single transaction.
+
+        Denominator semantics: an examination is ONE registry pass over ONE
+        context. The same posting observed through two pathways (discovery,
+        then application form) is two examinations and both rows are kept —
+        rates stay unbiased because numerator and denominator scale together.
+        The answerable denominator is therefore the EXAMINATION COUNT, and the
+        canonical rate query joins detector_outcomes to detector_examinations
+        on examination_id.
+
+        "Distinct postings examined" is NOT answerable yet, and this docstring
+        previously said it was. posting_hash is carried on every examination
+        row and is uniformly NULL today — nothing in AA mints a posting
+        identity, which is what EXPECTED_POSTING_IDENTITY_SITES == {} asserts
+        in tests/architecture/test_identity_pins.py. Measured on this code:
+        five examinations persisted, five with posting_hash IS NULL, and
+        COUNT(DISTINCT posting_hash) = 0, because COUNT(DISTINCT ...) skips
+        NULLs. The column is here so the per-posting denominator lands
+        somewhere the day item 2 mints an identity; until then it answers
+        zero, and a query that always answers zero is not an available
+        measurement.
+
+        Signals themselves still dedup via deterministic signal_id, so the gap
+        between detectors_fired here and rows in research_signals measures
+        observation-path redundancy.
+
+        Identity follows the 4c R3 ruling: examination_id / outcome_id are
+        random surrogates minted at write time. Nothing content-derived — an
+        examination claims no cross-observation sameness. C1 (item 5):
+        these rows are deliberately NOT provenance-signed; if item 10 wants
+        them signed, the hook is here, mirroring _write_batch's content-hash
+        point.
+
+        Roster: stored as a JSON array of the signal_types that ran, in
+        registry order, so "clean" remains derivable (roster minus recorded
+        outcomes) even after the registry grows and an old examination's 29
+        no longer means today's 29.
+        """
+        exam_rows: list[tuple] = []
+        outcome_rows: list[tuple] = []
+        examined_date = date.today().isoformat()
+        for exam in examinations:
+            examination_id = uuid.uuid4().hex
+            exam_rows.append((
+                examination_id, exam.posting_hash, exam.platform,
+                exam.jurisdiction, len(exam.detectors_roster),
+                json.dumps(list(exam.detectors_roster)),
+                exam.detectors_fired, exam.signals_fired,
+                exam.detectors_raised, examined_date, RESEARCH_SCHEMA_VERSION,
+            ))
+            for outcome in exam.outcomes:
+                outcome_rows.append((
+                    uuid.uuid4().hex, examination_id, outcome.signal_type,
+                    outcome.outcome, outcome.signals_count, outcome.error_class,
+                    examined_date, RESEARCH_SCHEMA_VERSION,
+                ))
+        try:
+            with self._get_connection() as conn:
+                conn.executemany(
+                    """INSERT INTO detector_examinations
+                       (examination_id, posting_hash, platform, jurisdiction,
+                        detectors_run, detectors_roster, detectors_fired,
+                        signals_fired, detectors_raised, examined_date,
+                        schema_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    exam_rows,
+                )
+                if outcome_rows:
+                    conn.executemany(
+                        """INSERT INTO detector_outcomes
+                           (outcome_id, examination_id, signal_type, outcome,
+                            signals_count, error_class, examined_date,
+                            schema_version)
+                           VALUES (?,?,?,?,?,?,?,?)""",
+                        outcome_rows,
+                    )
+            logger.debug(
+                "ResearchSignalAggregator | Wrote %d detector examination(s) to DB",
+                len(examinations),
+            )
+        except Exception as exc:
+            self._record_failure("examination_write")
+            logger.error(
+                "ResearchSignalAggregator | Examination write batch failed: %s", exc
             )

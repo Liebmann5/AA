@@ -198,9 +198,12 @@ def test_detectors_never_raise(
         salary_min=salary_min,
         salary_max=salary_max,
     )
-    # This must not raise under any circumstances
-    signals = run_all_detectors(ctx)
-    assert isinstance(signals, list)
+    # This must not raise under any circumstances. The return also carries
+    # the accounting: every detector that ran produced exactly one recorded
+    # outcome — a blow-up is data now, not silence (item 5, R5).
+    result = run_all_detectors(ctx)
+    assert isinstance(result.signals, tuple)
+    assert len(result.outcomes) == len(result.detectors_run)
 
 
 @given(

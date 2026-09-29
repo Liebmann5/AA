@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from auto_apply.domain.constants import (
     RESEARCH_SCHEMA_VERSION,
@@ -98,6 +98,68 @@ class ResearchSignal:
             company_id=compute_company_id(company_name),
             job_category=job_category,
         )
+
+
+# ── Detector outcome accounting (item 5) ─────────────────────────────────────
+#: The three distinguishable facts about one detector running against one
+#: context (item 5, R3). Collapsing any two of them re-creates the
+#: ``except Exception: pass`` defect in a new shape.
+DetectorOutcomeKind = Literal["clean", "fired", "raised"]
+
+OUTCOME_CLEAN: DetectorOutcomeKind = "clean"
+OUTCOME_FIRED: DetectorOutcomeKind = "fired"
+OUTCOME_RAISED: DetectorOutcomeKind = "raised"
+
+
+@dataclass(frozen=True)
+class DetectorOutcome:
+    """The recorded outcome of one detector running against one context.
+
+    Attributes:
+        signal_type: The detector's self-identification, e.g. "GJ-01".
+        outcome: OUTCOME_CLEAN / OUTCOME_FIRED / OUTCOME_RAISED.
+        signals_count: Signals produced (0 for clean and raised).
+        error_class: The exception's CLASS NAME when outcome is
+            OUTCOME_RAISED, None otherwise. str(exc) is never recorded: an
+            exception message can quote the posting under analysis — company
+            names, URLs, description text — and storing it would be a PII
+            leak with a research-data label on it (item 5, C2).
+    """
+
+    signal_type: str
+    outcome: DetectorOutcomeKind
+    signals_count: int
+    error_class: str | None = None
+
+
+@dataclass(frozen=True)
+class DetectionResult:
+    """Everything one run_all_detectors pass learned: findings and accounting.
+
+    Attributes:
+        signals: Every ResearchSignal produced, sorted confidence-descending,
+            with deterministic ids when the context carried a posting_hash.
+        detectors_run: signal_type of every detector that ran, in registry
+            order — the roster. Persisted per examination so "clean" stays
+            derivable as roster-minus-recorded even as the registry grows.
+        outcomes: Exactly one DetectorOutcome per detectors_run entry, same
+            order. len(outcomes) == len(detectors_run) is the completeness
+            invariant the accounting stands on.
+    """
+
+    signals: tuple[ResearchSignal, ...]
+    detectors_run: tuple[str, ...]
+    outcomes: tuple[DetectorOutcome, ...]
+
+    @property
+    def detectors_fired(self) -> int:
+        """How many detectors produced at least one signal."""
+        return sum(1 for o in self.outcomes if o.outcome == OUTCOME_FIRED)
+
+    @property
+    def detectors_raised(self) -> int:
+        """How many detectors raised instead of producing a verdict."""
+        return sum(1 for o in self.outcomes if o.outcome == OUTCOME_RAISED)
 
 
 @dataclass
