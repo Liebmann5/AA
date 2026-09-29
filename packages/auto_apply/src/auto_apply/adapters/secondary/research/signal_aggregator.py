@@ -22,6 +22,7 @@ import queue
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -135,6 +136,51 @@ CREATE TABLE IF NOT EXISTS application_outcomes (
     schema_version       INTEGER DEFAULT 2
 );
 
+CREATE TABLE IF NOT EXISTS discovery_pages (
+    page_id              TEXT PRIMARY KEY,
+    provider             TEXT,
+    page_host            TEXT,
+    page_state           TEXT,
+    blocked              INTEGER DEFAULT 0,
+    architecture         TEXT,
+    card_count           INTEGER,
+    resolved_count       INTEGER,
+    multi_route_count    INTEGER,
+    deferred_count       INTEGER,
+    no_destination_count INTEGER,
+    sponsored_card_count INTEGER,
+    activation_attempts  INTEGER,
+    activation_resolved  INTEGER,
+    learned_identity     TEXT,
+    observed_date        TEXT NOT NULL,
+    schema_version       INTEGER DEFAULT 2
+);
+
+CREATE TABLE IF NOT EXISTS discovery_cards (
+    card_id          TEXT PRIMARY KEY,
+    page_id          TEXT NOT NULL REFERENCES discovery_pages(page_id),
+    card_index       INTEGER,
+    title            TEXT,
+    resolution_state TEXT,
+    selected_host    TEXT,
+    schema_version   INTEGER DEFAULT 2
+);
+
+CREATE TABLE IF NOT EXISTS discovery_candidates (
+    candidate_id     TEXT PRIMARY KEY,
+    card_id          TEXT NOT NULL REFERENCES discovery_cards(card_id),
+    resolved_host    TEXT,
+    anchor_text      TEXT,
+    source           TEXT,
+    outcome          TEXT,
+    rejection_reason TEXT,
+    ad_evidence      TEXT,
+    apply_intent     INTEGER DEFAULT 0,
+    title_overlap    REAL,
+    method           TEXT,
+    schema_version   INTEGER DEFAULT 2
+);
+
 -- ── Provenance metadata table — stores the public key once per installation ──
 CREATE TABLE IF NOT EXISTS research_provenance (
     id                INTEGER PRIMARY KEY CHECK (id = 1),
@@ -151,6 +197,8 @@ CREATE INDEX IF NOT EXISTS idx_lifecycles_fp    ON job_lifecycles(job_fingerprin
 CREATE INDEX IF NOT EXISTS idx_salary_role      ON salary_observations(role_title_normalized);
 CREATE INDEX IF NOT EXISTS idx_outcomes_company ON application_outcomes(company_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_platform ON application_outcomes(platform);
+CREATE INDEX IF NOT EXISTS idx_discovery_cards_page ON discovery_cards(page_id);
+CREATE INDEX IF NOT EXISTS idx_discovery_candidates_card ON discovery_candidates(card_id);
 """
 
 
@@ -205,7 +253,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
         self._consent_version = consent_version
         self._flush_interval = flush_interval_seconds
         self._macro_signal_interval = macro_signal_interval_seconds
-        self._queue: queue.Queue[ResearchSignal | None] = queue.Queue()
+        self._queue: queue.Queue[ResearchSignal | DiscoveryObservation | None] = queue.Queue()
         self._running = False
         self._thread: threading.Thread | None = None
         self._enabled = consent_version is not None
@@ -485,7 +533,6 @@ class ResearchSignalAggregator(ResearchObserverPort):
         """
         if not self._enabled:
             return
-        import uuid
         outcome_id = str(uuid.uuid4())
         try:
             with self._get_connection() as conn:
@@ -507,14 +554,26 @@ class ResearchSignalAggregator(ResearchObserverPort):
             logger.debug("ResearchSignalAggregator | observe_application_outcome error: %s", exc)
 
     def observe_discovery(self, observation: DiscoveryObservation) -> None:
-        """Accept a discovery-surface observation (§4b).
+        """Accept a discovery-surface observation (§4b) and enqueue it for
+        persistence.
 
-        Persistence for discovery observations is deferred to the consumer
-        batch that builds the detector side of the discovery taxonomy. For
-        now each observation is logged and counted, so the record shape is
-        validated against real harvests without shipping the exporter early.
-        The observation carries no user data and no search URLs — it is
-        logged verbatim at INFO for legibility.
+        Persistence is no longer deferred to a consumer batch: the record is
+        placed on the same queue-plus-daemon pipeline as signals (no I/O on
+        the calling discovery thread — the handler rule in
+        domain/constants.py) and written by _write_discovery_batch into
+        discovery_pages / discovery_cards / discovery_candidates. The
+        consent gate above is unchanged: with consent absent this method
+        costs exactly nothing and no rows exist.
+
+        Two rulings bound what the daemon may write (item 4c): candidate
+        original_url / resolved_url are never persisted (the set of
+        candidate URLs on one page is the query's result set — the thing
+        page_host was designed not to record), and row identity is a random
+        surrogate, never content-derived. See _write_discovery_batch.
+
+        The INFO line below logs seven scalars about the record, never the
+        record itself; an earlier revision of this docstring claimed the
+        record was "logged verbatim at INFO", which the code never did.
 
         Args:
             observation: The discovery-surface record for one results page.
@@ -536,6 +595,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 observation.multi_route_count,
                 observation.sponsored_card_count,
             )
+            self._queue.put_nowait(observation)
         except Exception as exc:
             logger.debug("ResearchSignalAggregator | observe_discovery error: %s", exc)
 
@@ -729,7 +789,6 @@ class ResearchSignalAggregator(ResearchObserverPort):
         """
         if not self._enabled:
             return
-        import uuid
         form_id = str(uuid.uuid4())
         wcag_violations_json = json.dumps(list(form_structure.wcag_violations))
         wcag_score = "FAIL" if form_structure.wcag_violations else "AA"
@@ -1000,22 +1059,29 @@ class ResearchSignalAggregator(ResearchObserverPort):
     # ── Daemon thread ─────────────────────────────────────────────────────────
 
     def _flush_loop(self) -> None:
-        """Background thread: drain queue, write signals to SQLite, and
-        periodically compute macro‑signals."""
+        """Background thread: drain queue, write signals and discovery
+        observations to SQLite, and periodically compute macro-signals."""
         batch: list[ResearchSignal] = []
+        discovery_batch: list[DiscoveryObservation] = []
         while self._running:
             try:
                 item = self._queue.get(timeout=self._flush_interval)
                 if item is None:
                     break
-                batch.append(item)
+                if isinstance(item, DiscoveryObservation):
+                    discovery_batch.append(item)
+                else:
+                    batch.append(item)
                 # Drain additional items without waiting
                 while True:
                     try:
                         nxt = self._queue.get_nowait()
                         if nxt is None:
                             break
-                        batch.append(nxt)
+                        if isinstance(nxt, DiscoveryObservation):
+                            discovery_batch.append(nxt)
+                        else:
+                            batch.append(nxt)
                     except queue.Empty:
                         break
             except queue.Empty:
@@ -1024,6 +1090,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
             if batch:
                 self._write_batch(batch)
                 batch = []
+            if discovery_batch:
+                self._write_discovery_batch(discovery_batch)
+                discovery_batch = []
 
             # ── Periodic macro‑signal computation ────────────────────────
             now = time.monotonic()
@@ -1031,17 +1100,46 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 self._last_macro_ts = now
                 self.compute_macro_signals()
 
-        # Final flush
-        remaining = []
+        # Final flush.
+        #
+        # The two local-batch writes below are DEFENCE, not a repair: on
+        # every path out of the loop above, `batch` and `discovery_batch`
+        # are already empty here. Each iteration clears them after writing,
+        # so they are empty at the top of the next one, and both exits are
+        # reached before anything is appended in that iteration — the
+        # sentinel `break` sits immediately after the blocking `get`, and
+        # the `while self._running` test is at the top. Instrumenting this
+        # point across three stop timings (immediately after enqueue,
+        # mid-interval, and after a flush) reported local batch sizes of 0
+        # every time.
+        #
+        # They are kept because the day this loop becomes time-gated and
+        # accumulates across iterations, they are what stops a flush
+        # interval's records dying at shutdown.
+        #
+        # The queue drain below is the load-bearing part: producers gate on
+        # `self._enabled`, not `self._running`, so a record enqueued after
+        # stop() posted the sentinel lands there and nowhere else.
+        remaining: list[ResearchSignal] = []
+        remaining_discovery: list[DiscoveryObservation] = []
         while True:
             try:
                 item = self._queue.get_nowait()
                 if item is not None:
-                    remaining.append(item)
+                    if isinstance(item, DiscoveryObservation):
+                        remaining_discovery.append(item)
+                    else:
+                        remaining.append(item)
             except queue.Empty:
                 break
+        if batch:
+            self._write_batch(batch)
         if remaining:
             self._write_batch(remaining)
+        if discovery_batch:
+            self._write_discovery_batch(discovery_batch)
+        if remaining_discovery:
+            self._write_discovery_batch(remaining_discovery)
 
     def _ensure_signer(self) -> Any:
         """Lazily initialize the ProvenanceSigner and store the public key.
@@ -1171,3 +1269,100 @@ class ResearchSignalAggregator(ResearchObserverPort):
             )
         except Exception as exc:
             logger.error("ResearchSignalAggregator | Write batch failed: %s", exc)
+
+    def _write_discovery_batch(self, observations: list[DiscoveryObservation]) -> None:
+        """Persist discovery-surface observations (§4b): one page row, one
+        row per card, one row per candidate, in a single transaction.
+
+        Privacy ruling (item 4c, R1): the candidate-level ``original_url``
+        and ``resolved_url`` are NEVER written. The page record was
+        deliberately de-identified to host granularity so a user's search
+        query cannot be reconstructed; the set of candidate URLs on one
+        page IS that query's result set, so persisting full URLs one level
+        down would route around the page-level decision. Hosts survive
+        (``resolved_host`` — the syndication-topology datum GJ-02/GJ-03
+        need); full URLs exist only in process memory for the lifetime of
+        the observation.
+
+        Identity ruling (item 4c, R3): ``page_id`` / ``card_id`` /
+        ``candidate_id`` are random surrogate keys minted here, at write
+        time. Nothing content-derived is used — page content is measured
+        unstable across fetches (the posting_hash precedent) — and the keys
+        claim no cross-observation sameness: re-harvesting the same SERP
+        yields a new, unlinked page row, and there is deliberately no
+        run/session linker. The keys exist so child rows can join to their
+        parent, and only that. This diverges from signals' deterministic
+        signal_id on purpose: re-observation is not a dedup case here.
+
+        Signing (item 10, C1): these rows are NOT provenance-signed the way
+        research_signals rows are. If they should be, the hook is here —
+        content-hash each row tuple at this point and store the signature
+        in a new column; deliberately not built in this item.
+        """
+        page_rows: list[tuple] = []
+        card_rows: list[tuple] = []
+        candidate_rows: list[tuple] = []
+        observed_date = date.today().isoformat()
+        for obs in observations:
+            page_id = uuid.uuid4().hex
+            page_rows.append((
+                page_id, obs.provider, obs.page_host, obs.page_state,
+                int(obs.blocked), obs.architecture, obs.card_count,
+                obs.resolved_count, obs.multi_route_count, obs.deferred_count,
+                obs.no_destination_count, obs.sponsored_card_count,
+                obs.activation_attempts, obs.activation_resolved,
+                json.dumps(list(obs.learned_identity)),
+                observed_date, RESEARCH_SCHEMA_VERSION,
+            ))
+            for card in obs.cards:
+                card_id = uuid.uuid4().hex
+                card_rows.append((
+                    card_id, page_id, card.card_index, card.title,
+                    card.resolution_state, card.selected_host,
+                    RESEARCH_SCHEMA_VERSION,
+                ))
+                for cand in card.candidates:
+                    candidate_rows.append((
+                        uuid.uuid4().hex, card_id, cand.resolved_host,
+                        cand.anchor_text, cand.source, cand.outcome,
+                        cand.rejection_reason,
+                        json.dumps(list(cand.ad_evidence)),
+                        int(cand.apply_intent), cand.title_overlap,
+                        cand.method, RESEARCH_SCHEMA_VERSION,
+                    ))
+        try:
+            with self._get_connection() as conn:
+                conn.executemany(
+                    """INSERT INTO discovery_pages
+                       (page_id, provider, page_host, page_state, blocked,
+                        architecture, card_count, resolved_count,
+                        multi_route_count, deferred_count,
+                        no_destination_count, sponsored_card_count,
+                        activation_attempts, activation_resolved,
+                        learned_identity, observed_date, schema_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    page_rows,
+                )
+                conn.executemany(
+                    """INSERT INTO discovery_cards
+                       (card_id, page_id, card_index, title,
+                        resolution_state, selected_host, schema_version)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    card_rows,
+                )
+                conn.executemany(
+                    """INSERT INTO discovery_candidates
+                       (candidate_id, card_id, resolved_host, anchor_text,
+                        source, outcome, rejection_reason, ad_evidence,
+                        apply_intent, title_overlap, method, schema_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    candidate_rows,
+                )
+            logger.debug(
+                "ResearchSignalAggregator | Wrote %d discovery observation(s) to DB",
+                len(observations),
+            )
+        except Exception as exc:
+            logger.error(
+                "ResearchSignalAggregator | Discovery write batch failed: %s", exc
+            )

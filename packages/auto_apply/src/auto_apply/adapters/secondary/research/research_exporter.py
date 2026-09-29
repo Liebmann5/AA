@@ -85,6 +85,9 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
     TableSpec("salary_observations", ("posted_date", "obs_id")),
     TableSpec("form_observations", ("observed_date", "form_id")),
     TableSpec("application_outcomes", ("submitted_date", "outcome_id")),
+    TableSpec("discovery_pages", ("observed_date", "page_id")),
+    TableSpec("discovery_cards", ("page_id", "card_index", "card_id")),
+    TableSpec("discovery_candidates", ("card_id", "candidate_id")),
     TableSpec("research_provenance", (), kind="verification"),
 )
 
