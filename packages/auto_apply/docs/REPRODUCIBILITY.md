@@ -115,7 +115,7 @@ The exporter writes three files per invocation:
 | `evidence_text` | `TEXT` | Anonymized evidence excerpt (max 200 chars) |
 | `platform` | `TEXT` | ATS or job board identifier |
 | `jurisdiction` | `TEXT` | US state/city code (e.g. `CA`, `NYC`) |
-| `company_id` | `TEXT` | HMAC-SHA256 of company name (anonymized) |
+| `company_id` | `TEXT` | HMAC-SHA256 of the company name's canonical form (anonymized); NULL when no usable name exists. See `research_module/data_format.md` |
 | `job_category` | `TEXT` | BLS SOC code when available |
 | `detected_date` | `TEXT` | ISO date of detection |
 | `schema_version` | `INTEGER` | Schema version for longitudinal compatibility |

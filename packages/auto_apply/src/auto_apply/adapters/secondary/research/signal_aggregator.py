@@ -15,6 +15,7 @@ It must NEVER be imported by domain or application layers.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 from typing import Any
@@ -42,7 +43,10 @@ from auto_apply.domain.services.job_lifecycle_tracker import (
     days_live,
     update_lifecycle,
 )
-from auto_apply.domain.services.research_identity import resolve_research_salt
+from auto_apply.domain.services.research_identity import (
+    ABSENT_COMPANY_TOKENS,
+    resolve_research_salt,
+)
 from auto_apply.domain.services.research_statistics import percentile
 from auto_apply.domain.services.signal_detectors import (
     OUTCOME_CLEAN,
@@ -266,6 +270,14 @@ CREATE INDEX IF NOT EXISTS idx_outcomes_type ON detector_outcomes(signal_type);
 #: constructions and are nulled exactly once, at first open.
 _COMPANY_IDENTITY_MIGRATION_VERSION: int = 3
 
+#: user_version value stamping the phantom-identity migration. Rows minted
+#: between item 4a and the canonical-form fix carry, for every posting whose
+#: company extraction failed, ONE shared id — HMAC(salt, "unknown") — so
+#: unrelated employers arrived pre-merged into a fabricated entity. Those
+#: ids are recomputable (the names are known constants, the salt is in hand),
+#: so exactly those — and nothing else — are nulled once, at first open.
+_PHANTOM_IDENTITY_MIGRATION_VERSION: int = 4
+
 
 class ResearchSignalAggregator(ResearchObserverPort):
     """Daemon-thread adapter that persists research signals to SQLite.
@@ -321,6 +333,10 @@ class ResearchSignalAggregator(ResearchObserverPort):
         self._signer: Any = None
         self._public_key_stored: bool = False
 
+        # Resolved at construction when research is enabled (see __init__
+        # below); None otherwise, and the v4 migration never runs then.
+        self._research_salt: str | None = None
+
         # ── Macro‑signal tracking ─────────────────────────────────────────
         self._last_macro_ts: float = 0.0   # monotonic timestamp of last run
 
@@ -344,7 +360,11 @@ class ResearchSignalAggregator(ResearchObserverPort):
             # been re-verified for this change, and any wrapper there that
             # catches it and degrades to NullResearchObserver re-creates the
             # silent shape this raise exists to prevent.
-            resolve_research_salt()
+            # The value is kept on the instance: the phantom-identity
+            # migration (_null_phantom_company_ids) needs it to recognise
+            # ids minted by the retired construction for the known
+            # placeholder names.
+            self._research_salt = resolve_research_salt()
             self._initialize_db()
 
     def _initialize_db(self) -> None:
@@ -354,6 +374,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
             with self._get_connection() as conn:
                 conn.executescript(_SCHEMA_SQL)
                 self._null_legacy_company_ids(conn)
+                self._null_phantom_company_ids(conn)
             logger.info("ResearchSignalAggregator | DB initialized at %s", self._db_path)
         except Exception as exc:
             logger.error("ResearchSignalAggregator | DB init failed: %s", exc)
@@ -400,6 +421,83 @@ class ResearchSignalAggregator(ResearchObserverPort):
             "ResearchSignalAggregator | nulled legacy company_id values "
             "(item 4a migration, user_version -> %d)",
             _COMPANY_IDENTITY_MIGRATION_VERSION,
+        )
+
+    def _null_phantom_company_ids(self, conn: sqlite3.Connection) -> None:
+        """NULL every company_id minted from a placeholder name, exactly once.
+
+        Rows written between item 4a and the canonical-form fix carry, for
+        every posting whose company extraction failed, the SAME id:
+        HMAC(salt, "unknown") — discovery producers emit the literal
+        "Unknown" when they cannot name a company, so unrelated employers
+        arrived in the corpus pre-merged into one fabricated entity with a
+        fabricated response rate. Unlike the item-4a rows, these ids are
+        recomputable: the names are known constants and the salt is in hand,
+        so the migration recognises exactly the provable phantom and leaves
+        every other row untouched. This recomputation MINTS nothing — it
+        recognises corpses of the retired construction.
+
+        What survives, deliberately:
+          * ids minted from real names whose old form equals the new
+            canonical form (f(name) == name.lower()) — the overwhelming
+            majority; their joins stay valid across the boundary;
+          * ids minted from name VARIANTS the new canonical form would now
+            merge (e.g. a trailing-newline spelling). Those rows are
+            truthful about a spelling-variant cohort but will never be
+            joined by new writes. Dead weight, not fabricated data, and
+            indistinguishable from real ids — so they stay;
+          * ids minted from whitespace-only names, if any exist: enumerable
+            only in principle, produced by no known producer, and
+            indistinguishable from real ids. Disclosed, not nulled.
+
+        What a researcher may trust afterwards: within rows written after
+        this migration, company_id is stable across case, whitespace,
+        invisibles and Unicode spelling. A company_id that appears both
+        before and after is one continuous identity. A pre-migration
+        company_id that never reappears may be a merged-away variant — join
+        across the boundary at your own risk. No post-migration row is part
+        of the "unknown" phantom, because compute_company_id now mints None
+        for absence.
+
+        Idempotent via PRAGMA user_version; composes after the item-4a
+        migration (a pre-4a database is fully nulled by that one first);
+        a no-op on a fresh database. When item 10 re-keys the salt, every
+        id changes again and that migration supersedes this one wholesale.
+        """
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= _PHANTOM_IDENTITY_MIGRATION_VERSION:
+            return
+        if self._research_salt is None:
+            # Unreachable: _initialize_db only runs when research is enabled,
+            # which resolves the salt first. Guarded so the type stays honest.
+            return
+        phantom_ids = [
+            hmac.new(
+                self._research_salt.encode("utf-8"),
+                token.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()[:16]
+            for token in sorted(ABSENT_COMPANY_TOKENS)
+        ]
+        placeholders = ", ".join("?" for _ in phantom_ids)
+        conn.execute(
+            f"UPDATE research_signals SET company_id = NULL "
+            f"WHERE company_id IN ({placeholders})",
+            phantom_ids,
+        )
+        conn.execute(
+            f"UPDATE application_outcomes SET company_id = NULL "
+            f"WHERE company_id IN ({placeholders})",
+            phantom_ids,
+        )
+        conn.execute(
+            f"PRAGMA user_version = {_PHANTOM_IDENTITY_MIGRATION_VERSION}"
+        )
+        logger.info(
+            "ResearchSignalAggregator | nulled phantom company_id values "
+            "(%d placeholder identities, user_version -> %d)",
+            len(phantom_ids),
+            _PHANTOM_IDENTITY_MIGRATION_VERSION,
         )
 
     @contextmanager

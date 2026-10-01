@@ -51,7 +51,7 @@ This is the primary table. Every row is a single anonymised observation.
 | `evidence_text` | TEXT | Anonymised excerpt proving the signal (max 200 chars). | `"Posting live 120 days (SHRM fill threshold: 41 days)"` |
 | `platform` | TEXT | ATS or job‑board identifier (never a raw URL). | `greenhouse`, `linkedin` |
 | `jurisdiction` | TEXT | US state/city code, e.g. `"CA"`, `"NYC"`, or NULL. | `CA` |
-| `company_id` | TEXT | HMAC‑SHA256 of company name (salt never stored). 16‑hex‑character anonymised identifier. | `a3f2b1c4d5e6f7a8` |
+| `company_id` | TEXT | HMAC‑SHA256 of the company name's canonical form (format characters removed, NFKC, casefolded, whitespace collapsed; punctuation and legal suffixes kept; salt never stored). 16‑hex‑character anonymised identifier. NULL means no usable company name — including the placeholders discovery emits when extraction fails (`Unknown`, `N/A`, `None`); NULL is absence, never a company. Databases below `user_version` 4 were minted from the lower‑cased name only; the v4 migration NULLs their placeholder ids and leaves the rest. | `a3f2b1c4d5e6f7a8` |
 | `job_category` | TEXT | BLS SOC code when available. | `15-1252` |
 | `detected_date` | TEXT NOT NULL | ISO‑8601 date when the signal was recorded (no time component). | `2026-05-01` |
 | `schema_version` | INTEGER | Version of the research schema (incremented when data practices change). | `2` |

@@ -2254,7 +2254,15 @@ class ApplicationsWorkflow:
             )
 
         # ── New research observer: application outcome observation ────────
-        if self._research_observer is not None:
+        # Gated on is_enabled, not merely on an observer being present:
+        # composition injects NullResearchObserver (not None) when research
+        # is off, and minting below resolves the research salt — so the old
+        # check attempted an HMAC on every application with research
+        # disabled and swallowed a ResearchSaltError at DEBUG, once per
+        # attempt, for nothing. An enabled aggregator resolves the salt at
+        # construction, so the mint here can no longer raise for a missing
+        # salt.
+        if self._research_observer is not None and self._research_observer.is_enabled:
             try:
                 company_id = compute_company_id(job.company)
                 outcome_obs = ApplicationOutcomeObservation(

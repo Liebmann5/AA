@@ -537,7 +537,11 @@ def test_posting_identity_has_exactly_one_definition() -> None:
 EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     "adapters/secondary/persistence/database.py": ["hashlib.sha256"],
     "adapters/secondary/research/research_exporter.py": ["hashlib.sha256"],
-    "adapters/secondary/research/signal_aggregator.py": ["hashlib.sha256"],
+    # hmac.new here is the phantom-identity migration recognising ids minted
+    # by the RETIRED construction — it mints nothing (see
+    # signal_aggregator._null_phantom_company_ids), so it is not and must not
+    # become an entry in EXPECTED_COMPANY_IDENTITY_SITES.
+    "adapters/secondary/research/signal_aggregator.py": ["hashlib.sha256", "hmac.new"],
     "adapters/secondary/security/data_protection.py": ["hashlib.sha256"],
     "application/services/data_processing/deduplication_manager.py": ["hashlib.md5"],
     "application/workflows/applications_workflow.py": ["hashlib.sha256"],
@@ -573,7 +577,7 @@ def _digest_modules() -> dict[str, list[str]]:
 def test_hash_families_stay_disjoint() -> None:
     """RATCHET: the exact inventory of modules that compute any digest.
 
-    Ten today. This is the widest net in the file and the cheapest one to
+    Eleven today. This is the widest net in the file and the cheapest one to
     read: any new hashing anywhere in ``src`` shows up here first, before the
     narrower pins above have to decide what it is.
     """
