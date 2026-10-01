@@ -345,6 +345,48 @@ class TestEngine:
         out, _ = self.run("a\r\nb\nc\r\n", ("b\n", "B\n"))
         assert out.startswith("a\r\n") and out.endswith("c\r\n")
 
+    # A SEARCH that differs from the file only by look-alike characters is still
+    # REFUSED (the bytes differ) - but the refusal names the characters. Met on the
+    # research-storage reply (2026-10-01): two doc edits typed AA's where the docs
+    # have AA\u2019s, and kimicli said only "closest region ... 100% similar".
+
+    def test_typographic_apostrophe_is_named_not_matched(self):
+        doc = "1.  Deleting `research_signals.db` in AA\u2019s data directory.\n"
+        out, oc = K.apply_edits(doc, [K.EditBlock(
+            "1.  Deleting `research_signals.db` in AA's data directory.\n", "X\n", 1252)])
+        assert oc[0].status == "failed" and out == doc
+        p = oc[0].problem
+        assert "ONLY by look-alike characters" in p
+        assert "U+0027 APOSTROPHE" in p and "U+2019 RIGHT SINGLE QUOTATION MARK" in p
+        assert "reply line 1253" in p and "Free fix" in p
+        assert "similar" not in p
+
+    def test_reply_line_counts_from_the_search_marker(self):
+        doc = "a\nb\nit\u2019s\n"
+        _, oc = K.apply_edits(doc, [K.EditBlock("a\nb\nit's\n", "X\n", 40)])
+        assert "reply line 43" in oc[0].problem   # marker 40, SEARCH line 3
+
+    def test_dash_and_nbsp_each_named(self):
+        _, oc = self.run("a \u2013 b\u00a0c\n", ("a - b c\n", "X\n"))
+        p = oc[0].problem
+        assert "U+2013 EN DASH" in p and "U+00A0 NO-BREAK SPACE" in p
+        assert "SEARCH line 1" in p          # no marker line known
+
+    def test_invisible_character_named(self):
+        _, oc = self.run("abc\u200bdef\n", ("abcdef\n", "X\n"))
+        assert "U+200B ZERO WIDTH SPACE" in oc[0].problem
+
+    def test_real_difference_makes_no_look_alike_claim(self):
+        # One look-alike AND one real change: the look-alike story would mislead.
+        _, oc = self.run("it\u2019s 1\n", ("it's 2\n", "X\n"))
+        assert "look-alike" not in oc[0].problem and "similar" in oc[0].problem
+
+    def test_a_failed_match_is_never_reported_100_percent_similar(self):
+        body = "".join(f"line number {i} of a long block\n" for i in range(40))
+        _, oc = self.run(body, (body.replace("line number 7 ", "line numbr 7 "), "X\n"))
+        assert oc[0].status == "failed"
+        assert "100%" not in oc[0].problem and "99% similar" in oc[0].problem
+
 
 # =========================================================================
 # APPLIER / TRANSACTION / UNDO

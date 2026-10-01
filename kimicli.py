@@ -74,6 +74,7 @@ import symtable
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1225,6 +1226,63 @@ def _to_original(offset: int, crs: List[int]) -> int:
     return offset + bisect.bisect_left(crs, offset)
 
 
+# Characters a model types in place of the file's own (or the reverse): typographic
+# quotes and apostrophes, dashes, and unusual spaces. Each maps to its plain form.
+# Used ONLY to explain a near miss - never to decide a match: a SEARCH that differs
+# from the file by one of these is still refused, because the bytes differ.
+_CONFUSABLE = {
+    **{c: "'" for c in "\u2018\u2019\u201a\u201b\u2032\u00b4\u0060"},
+    **{c: '"' for c in "\u201c\u201d\u201e\u201f\u2033"},
+    **{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+    **{c: " " for c in "\u00a0\u2007\u2009\u202f\u2002\u2003"},
+}
+_INVISIBLE = set("\u200b\u200c\u200d\u2060\ufeff")
+
+
+def _char_name(c: str) -> str:
+    try:
+        name = unicodedata.name(c)
+    except ValueError:
+        name = "UNNAMED"
+    shown = c if c.isprintable() and not c.isspace() else " "
+    return f"{shown!r} (U+{ord(c):04X} {name})"
+
+
+def confusable_diffs(window: str, target: str) -> Optional[List[Tuple[int, str, str]]]:
+    """If `target` (the SEARCH text) differs from `window` (the file's closest
+    region) ONLY by look-alike characters, return each difference as
+    (0-based SEARCH line, SEARCH char, file char); '' stands for an invisible
+    character present on one side only. Return None when any difference is a
+    real one, or when there is no difference at all."""
+    out: List[Tuple[int, str, str]] = []
+    sm = difflib.SequenceMatcher(None, window, target, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        fw, st = window[i1:i2], target[j1:j2]
+        line = target.count("\n", 0, j1)
+        if tag == "replace" and len(fw) == len(st):
+            for a, b in zip(fw, st):
+                if a == b:
+                    continue
+                if _CONFUSABLE.get(a, a) != _CONFUSABLE.get(b, b):
+                    return None
+                out.append((line, b, a))
+        elif tag in ("delete", "insert", "replace") and all(c in _INVISIBLE for c in fw + st):
+            for c in fw:
+                out.append((line, "", c))
+            for c in st:
+                out.append((line, c, ""))
+        else:
+            return None
+    return out or None
+
+
+def _similar_pct(ratio: float) -> int:
+    """A failed match is never reported as 100% similar: 0.997 rounds to 1.00."""
+    return min(99, int(ratio * 100))
+
+
 def closest_region(norm: str, search: str) -> Dict[str, Any]:
     """Where in the file the SEARCH text most nearly appears. For the repair
     prompt only - never used to decide where to write."""
@@ -1255,7 +1313,25 @@ def closest_region(norm: str, search: str) -> Dict[str, Any]:
     lo = max(0, best_i - 3)
     hi = min(len(flines), best_i + k + 3)
     excerpt = "\n".join(f"{n + 1:>6}| {flines[n]}" for n in range(lo, hi))
-    return {"line": best_i + 1, "ratio": round(max(best_r, 0.0), 2), "excerpt": excerpt}
+    best_window = "\n".join(flines[best_i:best_i + k])
+    return {"line": best_i + 1, "ratio": round(max(best_r, 0.0), 2), "excerpt": excerpt,
+            "confusables": confusable_diffs(best_window, target)}
+
+
+def describe_confusables(diag: Dict[str, Any], search_marker_line: int) -> str:
+    """One sentence naming each look-alike character, with the reply line it is
+    on when the SEARCH marker's line is known (0 = unknown)."""
+    parts = []
+    for idx, s_char, f_char in diag["confusables"][:6]:
+        where = f"reply line {search_marker_line + 1 + idx}" if search_marker_line else f"SEARCH line {idx + 1}"
+        if not s_char:
+            parts.append(f"{where} lacks the invisible {_char_name(f_char)} the file has")
+        elif not f_char:
+            parts.append(f"{where} has an invisible {_char_name(s_char)} the file lacks")
+        else:
+            parts.append(f"{where} has {_char_name(s_char)} where the file has {_char_name(f_char)}")
+    more = len(diag["confusables"]) - 6
+    return "; ".join(parts) + (f"; and {more} more" if more > 0 else "")
 
 
 def apply_edits(original: str, edits: List[EditBlock]) -> Tuple[str, List[EditOutcome]]:
@@ -1333,10 +1409,16 @@ def apply_edits(original: str, edits: List[EditBlock]) -> Tuple[str, List[EditOu
             else:
                 diag = closest_region(norm, S)
                 elided = any(p.search(S) for p in ELISION)
-                oc.problem = ("SEARCH text not found in the file"
-                              + (" - it contains a placeholder like '...', but SEARCH must be literal "
-                                 "text copied from the file" if elided else
-                                 f" (closest region: line {diag['line']}, {int(diag['ratio'] * 100)}% similar)"))
+                if elided:
+                    detail = (" - it contains a placeholder like '...', but SEARCH must be literal "
+                              "text copied from the file")
+                elif diag.get("confusables"):
+                    detail = (f" - it differs from line {diag['line']} ONLY by look-alike characters: "
+                              f"{describe_confusables(diag, ed.line)}. Free fix: in a copy of the reply, make "
+                              f"those characters match the file's, then run --apply-fixes on that copy")
+                else:
+                    detail = f" (closest region: line {diag['line']}, {_similar_pct(diag['ratio'])}% similar)"
+                oc.problem = "SEARCH text not found in the file" + detail
                 oc.diag = diag
                 continue
 
@@ -2459,7 +2541,7 @@ def build_repair_prompt(plans: List[Plan], parse_problems: List[ParseProblem], t
         for o in pl.outcomes:
             if o.status == "failed" and o.diag:
                 lines.append(f"   Current text of the closest region to edit #{o.index}'s SEARCH "
-                             f"({int(o.diag['ratio'] * 100)}% similar) - line numbers are for "
+                             f"({_similar_pct(o.diag['ratio'])}% similar) - line numbers are for "
                              f"reference only, do not copy them:")
                 lines.append("   ```")
                 lines.extend("   " + x for x in o.diag["excerpt"].split("\n"))
