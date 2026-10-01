@@ -1255,6 +1255,9 @@ def mk(tmp_path):
         b"import os\r\n\r\n\r\ndef answer():\r\n    return 41\r\n")
     (repo / "dump.txt").write_text("\n---\nFile: AA/packages/auto_apply/src/auto_apply/core.py\n---\n"
                                    "import os\n\n\ndef answer():\n    return 41\n")
+    (repo / "packages/auto_apply/docs").mkdir(parents=True)
+    (repo / "packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md").write_text(
+        "# AA Engineering Philosophy\n\nWorst-case user first. PHIL-MARKER\n", encoding="utf-8")
     return repo
 
 
@@ -1333,3 +1336,85 @@ def test_selftest_cli(tmp_path):
     repo = mk(tmp_path)
     r = cli(repo, "--selftest")
     assert r.returncode == 0 and " passed." in r.stdout and "FAIL" not in r.stdout, r.stdout
+
+
+# =========================================================================
+# ENGINEERING PHILOSOPHY: carried by every call, checked in every reply
+# (Nick's standing rule, 2026-10-01)
+# =========================================================================
+
+def _session_messages(repo: Path) -> list:
+    sid = [d for d in (repo / ".kimi_out").iterdir() if d.is_dir()][0]
+    blob = json.loads((sid / "messages.json").read_text(encoding="utf-8"))
+    return blob["messages"] if isinstance(blob, dict) else blob
+
+
+def test_every_call_carries_the_philosophy(tmp_path):
+    repo = mk(tmp_path)
+    r = run_main(repo, ["--prompt", "fix it", "--request-code", "--codebase", str(repo / "dump.txt"),
+                        "--no-todo", "-y", "--no-count"], GOOD)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "philosophy (ENGINEERING_PHILOSOPHY.md)" in r.stdout
+    system = [m["content"] for m in _session_messages(repo) if m["role"] == "system"]
+    assert any("<engineering_philosophy" in c and "PHIL-MARKER" in c for c in system)
+    assert any("PHILOSOPHY FIRST" in c for c in system), "the method rule must ride along"
+
+
+def test_missing_philosophy_is_not_sent(tmp_path):
+    repo = mk(tmp_path)
+    (repo / "packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md").unlink()
+    r = run_main(repo, ["--prompt", "fix it", "--codebase", str(repo / "dump.txt"),
+                        "--no-todo", "-y", "--no-count"], GOOD)
+    assert r.returncode == 1 and "Not sent" in r.stdout
+    assert "engineering philosophy not found" in r.stdout
+    assert not any(d.is_dir() for d in (repo / ".kimi_out").iterdir())
+
+
+def test_no_philosophy_flag_is_the_explicit_way_out(tmp_path):
+    repo = mk(tmp_path)
+    (repo / "packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md").unlink()
+    r = run_main(repo, ["--prompt", "fix it", "--codebase", str(repo / "dump.txt"),
+                        "--no-todo", "--no-philosophy", "-y", "--no-count"], GOOD)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "philosophy: OFF (--no-philosophy)" in r.stdout
+
+
+def test_philosophy_is_not_sent_twice(tmp_path):
+    phil = tmp_path / "ENGINEERING_PHILOSOPHY.md"
+    phil.write_text("# AA Engineering Philosophy\n\nbody\n", encoding="utf-8")
+    copy = tmp_path / "copy_of_it.md"
+    copy.write_text(phil.read_text(encoding="utf-8"), encoding="utf-8")
+    base = dict(philosophy=str(phil))
+    # attached by path, or the same content under another name: one copy is enough
+    for attach in ([str(phil)], [str(copy)]):
+        msg, part, err = K.philosophy_context(argparse.Namespace(attach=attach, **base))
+        assert msg is None and err is None and "attach" in part[0]
+    # already a section of the codebase dump
+    dump = ("\n---\nFile: AA/packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md\n---\nbody\n"
+            "\n---\nFile: AA/packages/auto_apply/src/auto_apply/core.py\n---\nx = 1\n")
+    msg, part, err = K.philosophy_context(argparse.Namespace(attach=[], **base), dump)
+    assert msg is None and err is None and "dump" in part[0]
+    # otherwise it is sent
+    msg, part, err = K.philosophy_context(argparse.Namespace(attach=[], **base), "")
+    assert msg and "<engineering_philosophy" in msg and err is None
+
+
+def test_philosophy_check_is_detected_in_its_usual_forms():
+    yes = ["## 0. PHILOSOPHY CHECK\n", "**PHILOSOPHY CHECK**\n", "1. Philosophy check: ...\n",
+           "# PHILOSOPHY CHECK - worst-case user\n", "> PHILOSOPHY CHECK\n"]
+    no = ["## 1. Rulings on THE FORKS\n", "We did a philosophy check later in prose.\n", ""]
+    assert all(K.has_philosophy_check(t) for t in yes)
+    assert not any(K.has_philosophy_check(t) for t in no)
+
+
+def test_a_reply_without_the_check_is_flagged_not_blocked(tmp_path):
+    repo = mk(tmp_path)
+    r = run_main(repo, ["--prompt", "fix it", "--request-code", "--codebase", str(repo / "dump.txt"),
+                        "--no-todo", "-y", "--no-count"], GOOD)
+    assert "no PHILOSOPHY CHECK section" in r.stdout
+    assert "Every block resolves" in r.stdout          # flagged, not blocked
+    repo2 = mk(tmp_path / "second")
+    r2 = run_main(repo2, ["--prompt", "fix it", "--request-code", "--codebase", str(repo2 / "dump.txt"),
+                          "--no-todo", "-y", "--no-count"],
+                  "## 0. PHILOSOPHY CHECK\n- Worst-case user first: one line changed.\n\n" + GOOD)
+    assert "no PHILOSOPHY CHECK section" not in r2.stdout

@@ -114,6 +114,14 @@ MODEL = os.getenv("KIMI_MODEL", "kimi-k3")
 
 DEFAULT_CODEBASE = Path(os.getenv("KIMI_CODEBASE", r"D:\Downloads\AA-kimi.txt"))
 
+# AA's engineering philosophy rides along with EVERY call (Nick's standing rule,
+# 2026-10-01): every design and every change is judged against it, so the model
+# must always have it - not only when someone remembers to --attach it.
+DEFAULT_PHILOSOPHY = Path(os.getenv(
+    "KIMI_PHILOSOPHY",
+    PROJECT_ROOT / "packages" / "auto_apply" / "docs" / "ENGINEERING_PHILOSOPHY.md"))
+PHILOSOPHY_NAME = "ENGINEERING_PHILOSOPHY.md"
+
 OUT_DIR = PROJECT_ROOT / ".kimi_out"          # sessions, transcripts, staged files
 BACKUP_DIR = PROJECT_ROOT / ".kimi_backups"   # backups + manifests
 LEDGER = OUT_DIR / "ledger.jsonl"
@@ -2690,6 +2698,16 @@ class StageSummary:
     repair_path: Optional[Path] = None
     preview_path: Optional[Path] = None
     changed_lines: int = 0
+    philosophy_check: bool = True
+
+
+PHILOSOPHY_CHECK_RE = re.compile(r"^[#>*\s_\d.)]*PHILOSOPHY CHECK\b", re.I | re.M)
+
+
+def has_philosophy_check(reply: str) -> bool:
+    """True when the reply carries the PHILOSOPHY CHECK section the method rules
+    require - as a heading, bold text or a numbered item at the start of a line."""
+    return bool(PHILOSOPHY_CHECK_RE.search(reply or ""))
 
 
 def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optional[str]) -> StageSummary:
@@ -2778,7 +2796,8 @@ def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optiona
                       "key": _resolved_key(p.path, resolved)} for p in all_parse],
     })
 
-    summary = StageSummary(turn=turn, parse=pr, group_problems=gprobs, plans=plans)
+    summary = StageSummary(turn=turn, parse=pr, group_problems=gprobs, plans=plans,
+                           philosophy_check=has_philosophy_check(reply))
     if plans:
         summary.preview_path = session.dir / f"preview_turn{turn}.diff"
         summary.changed_lines = trial.write_preview(plans, summary.preview_path)
@@ -2830,6 +2849,9 @@ def print_stage_summary(s: StageSummary, session: "Session") -> None:
     print("\n" + "=" * 70)
     print(f"CHANGES IN TURN {s.turn}: {n_edit} EDIT block(s) + {n_file} FILE block(s) across "
           f"{files} file(s)   END marker: {'yes' if pr.end_marker else 'NO'}")
+    if pr.blocks and not s.philosophy_check:
+        print("  ! no PHILOSOPHY CHECK section in this reply - the method rules require one. "
+              "Nothing is blocked; review the change against ENGINEERING_PHILOSOPHY.md yourself.")
     for pl in s.plans:
         kind = pl.proposal.kind.upper()
         if pl.problems:
@@ -3157,6 +3179,14 @@ state the cheapest test that would prove you wrong.
 - OWN MISTAKES PLAINLY. If a number or claim you gave earlier was wrong, lead with that.
 - SAY WHAT YOU CANNOT PROMISE. End substantial answers with what the proposed change \
 does not cover.
+- PHILOSOPHY FIRST. AA's ENGINEERING_PHILOSOPHY.md is in this conversation. Read it \
+before designing anything. Any reply that proposes or changes design or code OPENS \
+with a section titled "PHILOSOPHY CHECK", before everything else: name the specific \
+principles the change touches, using the document's own section names; for each, say \
+concretely how the design satisfies it, citing the code; and name any principle the \
+change strains or trades away, with the reason that trade was chosen. A generic \
+restatement of the document is a failure, not a check. Judge any alternative you \
+offer (a BETTER IDEA section included) against the same principles.
 
 Be concrete and specific. Prefer file:line citations over description. Do not pad, do \
 not restate the request, and do not produce a summary of what you are about to do."""
@@ -3383,14 +3413,57 @@ def _age(path: Path) -> str:
     return f"made {s / 86400:.0f} days ago"
 
 
+def philosophy_context(
+    args: argparse.Namespace, dump_text: str = "",
+) -> Tuple[Optional[str], Optional[Tuple[str, int]], Optional[str]]:
+    """The engineering philosophy as a system message, unless it is already
+    in the call. Returns (message, preflight part, error).
+
+    Already in the call means: the codebase dump carries a section for it, or
+    an --attach names the same file or the same content - one copy is enough.
+    A missing file is an ERROR, not a warning: the method rules require a
+    PHILOSOPHY CHECK, and a call that cannot carry the document would be billed
+    for a check the model cannot make. --no-philosophy is the explicit way out.
+    """
+    if getattr(args, "no_philosophy", False):
+        return None, ("philosophy: OFF (--no-philosophy)", 0), None
+    named = getattr(args, "philosophy", None)
+    path = Path(named).expanduser() if named else DEFAULT_PHILOSOPHY
+    if not path.is_file():
+        return None, None, (
+            f"engineering philosophy not found at {path}. Every call carries it. Pass "
+            f"--philosophy <path> to point at it, or --no-philosophy to send without it.")
+    body = read_text(path)
+    if dump_text:
+        sections, _ = split_dump(dump_text)
+        if any(sec_path.replace("\\", "/").endswith(PHILOSOPHY_NAME) for sec_path, _b in sections):
+            return None, ("philosophy: in the codebase dump", 0), None
+    digest = sha256(body)
+    for spec in (getattr(args, "attach", None) or []):
+        a = Path(spec).expanduser()
+        try:
+            same = a.is_file() and (a.resolve() == path.resolve() or sha256(read_text(a)) == digest)
+        except OSError:
+            same = False
+        if same:
+            return None, ("philosophy: sent as an --attach", 0), None
+    msg = (f"<engineering_philosophy file=\"{path.name}\">\n{body}\n</engineering_philosophy>\n"
+           f"Every design and every change is judged against this document; see the "
+           f"PHILOSOPHY FIRST method rule.")
+    return msg, (f"philosophy ({path.name})", est_tokens(body)), None
+
+
 def build_context(args: argparse.Namespace) -> Context:
     """Order matters and is the whole caching strategy:
 
         [0] codebase        huge, stable  -> the cached prefix
         [1] method rules    stable
-        [2] master TODO     semi-stable
-        [3] memory          volatile
-        [4] attachments + prompt (user)   volatile
+        [2] applier contract stable
+        [3] philosophy      stable (ENGINEERING_PHILOSOPHY.md, unless the dump or
+                            an --attach already carries it)
+        [4] master TODO     semi-stable
+        [5] memory          volatile
+        [6] attachments + prompt (user)   volatile
 
     Anything that changes must sit as late as possible: a cache hit covers the
     identical leading tokens only, so one edited byte near the front costs you
@@ -3400,6 +3473,7 @@ def build_context(args: argparse.Namespace) -> Context:
     messages: List[Dict[str, Any]] = []
     errors: List[str] = []
     cache_seed = "no-codebase"
+    dump_text = ""
 
     if not args.no_codebase:
         cb = Path(args.codebase).expanduser()
@@ -3409,6 +3483,7 @@ def build_context(args: argparse.Namespace) -> Context:
                 dump, report = filter_dump(dump, args.exclude)
                 if report:
                     print(report)
+            dump_text = dump
             messages.append({"role": "system", "content":
                              f"<codebase name=\"{cb.name}\">\n{dump}\n</codebase>"})
             # The dump's age is on screen because a stale dump is paid for in
@@ -3428,6 +3503,16 @@ def build_context(args: argparse.Namespace) -> Context:
 
     messages.append({"role": "system", "content": APPLIER_CONTRACT})
     parts.append(("applier contract", est_tokens(APPLIER_CONTRACT)))
+
+    # The philosophy is stable, so it sits with the other stable system parts,
+    # ahead of the TODO and the volatile user message.
+    phil_msg, phil_part, phil_err = philosophy_context(args, dump_text)
+    if phil_err:
+        errors.append(phil_err)
+    if phil_msg:
+        messages.append({"role": "system", "content": phil_msg})
+    if phil_part:
+        parts.append(phil_part)
 
     todo = Path(args.todo) if args.todo else (PROJECT_ROOT / "AA_MASTER_TODO.md")
     if not args.no_todo and todo.exists():
@@ -4372,6 +4457,24 @@ def absent_function():
                                   prompt="Build it.", request_code=False)
         _txt, _parts, aerr = compose_user_message(ns_a)
         check("a missing or folder --attach stops the request", len(aerr) == 2, str(aerr))
+        phil = root / "ENGINEERING_PHILOSOPHY.md"
+        phil.write_text("# AA Engineering Philosophy\n\nWorst-case user first.\n", encoding="utf-8")
+        pm, _pp, pe = philosophy_context(argparse.Namespace(philosophy=str(phil), attach=[]))
+        pm_miss, _pp2, pe_miss = philosophy_context(
+            argparse.Namespace(philosophy=str(root / "missing.md"), attach=[]))
+        pm_off, _pp3, pe_off = philosophy_context(
+            argparse.Namespace(philosophy=str(root / "missing.md"), no_philosophy=True, attach=[]))
+        pm_dup, _pp4, pe_dup = philosophy_context(
+            argparse.Namespace(philosophy=str(phil), attach=[str(phil)]))
+        check("every call carries the engineering philosophy; a missing one stops the request",
+              bool(pm) and "Worst-case user first." in (pm or "") and pe is None
+              and pm_miss is None and bool(pe_miss) and pm_off is None and pe_off is None
+              and pm_dup is None and pe_dup is None,
+              f"{pe!r} {pe_miss!r} {pe_off!r} {pe_dup!r}")
+        check("a reply without a PHILOSOPHY CHECK section is noticed",
+              has_philosophy_check("## 0. PHILOSOPHY CHECK\n- Worst-case user ...")
+              and has_philosophy_check("**PHILOSOPHY CHECK**: ...")
+              and not has_philosophy_check("## 1. Rulings on THE FORKS\n"))
         tbl = parse_changes("| File | Kind |\n|---|---|\n| `pkg/x.py` | EDIT |\n\n"
                             "### EDIT: pkg/y.py\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n")
         check("a file list written as a markdown table is checked against the blocks",
@@ -4455,6 +4558,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--attach", action="append", default=[], metavar="PATH", help="repeatable")
     g.add_argument("--todo", help="path to AA_MASTER_TODO.md (auto-detected in the project root)")
     g.add_argument("--no-todo", action="store_true")
+    g.add_argument("--philosophy", metavar="PATH",
+                   help="engineering philosophy sent with every call "
+                        "(default: packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md)")
+    g.add_argument("--no-philosophy", action="store_true",
+                   help="send without the engineering philosophy (it is required otherwise)")
     g.add_argument("--memory", action="store_true", help="include .kimi_out/memory.md")
     g.add_argument("--predict", metavar="PATH",
                    help="Predicted Output: pass this file's current content as the expected "
@@ -4633,7 +4741,9 @@ def main() -> int:
         ignored = [flag for flag, on in (
             ("--codebase", str(args.codebase) != str(DEFAULT_CODEBASE)), ("--no-codebase", args.no_codebase),
             ("--exclude", bool(args.exclude)), ("--todo", bool(args.todo)),
-            ("--no-todo", args.no_todo), ("--memory", args.memory)) if on]
+            ("--no-todo", args.no_todo), ("--memory", args.memory),
+            ("--philosophy", bool(getattr(args, "philosophy", None))),
+            ("--no-philosophy", getattr(args, "no_philosophy", False))) if on]
         if ignored:
             print(f"  note: {', '.join(ignored)} ignored on --resume - the conversation's prefix was "
                   f"fixed by its first turn (and changing it would lose the cache).")
