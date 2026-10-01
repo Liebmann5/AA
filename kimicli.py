@@ -556,6 +556,15 @@ ELISION = [
     re.compile(r"(?im)^\s*(?:#|//)\s*\.{3,}\s*$"),
 ]
 LOOSE_HEADER_RE = re.compile(r"^[ \t>*_#`]*(?:FILE|EDIT|PATCH)[*_`]*[ \t]*:[ \t]*\S", re.I)
+# A change header with its colon missing ("### FILE pkg/x.py"). Every other
+# header regex requires the colon, so without this the header matched nothing
+# and its fenced body was skipped as prose - a new file silently dropped while
+# the dry run said "PASS 1 clean" (T-1, measured on 4a62556).
+NOCOLON_HEADER_RE = re.compile(
+    r"^[ ]{0,3}#{2,4}[ \t]*(?P<kind>FILE|EDIT|PATCH|CREATE|UPDATE|MODIFY|DELETE|REMOVE|RENAME|MOVE)"
+    r"[ \t]+(?P<rest>\S.*)$", re.I)
+# Change intents that carry no body by nature: a bare header IS the request.
+BODILESS_INTENT_WORDS = {"delete", "remove", "rename", "move"}
 MARKDOWNISH = {".md", ".markdown", ".rst", ".txt", ".mdx"}
 
 
@@ -642,12 +651,13 @@ def parse_changes(text: str) -> ParseResult:
     section_style = "header"
     section_blocks = 0
     section_line = 0
+    section_kind = "EDIT"                   # the header word the model wrote
 
     def close_section() -> None:
         nonlocal section_path, section_blocks
         if section_path is not None and section_blocks == 0:
             res.problems.append(ParseProblem(
-                section_line, f"'### EDIT: {section_path}' has no SEARCH/REPLACE block under it",
+                section_line, f"'### {section_kind}: {section_path}' has no SEARCH/REPLACE block under it",
                 path=section_path))
         section_path = None
         section_blocks = 0
@@ -789,6 +799,7 @@ def parse_changes(text: str) -> ParseResult:
                 i = parse_file(i, path)
                 continue
             section_path, section_style, section_blocks, section_line = path, "header", 0, i + 1
+            section_kind = kind.upper()
             i += 1
             continue
 
@@ -823,6 +834,14 @@ def parse_changes(text: str) -> ParseResult:
             stripped = ln.strip()
             if (not stripped or FENCE_RE.match(ln)
                     or stripped.strip("`*").strip() == section_path):
+                # A fence here is usually an EDIT's wrapping - but a unified diff
+                # opened right after an EDIT block also starts with one, and the
+                # top-level udiff check below never sees a fence this branch ate.
+                if (FENCE_RE.match(ln) and i + 1 < n and UDIFF_RE.match(lines[i + 1])
+                        and not after_end()):
+                    res.problems.append(ParseProblem(
+                        i + 1, "the reply contains a unified diff; kimicli does not apply diffs. "
+                               "If it was meant as a change, ask for EDIT blocks", severity="warning"))
                 i += 1
                 continue
             if NEAR_MARKER_RE.match(ln) or DIVIDER_RE.match(stripped):
@@ -850,12 +869,30 @@ def parse_changes(text: str) -> ParseResult:
                 i += 1
                 continue
 
+        nm = NOCOLON_HEADER_RE.match(ln)
+        if nm and not after_end():
+            word = nm.group("kind").lower()
+            first = nm.group("rest").split()[0].strip("`*")
+            nxt = [x for x in lines[i + 1:i + 4] if x.strip()][:1]
+            block_follows = bool(nxt) and bool(FENCE_RE.match(nxt[0]) or SEARCH_RE.match(nxt[0]))
+            if PATHLIKE_RE.match(first) and (block_follows or word in BODILESS_INTENT_WORDS):
+                res.problems.append(ParseProblem(
+                    i + 1, f"change header not recognised: {ln.strip()[:60]!r} - the colon is "
+                           f"missing; it must be '### FILE: <path>' or '### EDIT: <path>'"
+                           + (" (and kimicli never deletes, renames or moves files - do that "
+                              "by hand with retire.py)" if word in BODILESS_INTENT_WORDS else ""),
+                    path=first))
+                i += 1
+                continue
+
         om = OTHER_HEADER_RE.match(ln)
         if om:
             word = om.group("kind").strip().lower()
             nxt = [x for x in lines[i + 1:i + 4] if x.strip()][:2]
             block_shaped = any(FENCE_RE.match(x) or SEARCH_RE.match(x) for x in nxt)
-            if block_shaped and not after_end() and (
+            first_tok = (om.group("rest").split() or [""])[0].strip("`* ")
+            bodiless = (word in BODILESS_INTENT_WORDS and bool(PATHLIKE_RE.match(first_tok)))
+            if (block_shaped or bodiless) and not after_end() and (
                     word in CHANGE_INTENT_WORDS or PATHLIKE_RE.match(om.group("rest").strip("`* "))):
                 hint = ("kimicli never deletes, renames or moves files - do that step by hand "
                         "(retire.py), then continue" if word in ("delete", "remove", "rename", "move")

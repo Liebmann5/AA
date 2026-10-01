@@ -120,6 +120,47 @@ class TestParser:
         pr = K.parse_changes("Here:\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n")
         assert not pr.blocks and len(pr.errors) == 1
 
+    # ---- T-1 holes measured on 4a62556: each returned ZERO problems there ----
+
+    @pytest.mark.parametrize("hdr", ["### FILE pkg/new.py", "### EDIT pkg/a.py",
+                                     "### Create `pkg/new.py`", "## FILE pkg/new.py"])
+    def test_colonless_change_header_with_block_is_error(self, hdr):
+        r = (edit("pkg/a.py", "x = 1\n", "x = 2\n") + "\n" + hdr
+             + "\n```python\nprint(1)\n```\n### END CHANGES\n")
+        pr = K.parse_changes(r)
+        assert len(pr.blocks) == 1 and len(pr.errors) == 1
+        assert "colon is missing" in pr.errors[0].message
+
+    @pytest.mark.parametrize("prose", [
+        "### Edit summary\n```text\nthree files\n```\n",
+        "### Update pkg/a.py\nThis changes the loop bound.\n",
+        "### Files changed\n```\npkg/a.py\n```\n"])
+    def test_colonless_prose_headings_are_not_flagged(self, prose):
+        pr = K.parse_changes(prose + edit("pkg/a.py", "x\n", "y\n") + "### END CHANGES\n")
+        assert len(pr.blocks) == 1 and not pr.errors
+
+    @pytest.mark.parametrize("hdr", ["### DELETE: pkg/a.py", "### Remove: `pkg/a.py`",
+                                     "### RENAME: pkg/a.py -> pkg/b.py", "### MOVE pkg/a.py"])
+    def test_bodiless_delete_style_header_is_error(self, hdr):
+        pr = K.parse_changes(edit("pkg/c.py", "x\n", "y\n") + "\n" + hdr + "\n\n### END CHANGES\n")
+        assert len(pr.blocks) == 1 and len(pr.errors) == 1
+        assert "retire.py" in pr.errors[0].message
+
+    def test_bodiless_header_after_end_is_discussion(self):
+        pr = K.parse_changes(edit("pkg/c.py", "x\n", "y\n") + "### END CHANGES\n### DELETE: pkg/a.py\n")
+        assert not pr.errors
+
+    def test_udiff_right_after_an_edit_is_warned(self):
+        r = (edit("pkg/a.py", "x\n", "y\n") + "\n```diff\n--- a/pkg/b.py\n+++ b/pkg/b.py\n"
+             "@@ -1 +1 @@\n-a\n+b\n```\n### END CHANGES\n")
+        pr = K.parse_changes(r)
+        assert len(pr.blocks) == 1 and not pr.errors
+        assert [p for p in pr.warnings if "unified diff" in p.message]
+
+    def test_empty_section_message_names_the_header_used(self):
+        pr = K.parse_changes("### PATCH: pkg/a.py\n@@ -1 +1 @@\n-x\n+y\n\n### END CHANGES\n")
+        assert pr.errors and "'### PATCH: pkg/a.py'" in pr.errors[0].message
+
     def test_legacy_patch_four_char_markers(self):
         pr = K.parse_changes("### PATCH: a.py\n```python\n<<<<\nx = 1\n====\nx = 2\n>>>>\n```\n")
         assert len(pr.blocks) == 1 and pr.blocks[0].edit.search == "x = 1\n"
@@ -478,10 +519,23 @@ ap.apply(ap.validate(pp), {{}}, _write=w)
         pl = applier(repo).validate(pp)
         assert pl[0].problems
 
-    def test_basename_only_edit_never_rerouted(self, repo):
+    def test_basename_only_edit_rerouted_only_when_unique(self, repo):
+        # Policy since 6f4b5c5: a basename-only EDIT re-routes to the ONE file
+        # with that name (the SEARCH must still match it exactly); two
+        # candidates refuse and name both. Creates never re-route.
         w(repo, "pkg/deep/m.py", "a = 1\n")
         pp, _, _ = props(repo, edit("m.py", "a = 1\n", "a = 2\n"))
-        assert applier(repo).validate(pp)[0].problems
+        pl = applier(repo).validate(pp)[0]
+        assert not pl.problems and pl.rel == "pkg/deep/m.py"
+        w(repo, "pkg/other/m.py", "a = 1\n")
+        pl = applier(repo).validate(pp)[0]
+        assert pl.problems and "pkg/other/m.py" in pl.problems[0] and "pkg/deep/m.py" in pl.problems[0]
+
+    def test_basename_only_file_never_rerouted(self, repo):
+        w(repo, "pkg/deep/m.py", "a = 1\n")
+        pl = applier(repo, allow_new_files=True).validate(
+            [K.Proposal(raw_path="m.py", kind="file", content="a = 9\n")])[0]
+        assert pl.problems and pl.rel == "m.py"
 
     def test_repo_name_prefix_stripped_unless_real_dir(self, repo):
         w(repo, "pkg/m.py", "a = 1\n")
@@ -853,10 +907,9 @@ def test_wrong_case_path_keeps_on_disk_spelling(repo):
     w(repo, "pkg/Model.py", "a = 1\n")
     pl = applier(repo).validate([K.Proposal(raw_path="pkg/model.py", kind="edit",
                                             edits=[K.EditBlock("a = 1\n", "a = 2\n", 1)])])
-    if (repo / "pkg" / "model.py").exists():          # case-insensitive filesystem
-        assert pl[0].rel == "pkg/Model.py" and not pl[0].problems
-    else:                                              # case-sensitive: never re-routed
-        assert pl[0].problems
+    # Both filesystems: case-insensitive resolves it directly; case-sensitive
+    # reaches the same file through the unique-basename fallback (6f4b5c5).
+    assert pl[0].rel == "pkg/Model.py" and not pl[0].problems
 
 
 # =========================================================================
