@@ -18,7 +18,9 @@ checklist for data science and software projects involving data collection.
 - [x] **Informed consent**: Users must explicitly opt in to research data collection.
   Default is `research.enabled: false`. Consent is versioned and stored with each record.
 - [x] **Right to withdraw**: Users can delete their research contribution at any time
-  via Settings → Research → Delete My Data. Deletion takes effect within 24 hours.
+  via Settings → Research → Delete My Data. Deletion is immediate: every research
+  table, the database files, and the installation's research signing key are
+  removed.
 - [x] **Data minimization**: Only the minimum data needed for each research signal is
   collected. Full job descriptions are never stored; only anonymized excerpts ≤200 chars.
 - [x] **Anonymization**: Company names are HMAC-SHA256 anonymized. No personally

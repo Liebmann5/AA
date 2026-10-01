@@ -125,7 +125,7 @@ history across container restarts.
 | `~/.auto_apply/logs/` | `/data/logs/` | Session audit logs |
 | `~/.auto_apply/screenshots/` | `/data/screenshots/` | Failure screenshots |
 | `~/.auto_apply/checkpoints/` | `/data/checkpoints/` | Crash‑recovery snapshots |
-| `~/.auto_apply/research_data/` | `/data/research_data/` | Anonymised research signals (opt‑in) |
+| `~/.auto_apply/research/` | `/data/research/` | Anonymised research data (opt‑in) |
 
 !!! tip
     If you want AA to use a different profile, set `AA_PROFILE_PATH` to the

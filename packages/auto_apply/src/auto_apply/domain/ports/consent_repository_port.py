@@ -34,7 +34,13 @@ class ConsentRepositoryPort(Protocol):
         ...
 
     def purge_research_data(self) -> int:
-        """Delete all research signal data associated with this user.
+        """Delete ALL research data associated with this user.
+
+        "All" means all: every table in the research database (the list is
+        derived from the live schema, never hard-coded, so a new table can
+        never escape), the database files themselves where possible, and the
+        installation's research signing identity. The consent record itself
+        and already-exported bundles are out of scope.
 
         Returns:
             Number of records deleted (for user-facing confirmation).

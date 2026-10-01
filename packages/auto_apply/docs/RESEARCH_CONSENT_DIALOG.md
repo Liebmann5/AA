@@ -68,8 +68,9 @@ way that changes what data is collected or how, increment
 >
 > - You can withdraw consent at any time in Settings → Research
 > - Withdrawing consent immediately stops new data collection
-> - You can request deletion of all data collected so far — this happens
->   within 24 hours and is permanent
+> - You can request deletion of all data collected so far — deletion is
+>   immediate and permanent, and covers every research table as well as the
+>   private key that signed your rows
 > - You can export a copy of everything collected from your sessions before
 >   deleting it
 >
@@ -100,9 +101,15 @@ version bump, which must describe in plain language what changed.
 >
 > [ ] Also delete all data collected so far (recommended)
 >
-> If checked, all anonymized signals, salary observations, and form
-> observations linked to your sessions will be permanently deleted within
-> 24 hours. This cannot be undone.
+> If checked, ALL research data linked to your sessions — every anonymized
+> signal, salary, form, discovery and detector record — is deleted
+> immediately and permanently, together with the private key that signed
+> your rows, so nothing you contribute later can be linked back to what was
+> deleted. Files you previously exported yourself are not touched; delete
+> those separately if you want them gone. Your consent record itself is
+> kept, so AutoApply remembers that you withdrew.
+>
+> This cannot be undone.
 >
 > [ Withdraw ]   [ Cancel ]
 

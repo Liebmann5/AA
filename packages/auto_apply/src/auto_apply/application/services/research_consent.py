@@ -138,10 +138,10 @@ class ResearchConsentManager:
         """Withdraw consent and optionally purge all collected research data.
 
         Args:
-            purge_data: If True (default), delete all research signals
-                attributable to this user within 24 hours per the data
+            purge_data: If True (default), delete all research data
+                attributable to this user — immediately, per the data
                 retention policy in docs/ETHICS.md. The purge itself is
-                synchronous here for simplicity; production may queue it.
+                synchronous.
 
         Returns:
             Number of records purged (0 if purge_data=False).

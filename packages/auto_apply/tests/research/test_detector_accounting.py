@@ -66,19 +66,14 @@ def accounting_db(
     """An enabled aggregator against the patched registry, on a tmp database."""
     monkeypatch.setenv("AA_RESEARCH_SALT", "item5-test-salt")
     monkeypatch.setattr(sd, "ALL_DETECTORS", [_Fires(), _Cleans(), _Bombs()])
-    # The provenance signer (when importable) writes its key under the
-    # research dir; point that at tmp_path so the test never touches the
-    # real one. raising=False in case the constant moves.
-    import auto_apply.domain.config as domain_config
-
-    monkeypatch.setattr(
-        domain_config, "RESEARCH_DIR", tmp_path / "research_dir", raising=False
-    )
     db_path = tmp_path / "research.db"
     aggregator = ResearchSignalAggregator(
         db_path=db_path,
         consent_version="item5-test",
         flush_interval_seconds=0.05,
+        # The signer writes a real private key on the first flushed batch;
+        # inject its path so the test never touches the real data directory.
+        provenance_key_path=tmp_path / "provenance_key.pem",
     )
     yield aggregator, db_path
     aggregator.stop()

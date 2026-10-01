@@ -55,19 +55,19 @@ Run the same session twice and compare the research signal files:
 ```bash
 # First run
 python -m auto_apply --seed 42 --cli --portable
-python -m auto_apply --export-research --export-format json
-mv research_signals_*.json run1.json
+python -m auto_apply --export-research --export-format ndjson
+mv data/reports/aa_research_export_* run1_bundle
 
 # Second run (identical configuration)
 python -m auto_apply --seed 42 --cli --portable
-python -m auto_apply --export-research --export-format json
-mv research_signals_*.json run2.json
+python -m auto_apply --export-research --export-format ndjson
+mv data/reports/aa_research_export_* run2_bundle
 
 # Compare
-diff <(jq -S . run1.json) <(jq -S . run2.json)
+diff -r run1_bundle run2_bundle
 ```
 
-If the two JSON files differ, check that no component is using un-seeded
+If the two bundles differ, check that no component is using un-seeded
 randomness (common culprits: `random.choice()` in provider selection,
 `time.sleep()` without going through the injected `BehaviorSimulator`).
 
@@ -82,23 +82,23 @@ analysis-ready formats using the built-in CLI:
 # Export all research signals as CSV (default)
 python -m auto_apply --export-research
 
-# Export as JSON
-python -m auto_apply --export-research --export-format json
+# Export as NDJSON
+python -m auto_apply --export-research --export-format ndjson
 
 # Export as Parquet (requires pyarrow; install with `uv sync --extra research`)
 python -m auto_apply --export-research --export-format parquet
 ```
 
-Export files are written to the session reports directory (typically
-`~/.auto_apply/reports/` or `<USB>/data/reports/` in portable mode).
+Export bundles are written to the reports directory inside AA's data
+directory (`reports/`; `<USB>/data/reports/` in portable mode).
 
-The exporter writes three files per invocation:
-
-| File prefix | Contents |
-|---|---|
-| `aa_research_signals_*` | All individual signal events (29 detector types) |
-| `aa_salary_corpus_*` | Salary observations for market benchmarking (ST‑03) |
-| `aa_form_observations_*` | ATS form complexity observations (DP‑04, ST‑04) |
+Each invocation writes ONE bundle directory, `aa_research_export_<digest>/`,
+containing one data file per research table (`research_signals`,
+`job_lifecycles`, `salary_observations`, `form_observations`,
+`application_outcomes`, `discovery_pages`, `discovery_cards`,
+`discovery_candidates`, `detector_examinations`, `detector_outcomes`), an
+`index.json` describing every file, and — once signed signals exist — a
+`verification.json` carrying the public key.
 
 ---
 
@@ -210,7 +210,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 # 1. Load the public key from the research database
 import sqlite3
-conn = sqlite3.connect("research_signals.db")
+conn = sqlite3.connect("research/research_signals.db")  # inside AA's data directory
 row = conn.execute("SELECT public_key_hex FROM research_provenance WHERE id = 1").fetchone()
 public_key = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(row[0]))
 

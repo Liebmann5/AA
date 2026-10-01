@@ -311,6 +311,11 @@ class ResearchSignalAggregator(ResearchObserverPort):
         flush_interval_seconds: How often the daemon thread flushes the queue.
         macro_signal_interval_seconds: How often corpus‑level macro‑signals
             are recomputed (default 3600 = hourly).
+        provenance_key_path: Where the private Ed25519 signing key lives.
+            composition_root injects domain.config.PROVENANCE_KEY_PATH, which
+            is deliberately OUTSIDE the research directory so no "share your
+            research data" instruction can sweep the key along. None resolves
+            to that same constant lazily; tests inject a tmp path instead.
     """
 
     def __init__(
@@ -319,8 +324,10 @@ class ResearchSignalAggregator(ResearchObserverPort):
         consent_version: str | None = None,
         flush_interval_seconds: float = 5.0,
         macro_signal_interval_seconds: float = 3600.0,
+        provenance_key_path: Path | None = None,
     ) -> None:
         self._db_path = db_path
+        self._provenance_key_path = provenance_key_path
         self._consent_version = consent_version
         self._flush_interval = flush_interval_seconds
         self._macro_signal_interval = macro_signal_interval_seconds
@@ -1376,28 +1383,49 @@ class ResearchSignalAggregator(ResearchObserverPort):
         if remaining_examination:
             self._write_examination_batch(remaining_examination)
 
+    def _key_path(self) -> Path:
+        """The provenance key's path: injected, else the config constant.
+
+        The lazy import mirrors the pattern this module previously used for
+        RESEARCH_DIR and keeps module-import graphs unchanged for tests.
+        """
+        if self._provenance_key_path is not None:
+            return self._provenance_key_path
+        from auto_apply.domain.config import PROVENANCE_KEY_PATH  # noqa: PLC0415
+
+        return PROVENANCE_KEY_PATH
+
     def _ensure_signer(self) -> Any:
         """Lazily initialize the ProvenanceSigner and store the public key.
+
+        If the key file has vanished under a live cached signer — a consent
+        purge rotates the installation's research identity by deleting it —
+        the signer is regenerated and the public key re-stored. Without this
+        check, _public_key_stored staying True would leave later rows with
+        no key on record and exports would lose verification.json.
 
         Returns:
             The ProvenanceSigner instance, or None if initialization fails.
         """
         if self._signer is not None:
-            return self._signer
+            if self._key_path().exists():
+                return self._signer
+            self._signer = None
+            self._public_key_stored = False
 
         try:
             from auto_apply.adapters.secondary.security.data_protection import (  # noqa: PLC0415
                 ProvenanceSigner,
             )
-            from auto_apply.domain.config import RESEARCH_DIR  # noqa: PLC0415
 
-            key_path = RESEARCH_DIR / "provenance_key.pem"
-            signer = ProvenanceSigner(key_path=key_path)
+            signer = ProvenanceSigner(key_path=self._key_path())
 
-            # Store the public key once per installation
+            # Store the public key once per identity: after a purge rotated
+            # the key, the new public key must be stored too.
             if not self._public_key_stored:
-                self._store_public_key(signer.public_key_hex)
-                self._public_key_stored = True
+                self._public_key_stored = self._store_public_key(
+                    signer.public_key_hex
+                )
 
             self._signer = signer
             return signer
@@ -1408,8 +1436,13 @@ class ResearchSignalAggregator(ResearchObserverPort):
             )
             return None
 
-    def _store_public_key(self, public_key_hex: str) -> None:
-        """Persist the provenance public key to the database metadata table."""
+    def _store_public_key(self, public_key_hex: str) -> bool:
+        """Persist the provenance public key to the database metadata table.
+
+        Returns True on success so callers latch _public_key_stored only
+        when the row really exists — a False return means the next write
+        batch tries again instead of believing a lie.
+        """
         try:
             with self._get_connection() as conn:
                 conn.execute(
@@ -1422,10 +1455,12 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 "ResearchSignalAggregator: provenance public key stored (%s...)",
                 public_key_hex[:16],
             )
+            return True
         except Exception as exc:
             logger.warning(
                 "ResearchSignalAggregator: could not store public key: %s", exc
             )
+            return False
 
     def _write_batch(self, signals: list[ResearchSignal]) -> None:
         """Persist a batch of signals to SQLite in a single transaction.

@@ -9,30 +9,35 @@ audience: researchers
 # Data Format
 
 Research signals are stored in a single, append‑only SQLite database:
-`research_data/research_signals.db`. This database is designed to be directly
-queryable with any SQLite client, pandas, R, or spreadsheet application
-(after export).
+`research/research_signals.db` inside AA's data directory. This database is
+designed to be directly queryable with any SQLite client, pandas, R, or
+spreadsheet application (after export).
 
 ---
 
 ## Database Location
 
-| Platform | Default path |
-| -------- | ------------ |
-| Windows  | `%USERPROFILE%\.auto_apply\research_data\research_signals.db` |
-| macOS    | `~/.auto_apply/research_data/research_signals.db` |
-| Linux    | `~/.auto_apply/research_data/research_signals.db` |
-| USB portable | `<drive>:\AutoApply\data\research_data\research_signals.db` |
+There is ONE location, on every platform: **`research/research_signals.db`
+inside AA's data directory.** (The data directory itself depends on how AA
+is installed — a normal install, a USB portable drive, or a development
+checkout. On a USB portable install the research database is
+`<drive>:\<AA folder>\data\research\research_signals.db`.)
+
+Everything the research module writes lives in that one `research/`
+directory — the database and its WAL sidecars. The private provenance
+signing key does NOT live there: it sits one level up, beside AA's other
+state files, so zipping or sharing the `research/` folder can never leak
+the key that signs your rows.
 
 The database is created automatically the first time research collection is
 enabled and a session runs. If the database already exists, new signals are
 appended — existing data is never overwritten.
 
-Export the data to CSV, JSON, or Parquet with:
+Export the data to CSV, NDJSON, or Parquet with:
 
 ```bash
 python -m auto_apply --export-research              # CSV (default)
-python -m auto_apply --export-research --export-format json
+python -m auto_apply --export-research --export-format ndjson
 python -m auto_apply --export-research --export-format parquet
 ```
 
@@ -73,7 +78,12 @@ This is the primary table. Every row is a single anonymised observation.
 
 The database also includes these tables, used by detectors that require
 accumulated data (lifecycle tracking, salary benchmarking, form analysis,
-application outcomes).
+application outcomes). Five more tables exist and are not yet documented
+column-by-column here: `discovery_pages`, `discovery_cards` and
+`discovery_candidates` (what the discovery surface looked like), and
+`detector_examinations` and `detector_outcomes` (one accounting row per
+detector run). All eleven tables are covered by research export and by
+consent withdrawal's delete-all.
 
 ### `job_lifecycles`
 
@@ -180,7 +190,7 @@ This table has exactly one row.
 import sqlite3
 import pandas as pd
 
-conn = sqlite3.connect("research_signals.db")
+conn = sqlite3.connect("research/research_signals.db")  # inside AA's data directory
 df = pd.read_sql_query("SELECT * FROM research_signals", conn)
 conn.close()
 
@@ -194,7 +204,7 @@ df["detected_date"] = pd.to_datetime(df["detected_date"], utc=True)
 library(DBI)
 library(RSQLite)
 
-con <- dbConnect(SQLite(), "research_signals.db")
+con <- dbConnect(SQLite(), "research/research_signals.db")  # inside AA's data directory
 df <- dbReadTable(con, "research_signals")
 dbDisconnect(con)
 
@@ -208,8 +218,11 @@ df$detected_date <- as.Date(df$detected_date)
 python -m auto_apply --export-research --export-format csv
 ```
 
-This produces three CSV files (signals, salary, forms) in the reports
-directory — ready for Excel, Google Sheets, or any analysis tool.
+This produces ONE self-describing bundle directory under `reports/` in AA's
+data directory — one data file per research table, an `index.json`
+describing them, and (once signals have been signed) a `verification.json`
+carrying the public key a recipient needs to authenticate every signed row.
+CSV and NDJSON open directly in Excel, Google Sheets, or any analysis tool.
 
 ---
 
@@ -230,13 +243,22 @@ directory — ready for Excel, Google Sheets, or any analysis tool.
 
 You can delete all research data at any time by:
 
-1.  Deleting `research_signals.db` in AA’s data directory.
+1.  Deleting the `research/` directory inside AA's data directory (the
+    database and its WAL sidecars live there). To also retire the signing
+    identity, delete `provenance_key.pem` one level up.
 2.  Disabling research collection in Settings (this stops future collection
     but does not delete existing data).
-3.  Clicking **“Delete All Research Data”** in the Settings menu (if
-    available in your AA version).
+3.  Withdrawing consent with deletion requested (**Settings → Research →
+    Delete My Data**, where available): AA deletes ALL of it — every table
+    in the database, the database files themselves, and the private
+    provenance key, so a contribution you make later cannot be linked to
+    the deleted one. If another process is holding the database open at
+    that moment, AA falls back to erasing every row and compacting the
+    file; the result is the same once that process closes.
 
-Deletion is immediate and irreversible.
+Deletion is immediate and irreversible. Export bundles you already created
+under `reports/` are not touched — they are your copies; delete them
+yourself if you want them gone.
 
 ---
 

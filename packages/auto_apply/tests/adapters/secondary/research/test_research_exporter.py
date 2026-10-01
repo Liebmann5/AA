@@ -42,16 +42,15 @@ def _make_aggregator(
     """Build a real, enabled aggregator against throwaway paths.
 
     The salt env var must be set before construction (item 4a: the
-    constructor raises without it). RESEARCH_DIR is patched so the
-    provenance key lands in the tmp tree instead of dev_data —
-    _ensure_signer imports it lazily, at call time, so the patch holds.
+    constructor raises without it). The provenance key path is injected so
+    the signer writes into the tmp tree instead of the real data directory.
     """
     monkeypatch.setenv("AA_RESEARCH_SALT", "exporter-test-salt")
-    monkeypatch.setattr("auto_apply.domain.config.RESEARCH_DIR", research_dir)
     return ResearchSignalAggregator(
         db_path=db_path,
         consent_version="test-consent",
         macro_signal_interval_seconds=999_999.0,
+        provenance_key_path=research_dir / "provenance_key.pem",
     )
 
 

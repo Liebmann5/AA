@@ -37,8 +37,8 @@ Inside this directory you will find:
 ├── checkpoints/           # Crash‑recovery snapshots
 │   └── checkpoint_<session>.json
 ├── screenshots/           # Failure screenshots (timestamped PNGs)
-├── research_data/         # Anonymised research signals (if opted in)
-│   └── hiring_signals.csv
+├── research/              # Anonymised research data (if opted in)
+│   └── research_signals.db
 └── applications.db        # SQLite database of all jobs ever seen
 ```
 
@@ -140,9 +140,10 @@ AA records anonymised signals about hiring market patterns. No personal
 information — not your name, email, job URLs, or company names — is ever
 stored in research data.
 
-Research data is written to `research_data/hiring_signals.csv`. The file is
-a standard CSV that you can open in Excel, Google Sheets, or any data analysis
-tool.
+Research data is written to `research/research_signals.db`, a SQLite
+database. Export it to CSV, NDJSON, or Parquet with
+`python -m auto_apply --export-research` — the exported files open in Excel,
+Google Sheets, or any data analysis tool.
 
 Each row represents a single observation, such as:
 

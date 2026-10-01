@@ -59,10 +59,15 @@ def aggregator(tmp_path, monkeypatch):
     aggregator resolves AA_RESEARCH_SALT at construction and raises
     ResearchSaltError without one. A test that wants the unset case unsets it
     itself — see tests/research/test_research_identity.py.
+
+    The provenance key path is injected for the same reason: without it the
+    first flushed batch would write a real Ed25519 private key into the
+    developer's actual data directory.
     """
     monkeypatch.setenv("AA_RESEARCH_SALT", "conftest-research-salt")
     return ResearchSignalAggregator(
         db_path=tmp_path / "research_signals.db",
         consent_version="v2.1",
         flush_interval_seconds=0.1,  # fast flush for tests
+        provenance_key_path=tmp_path / "provenance_key.pem",
     )

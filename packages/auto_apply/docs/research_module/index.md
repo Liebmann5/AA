@@ -125,15 +125,20 @@ pipeline operates as follows:
    signed with an installation‑unique Ed25519 key. The public key is stored
    in the database so third‑party verifiers can authenticate the data.
 
-The SQLite database uses three additional supporting tables:
+The SQLite database also includes these supporting tables:
 
 - `job_lifecycles` — tracks posting freshness and cross‑platform reposting
 - `salary_observations` — builds a salary corpus for benchmarking
 - `form_observations` — records ATS form complexity and accessibility violations
 - `application_outcomes` — tracks whether applications receive any response (black‑hole detection)
+- `discovery_pages` / `discovery_cards` / `discovery_candidates` — what the
+  discovery surface looked like, page by page
+- `detector_examinations` / `detector_outcomes` — one accounting row per
+  detector run (the denominator behind every rate)
+- `research_provenance` — the public half of this installation's signing key
 
-All tables are in a single `research_signals.db` file inside the AA data
-directory.
+All tables live in one file: `research/research_signals.db` inside AA's
+data directory.
 
 ---
 
@@ -163,8 +168,9 @@ The complete signal catalogue with detailed descriptions is in
 
 ## What the Data Looks Like
 
-Signals are written to `research_signals.db` in AA’s data directory.
-The database can be exported to CSV, JSON, or Parquet via
+Signals are written to `research/research_signals.db` inside AA's data
+directory — the single home of everything the module collects. The database
+can be exported to CSV, NDJSON, or Parquet via
 `python -m auto_apply --export-research`.
 
 The `research_signals` table has 15 columns covering signal metadata,
@@ -189,7 +195,7 @@ Full schema details are in [Data Format](data_format.md).
 - The **session ID** is a random UUID that changes every session. It cannot
   be linked to your identity across sessions.
 - You can **delete all research data** at any time via the Settings menu or
-  by deleting the `research_signals.db` file.
+  by deleting the `research/` directory inside AA's data directory.
 - An **admin policy** can globally disable research collection, overriding
   any user opt‑in.
 
@@ -247,11 +253,16 @@ users into a **public research dataset**. This dataset will be:
 - Accompanied by a data dictionary and methodology document.
 - Updated on a regular cadence (e.g. quarterly).
 
-If you would like to contribute your data to the public dataset, you can
-export your `research_signals.db` and submit it via the project’s contribution
-channel (to be announced). Contributions are voluntary, anonymous, and
-irreversible — once data is published, it cannot be retracted. Only share
-what you are comfortable making public.
+If you would like to contribute your data to the public dataset, run
+`python -m auto_apply --export-research` and submit the **export bundle**
+it creates (a directory under `reports/` in AA's data directory) via the
+project’s contribution channel (to be announced). The bundle is the
+contribution format: it is self-verifying — it carries the public key a
+recipient needs to authenticate every signed row — and it contains nothing
+private. Share ONLY the bundle, never the raw `research/` directory.
+Contributions are voluntary, anonymous, and irreversible — once data is
+published, it cannot be retracted. Only share what you are comfortable
+making public.
 
 ---
 

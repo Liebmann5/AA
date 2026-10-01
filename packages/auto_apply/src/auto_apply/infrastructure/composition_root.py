@@ -24,6 +24,8 @@ from auto_apply.application.services.mathematical_web_analyzer import Mathematic
 from auto_apply.domain.config import (
     DB_PATH,
     IS_FROZEN,
+    PROVENANCE_KEY_PATH,
+    RESEARCH_DB_PATH,
     USER_DATA_DIR,
 )
 from auto_apply.domain.exceptions import BrowserSetupError
@@ -61,6 +63,30 @@ logger = logging.getLogger(__name__)
 # permits concurrent access to the same instance, which is the exact bug the
 # lease exists to prevent.  Never derive this from config or session plan.
 _MAX_LEASES_PER_SHARED_DRIVER = 1
+
+
+def _warn_if_legacy_research_db() -> None:
+    """Warn when a pre-relocation research database exists.
+
+    The collector used to write USER_DATA_DIR / <filename>; the one home is
+    now RESEARCH_DB_PATH (research/ under the data directory). No real user
+    can have research data (consent has no production caller), so this is a
+    signpost for developer machines, not a migration: AA never moves or
+    deletes the old file — its -wal sidecar may hold the only copy of its
+    last rows. The path is derived from RESEARCH_DB_PATH's parts so the
+    filename literal stays spelled in exactly one src file (domain/config).
+    """
+    legacy = RESEARCH_DB_PATH.parent.parent / RESEARCH_DB_PATH.name
+    if legacy == RESEARCH_DB_PATH or not legacy.exists():
+        return
+    logger.warning(
+        "Legacy research database found at %s — it is no longer read or "
+        "written. Research data now lives at %s. AA will not move or delete "
+        "the old file; move it yourself if you want the rows, delete it if "
+        "not.",
+        legacy,
+        RESEARCH_DB_PATH,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -503,11 +529,13 @@ def build_orchestrator(  # noqa: PLR0914
             )
 
             _consent_db = USER_DATA_DIR / "research_consent.db"
-            _signals_db = USER_DATA_DIR / "research_signals.db"
+            _signals_db = RESEARCH_DB_PATH
+            _warn_if_legacy_research_db()
 
             _consent_repo = SqliteConsentRepository(
                 consent_db_path=_consent_db,
                 research_db_path=_signals_db,
+                provenance_key_path=PROVENANCE_KEY_PATH,
             )
             _consent_mgr = ResearchConsentManager(_consent_repo)
 
@@ -518,6 +546,7 @@ def build_orchestrator(  # noqa: PLR0914
                 _aggregator = ResearchSignalAggregator(
                     db_path=_signals_db,
                     consent_version=_consent_mgr.consent_version,
+                    provenance_key_path=PROVENANCE_KEY_PATH,
                 )
                 _aggregator.start()
                 research_observer = _aggregator

@@ -358,13 +358,13 @@ def _handle_export_research(args) -> None:
         ExportError,
         ResearchExporter,
     )
-    from auto_apply.domain.config import REPORTS_DIR, RESEARCH_DIR
+    from auto_apply.domain.config import REPORTS_DIR, RESEARCH_DB_PATH
 
     fmt: ExportFormat = _parse_export_format(args.export_format or "csv")
     print(f"Exporting research data as {fmt.upper()}...")
 
     exporter = ResearchExporter(
-        db_path=RESEARCH_DIR / "research_signals.db",
+        db_path=RESEARCH_DB_PATH,
         export_root=REPORTS_DIR,
     )
     try:
