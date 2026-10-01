@@ -670,11 +670,20 @@ class AutoApplyApp(tk.Tk):
         self._show_session_config()
 
     def _on_close(self) -> None:
-        """Handles window close: stops the controller and exits."""
+        """Handles window close: shuts the session down and exits.
+
+        shutdown(), not stop(): the window is going away, so the browser
+        must be released even when the agent thread is mid-task and stop()'s
+        10-second join expires — the measured orphan path behind this
+        button. A session whose run() already ended pays nothing (shutdown
+        is idempotent).
+        """
         logger.info("Application shutdown requested")
-        # Future: call SessionController.stop() here when wired.
         if self.controller:
-            self.controller.stop()
+            try:
+                self.controller.shutdown()
+            except Exception as exc:  # noqa: BLE001 — exiting must not be blocked
+                logger.warning("Controller shutdown raised during close: %s", exc)
 
         self.destroy()
         sys.exit(0)
@@ -827,6 +836,19 @@ class AutoApplyApp(tk.Tk):
             messagebox.showerror("Session Error", "No profile is loaded.")
             return
 
+        # Release the previous session's controller before building another.
+        # A built controller owns a live browser; dropping the reference
+        # without shutdown() strands it against the shared profile directory
+        # and the new build below is refused. On the ordinary
+        # Start -> Stop -> Start path run() has already ended, so this is a
+        # no-op; on a previously failed Start it is the only release.
+        if self.controller is not None:
+            try:
+                self.controller.shutdown()
+            except Exception as exc:  # noqa: BLE001 — must not block the new session
+                logger.warning("Previous controller shutdown raised: %s", exc)
+            self.controller = None
+
         try:
             # 1. Build controller (this builds CapabilitiesRegistry internally).
             self.controller = self._create_controller(self.profile, profile_repo=self._repo)
@@ -846,6 +868,17 @@ class AutoApplyApp(tk.Tk):
 
         except Exception as exc:
             logger.error("Session start failed: %s", exc, exc_info=True)
+            # The build may have acquired a browser before failing. Release
+            # the half-built controller or its browser strands the next Start.
+            if self.controller is not None:
+                try:
+                    self.controller.shutdown()
+                except Exception as shutdown_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed-session controller shutdown raised: %s",
+                        shutdown_exc,
+                    )
+                self.controller = None
             messagebox.showerror(
                 "Session Error",
                 f"Failed to start session: {exc}",

@@ -118,7 +118,7 @@ Example:
     ...                    execution_mode=SessionExecutionMode.DISCOVER_ONLY))
     >>> controller.start()
     >>> # ... poll controller.snapshot() from the UI ...
-    >>> controller.stop()
+    >>> controller.shutdown()  # releases the browser; stop() alone does not
 """
 
 import csv
@@ -420,7 +420,9 @@ class SessionController:
            set_autonomy() writes the profile for FUTURE sessions.
 
     The controller is stateful — one instance per session. When the session
-    ends, discard the controller and create a new one for the next session.
+    ends, call shutdown() — it releases the browser whether or not a run is
+    still active — then discard the controller and create a new one for the
+    next session.
 
     Attributes:
         registry: A RegistryPort (CapabilitiesRegistry) for this session.
@@ -1258,6 +1260,7 @@ class SessionController:
             )
             return
 
+        self._stop_requested = False   # a new run: a later shutdown() must stop it
         logger.info("Spawning Agent Orchestrator thread...")
         self._agent_thread = threading.Thread(
             target=self.orchestrator.run,
@@ -1266,6 +1269,12 @@ class SessionController:
         )
         self._agent_thread.start()
 
+    #: Set by stop(), cleared by start(). shutdown() reads it so that a stop()
+    #: which already waited out its 10-second join is not repeated: with a task
+    #: stuck mid-flight every stop() blocks for the full join, and the CLI's
+    #: inner finally (stop) plus outer finally (shutdown) used to wait twice.
+    _stop_requested: bool = False
+
     def stop(self) -> None:
         """Signals the orchestrator to halt gracefully and waits for it.
 
@@ -1273,8 +1282,17 @@ class SessionController:
         method blocks for up to 10 seconds waiting for the thread to exit.
         If the thread doesn't exit in time, it is abandoned (daemon thread
         will die with the process).
+
+        What this does NOT do: release the browser. The browser is owned by
+        the orchestrator and is released only by shutdown() — or by run()
+        reaching its own end. stop() remains right for "halt the work, keep
+        the session". Callers that mean "the session is over" — window
+        close, CLI exit, discarding this controller — must call shutdown(),
+        because the abandoned-thread case above leaves the browser held by
+        an orchestrator whose run() may never reach its own teardown.
         """
         logger.info("Stop signal received")
+        self._stop_requested = True
         self.orchestrator.stop()
 
         if self._agent_thread and self._agent_thread.is_alive():
@@ -1284,6 +1302,34 @@ class SessionController:
                     "Orchestrator thread did not exit within 10s — "
                     "it will be killed when the process exits"
                 )
+
+    def shutdown(self) -> None:
+        """Ends the session AND releases everything it holds, browser included.
+
+        stop() first — the agent thread is asked to finish its current task
+        and is given up to 10 seconds — then orchestrator.shutdown() in a
+        finally, so the browser is released even when that join expires with
+        a task still mid-flight (the measured orphan path: Ctrl+C or a
+        window close during a slow page load, after which the daemon thread
+        would die at process exit before reaching its own teardown).
+        orchestrator.shutdown() is idempotent, so a session whose run()
+        already ended pays nothing for this call.
+
+        A stop() that already ran is not repeated: its join already waited
+        up to 10 seconds, and waiting again on a thread stuck mid-task only
+        delays the release (measured ~18 s from Ctrl+C to release through
+        cli/startup.py, whose inner finally calls stop() and whose outer
+        finally calls this) and widens the window in which a second Ctrl+C
+        aborts it.
+
+        Safe to call whether or not start() was ever called, and safe to
+        call more than once.
+        """
+        try:
+            if not self._stop_requested:
+                self.stop()
+        finally:
+            self.orchestrator.shutdown()
 
     def pause(self) -> None:
         """Pauses the orchestrator without killing the browser session."""

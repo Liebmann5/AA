@@ -165,24 +165,34 @@ class CLIStartup:
         # 3. Initialize Session — use the composition‑root factory
         controller = build_session_controller(profile, profile_repo=self.repo)
 
-        task_count = controller.initialize_session(session_config)
-
-        if task_count == 0:
-            sys.exit(0)
-
-        # 4. Execute
-        controller.start()
-
         try:
-            dashboard = CLIDashboard(controller)
-            dashboard.run_monitor_loop()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            controller.stop()
+            task_count = controller.initialize_session(session_config)
 
-        # 5. Results
-        self._print_results(controller)
+            if task_count == 0:
+                sys.exit(0)
+
+            # 4. Execute
+            controller.start()
+
+            try:
+                dashboard = CLIDashboard(controller)
+                dashboard.run_monitor_loop()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                controller.stop()
+
+            # 5. Results
+            self._print_results(controller)
+        finally:
+            # Release the browser on EVERY way out of this method: a normal
+            # end of run (a no-op then — run()'s own exit already released
+            # it), Ctrl+C while a task is busy (stop()'s 10-second join
+            # above can expire mid-task; the daemon agent thread would then
+            # die at process exit before reaching its own teardown — the
+            # measured orphan path), the task_count == 0 exit, and any
+            # exception raised between build and here.
+            controller.shutdown()
 
     # =========================================================================
     # AUTONOMY CONTROL (stage E1)

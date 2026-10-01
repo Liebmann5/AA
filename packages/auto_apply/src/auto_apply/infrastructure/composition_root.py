@@ -92,7 +92,15 @@ def build_orchestrator(  # noqa: PLR0914
     Args:
         registry: A fully initialised CapabilitiesRegistry for this environment.
         driver: Pre-acquired browser driver. Pass ``None`` to skip the cascade
-            entirely (static/BS4 perception only). Omit to run the cascade.
+            entirely (construction-only callers and tests — no perception or
+            interaction adapters are built then). Omit to run the cascade.
+
+    Ownership:
+        The returned orchestrator owns the acquired driver's lifetime from
+        this point. It is released exactly once, by
+        ``AgentOrchestrator.shutdown()`` — reached from run()'s own exit and
+        from ``SessionController.shutdown()``. Callers must not close the
+        driver themselves.
 
     Returns:
         A fully wired AgentOrchestrator ready to call ``.run()``.
@@ -1038,6 +1046,41 @@ def _refuse_no_browser(registry: CapabilitiesRegistry, cascade: BrowserCascade) 
     raise BrowserSetupError(message)
 
 
+def _register_exit_shutdown(controller: "SessionController") -> None:
+    """Registers a WEAK atexit hook that shuts *controller* down at interpreter exit.
+
+    This is the last-resort release net for exits nobody named: a sys.exit
+    on a path without a finally, an unhandled exception, a signal handler
+    that exits the process. The explicit paths — run()'s own exit and
+    SessionController.shutdown() from the GUI close, the CLI finally, or the
+    next Start — run first and make this a no-op.
+
+    The reference is deliberately weak. A strong one would pin every
+    controller — and its live browser, against the shared --user-data-dir —
+    until process exit, turning "controller dropped without shutdown" from a
+    case garbage collection currently rescues into a guaranteed refusal of
+    the next build. With the weak form, a controller still reachable at exit
+    is shut down explicitly; one already collected is left to the GC rescue
+    that works today. A killed process (SIGKILL, Task Manager, power loss)
+    runs no atexit hooks; nothing in-process can cover that.
+    """
+    import atexit  # noqa: PLC0415
+    import weakref  # noqa: PLC0415
+
+    controller_ref = weakref.ref(controller)
+
+    def _shutdown_if_alive() -> None:
+        instance = controller_ref()
+        if instance is None:
+            return
+        try:
+            instance.shutdown()
+        except Exception:  # noqa: BLE001 — an atexit hook must never raise
+            pass
+
+    atexit.register(_shutdown_if_alive)
+
+
 def build_session_controller(
     profile: "UserProfile",
     profile_repo: "ProfileRepositoryPort | None" = None,
@@ -1057,6 +1100,14 @@ def build_session_controller(
 
     Returns:
         A SessionController instance ready to call ``.initialize_session()``.
+
+    Lifecycle:
+        The caller owns ending the session: call ``controller.shutdown()``
+        on every exit path (window close, CLI exit, the next Start). It
+        releases the browser whether or not a run is active. The weak
+        atexit hook registered below is the last resort for exits no caller
+        named — it cannot help a killed process, and it deliberately does
+        not pin the controller; see ``_register_exit_shutdown``.
     """
     from auto_apply.application.services.session_controller import SessionController  # noqa: PLC0415
     from auto_apply.domain.models.profile import UserProfile  # noqa: PLC0415
@@ -1067,17 +1118,30 @@ def build_session_controller(
     # 2. Build the fully wired orchestrator
     orchestrator = build_orchestrator(registry)
 
-    # 3. Assemble the controller (all deps injected)
-    controller = SessionController(
-        registry=registry,
-        db=orchestrator.task_queue,      # DatabaseManager implements WorkQueuePort
-        orchestrator=orchestrator,
-        profile_repo=profile_repo,
-    )
+    # 3. Assemble the controller (all deps injected). If assembly fails after
+    # the orchestrator exists, its browser has no owner yet — release it here
+    # rather than stranding it against the shared profile directory.
+    try:
+        controller = SessionController(
+            registry=registry,
+            db=orchestrator.task_queue,      # DatabaseManager implements WorkQueuePort
+            orchestrator=orchestrator,
+            profile_repo=profile_repo,
+        )
+    except Exception:
+        orchestrator.shutdown()
+        raise
 
     # 4. Post‑construction initialisation (previously inside from_profile)
     controller._perform_startup_recovery()   # reset stuck IN_PROGRESS tasks
     controller._wire_approval_gate()         # bind HITL gate to workflow
+
+    # 5. Last-resort release net — see _register_exit_shutdown. Covers exits
+    # no caller names (a stray sys.exit, an unhandled exception) by shutting
+    # the controller down at interpreter exit IF it is still alive. Cannot
+    # cover a killed process (SIGKILL, Task Manager, power loss); nothing
+    # in-process can.
+    _register_exit_shutdown(controller)
 
     return controller
 

@@ -262,6 +262,16 @@ class AgentOrchestrator:
         # to record-and-continue rather than hanging (see _handle_captcha).
         self._approval_gate: Any | None = None
 
+        # ── Shutdown latch ────────────────────────────────────────────────
+        # shutdown() is the ONE release path for the injected browser. The
+        # lock serializes concurrent callers (the agent thread at run()'s
+        # end vs. a UI thread releasing after stop()'s join expired); the
+        # flag makes every call after the first a no-op, so teardown —
+        # final checkpoint, session report, driver close — happens exactly
+        # once.
+        self._shutdown_lock: threading.Lock = threading.Lock()
+        self._shutdown_complete: bool = False
+
         # ── Redirect dedupe for the REDIRECT_TO_LIST_DETECTED handler ─────
         self._seen_redirect_urls: set = set()
 
@@ -307,6 +317,12 @@ class AgentOrchestrator:
         Raises:
             Nothing. All exceptions are caught, logged, and handled per-task.
             The loop itself never propagates an exception to the caller.
+
+        Exit:
+            However the loop ends — queue drained, stop() called, or an
+            exception that escaped the per-task handling — the finally block
+            routes through shutdown(), so the browser acquired at build time
+            is released exactly once.
         """
         logger.info("AgentOrchestrator starting | session=%s", self.context.session_id)
         self.running = True
@@ -449,9 +465,13 @@ class AgentOrchestrator:
             # ── Stop progress display ────────────────────────────────────
             if self._progress is not None:
                 self._progress.stop()
+            # ── Release all owned resources, browser included ────────────
+            # Routes the loop's exit through the ONE release path. If a
+            # controller-level shutdown() already ran (stop()'s join expired
+            # with a task mid-flight and the caller's thread released the
+            # browser out from under this one), this is a no-op.
+            self.shutdown()
 
-        # ── Cleanup on graceful exit ──────────────────────────────────────
-        self._teardown()
         logger.info(
             "AgentOrchestrator stopped gracefully | session=%s",
             self.context.session_id,
@@ -467,12 +487,54 @@ class AgentOrchestrator:
         Does not kill the loop mid-task. The loop checks self.running at the
         top of each iteration and exits cleanly.
 
+        What this does NOT do: release the browser or any other resource.
+        Release happens only in shutdown() — reached from run()'s own exit,
+        or from SessionController.shutdown() when the caller needs the
+        session torn down whether or not the loop has finished.
+
         Example:
-            >>> orchestrator.stop()  # Triggers graceful shutdown
+            >>> orchestrator.stop()  # Ask the loop to exit; browser stays open
         """
         logger.info("Stop signal received")
         self.running = False
         self.state_machine.transition_to(AgentState.STOPPING)
+
+    def shutdown(self) -> None:
+        """Releases every resource this orchestrator owns, browser included.
+
+        This is the ONE release path for the driver injected at build time.
+        It is reachable from every exit:
+
+            - run()'s exit — queue drained, stop() called, or an exception
+              that escaped the per-task handling — routes here from a
+              finally;
+            - SessionController.shutdown() calls here after stop() returns,
+              including when stop()'s thread join timed out with a task
+              still mid-flight. In that case this runs on the caller's
+              thread and closes the browser out from under the stuck task;
+              the stuck task then fails against the dead driver and the loop
+              exits — the daemon thread is no longer relied on to reach
+              teardown itself;
+            - it works whether or not run() was ever called.
+
+        Idempotent and thread-safe: concurrent callers serialize on a lock
+        and every call after the first returns immediately, so the final
+        checkpoint and the session report are written exactly once.
+
+        What this CANNOT cover: a killed process (SIGKILL, Task Manager,
+        power loss). No in-process cleanup runs there.
+        """
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                logger.debug("shutdown() after teardown — no-op")
+                return
+            self._shutdown_complete = True
+            try:
+                self._teardown()
+            except Exception as exc:  # noqa: BLE001 — release must never raise
+                logger.warning(
+                    "shutdown(): teardown raised (non-fatal) | error=%s", exc
+                )
 
     def pause(self) -> None:
         """Suspends task dispatching without destroying browser state.
@@ -1902,9 +1964,11 @@ class AgentOrchestrator:
     def _teardown(self) -> None:
         """Cleans up all resources after the event loop exits.
 
-        Called exactly once at the end of ``run()``, whether the loop exited
-        cleanly (``stop()`` called or the queue drained) or due to an
-        unhandled exception. Ordering matters:
+        Called exactly once, from :meth:`shutdown` — whether run() exited
+        (queue drained, stop() called, or an exception that escaped the
+        loop), whether run() never ran, or whether stop()'s thread join
+        expired with a task mid-flight and the caller's thread is doing the
+        releasing. Ordering matters:
             0. Shutdown workflows that may still hold background threads.
             1. Transition to STOPPED state (signals all observers that the
                session has ended). Routes through STOPPING first in case an

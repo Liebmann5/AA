@@ -139,7 +139,6 @@ class SeleniumProvider:
         except Exception:
             pass
 
-        self._register_process(driver)
         return driver
 
     def cleanup(self, driver: Any) -> None:
@@ -649,24 +648,3 @@ class SeleniumProvider:
         return os.environ.get("CONTAINER", "").lower() in {
             "true", "1", "yes", "docker"
         }
-
-    @staticmethod
-    def _register_process(driver: Any) -> None:
-        """Register the browser PID with ProcessManager for clean-up on exit."""
-        try:
-            from auto_apply.adapters.secondary.os.process import (  # noqa: PLC0415
-                ProcessManager,
-            )
-
-            pid = getattr(driver, "browser_pid", None)
-            if not pid and hasattr(driver, "service"):
-                pid = driver.service.process.pid
-            if pid:
-                ProcessManager.register(pid)
-                logger.debug(
-                    "SeleniumProvider: registered browser PID %s", pid
-                )
-        except Exception as exc:
-            logger.warning(
-                "SeleniumProvider: could not register browser PID: %s", exc
-            )
