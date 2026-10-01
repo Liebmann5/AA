@@ -161,6 +161,24 @@ class TestParser:
         pr = K.parse_changes("### PATCH: pkg/a.py\n@@ -1 +1 @@\n-x\n+y\n\n### END CHANGES\n")
         assert pr.errors and "'### PATCH: pkg/a.py'" in pr.errors[0].message
 
+    def test_unfenced_file_body_names_the_missing_opening_fence(self):
+        # The 2026-09-30 shape: header, body with no opening fence, one closing
+        # fence, END. Still an error - but the message gives the free fix.
+        r = (edit("pkg/a.py", "x\n", "y\n") + "\n### FILE: pkg/t.py\n"
+             + "import os\n\nX = 1\n```\n\n### END CHANGES\n")
+        pr = K.parse_changes(r)
+        assert len(pr.blocks) == 1 and len(pr.errors) == 1
+        msg = pr.errors[0].message
+        assert "OPENING fence is missing" in msg
+        assert "reply lines 9-11" in msg and "on line 12" in msg and "under line 8" in msg
+
+    @pytest.mark.parametrize("tail", [
+        "import os\nX = 1\n### END CHANGES\n",                       # no closing fence at all
+        "Intro\n```py\na\n```\nmore\n```\n### END CHANGES\n"])        # body has its own fences
+    def test_no_fence_hint_when_the_shape_is_ambiguous(self, tail):
+        pr = K.parse_changes("### FILE: pkg/t.py\n" + tail)
+        assert pr.errors and "OPENING fence is missing" not in pr.errors[0].message
+
     def test_legacy_patch_four_char_markers(self):
         pr = K.parse_changes("### PATCH: a.py\n```python\n<<<<\nx = 1\n====\nx = 2\n>>>>\n```\n")
         assert len(pr.blocks) == 1 and pr.blocks[0].edit.search == "x = 1\n"

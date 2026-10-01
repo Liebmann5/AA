@@ -729,8 +729,25 @@ def parse_changes(text: str) -> ParseResult:
             j += 1
         m = FENCE_RE.match(lines[j]) if j < n else None
         if not m:
+            # The commonest shape of this failure is a body that IS there with
+            # only its opening fence missing. When the span up to the next change
+            # header (or END) holds exactly one fence line, say so precisely: the
+            # fix is one inserted line, which is free, and a repair turn is not.
+            k, fences = hdr + 1, []
+            while k < n and not (HEADER_RE.match(lines[k]) or END_RE.match(lines[k])):
+                if FENCE_RE.match(lines[k]):
+                    fences.append(k)
+                k += 1
+            hint = ""
+            if len(fences) == 1 and fences[0] > hdr + 1:
+                hint = (f" - its body looks present but unfenced (reply lines {hdr + 2}-"
+                        f"{fences[0]}, closed by the fence on line {fences[0] + 1}): the "
+                        f"OPENING fence is missing. Free fix: in a copy of the reply, insert "
+                        f"a line like ```python directly under line {hdr + 1}, then run "
+                        f"--apply-fixes on that copy")
             res.problems.append(ParseProblem(
-                hdr + 1, f"'### FILE: {path}' is not followed by a fenced code block", path=path))
+                hdr + 1, f"'### FILE: {path}' is not followed by a fenced code block" + hint,
+                path=path))
             return hdr + 1
         ch, width = m.group("fence")[0], len(m.group("fence"))
         j += 1
