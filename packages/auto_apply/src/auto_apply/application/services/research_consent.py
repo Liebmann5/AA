@@ -20,11 +20,22 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from auto_apply.domain.constants import CURRENT_CONSENT_VERSION
 from auto_apply.domain.models.consent import ConsentRecord
 from auto_apply.domain.ports.consent_repository_port import ConsentRepositoryPort
+from auto_apply.domain.ports.research_consent_port import (
+    ResearchConsentDialog,
+    ResearchConsentReason,
+    ResearchConsentState,
+    ResearchConsentStatus,
+    WithdrawalResult,
+)
+from auto_apply.domain.services import research_consent_text
+from auto_apply.domain.services.research_identity import (
+    salt_available as _research_salt_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,28 +71,63 @@ class InMemoryConsentRepository:
 class ResearchConsentManager:
     """Application service governing research data collection consent.
 
+    This is the ONE answer to "is research on?" (ruled 2026-10-01, FORK 1/2).
+    It satisfies domain.ports.research_consent_port.ResearchConsentPort
+    structurally; both user surfaces call it, and composition_root builds it
+    via build_research_consent() and consults should_collect() — nothing else
+    decides whether an aggregator is constructed.
+
     Usage in composition_root.py:
-        consent_manager = ResearchConsentManager(consent_repository)
-        if consent_manager.is_active():
-            observer = ResearchSignalAggregator(db_path, consent_manager.consent_version)
+        consent_service = build_research_consent(registry)
+        if consent_service.should_collect():
+            observer = ResearchSignalAggregator(db_path, consent_service.consent_version)
+            observer.start()
+            consent_service.register_observer(observer)
         else:
             observer = NullResearchObserver()
 
     Args:
         repository: Persistence adapter for consent records.
+        is_offered: Whether research is offered on this device/build — the
+            ``enable_research_collection`` flag AFTER policy enforcement.
+        admin_prohibited: Whether an admin policy forbids research here. Kept
+            separate from is_offered so status() can say "disabled by your
+            device administrator" rather than merely "unavailable".
+        salt_available: Zero-arg callable answering "is a research salt
+            configured?". Defaults to domain.research_identity.salt_available,
+            which reads the process environment (fixed for a session).
     """
 
-    def __init__(self, repository: ConsentRepositoryPort) -> None:
+    def __init__(
+        self,
+        repository: ConsentRepositoryPort,
+        *,
+        is_offered: bool = True,
+        admin_prohibited: bool = False,
+        salt_available: Callable[[], bool] | None = None,
+    ) -> None:
         self._repository = repository
+        self._is_offered = is_offered
+        self._admin_prohibited = admin_prohibited
+        self._salt_available = salt_available or _research_salt_available
+        self._active_observer: Any = None
 
     def is_active(self) -> bool:
-        """Return True if research collection should run right now.
+        """Return True when the CONSENT RECORD is granted and current.
 
         Requires BOTH: consent was granted, AND the consent version matches
         CURRENT_CONSENT_VERSION (re-consent required after policy changes).
 
+        This answers exactly one question — has the user granted current,
+        unwithdrawn consent? It does NOT answer whether research collection
+        runs: that is should_collect(), which additionally requires research
+        to be offered, no admin prohibition, and an available salt. (An
+        earlier revision of this docstring claimed is_active() was the
+        collection decision; it never was — the config flag it ignored was
+        the gate no user could open. See AA_MASTER_TODO predicate row 18.)
+
         Returns:
-            True if research collection is authorized and current.
+            True if the consent record is granted and current.
         """
         record = self._repository.load_consent()
         if not record.granted:
@@ -113,6 +159,135 @@ class ResearchConsentManager:
             and record.consent_version != CURRENT_CONSENT_VERSION
         )
 
+    # ── The collection decision (FORK 1) ─────────────────────────────────────
+
+    def _consent_state(
+        self, record: ConsentRecord
+    ) -> tuple[ResearchConsentState, ResearchConsentReason]:
+        """The one (state, reason) computation behind status() and
+        should_collect() — both presentations read this, never their own."""
+        if record.withdrawn_at is not None:
+            return ResearchConsentState.WITHDRAWN, ResearchConsentReason.NONE
+        if not record.granted:
+            return ResearchConsentState.OFF, ResearchConsentReason.NONE
+        if record.consent_version != CURRENT_CONSENT_VERSION:
+            return ResearchConsentState.NEEDS_RECONSENT, ResearchConsentReason.NONE
+        if self._admin_prohibited:
+            return ResearchConsentState.INACTIVE, ResearchConsentReason.ADMIN_PROHIBITED
+        if not self._is_offered:
+            return ResearchConsentState.INACTIVE, ResearchConsentReason.NOT_OFFERED
+        if not self._salt_available():
+            return ResearchConsentState.INACTIVE, ResearchConsentReason.NO_SALT
+        return ResearchConsentState.ACTIVE, ResearchConsentReason.NONE
+
+    def should_collect(self) -> bool:
+        """The ONE collection decision: consent granted and current, research
+        offered, no admin prohibition, and a salt available.
+
+        composition_root calls this and nothing else to decide whether a
+        ResearchSignalAggregator is constructed. When it is False, research
+        is clearly off and AA builds and runs normally (FORK 4): rows are
+        never written without a salt because no aggregator exists.
+        """
+        state, _reason = self._consent_state(self._repository.load_consent())
+        return state is ResearchConsentState.ACTIVE
+
+    # ── The consent interface (FORK 2 — satisfies ResearchConsentPort) ───────
+
+    def status(self) -> ResearchConsentStatus:
+        """Everything a surface needs to render, without internals access."""
+        record = self._repository.load_consent()
+        state, reason = self._consent_state(record)
+        return ResearchConsentStatus(
+            state=state,
+            reason=reason,
+            offered=self._is_offered and not self._admin_prohibited,
+            collecting_now=self.collecting,
+            consent_version=record.consent_version,
+            current_version=CURRENT_CONSENT_VERSION,
+        )
+
+    def consent_dialog(self) -> ResearchConsentDialog:
+        """The exact text a surface must render before calling grant().
+
+        Single canonical copy: domain/services/research_consent_text.py;
+        every line of it must appear verbatim in docs/RESEARCH_CONSENT_DIALOG.md, so
+        what the user reads and what grant() records cannot drift apart.
+        """
+        return research_consent_text.consent_dialog()
+
+    def grant(self) -> ResearchConsentStatus:
+        """Record consent to the CURRENT version and return the new status.
+
+        The surface MUST have rendered consent_dialog() first — the version
+        recorded is the version that dialog carries. No acknowledgement
+        tokens (unlike set_autonomy): the dialog itself is the
+        acknowledgement, and a grant is reversible at any time via
+        withdraw(purge_data=True). Collection starts at the next session
+        build, never mid-session (the session's composition is frozen).
+        """
+        self.grant_consent()
+        return self.status()
+
+    def withdraw(self, purge_data: bool = True) -> WithdrawalResult:
+        """Stop collection NOW, record the withdrawal, optionally purge.
+
+        Unlike a grant, a withdrawal takes effect immediately — the dialog
+        promises "withdrawing consent immediately stops new data collection",
+        and a rights promise outranks the frozen-session rule (FORK 3).
+        """
+        self.stop_collection()
+        purged = self.withdraw_consent(purge_data=purge_data)
+        return WithdrawalResult(
+            purged=purged,
+            collection_stopped=not self.collecting,
+            status=self.status(),
+        )
+
+    # ── The stop channel (FORK 3) ────────────────────────────────────────────
+
+    def register_observer(self, observer: Any) -> None:
+        """Register the session's live research observer for later stopping.
+
+        Called by composition_root right after the aggregator starts. This
+        registration is what lets a mid-session withdrawal — and session
+        shutdown — reach the running observer at all (M4: previously nothing
+        held it). Only ever called with the real aggregator, never the Null
+        observer. The reference is strong on purpose: the manager lives as
+        long as the controller that owns the session.
+        """
+        self._active_observer = observer
+
+    @property
+    def collecting(self) -> bool:
+        """True while a registered observer is live (enabled)."""
+        observer = self._active_observer
+        return bool(observer is not None and getattr(observer, "is_enabled", False))
+
+    def stop_collection(self) -> bool:
+        """Stop the registered observer, if any. Idempotent.
+
+        The observer's stop() flushes its queue through the tested drain —
+        items collected under consent are written, not lost — and marks it
+        disabled, so later observe_* calls become no-ops instead of feeding
+        a queue no thread will ever drain. A failure to stop is logged and
+        NOT raised: a withdrawal must not fail because the flush hiccuped.
+
+        Returns:
+            True if an observer was registered (and stop was attempted).
+        """
+        observer = self._active_observer
+        self._active_observer = None
+        if observer is None:
+            return False
+        try:
+            observer.stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "ResearchConsentManager | observer stop failed: %s", exc
+            )
+        return True
+
     @property
     def consent_version(self) -> str | None:
         """The consent version the user most recently agreed to, or None."""
@@ -143,9 +318,20 @@ class ResearchConsentManager:
                 retention policy in docs/ETHICS.md. The purge itself is
                 synchronous.
 
+        Order (FORK 3): stop the running observer FIRST (no new writes; its
+        queued items are flushed by stop()'s tested drain), then persist the
+        withdrawn record, then purge if asked. With purge_data=True the final
+        flushed batch is written and immediately deleted — bounded waste (one
+        batch), chosen over a second code path; with purge_data=False the
+        flush is exactly what the user is owed, since everything collected
+        under consent is kept. If the daemon is wedged and stop's join times
+        out, the purge still proceeds: the repository's row-deletion fallback
+        exists for exactly a locked/held database.
+
         Returns:
             Number of records purged (0 if purge_data=False).
         """
+        self.stop_collection()
         previous = self._repository.load_consent()
         record = ConsentRecord(
             granted=False,

@@ -15,8 +15,9 @@ checklist for data science and software projects involving data collection.
 
 ### A. Data Collection
 
-- [x] **Informed consent**: Users must explicitly opt in to research data collection.
-  Default is `research.enabled: false`. Consent is versioned and stored with each record.
+- [x] **Informed consent**: Users must explicitly opt in to research data collection
+  through the consent dialog. Collection is OFF by default; the decision is stored in
+  a versioned consent record and the version is stored with each record.
 - [x] **Right to withdraw**: Users can delete their research contribution at any time
   via Settings → Research → Delete My Data. Deletion is immediate: every research
   table, the database files, and the installation's research signing key are
@@ -35,8 +36,9 @@ checklist for data science and software projects involving data collection.
   file encryption. Future versions will implement AES-256 encryption at the file level.
 - [x] **Access controls**: Research data is stored locally on the user's device.
   No data is transmitted to external servers without explicit user action (export).
-- [x] **Data retention**: Research signals are retained for 90 days by default,
-  configurable via `research.retention_days` in `runtime_defaults.yaml`.
+- [x] **Data retention**: Research data is kept until the user withdraws and purges
+  it or deletes it; there is no automatic expiry. (An earlier draft of this document
+  promised a configurable 90-day default; that mechanism was never built.)
 - [x] **Breach response**: In the event of a discovered vulnerability affecting
   research data, users will be notified via the project's issue tracker within 72 hours.
 

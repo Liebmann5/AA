@@ -52,6 +52,7 @@ __all__ = [
     "ABSENT_COMPANY_TOKENS",
     "ResearchSaltError",
     "resolve_research_salt",
+    "salt_available",
     "compute_company_id",
 ]
 
@@ -90,6 +91,23 @@ def resolve_research_salt() -> str:
             "with research consent active."
         )
     return salt
+
+
+def salt_available() -> bool:
+    """True when a research salt is configured, False when it is not.
+
+    The boolean half of resolve_research_salt: the consent service and the
+    composition root ask this question before anything is constructed, so a
+    missing salt surfaces as a STATUS (research inactive, reason NO_SALT)
+    instead of an exception from inside a constructor. The raise in
+    resolve_research_salt is unchanged — anything that actually writes still
+    hard-requires the salt.
+    """
+    try:
+        resolve_research_salt()
+    except ResearchSaltError:
+        return False
+    return True
 
 
 #: Display strings that mean "the producer could not name a company", matched

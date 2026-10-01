@@ -40,8 +40,17 @@ class RegistryPort(Protocol):
         """Return a single effective-config value by key."""
         ...
 
+    def is_research_offered(self) -> bool:
+        """Return True if research is OFFERED on this device/build.
+
+        Says nothing about consent — the collection decision is the consent
+        service's should_collect().
+        """
+        ...
+
     def is_research_enabled(self) -> bool:
-        """Return True if the user opted into research data collection."""
+        """Deprecated alias for is_research_offered(). The old name claimed
+        to answer "has the user opted in"; it never measured consent."""
         ...
 
     def discovery_requires_live_browser(self) -> bool:

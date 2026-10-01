@@ -43,7 +43,13 @@ class ResolvedCapabilityProfile(BaseModel):
     has_spacy: bool = False
     has_gpt4all: bool = False
 
-    # Research capabilities
+    # Research capabilities. The registry cannot see the consent database, so
+    # composition_root injects both values from the consent service:
+    #   has_research_consent    — the consent RECORD is granted and current
+    #   research_signals_active — a live aggregator was built and started
+    # Both default False (honest absence). Until 2026-10-01 both were filled
+    # from the enable_research_collection config flag — a deployment switch
+    # no user could reach, reported here as consent (M2).
     has_research_consent: bool = False
     research_signals_active: bool = False
 

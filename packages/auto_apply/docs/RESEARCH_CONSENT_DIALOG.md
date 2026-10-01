@@ -1,18 +1,25 @@
 ---
-title: "Research Consent Dialog — Exact UI Text (v2.1)"
+title: "Research Consent Dialog — Exact UI Text (v2.2)"
 status: needs-review
 last_verified: 2026-09-27
 verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
 audience: researchers
 ---
 
-# Research Consent Dialog — Exact UI Text (v2.1)
+# Research Consent Dialog — Exact UI Text (v2.2)
 
 This document is the AUTHORITATIVE SOURCE for the consent dialog text shown
 to users when they enable research data collection in Settings → Research.
 
-The GUI/CLI must render this text VERBATIM (or link to it) — do not
-paraphrase. `CURRENT_CONSENT_VERSION` in `domain/constants.py` MUST match
+The canonical strings live in code —
+`src/auto_apply/domain/services/research_consent_text.py` — so the GUI and
+CLI load them instead of carrying copies. The GUI/CLI must render this text
+VERBATIM (or link to it) — do not paraphrase. A pin
+(`tests/research/test_research_consent.py`) fails if this document and the
+code module drift apart, and a second pin fails if any table in the research
+schema is not disclosed in the text below. Edit the code module FIRST.
+
+`CURRENT_CONSENT_VERSION` in `domain/constants.py` MUST match
 the version number in this document's title. If you edit this text in any
 way that changes what data is collected or how, increment
 `CURRENT_CONSENT_VERSION` — this triggers re-consent for existing users
@@ -22,7 +29,7 @@ way that changes what data is collected or how, increment
 
 ## Dialog Title
 
-> **Help Improve the Job Market — Optional Research Participation**
+> Help Improve the Job Market — Optional Research Participation
 
 ## Dialog Body
 
@@ -31,9 +38,9 @@ way that changes what data is collected or how, increment
 > dysfunction — things like ghost job postings, salary transparency law
 > violations, discriminatory language, and unrealistic job requirements.
 >
-> **This is completely optional and OFF by default.**
+> This is completely optional and OFF by default.
 >
-> ### What gets collected if you opt in:
+> What gets collected if you opt in:
 >
 > - Anonymized excerpts (max 200 characters) of job description text that
 >   triggered a detection pattern
@@ -41,30 +48,46 @@ way that changes what data is collected or how, increment
 >   reversed back to the employer's name
 > - Job posting metadata: posting date, platform, location, salary range
 >   (if disclosed), and job category
+> - How long postings stay visible and how often they are reposted, per
+>   platform (no posting URLs)
 > - Application form structure: number of fields, whether certain
 >   questions are present (e.g. "What is your current salary?"),
 >   accessibility compliance
 > - Whether your applications receive any acknowledgment within 30 days
+> - Which search providers and result-page hosts your sessions visited,
+>   what those result pages looked like (job titles shown, whether a page
+>   was a block or CAPTCHA page), and the link texts and destination hosts
+>   behind result links. Your search query and full result-page URLs are
+>   NOT recorded. Job titles and link texts are stored exactly as shown
+>   and may include employer names.
+> - Which detectors ran on each posting and how each concluded, so rates
+>   in published research have a trustworthy denominator
+> - A public verification key that lets recipients confirm exported rows
+>   came from an unmodified AutoApply (the private key never leaves your
+>   data folder)
 >
-> ### What is NEVER collected:
+> What is NEVER collected:
 >
 > - Your name, email, phone number, or any personal identifying information
 > - Your resume content or cover letters
 > - Your answers to application questions
 > - Login credentials (never stored or logged, with or without research)
 > - Full job description text (only short excerpts proving a detected pattern)
+> - Your search queries or full result-page URLs
 >
-> ### How your data is used:
+> How your data is used:
 >
 > Anonymized data may be aggregated with data from other AutoApply users
 > and published in academic research about hiring market dysfunction —
 > for example, studies on ghost job prevalence, pay transparency law
 > compliance, or discriminatory hiring patterns. Published results report
 > only aggregate statistics (e.g. "23% of postings in Sector X showed signs
-> of being ghost jobs") — never information that could identify you or any
-> specific employer by name.
+> of being ghost jobs") — never information that could identify you. Rows
+> that name an employer at all store the name only as an irreversible
+> anonymous code; job titles and link texts are recorded as displayed
+> (see above).
 >
-> ### Your rights:
+> Your rights:
 >
 > - You can withdraw consent at any time in Settings → Research
 > - Withdrawing consent immediately stops new data collection
@@ -74,28 +97,32 @@ way that changes what data is collected or how, increment
 > - You can export a copy of everything collected from your sessions before
 >   deleting it
 >
-> Full details: see `docs/ETHICS.md` in the AutoApply repository.
+> Note: research collection also needs a private research key on this
+> device (the AA_RESEARCH_SALT setting). If it is missing, research stays
+> off and AutoApply works normally — your choice is remembered and takes
+> effect once the key is present.
+>
+> Full details: see docs/ETHICS.md in the AutoApply repository.
 
 ## Buttons
 
-> [ I Agree — Enable Research Participation ]   [ Not Now ]
+> I Agree — Enable Research Participation
+> Not Now
 
 ## Re-Consent Prompt (shown when `needs_reconsent()` is True)
 
-> **AutoApply's Research Practices Have Been Updated**
+> AutoApply's Research Practices Have Been Updated
 >
 > You previously opted into research data collection (version
-> `{old_version}`). The data collection practices have changed since then —
+> {old_version}). The data collection practices have changed since then —
 > please review the updated terms before research collection resumes.
 >
-> [ View Changes ]   [ I Agree — Continue Participation ]   [ Withdraw Consent ]
-
-"View Changes" should link to the CHANGELOG.md entry corresponding to the
-version bump, which must describe in plain language what changed.
+> "View Changes" links to the CHANGELOG.md entry for the new version,
+> which describes in plain language what changed.
 
 ## Withdrawal Confirmation
 
-> **Withdraw Research Participation?**
+> Withdraw Research Participation?
 >
 > This will stop all future research data collection immediately.
 >
@@ -110,16 +137,16 @@ version bump, which must describe in plain language what changed.
 > kept, so AutoApply remembers that you withdrew.
 >
 > This cannot be undone.
->
-> [ Withdraw ]   [ Cancel ]
 
 ## Data Export Confirmation
 
 > **Export Your Research Contribution**
 >
-> This will create a file containing all anonymized data collected from
-> your AutoApply sessions. The file will be saved to your Downloads folder.
+> This will create a folder containing all anonymized data collected from
+> your AutoApply sessions — one file per research table, an index, and the
+> public verification key. It is saved under `reports/` in AutoApply's data
+> folder.
 >
-> Format: [ CSV ▾ ]  (options: CSV, JSON, Parquet)
+> Format: [ CSV ▾ ]  (options: CSV, NDJSON, Parquet)
 >
 > [ Export ]   [ Cancel ]

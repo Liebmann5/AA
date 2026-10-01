@@ -335,6 +335,12 @@ class ResearchSignalAggregator(ResearchObserverPort):
         self._running = False
         self._thread: threading.Thread | None = None
         self._enabled = consent_version is not None
+        # True once the database exists and its schema is in place. Reads of
+        # what was already written gate on THIS, not on _enabled: stop()
+        # clears _enabled so nothing new is accepted, but a stopped
+        # aggregator must still report what it wrote (session statistics are
+        # read after shutdown).
+        self._db_ready = False
 
         # ── Provenance — lazy‑init on first write ─────────────────────────
         self._signer: Any = None
@@ -382,6 +388,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 conn.executescript(_SCHEMA_SQL)
                 self._null_legacy_company_ids(conn)
                 self._null_phantom_company_ids(conn)
+            self._db_ready = True
             logger.info("ResearchSignalAggregator | DB initialized at %s", self._db_path)
         except Exception as exc:
             logger.error("ResearchSignalAggregator | DB init failed: %s", exc)
@@ -535,8 +542,20 @@ class ResearchSignalAggregator(ResearchObserverPort):
         logger.info("ResearchSignalAggregator | Started")
 
     def stop(self) -> None:
-        """Signal the daemon to stop and flush remaining items."""
+        """Signal the daemon to stop and flush remaining items.
+
+        Also marks the aggregator DISABLED: after stop(), the observe_* entry
+        points become no-ops instead of enqueueing into a queue no thread
+        will ever drain (a memory leak dressed as acceptance). A stopped
+        aggregator reports is_enabled=False and has no restart path — build
+        a new one. This is what makes "withdraw consent" and "session
+        shutdown" real: no later write can recreate the database or the
+        provenance key the purge removed. Reads are unaffected:
+        get_statistics_summary() still reports what was written (it gates on
+        _db_ready, not _enabled).
+        """
         self._running = False
+        self._enabled = False
         if self._thread and self._thread.is_alive():
             self._queue.put(None)  # Sentinel to unblock queue.get()
             self._thread.join(timeout=10.0)
@@ -1028,8 +1047,11 @@ class ResearchSignalAggregator(ResearchObserverPort):
         Returns:
             Dict with counts by signal type and severity, the examination
             denominator (item 5), and in-process accounting-failure counters.
+            Still answers after stop(): a stopped aggregator accepts nothing
+            new but reports what it wrote. Empty only when no database was
+            ever initialised.
         """
-        if not self._enabled:
+        if not self._db_ready:
             return {}
         try:
             with self._get_connection() as conn:

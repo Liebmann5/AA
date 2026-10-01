@@ -46,11 +46,18 @@ if TYPE_CHECKING:
     from auto_apply.application.agent.orchestrator import AgentOrchestrator
     #from auto_apply.application.agent.task_kernel import TaskKernel
     from auto_apply.domain.models.profile import UserProfile
+    from auto_apply.application.services.research_consent import ResearchConsentManager
     from auto_apply.application.services.session_controller import SessionController
     from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
 # Re-export so existing callers don't break.
-__all__ = ["CapabilitiesRegistry", "build_orchestrator", "build_session", "build_session_controller"]
+__all__ = [
+    "CapabilitiesRegistry",
+    "build_orchestrator",
+    "build_research_consent",
+    "build_session",
+    "build_session_controller",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +96,62 @@ def _warn_if_legacy_research_db() -> None:
     )
 
 
+def build_research_consent(
+    registry: CapabilitiesRegistry | None = None,
+) -> "ResearchConsentManager":
+    """Build the research-consent service — the one answer to "is research on?".
+
+    Two call sites:
+      * build_orchestrator / build_session_controller, which pass the session
+        registry so the offered flag and the admin policy come from the
+        enforced three-tier merge (PolicyEnforcement has already run inside
+        registry.build());
+      * the user surfaces (GUI settings, CLI) BEFORE any session exists,
+        which pass nothing — the offered flag is the runtime default and the
+        admin policy is read from disk directly.
+
+    The returned service records grant()/withdraw() in the consent database;
+    grants take effect at the next session build. A service a session was
+    built with also stops the running observer on withdrawal, and the
+    controller stops it at shutdown (FORK 3).
+
+    Args:
+        registry: The session registry, or None for pre-session use.
+    """
+    from auto_apply.adapters.secondary.research.sqlite_consent_repository import (  # noqa: PLC0415
+        SqliteConsentRepository,
+    )
+    from auto_apply.application.services.research_consent import (  # noqa: PLC0415
+        ResearchConsentManager,
+    )
+
+    if registry is not None:
+        is_offered = bool(registry.is_research_offered())
+        policy = registry.get_admin_policy()
+    else:
+        from auto_apply.adapters.secondary.persistence.policy_manager import (  # noqa: PLC0415
+            PolicyManager,
+        )
+        from auto_apply.infrastructure.registry import _RUNTIME_DEFAULTS  # noqa: PLC0415
+
+        is_offered = bool(_RUNTIME_DEFAULTS.get("enable_research_collection", True))
+        policy = PolicyManager.load_admin_policy()
+
+    repo = SqliteConsentRepository(
+        consent_db_path=USER_DATA_DIR / "research_consent.db",
+        research_db_path=RESEARCH_DB_PATH,
+        provenance_key_path=PROVENANCE_KEY_PATH,
+    )
+    return ResearchConsentManager(
+        repo,
+        is_offered=is_offered,
+        # `is True`, deliberately: the policy field is tri-state and only an
+        # explicit True prohibits. It also keeps MagicMock-built registries
+        # (tests) from reading as prohibitions.
+        admin_prohibited=getattr(policy, "disable_research_collection", None) is True,
+    )
+
+
 # --------------------------------------------------------------------------
 # MAIN WIRING FUNCTION
 # --------------------------------------------------------------------------
@@ -96,6 +159,7 @@ def _warn_if_legacy_research_db() -> None:
 def build_orchestrator(  # noqa: PLR0914
     registry: CapabilitiesRegistry,
     driver: "BrowserInterface | None" = ...,  # type: ignore[assignment]
+    research_consent: "ResearchConsentManager | None" = None,
 ) -> "AgentOrchestrator":
     """Assembles and returns a fully wired AgentOrchestrator.
 
@@ -120,6 +184,12 @@ def build_orchestrator(  # noqa: PLR0914
         driver: Pre-acquired browser driver. Pass ``None`` to skip the cascade
             entirely (construction-only callers and tests — no perception or
             interaction adapters are built then). Omit to run the cascade.
+        research_consent: The session's consent service, built by the caller
+            via :func:`build_research_consent` so the SAME instance can be
+            injected into the SessionController (mid-session withdrawal and
+            shutdown reach the running observer through it). None builds an
+            internal one — fine for construction-only callers, but nothing
+            outside this function can then stop the observer.
 
     Ownership:
         The returned orchestrator owns the acquired driver's lifetime from
@@ -501,10 +571,18 @@ def build_orchestrator(  # noqa: PLR0914
         from auto_apply.domain.ports.page_understanding_port import NullPageUnderstandingAdapter
         page_understanding_port = NullPageUnderstandingAdapter()
 
-    # ── Research observer (consent-gated) ─────────────────────────────────────
-    # Built BEFORE the discovery providers so it can be injected into them:
+    # ── Research consent + observer ───────────────────────────────────────────
+    # The consent service is built ALWAYS — it is the one answer to "is
+    # research on?", for this build and (via the controller) for the user
+    # surfaces. Only the AGGREGATOR is conditional, on
+    # consent_service.should_collect(): consent granted and current, research
+    # offered, no admin prohibition, and a salt available (FORK 1). Built
+    # BEFORE the discovery providers so it can be injected into them:
     # providers hand it to the fast extractor and the SERP strategy, which
     # emit discovery-surface observations (§4b).
+    from auto_apply.domain.ports.research_consent_port import (  # noqa: PLC0415
+        ResearchConsentState,
+    )
     from auto_apply.domain.ports.research_port import (  # noqa: PLC0415
         NullResearchObserver,
         ResearchObserverPort,
@@ -512,7 +590,14 @@ def build_orchestrator(  # noqa: PLR0914
 
     research_observer: ResearchObserverPort = NullResearchObserver()
 
-    if registry.is_research_enabled():
+    consent_service = (
+        research_consent
+        if research_consent is not None
+        else build_research_consent(registry)
+    )
+    _warn_if_legacy_research_db()
+
+    if consent_service.should_collect():
         # Imported BEFORE the try so the `except ResearchSaltError` clause below
         # can never evaluate an unbound name: an early failure inside the try
         # would otherwise raise NameError from the handler itself.
@@ -521,57 +606,56 @@ def build_orchestrator(  # noqa: PLR0914
         )
 
         try:
-            from auto_apply.adapters.secondary.research.sqlite_consent_repository import (  # noqa: PLC0415
-                SqliteConsentRepository,
+            from auto_apply.adapters.secondary.research.signal_aggregator import (  # noqa: PLC0415
+                ResearchSignalAggregator,
             )
-            from auto_apply.application.services.research_consent import (  # noqa: PLC0415
-                ResearchConsentManager,
-            )
-
-            _consent_db = USER_DATA_DIR / "research_consent.db"
-            _signals_db = RESEARCH_DB_PATH
-            _warn_if_legacy_research_db()
-
-            _consent_repo = SqliteConsentRepository(
-                consent_db_path=_consent_db,
-                research_db_path=_signals_db,
+            _aggregator = ResearchSignalAggregator(
+                db_path=RESEARCH_DB_PATH,
+                consent_version=consent_service.consent_version,
                 provenance_key_path=PROVENANCE_KEY_PATH,
             )
-            _consent_mgr = ResearchConsentManager(_consent_repo)
-
-            if _consent_mgr.is_active():
-                from auto_apply.adapters.secondary.research.signal_aggregator import (  # noqa: PLC0415
-                    ResearchSignalAggregator,
-                )
-                _aggregator = ResearchSignalAggregator(
-                    db_path=_signals_db,
-                    consent_version=_consent_mgr.consent_version,
-                    provenance_key_path=PROVENANCE_KEY_PATH,
-                )
-                _aggregator.start()
-                research_observer = _aggregator
-                logger.info(
-                    "Research pipeline active (consent granted, version=%s)",
-                    _consent_mgr.consent_version,
-                )
-            else:
-                logger.info("Research disabled: consent not granted by user")
-        except ResearchSaltError:
-            # NOT swallowed. Every other research-init failure degrades to
-            # NullResearchObserver, which is right: a broken research database
-            # should not stop someone applying for jobs. A missing salt is
-            # different. The operator granted research consent, so rows WILL be
-            # written; without a salt the retired code wrote them under a
-            # literal published in this source tree, which is not
-            # anonymisation. The remedy is one environment variable, and a
-            # warning here reaches a log a GUI user never opens — so the
-            # session refuses to start, the way it already refuses when no
-            # browser is available.
-            raise
+            _aggregator.start()
+            # Registered BEFORE any workflow can observe: this registration is
+            # the channel that lets a mid-session withdrawal — and session
+            # shutdown — stop the running aggregator (FORK 3).
+            consent_service.register_observer(_aggregator)
+            research_observer = _aggregator
+            logger.info(
+                "Research pipeline active (consent granted, version=%s)",
+                consent_service.consent_version,
+            )
+        except ResearchSaltError as _exc:
+            # A granted consent must never stop AA from starting (FORK 4 —
+            # Option A, ruled 2026-10-01). should_collect() already checked
+            # the salt; this catch covers a salt that vanished between the
+            # check and the constructor. Research stays OFF, loudly, and the
+            # session continues. Rows are never written without a private
+            # salt because no aggregator exists to write them.
+            logger.error(
+                "build_orchestrator: research consent is granted but the "
+                "research salt is unavailable (%s) — research is OFF for "
+                "this session. The session is not affected.",
+                _exc,
+            )
         except Exception as _exc:
             logger.warning(
                 "Research observer failed to initialize — using NullResearchObserver: %s",
                 _exc,
+            )
+    else:
+        _consent_status = consent_service.status()
+        if _consent_status.state is ResearchConsentState.INACTIVE:
+            # The user granted consent and expects collection — say plainly
+            # why it is not happening (the surfaces show the same reason via
+            # status()).
+            logger.warning(
+                "Research consent granted but collection is inactive | reason=%s",
+                _consent_status.reason.value,
+            )
+        else:
+            logger.info(
+                "Research collection not active | state=%s",
+                _consent_status.state.value,
             )
 
     # ── 4. Discovery providers ────────────────────────────────────────────────
@@ -740,7 +824,11 @@ def build_orchestrator(  # noqa: PLR0914
         browser_lease = BrowserLeaseManager(driver, max_concurrent=_MAX_LEASES_PER_SHARED_DRIVER)
 
     # ── 5. Capability profile — gates task types based on driver availability ──
-    _capability_profile = registry.build_capability_profile(driver is not None)
+    _capability_profile = registry.build_capability_profile(
+        driver is not None,
+        research_consent=consent_service.is_active(),
+        research_signals_active=research_observer.is_enabled,
+    )
     db_manager.set_capability_profile(_capability_profile)
     logger.info(
         "Capability profile active | mode=%s browser=%s workers=%d",
@@ -1144,8 +1232,14 @@ def build_session_controller(
     # 1. Build authoritative configuration
     registry = CapabilitiesRegistry.build(user_profile=profile)
 
-    # 2. Build the fully wired orchestrator
-    orchestrator = build_orchestrator(registry)
+    # 2. Build the research-consent service, then the fully wired orchestrator.
+    # The consent service comes first so the session's research observer can
+    # register with it; the SAME instance is injected into the controller
+    # below, so a mid-session withdrawal and shutdown both reach the running
+    # observer (FORK 3). The pre-session surfaces use the same builder with
+    # no registry.
+    research_consent = build_research_consent(registry)
+    orchestrator = build_orchestrator(registry, research_consent=research_consent)
 
     # 3. Assemble the controller (all deps injected). If assembly fails after
     # the orchestrator exists, its browser has no owner yet — release it here
@@ -1156,6 +1250,7 @@ def build_session_controller(
             db=orchestrator.task_queue,      # DatabaseManager implements WorkQueuePort
             orchestrator=orchestrator,
             profile_repo=profile_repo,
+            research_consent=research_consent,
         )
     except Exception:
         orchestrator.shutdown()

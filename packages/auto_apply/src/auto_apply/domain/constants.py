@@ -118,4 +118,4 @@ EVENT_RESEARCH_SIGNAL_DETECTED: str = "RESEARCH_SIGNAL_DETECTED"
 # ── Research Consent ───────────────────────────────────────────────────────────
 # Current consent dialog version. Increment whenever the data collection
 # practices documented in docs/ETHICS.md change. Stored with every signal.
-CURRENT_CONSENT_VERSION: str = "2.1"
+CURRENT_CONSENT_VERSION: str = "2.2"

@@ -109,8 +109,16 @@ def test_aggregator_disabled_when_consent_is_none(tmp_path):
     assert not agg.is_enabled
 
 
-def test_aggregator_disabled_when_consent_withdrawn():
-    """After withdrawing consent, aggregator is not active."""
+def test_consent_manager_reports_inactive_after_withdrawal():
+    """After withdrawing consent, the consent MANAGER reports inactive.
+
+    Renamed from test_aggregator_disabled_when_consent_withdrawn (2026-10-01):
+    the old name claimed a fact about a running aggregator but only ever
+    exercised the manager — no aggregator was constructed. The aggregator
+    claim is now tested for real in tests/research/test_research_consent.py
+    (withdrawal stops a running aggregator; shutdown stops and flushes it),
+    so the rename is honest labelling, not a weakening.
+    """
     repo = InMemoryConsentRepository()
     mgr = ResearchConsentManager(repo)
     mgr.grant_consent()

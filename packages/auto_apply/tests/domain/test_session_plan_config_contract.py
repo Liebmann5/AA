@@ -26,9 +26,12 @@ and AA runs headless anyway. A headless browser cannot show a CAPTCHA, an MFA
 prompt, or a submission confirmation to a human — so this silently disables the
 visible half of HITL on the exact worst-case machines AA exists to serve.
 
-``config["session"]`` and ``config["research"]`` do not exist in the YAML at
-all, so ``execution_mode`` can only ever be FULL_PIPELINE and research can only
-ever be off, regardless of what any user or admin writes.
+``config["session"]`` does not exist in the YAML at all, so ``execution_mode``
+can only ever be FULL_PIPELINE regardless of what any user or admin writes.
+(The research half of the old claim died 2026-10-01: the flat
+``enable_research_collection`` flag does reach the plan, and now means
+"research is OFFERED" — collection itself is gated by the consent record, not
+by config, so research can no longer be described as "only ever off".)
 
 README.md claims: "All configuration layers are merged at startup; no
 hard-coded defaults can override the YAML." That is precisely inverted.

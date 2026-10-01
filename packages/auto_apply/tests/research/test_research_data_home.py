@@ -175,22 +175,47 @@ def test_composition_root_and_main_consume_the_one_name():
     """GUARD (M1, binding): both consumers reference the config constant —
     checked on the AST, not on substrings.
 
-    RED today: composition_root binds _signals_db to a USER_DATA_DIR BinOp
-    and main passes a RESEARCH_DIR BinOp to ResearchExporter.
+    composition_root must hand RESEARCH_DB_PATH itself to the collector
+    (ResearchSignalAggregator db_path=) AND to the consent repository that
+    purges it (SqliteConsentRepository research_db_path=); main.py must hand
+    it to ResearchExporter. Fails if any of the three sites goes back to
+    building the path itself (a BinOp such as USER_DATA_DIR / "...").
+
+    RED on d53e5cb: composition_root built the path from USER_DATA_DIR and
+    main passed a RESEARCH_DIR BinOp to ResearchExporter. (Revised
+    2026-10-01: the consent-backend change passes the constant directly
+    instead of through a _signals_db variable; the invariant is unchanged.)
     """
     import auto_apply.infrastructure.composition_root as composition_root
     import auto_apply.main as main_module
 
-    cr_tree = ast.parse(inspect.getsource(composition_root))
-    assert any(
-        isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "_signals_db" for t in node.targets
+    def _passes_constant(tree: ast.AST, callee: str, keyword: str) -> bool:
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == callee
+        ]
+        return bool(calls) and all(
+            any(
+                kw.arg == keyword
+                and isinstance(kw.value, ast.Name)
+                and kw.value.id == "RESEARCH_DB_PATH"
+                for kw in call.keywords
+            )
+            for call in calls
         )
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "RESEARCH_DB_PATH"
-        for node in ast.walk(cr_tree)
-    ), "composition_root must bind _signals_db from RESEARCH_DB_PATH"
+
+    cr_tree = ast.parse(inspect.getsource(composition_root))
+    assert _passes_constant(cr_tree, "ResearchSignalAggregator", "db_path"), (
+        "composition_root must pass RESEARCH_DB_PATH to every "
+        "ResearchSignalAggregator(db_path=...)"
+    )
+    assert _passes_constant(cr_tree, "SqliteConsentRepository", "research_db_path"), (
+        "composition_root must pass RESEARCH_DB_PATH to every "
+        "SqliteConsentRepository(research_db_path=...)"
+    )
 
     main_tree = ast.parse(inspect.getsource(main_module))
     assert any(

@@ -134,7 +134,7 @@ from datetime import datetime, timezone
 from enum import Enum, auto
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from auto_apply.application.agent.orchestrator import AgentOrchestrator
 from auto_apply.application.agent.state_machine import AgentState
@@ -170,6 +170,9 @@ from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 from auto_apply.domain.ports.registry_port import RegistryPort
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
+
+if TYPE_CHECKING:
+    from auto_apply.application.services.research_consent import ResearchConsentManager
 
 logger = logging.getLogger(__name__)
 
@@ -418,6 +421,11 @@ class SessionController:
         9. Autonomy state read/write (E1): autonomy() answers whether THIS
            session submits without asking (frozen at composition);
            set_autonomy() writes the profile for FUTURE sessions.
+        10. Research consent (2026-10-01): the session's consent service is
+           injected and exposed as research_consent — the same instance the
+           session's research observer registered with, so a mid-session
+           withdrawal stops collection immediately. shutdown() stops the
+           observer (flushing its queue) whether or not a run is active.
 
     The controller is stateful — one instance per session. When the session
     ends, call shutdown() — it releases the browser whether or not a run is
@@ -436,6 +444,7 @@ class SessionController:
         db: WorkQueuePort,
         orchestrator: AgentOrchestrator,
         profile_repo: ProfileRepositoryPort | None = None,
+        research_consent: "ResearchConsentManager | None" = None,
     ) -> None:
         """Stores pre-built dependencies and starts the event-fed projections.
 
@@ -449,11 +458,17 @@ class SessionController:
             profile_repo: Optional ProfileRepositoryPort for custody operations
                 (export_profile) and the autonomy write (set_autonomy). When
                 None, both raise a clear error rather than guessing.
+            research_consent: The session's consent service, built by
+                composition_root. The session's research observer (if any) is
+                registered with it, so withdrawal and shutdown stop
+                collection. None only for tests and legacy construction —
+                shutdown then has no observer to stop.
         """
         self.registry = registry
         self.db = db
         self.orchestrator = orchestrator
         self._profile_repo = profile_repo
+        self._research_consent = research_consent
         self._agent_thread: threading.Thread | None = None
         # HITL: maps context_id → (gate_event, chosen_value_holder, payload).
         self._pending_approvals: dict[
@@ -1322,14 +1337,29 @@ class SessionController:
         finally calls this) and widens the window in which a second Ctrl+C
         aborts it.
 
+        It also stops the session's research observer (if any), after the
+        agent thread is asked to halt and before the browser is released:
+        the observer's stop() flushes its queued items — signals die with
+        the daemon thread without this (M4's second half) — and marks it
+        disabled, so a wedged workflow observing late hits a no-op.
+
         Safe to call whether or not start() was ever called, and safe to
-        call more than once.
+        call more than once (stop_collection is idempotent too).
         """
         try:
             if not self._stop_requested:
                 self.stop()
         finally:
-            self.orchestrator.shutdown()
+            try:
+                consent = self._research_consent
+                if consent is not None:
+                    consent.stop_collection()
+            except Exception as exc:  # noqa: BLE001 — shutdown must not fail
+                logger.warning(
+                    "SessionController: research observer stop failed | %s", exc
+                )
+            finally:
+                self.orchestrator.shutdown()
 
     def pause(self) -> None:
         """Pauses the orchestrator without killing the browser session."""
@@ -1599,6 +1629,19 @@ class SessionController:
         if self._agent_thread is None:
             return False
         return self._agent_thread.is_alive()
+
+    @property
+    def research_consent(self) -> "ResearchConsentManager | None":
+        """The session's research-consent service — the consent interface.
+
+        Surfaces call this for status()/consent_dialog()/grant()/withdraw()
+        DURING a session: it is the same instance the session's research
+        observer registered with, so withdraw() here stops collection
+        immediately. Before any session exists, surfaces build their own via
+        composition_root.build_research_consent(). None only when this
+        controller was built without one (tests, legacy construction).
+        """
+        return self._research_consent
 
     def get_queue_stats(self) -> dict[str, int]:
         """Returns work queue status counts from the database.

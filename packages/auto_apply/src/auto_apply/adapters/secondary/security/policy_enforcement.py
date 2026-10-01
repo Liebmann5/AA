@@ -210,11 +210,15 @@ class PolicyEnforcement:
             logger.warning("PolicyEnforcement: %s", msg)
 
     def _enforce_research_prohibition(self) -> None:
-        """Disables research collection if the admin policy prohibits it.
+        """Marks research as NOT OFFERED if the admin policy prohibits it.
 
-        This overrides the user's opt-in consent. The user is not shown
-        an error — research is simply silently disabled. The session report
-        notes that research was admin-prohibited.
+        This overrides any user consent, always (ruled FORK 1, 2026-10-01):
+        the flag this method flips is what the consent service reads as
+        "offered", and the service additionally receives admin_prohibited so
+        its status can say "disabled by your device administrator" rather
+        than merely "unavailable". The user is not shown an error — the
+        consent interface reports research as administrator-disabled, and
+        no aggregator is ever constructed.
 
         This is the correct behavior for enterprise environments where
         data collection policies apply regardless of individual preference.
@@ -224,7 +228,7 @@ class PolicyEnforcement:
 
         if self._registry.get_effective_config("enable_research_collection", False):
             self._registry.apply_config_override("enable_research_collection", False)
-            msg = "research collection disabled by admin policy (overrides user opt-in)"
+            msg = "research disabled by admin policy: not offered (overrides any consent)"
             self._violations.append(msg)
             logger.warning("PolicyEnforcement: %s", msg)
 

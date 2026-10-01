@@ -66,7 +66,12 @@ opt‑in toggle in the user interface is locked and the user cannot enable it.
 The research module **never** records:
 
 - Job URLs (which could identify a user’s browsing pattern)
-- Company names (which could identify geography or industry preference)
+- Your search queries and full result-page URLs
+
+One honest qualification: in **signal** rows, employer names exist only as an
+irreversible anonymous code. But job titles and link texts on result pages
+are recorded exactly as displayed (see “What Is Collected”), and those may
+include employer names. If that is more than you want recorded, do not opt in.
 - User names, emails, resume details, or any profile data
 - IP addresses or network information
 - Timestamps at a granularity that could correlate to a specific user
@@ -189,9 +194,10 @@ Full schema details are in [Data Format](data_format.md).
   share it.
 - The data contains **no personally identifiable information** — not your
   name, email, IP address, or specific job URLs.
-- Company names are **never recorded** — only ATS platform types
-  (`"greenhouse"`, `"lever"`, etc.) which are extracted from URL domains
-  and immediately discarded.
+- In signal rows, company names are stored only as an irreversible anonymous
+  code (HMAC with a private per-installation salt). Job titles and link texts
+  from result pages are stored as displayed and may name employers — the
+  consent dialog says so explicitly, in the list of what IS collected.
 - The **session ID** is a random UUID that changes every session. It cannot
   be linked to your identity across sessions.
 - You can **delete all research data** at any time via the Settings menu or
@@ -213,20 +219,32 @@ Full schema details are in [Data Format](data_format.md).
 
 === "GUI"
 
-    1. Open **Settings** → **Safety & Throttling**.
-    2. Check or uncheck **“Contribute Anonymized Research Data.”**
-    3. Click **Save Changes**.
+    *(The Research screen arrives with the GUI/CLI consent change that
+    follows the consent backend; until then there is no GUI control.)*
 
-    The setting takes effect on the next session.
+    1. Open **Settings** → **Research**.
+    2. Read the consent dialog and choose **“I Agree — Enable Research
+       Participation.”**
+
+    The decision is recorded in AA's consent database (not in your profile)
+    and collection starts on your next session. Withdraw from the same
+    screen at any time — withdrawal stops collection immediately, and you
+    can delete everything collected so far in the same step.
 
 === "CLI"
 
-    Edit your profile JSON directly:
-    ```json
-    "app_config": {
-        "enable_research_collection": true
-    }
-    ```
+    *(The research-consent command arrives with the GUI/CLI consent change
+    that follows the consent backend; until then there is no CLI command.)*
+
+    Use the research-consent command, which calls the same consent interface
+    as the GUI (`composition_root.build_research_consent()`), shows the same
+    dialog text, and records the same versioned decision. Collection starts
+    on your next session.
+
+    Editing the profile JSON does **not** enable research:
+    `app_config.enable_research_collection` is not read for consent (the
+    templates no longer carry it), and the `enable_research_collection`
+    config flag only controls whether research is *offered* at all.
 
 === "Admin Policy"
 
