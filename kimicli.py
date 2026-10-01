@@ -369,6 +369,7 @@ class Session:
         # different cache bucket, and the prefix you already paid for misses.
         self.cache_key: Optional[str] = None
         self.printed_stage_summary = False
+        self.load_error: Optional[str] = None
         self._load()
 
     # -- persistence -------------------------------------------------
@@ -382,7 +383,24 @@ class Session:
                 u = blob.get("usage", {})
                 self.usage = Usage(**{k: u.get(k, 0) for k in ("prompt", "cached", "completion", "calls")})
             except Exception as exc:
+                # Recorded, not just logged: resuming a session that failed to
+                # load would send the new prompt with NO codebase and NO history.
+                self.load_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("could not reload session state: %s", exc)
+
+    @staticmethod
+    def has_turns(d: Path) -> bool:
+        """True when the directory holds a session that completed at least one
+        call. --estimate-only, a declined preflight or a call that failed
+        before streaming used to leave an empty directory that 'last' then
+        picked over the real session."""
+        p = d / "messages.json"
+        if not p.is_file():
+            return False
+        try:
+            return int(json.loads(read_text(p)).get("turn", 0)) >= 1
+        except (ValueError, TypeError, AttributeError, OSError):
+            return False
 
     def save(self) -> None:
         blob = {
@@ -483,7 +501,7 @@ class Session:
                 out.append(int(m.group(1)))
         return sorted(out)
 
-    def ledger_entry(self, u: Dict[str, Any], effort: str, note: str = "") -> None:
+    def ledger_entry(self, u: Dict[str, Any], effort: str, note: str = "", estimated: bool = False) -> None:
         cached = u.get("cached_tokens") or (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
         row = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -496,18 +514,25 @@ class Session:
             "cost_usd": round(cost_of(u.get("prompt_tokens", 0), cached, u.get("completion_tokens", 0)), 5),
             "note": note,
         }
+        if estimated:
+            row["estimated"] = True
         LEDGER.parent.mkdir(parents=True, exist_ok=True)
         with open(LEDGER, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
 
 
 def resolve_session(token: str) -> Optional[Session]:
-    """'last' -> newest session; otherwise an explicit id."""
+    """'last' -> newest session that completed a call; otherwise an explicit id."""
     if token == "last":
         if not OUT_DIR.exists():
             return None
-        dirs = sorted((d for d in OUT_DIR.iterdir() if d.is_dir()), key=lambda d: d.name)
-        return Session(dirs[-1].name) if dirs else None
+        # Newest first, stopping at the first real one: messages.json carries
+        # the whole dump, so reading every session's would be slow.
+        for d in sorted((d for d in OUT_DIR.iterdir() if d.is_dir()),
+                        key=lambda d: d.name, reverse=True):
+            if Session.has_turns(d):
+                return Session(d.name)
+        return None
     if not re.match(r"^[A-Za-z0-9_.-]+$", token):
         return None
     return Session(token) if (OUT_DIR / token).is_dir() else None
@@ -617,9 +642,12 @@ class ParseResult:
         return [p for p in self.problems if p.severity != "error"]
 
 
+# The up-front file list. Bullets, numbers, and markdown TABLE rows
+# ("| `pkg/x.py` | EDIT | why |") - a table used to match nothing, so an
+# announced-but-never-emitted file in a table went unreported.
 ANNOUNCE_RE = re.compile(
-    r"^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*[`*]*(?P<path>[\w.@+-]+(?:[/\\][\w.@+-]+)*\.[A-Za-z0-9_]{1,10})[`*]*"
-    r"[ \t]*(?:[-\u2013\u2014:|>]|\u2192)+[ \t]*[`*]*(?P<kind>EDIT|FILE)\b", re.I)
+    r"^[ \t]*(?:[-*+|]|\d+[.)])?[ \t]*[`*]*(?P<path>[\w.@+-]+(?:[/\\][\w.@+-]+)*\.[A-Za-z0-9_]{1,10})[`*]*"
+    r"[ \t]*(?:[-\u2013\u2014:|>(\[]|\u2192)+[ \t]*[`*]*(?P<kind>EDIT|FILE)\b", re.I)
 
 
 def _join_lines(lines: List[str]) -> str:
@@ -2535,15 +2563,34 @@ def codebase_versions(messages: List[Dict[str, Any]], root: Path) -> Dict[str, s
     return {}
 
 
-def attachment_versions(messages: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-    """basename (casefolded) -> texts of attachments with that name."""
+def attachment_versions(messages: List[Dict[str, Any]], root: Optional[Path] = None) -> Dict[str, List[str]]:
+    """Normalised, casefolded repo path -> texts of attachments announced
+    under it. Attachments are announced by repo-relative path (_attach_label);
+    one from outside the root, or from a session made before that change, is
+    announced by bare basename and is keyed by that basename."""
     out: Dict[str, List[str]] = {}
     for m in messages:
         c = m.get("content")
         if m.get("role") != "user" or not isinstance(c, str) or "<attachment" not in c:
             continue
         for a in re.finditer(r'<attachment name="([^"]+)">\n(.*?)\n</attachment>', c, re.S):
-            out.setdefault(a.group(1).casefold(), []).append(a.group(2))
+            try:
+                key = normalize_rel(a.group(1), root or PROJECT_ROOT).casefold()
+            except PathRefused:
+                key = a.group(1).strip().casefold()
+            out.setdefault(key, []).append(a.group(2))
+    return out
+
+
+def attached_bases(attach: Dict[str, List[str]], key: str) -> List[str]:
+    """Texts the model was shown for the file at `key`: attachments announced
+    under its full path, plus any announced under its bare basename. Keying
+    the lookup by basename alone (as before) never matched a path-labelled
+    attachment, so the STALE BASE guard never saw what Kimi was shown."""
+    out = list(attach.get(key, []))
+    base = key.rsplit("/", 1)[-1]
+    if base != key:
+        out += attach.get(base, [])
     return out
 
 
@@ -2583,7 +2630,7 @@ def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optiona
         repairs = int(mt.group(1)) if mt else None
 
     dump = codebase_versions(session.messages, PROJECT_ROOT)
-    attach = attachment_versions(session.messages)
+    attach = attachment_versions(session.messages, PROJECT_ROOT)
     earlier: Dict[str, List[str]] = {}             # key -> earlier FILE texts in this session
     for row in session.rows():
         if row.get("kind", "file") == "file" and row.get("turn", 0) < turn:
@@ -2603,7 +2650,7 @@ def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optiona
                 bases = []
                 if g.key in dump:
                     bases.append(dump[g.key])
-                bases += attach.get(rel.rsplit("/", 1)[-1].casefold(), [])
+                bases += attached_bases(attach, g.key)
                 bases += earlier.get(g.key, [])
                 prop.known_bases = bases
         except PathRefused:
@@ -2614,12 +2661,21 @@ def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optiona
                     ApplyOptions(allow_new_files=True, allow_new_dirs=True))
     plans = trial.validate(proposals) if proposals else []
 
+    # A row is keyed by the file the block RESOLVED to, not the path the model
+    # wrote. Otherwise an EDIT sent to a wrong directory (re-pointed by unique
+    # basename) and its re-emission at the right path in a later turn are two
+    # different "files": both survive "latest emission per file", and the
+    # apply is refused as the same file changed twice in one batch.
+    resolved: Dict[str, str] = {}
+    for g, pl in zip(groups, plans):
+        resolved[g.key] = pl.rel.casefold() if pl.rel else g.key
+
     rows = []
     for g, prop, pl in zip(groups, proposals, plans):
         staged = (session.stage_edits(g.raw_path, g.edits, turn) if g.kind == "edit"
                   else session.stage(g.raw_path, g.content or "", turn))
         rows.append({
-            "turn": turn, "kind": g.kind, "path": g.raw_path, "key": g.key,
+            "turn": turn, "kind": g.kind, "path": g.raw_path, "key": resolved[g.key],
             "blocks": len(g.edits) if g.kind == "edit" else 1,
             "staged": staged.relative_to(session.dir).as_posix(),
             "sha256": sha256_bytes(staged.read_bytes()),
@@ -2637,7 +2693,7 @@ def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optiona
         "end_marker": pr.end_marker, "blocks": len(pr.blocks), "files": len(groups),
         "blocks_after_end": pr.blocks_after_end,
         "problems": [{"line": p.line, "message": p.message, "severity": p.severity,
-                      "key": _key_or_none(p.path)} for p in all_parse],
+                      "key": _resolved_key(p.path, resolved)} for p in all_parse],
     })
 
     summary = StageSummary(turn=turn, parse=pr, group_problems=gprobs, plans=plans)
@@ -2660,6 +2716,11 @@ def _key_or_none(path: Optional[str]) -> Optional[str]:
         return normalize_rel(path, PROJECT_ROOT).casefold()
     except PathRefused:
         return path.strip().casefold()
+
+
+def _resolved_key(path: Optional[str], resolved: Dict[str, str]) -> Optional[str]:
+    k = _key_or_none(path)
+    return resolved.get(k, k) if k else None
 
 
 def _rel_display(p: Path) -> str:
@@ -2755,7 +2816,8 @@ def load_session_proposals(session: "Session", turns: Optional[Sequence[int]] = 
     for r in rows:
         k = r.get("key") or _key_or_none(r["path"]) or r["path"]
         r["key"] = k
-        if k in skip_keys:
+        # --skip names either the real file or the path the model wrote.
+        if k in skip_keys or _key_or_none(r["path"]) in skip_keys:
             continue
         if k not in chosen:
             order.append(k)
@@ -2807,11 +2869,11 @@ def load_session_proposals(session: "Session", turns: Optional[Sequence[int]] = 
             prop.content = art                     # type: ignore[assignment]
             if dump is None:
                 dump = codebase_versions(session.messages, PROJECT_ROOT)
-                attach = attachment_versions(session.messages)
+                attach = attachment_versions(session.messages, PROJECT_ROOT)
             bases = []
             if k in dump:
                 bases.append(dump[k])
-            bases += (attach or {}).get(k.rsplit("/", 1)[-1], [])
+            bases += attached_bases(attach or {}, k)
             for er in session.rows():
                 ek = er.get("key") or _key_or_none(er["path"])
                 if ek == k and er.get("kind", "file") == "file" and int(er.get("turn", 0)) < int(r.get("turn", 0)):
@@ -3095,10 +3157,110 @@ class Context:
     messages: List[Dict[str, Any]]
     parts: List[Tuple[str, int]]
     cache_key: str
+    errors: List[str] = field(default_factory=list)   # any entry means: do not send
 
     @property
     def total_tokens(self) -> int:
         return sum(t for _, t in self.parts)
+
+
+def est_messages(messages: List[Dict[str, Any]]) -> int:
+    """Local estimate for a whole conversation, INCLUDING reasoning_content:
+    K3 uses Preserved Thinking, so every earlier turn's reasoning is sent back
+    on a resume and counts against the window."""
+    return sum(est_tokens(str(m.get("content") or "")) + est_tokens(str(m.get("reasoning_content") or ""))
+               for m in messages)
+
+
+def resolve_prompt_arg(raw: str) -> Tuple[str, Optional[Path], Optional[str]]:
+    """--prompt is text OR a path. Returns (text, file_it_came_from, error).
+
+    A path that does not resolve used to be sent as the literal prompt - Kimi
+    received a file name and no task ($2.48, 2026-09-15). Anything that is a
+    single token shaped like a path is refused instead: a real prompt has
+    spaces in it, and a one-word one ("continue") is not path-shaped."""
+    p = Path(raw).expanduser()
+    try:
+        is_file = p.is_file()
+    except (OSError, ValueError):          # a long literal prompt is not a valid path on Windows
+        is_file = False
+    if is_file:
+        return read_text(p), p, None
+    s = raw.strip()
+    if s and not re.search(r"\s", s) and ("/" in s or "\\" in s or PATHLIKE_RE.match(s)):
+        return "", None, (f"--prompt '{raw}' looks like a file path, but no such file exists "
+                          f"(looked in {Path.cwd()}). It would be sent as the literal prompt text. "
+                          f"Run from the folder it is in, or give its full path.")
+    return raw, None, None
+
+
+def compose_user_message(args: argparse.Namespace) -> Tuple[str, List[Tuple[str, int]], List[str]]:
+    """The new user message: attachments, then playbook + prompt + contract.
+    Used by fresh calls AND --resume, so a flag can never work on one and be
+    silently ignored on the other (--attach on --resume once never reached
+    the model). Returns (text, preflight parts, errors). Any error means the
+    request must not be sent: every one of these used to proceed to a billed
+    call with part of the request missing."""
+    errors: List[str] = []
+    parts: List[Tuple[str, int]] = []
+    chunks: List[str] = []
+    seen_attach: set = set()
+    for spec in (getattr(args, "attach", None) or []):
+        p = Path(spec).expanduser()
+        if not p.exists():
+            errors.append(f"--attach {spec}: not found (looked in {Path.cwd()})")
+            continue
+        if not p.is_file():
+            errors.append(f"--attach {spec}: is a folder, not a file - attach the files one by one")
+            continue
+        body = read_text(p)
+        digest = sha256(body)
+        if digest in seen_attach:
+            logger.warning("skipping duplicate attachment: %s", p.name)
+            continue
+        seen_attach.add(digest)
+        chunks.append(f"<attachment name=\"{_attach_label(p)}\">\n{body}\n</attachment>")
+        parts.append((f"attach {p.name}", est_tokens(body)))
+
+    prompt_text = ""
+    if getattr(args, "playbook", None):
+        pb = load_playbook(Path(args.playbook_file), args.playbook)
+        if pb:
+            prompt_text = pb
+            unfilled = re.findall(r"<[a-z][^>]{2,40}>", pb)
+            if unfilled:
+                logger.warning("playbook %s still has placeholders: %s",
+                               args.playbook, ", ".join(sorted(set(unfilled))[:5]))
+        else:
+            errors.append(f"--playbook {args.playbook}: section not found in {args.playbook_file}")
+
+    if getattr(args, "prompt", None):
+        extra, src, err = resolve_prompt_arg(args.prompt)
+        if err:
+            errors.append(err)
+        elif src is not None:
+            logger.info("prompt loaded from %s", src.name)
+        prompt_text = (prompt_text + "\n\n" + extra).strip() if prompt_text else extra
+
+    if prompt_text and getattr(args, "request_code", False):
+        prompt_text = (prompt_text + "\n\n" + CODE_CONTRACT).strip()
+
+    if prompt_text:
+        chunks.append(prompt_text)
+        parts.append(("prompt", est_tokens(prompt_text)))
+    return "\n\n".join(chunks), parts, errors
+
+
+def _age(path: Path) -> str:
+    try:
+        s = max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return "age unknown"
+    if s < 3600:
+        return f"made {int(s // 60)} min ago"
+    if s < 86400:
+        return f"made {s / 3600:.0f} h ago"
+    return f"made {s / 86400:.0f} days ago"
 
 
 def build_context(args: argparse.Namespace) -> Context:
@@ -3116,11 +3278,12 @@ def build_context(args: argparse.Namespace) -> Context:
     """
     parts: List[Tuple[str, int]] = []
     messages: List[Dict[str, Any]] = []
+    errors: List[str] = []
     cache_seed = "no-codebase"
 
     if not args.no_codebase:
         cb = Path(args.codebase).expanduser()
-        if cb.exists():
+        if cb.is_file():
             dump = read_text(cb)
             if args.exclude:
                 dump, report = filter_dump(dump, args.exclude)
@@ -3128,10 +3291,17 @@ def build_context(args: argparse.Namespace) -> Context:
                     print(report)
             messages.append({"role": "system", "content":
                              f"<codebase name=\"{cb.name}\">\n{dump}\n</codebase>"})
-            parts.append((f"codebase ({cb.name})", est_tokens(dump)))
+            # The dump's age is on screen because a stale dump is paid for in
+            # full and silently disagrees with the tree the edits must match.
+            parts.append((f"codebase ({cb.name}, {_age(cb)})", est_tokens(dump)))
             cache_seed = sha256(dump)[:32]
+        elif str(args.codebase) != str(DEFAULT_CODEBASE):
+            # You named this dump: sending without it is not what you asked for.
+            errors.append(f"--codebase {args.codebase}: not found. Fix the path, or pass "
+                          f"--no-codebase to send without a dump.")
         else:
             logger.warning("codebase not found at %s - continuing without it", cb)
+            parts.append(("codebase NOT FOUND - not sent", 0))
 
     messages.append({"role": "system", "content": METHOD_RULES})
     parts.append(("method rules", est_tokens(METHOD_RULES)))
@@ -3154,54 +3324,14 @@ def build_context(args: argparse.Namespace) -> Context:
         messages.append({"role": "system", "content": f"<notes_from_earlier_sessions>\n{body}\n</notes_from_earlier_sessions>"})
         parts.append(("memory", est_tokens(body)))
 
-    user_chunks: List[str] = []
-    seen_attach: set = set()
-    for spec in (args.attach or []):
-        p = Path(spec).expanduser()
-        if not p.exists():
-            logger.warning("attachment not found: %s", spec)
-            continue
-        body = read_text(p)
-        digest = sha256(body)
-        if digest in seen_attach:
-            logger.warning("skipping duplicate attachment: %s", p.name)
-            continue
-        seen_attach.add(digest)
-        user_chunks.append(
-            f"<attachment name=\"{_attach_label(p)}\">\n{body}\n</attachment>"
-        )
-        parts.append((f"attach {p.name}", est_tokens(body)))
+    text, uparts, uerrors = compose_user_message(args)
+    parts += uparts
+    errors += uerrors
+    if text:
+        messages.append({"role": "user", "content": text})
 
-    prompt_text = ""
-    if args.playbook:
-        pb = load_playbook(Path(args.playbook_file), args.playbook)
-        if pb:
-            prompt_text = pb
-            unfilled = re.findall(r"<[a-z][^>]{2,40}>", pb)
-            if unfilled:
-                logger.warning("playbook %s still has placeholders: %s",
-                               args.playbook, ", ".join(sorted(set(unfilled))[:5]))
-        else:
-            logger.warning("playbook section %s not found", args.playbook)
-
-    if args.prompt:
-        p = Path(args.prompt)
-        extra = read_text(p) if (p.exists() and p.is_file()) else args.prompt
-        if p.exists() and p.is_file():
-            logger.info("prompt loaded from %s", p.name)
-        prompt_text = (prompt_text + "\n\n" + extra).strip() if prompt_text else extra
-
-    if args.request_code:
-        prompt_text = (prompt_text + "\n\n" + CODE_CONTRACT).strip()
-
-    if prompt_text:
-        user_chunks.append(prompt_text)
-        parts.append(("prompt", est_tokens(prompt_text)))
-
-    if user_chunks:
-        messages.append({"role": "user", "content": "\n\n".join(user_chunks)})
-
-    return Context(messages=messages, parts=parts, cache_key=args.cache_key or f"aa-{cache_seed}")
+    return Context(messages=messages, parts=parts, cache_key=args.cache_key or f"aa-{cache_seed}",
+                   errors=errors)
 
 
 # ==========================================================================
@@ -3445,15 +3575,28 @@ def preflight(ctx: Context, kimi: Kimi, args: argparse.Namespace) -> bool:
         print(f"  {'window guard uses':<{width}}  {n_in:>10,} tok"
               f"   [estimate x{EST_WINDOW_SAFETY}; no tokenizer count this call]")
 
-    if n_in > CONTEXT_WINDOW:
-        print(f"\n  STOP: {n_in:,} tokens exceeds the {CONTEXT_WINDOW:,} context window.")
-        print("  Use --exclude docs --exclude tests, or --no-codebase.")
+    # What a died stream is billed for, if usage never arrives (see do_turn).
+    args.input_tokens_hint = exact if exact else est
+
+    # Below this there is no room for a useful answer: send nothing rather
+    # than pay for the input and get an answer cut off in its first lines.
+    MIN_OUTPUT = 8192
+    if n_in > CONTEXT_WINDOW - MIN_OUTPUT:
+        print(f"\n  STOP: {n_in:,} input tokens leaves no room for an answer in the "
+              f"{CONTEXT_WINDOW:,} context window.")
+        print("  Fresh call: --exclude docs, fewer --attach, or --no-codebase. On a --resume "
+              "chain: start a fresh session instead of adding another turn.")
         return False
     if n_in + args.max_completion > CONTEXT_WINDOW:
-        room = CONTEXT_WINDOW - n_in
-        print(f"\n  NOTE: input + max_completion_tokens exceeds the window; "
-              f"capping output at {room:,}.")
-        args.max_completion = max(room - 1024, 4096)
+        asked = args.max_completion
+        # Never cap to a figure that still overflows: the old floor of 4096
+        # could put input + output past the window.
+        args.max_completion = CONTEXT_WINDOW - n_in - 1024
+        print(f"\n  ! OUTPUT CAPPED at {args.max_completion:,} tokens (asked {asked:,}): the input "
+              f"fills the rest of the window.")
+        if args.max_completion < 65_536:
+            print("    A multi-file code reply this size is likely to be CUT OFF. On a --resume "
+                  "chain, a fresh\n    session (not another resume) gets the full output budget back.")
 
     miss = cost_of(n_in, 0, 0)
     hit = cost_of(n_in, n_in, 0)
@@ -3504,12 +3647,20 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
     session.banner("KIMI", f"effort={args.effort}")
 
     print()
-    result = kimi.stream(
-        session.messages, session,
-        model=args.model, effort=args.effort, max_completion=args.max_completion,
-        cache_key=args.cache_key_resolved, show_thinking=args.show_thinking,
-        prediction=args.prediction_text,
-    )
+    # The input this request carries: preflight's exact count for the first
+    # call, a local estimate for chat turns (which have no preflight).
+    input_hint = getattr(args, "input_tokens_hint", None) or est_messages(session.messages)
+    args.input_tokens_hint = None
+    try:
+        result = kimi.stream(
+            session.messages, session,
+            model=args.model, effort=args.effort, max_completion=args.max_completion,
+            cache_key=args.cache_key_resolved, show_thinking=args.show_thinking,
+            prediction=args.prediction_text,
+        )
+    except BaseException:
+        session.turn -= 1          # nothing was answered; keep turn numbers contiguous
+        raise
 
     assistant: Dict[str, Any] = {"role": "assistant", "content": result["content"] or ""}
     # K3 uses Preserved Thinking: keep reasoning_content in history or the model
@@ -3522,6 +3673,18 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
     if usage:
         session.usage.add(usage)
         session.ledger_entry(usage, args.effort, note=label)
+    elif result.get("ttft") is not None:
+        # The stream died after tokens arrived, so usage never came - but
+        # Moonshot still bills it (measured 2026-09-15: ~$7 across two died
+        # streams that recorded nothing). Ledger it as an estimate, assuming
+        # 0% cached, so lifetime spend is an upper bound rather than a gap.
+        est_out = est_tokens(result["content"] or "") + est_tokens(result["reasoning"] or "")
+        result["estimated_cost"] = cost_of(input_hint, 0, est_out)
+        session.ledger_entry({"prompt_tokens": input_hint, "completion_tokens": est_out,
+                              "cached_tokens": 0}, args.effort,
+                             note=(label + " " if label else "") + "ESTIMATE: usage not reported "
+                                  f"(finish_reason={result['finish_reason']})",
+                             estimated=True)
     session.save()
 
     summary: Optional[StageSummary] = None
@@ -3556,6 +3719,10 @@ def print_turn_summary(result: Dict[str, Any], session: Session) -> None:
         print(f"  input {p:,} tok ({c:,} cached = {pct:.0f}%)   output {o:,} tok"
               f"   this turn {money(cost_of(p, c, o))}")
         print(f"  session total {money(session.usage.cost)} over {session.usage.calls} call(s)")
+    elif result.get("estimated_cost") is not None:
+        print("  usage not reported (stream ended early) - this call is STILL BILLED.")
+        print(f"  estimated at up to {money(result['estimated_cost'])} (assumes 0% cached); "
+              f"recorded in the ledger as an estimate")
     else:
         print("  usage not reported (stream ended early) - see the ledger for prior calls")
     if result["ttft"]:
@@ -3647,10 +3814,12 @@ def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
                     print("  noted for future sessions (takes effect next run with --memory)")
                 continue
             if cmd == "/attach":
-                p = Path(rest.strip().strip('"'))
-                if p.exists():
+                p = Path(rest.strip().strip('"')).expanduser()
+                if p.is_file():
                     pending_attachments.append(str(p))
                     print(f"  will attach {p.name} ({est_tokens(read_text(p)):,} tok) to the next message")
+                elif p.exists():
+                    print(f"  {p} is a folder, not a file - attach files one by one")
                 else:
                     print(f"  not found: {p}")
                 continue
@@ -3673,6 +3842,12 @@ def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
                 continue
 
         chunks: List[str] = []
+        gone = [s for s in pending_attachments if not Path(s).is_file()]
+        if gone:
+            print(f"  not sent: attachment(s) no longer there: {', '.join(gone)}. "
+                  f"/attach them again, then resend.")
+            pending_attachments = [s for s in pending_attachments if s not in gone]
+            continue
         for spec in pending_attachments:
             p = Path(spec)
             chunks.append(
@@ -3722,6 +3897,10 @@ def print_stats() -> None:
     print(f"  input tokens   : {prompt:,}  ({cached:,} cached = {cached / max(prompt, 1) * 100:.0f}%)")
     print(f"  output tokens  : {out:,}")
     print(f"  total spend    : {money(total)}")
+    est_rows = [r for r in rows if r.get("estimated")]
+    if est_rows:
+        print(f"    of which     : {money(sum(r.get('cost_usd', 0) for r in est_rows))} estimated "
+              f"for {len(est_rows)} died stream(s) (upper bound, 0% cached assumed)")
     if prompt:
         saved = (cached * (PRICE_IN_FRESH - PRICE_IN_CACHED)) / 1e6
         print(f"  saved by cache : {money(saved)}")
@@ -4003,6 +4182,84 @@ def absent_function():
                   "Model.py" in os.listdir(root / "pkg")
                   and (root / "pkg" / "Model.py").read_bytes() == b"a = 2\n")
         (root / "pkg" / "Model.py").unlink()
+
+        # ---- 13. sessions: staging, 'last', and the request guards. These
+        # use the module's own paths, pointed at the temp folder for the
+        # duration and restored in `finally`.
+        g = globals()
+        saved_paths = {k: g[k] for k in ("PROJECT_ROOT", "OUT_DIR", "BACKUP_DIR", "LEDGER")}
+        g["PROJECT_ROOT"], g["OUT_DIR"], g["BACKUP_DIR"] = root, root / ".kimi_out", bdir
+        g["LEDGER"] = g["OUT_DIR"] / "ledger.jsonl"
+        try:
+            sys_msgs = [{"role": "system", "content": "rules"}]
+            # a) an EDIT sent to a wrong directory, then re-sent at the right
+            # path next turn, is ONE file - not "changed twice"
+            s = Session("selftest_a")
+            s.messages, s.turn = sys_msgs + [{"role": "user", "content": "q"}], 2
+            s.save()
+            with contextlib.redirect_stdout(quiet):
+                stage_turn(s, 1, WRONGDIR_REPLY + "\n### END CHANGES\n", "stop")
+                stage_turn(s, 2, WRONGDIR_REPLY.replace("pkg/WRONG/lib.py", "pkg/lib.py")
+                           + "\n### END CHANGES\n", "stop")
+            sp, sb, _ = load_session_proposals(s)
+            sv = fresh_applier().validate(sp)
+            check("a file re-sent at its corrected path next turn replaces the wrong-path emission",
+                  len(sp) == 1 and not sb and not any(p.problems for p in sv),
+                  f"{len(sp)} proposals, {[p.problems for p in sv]}")
+
+            # b) a whole FILE over an ATTACHED file you changed since is STALE
+            lib_now = (root / "pkg" / "lib.py").read_text(encoding="utf-8")
+            s = Session("selftest_b")
+            s.messages = sys_msgs + [{"role": "user", "content":
+                                      f'<attachment name="pkg/lib.py">\n{lib_now}\n</attachment>\n\nq'}]
+            s.turn = 1
+            s.save()
+            (root / "pkg" / "lib.py").write_text(lib_now + "\nMINE = 1\n", encoding="utf-8")
+            with contextlib.redirect_stdout(quiet):
+                sm = stage_turn(s, 1, "### FILE: pkg/lib.py\n```python\n" + lib_now.replace("42", "7")
+                                + "```\n\n### END CHANGES\n", "stop")
+            check("a FILE over an attached file that changed since is refused as STALE BASE",
+                  any("STALE" in x for pl in sm.plans for x in pl.problems))
+            (root / "pkg" / "lib.py").write_bytes(originals["pkg/lib.py"])
+
+            # c) 'last' never picks an empty session (estimate-only, declined call)
+            Session("zzzz_never_called")           # sorts newest, never completed a call
+            lst = resolve_session("last")
+            check("'last' skips a session that never completed a call",
+                  lst is not None and lst.id == "selftest_b", lst.id if lst else "None")
+        finally:
+            g.update(saved_paths)
+
+        # d) the request guards that used to let a billed call go out incomplete
+        _t, _s, perr = resolve_prompt_arg("e1_autonomy.md")
+        _t2, _s2, perr2 = resolve_prompt_arg("Build it.")
+        check("--prompt naming a missing file is refused; a real sentence is not",
+              bool(perr) and perr2 is None and _t2 == "Build it.")
+        ns_a = argparse.Namespace(attach=[str(root / "nope.py"), str(root / "pkg")], playbook=None,
+                                  prompt="Build it.", request_code=False)
+        _txt, _parts, aerr = compose_user_message(ns_a)
+        check("a missing or folder --attach stops the request", len(aerr) == 2, str(aerr))
+        tbl = parse_changes("| File | Kind |\n|---|---|\n| `pkg/x.py` | EDIT |\n\n"
+                            "### EDIT: pkg/y.py\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n")
+        check("a file list written as a markdown table is checked against the blocks",
+              [a[1] for a in tbl.announced] == ["pkg/x.py"])
+
+        class _NoNet:
+            def count_tokens(self, *_a: Any) -> None:
+                return None
+
+            def balance(self) -> None:
+                return None
+
+        full = Context(messages=[], parts=[("conversation", int((CONTEXT_WINDOW - 2000) / EST_WINDOW_SAFETY))],
+                       cache_key="k")
+        ns_p = argparse.Namespace(no_count=True, model="m", max_completion=DEFAULT_MAX_COMPLETION,
+                                  effort="max", max_spend=999.0, yes=True)
+        with contextlib.redirect_stdout(quiet):
+            sent = preflight(full, _NoNet(), ns_p)          # type: ignore[arg-type]
+        check("a window with no room left for an answer stops the call", sent is False)
+        check("a resume's size includes the reasoning it sends back",
+              est_messages([{"role": "assistant", "content": "", "reasoning_content": "r" * 4450}]) == 1000)
     except Exception as exc:
         check("self-test ran to completion", False, f"{type(exc).__name__}: {exc}")
     finally:
@@ -4184,10 +4441,17 @@ def main() -> int:
             logger.info("predicted output seeded from %s", pp.name)
 
     # Resume keeps the exact prefix, which is what makes turn 2 cheap.
+    session = None
     if args.resume:
         session = resolve_session(args.resume)
         if not session:
-            print(f"No session '{args.resume}'.")
+            print(f"No session '{args.resume}'" + (" with a completed call." if args.resume == "last" else "."))
+            return 1
+        if session.load_error or not session.messages:
+            why = (f"its messages.json did not load ({session.load_error})" if session.load_error
+                   else "it has no saved conversation")
+            print(f"Session {session.id} cannot be resumed: {why}. Resuming would send your prompt "
+                  f"with no codebase and no history. Not sent.")
             return 1
         print(f"Resumed {session.id}: {len(session.messages)} messages, "
               f"{money(session.usage.cost)} spent so far.")
@@ -4202,53 +4466,74 @@ def main() -> int:
         elif not args.cache_key:
             print(f"  cache key: {args.cache_key_resolved} (reused from turn 1)")
         session.cache_key = args.cache_key_resolved
-        if args.prompt:
-            p = Path(args.prompt)
-            if p.is_file():
-                text = read_text(p)
-                logger.info("prompt loaded from %s", p.name)
-            else:
-                text = args.prompt
-                if re.search(r"\.(md|txt)$", args.prompt.strip(), re.I) and "\n" not in args.prompt:
-                    print(f"  ! '{args.prompt}' looks like a file name but no such file exists here "
-                          f"- it would be sent as the literal prompt text. Not sent.")
-                    return 1
-            if args.request_code:
-                text = text + "\n\n" + CODE_CONTRACT
+        # The prefix (dump, rules, TODO, memory) was fixed by turn 1; these
+        # flags cannot change it now. Say so rather than ignore them silently.
+        ignored = [flag for flag, on in (
+            ("--codebase", str(args.codebase) != str(DEFAULT_CODEBASE)), ("--no-codebase", args.no_codebase),
+            ("--exclude", bool(args.exclude)), ("--todo", bool(args.todo)),
+            ("--no-todo", args.no_todo), ("--memory", args.memory)) if on]
+        if ignored:
+            print(f"  note: {', '.join(ignored)} ignored on --resume - the conversation's prefix was "
+                  f"fixed by its first turn (and changing it would lose the cache).")
+        text, uparts, uerrors = compose_user_message(args)
+        if uerrors:
+            for e in uerrors:
+                print(f"  !! {e}")
+            print("Not sent.")
+            return 1
+        parts = [("conversation so far", est_messages(session.messages))]
+        if text:
             session.messages.append({"role": "user", "content": text})
+            parts += uparts
         elif not args.chat:
             print("Nothing to send. Add --prompt or --chat.")
             return 1
-        ctx = Context(messages=session.messages, parts=[("conversation so far",
-                      est_tokens("".join(str(m.get("content", "")) for m in session.messages)))],
-                      cache_key=args.cache_key_resolved)
+        ctx = Context(messages=session.messages, parts=parts, cache_key=args.cache_key_resolved)
     else:
-        if (args.prompt and not Path(args.prompt).is_file() and "\n" not in args.prompt
-                and re.search(r"\.(md|txt)$", args.prompt.strip(), re.I)):
-            print(f"'{args.prompt}' looks like a file name but no such file exists here - it would "
-                  f"be sent as the literal prompt text. Not sent. (Run from the folder it is in.)")
-            return 1
         ctx = build_context(args)
+        if ctx.errors:
+            for e in ctx.errors:
+                print(f"  !! {e}")
+            print("Not sent.")
+            return 1
         if not any(m["role"] == "user" for m in ctx.messages) and not args.chat:
             print("No prompt given. Use --prompt, --playbook, or --chat.")
             return 1
-        session = Session()
-        session.messages = ctx.messages
         args.cache_key_resolved = ctx.cache_key
-        session.cache_key = ctx.cache_key
+
+    # Something new to send = the conversation ends with a user message. A
+    # --resume --chat with no --prompt has nothing new: re-sending the history
+    # as it stands was a billed call for an "I'm waiting" reply ($2.30).
+    has_new = bool(ctx.messages) and ctx.messages[-1].get("role") == "user"
 
     if args.estimate_only:
         args.yes = True          # a cost check should never prompt to send
         preflight(ctx, kimi, args)
         return 0
-    if not preflight(ctx, kimi, args):
+    if session is not None and not has_new:
+        print("  Nothing new to send - opening the chat. Your first message there is the next "
+              "billed call.")
+    elif not preflight(ctx, kimi, args):
         print("Not sent.")
         return 1
 
-    if any(m["role"] == "user" for m in session.messages):
+    if session is None:
+        # Created only now that a call is really going out: a session made for
+        # --estimate-only or a declined preflight used to become 'last'.
+        session = Session()
+        session.messages = ctx.messages
+        session.cache_key = ctx.cache_key
+
+    if has_new:
         try:
             do_turn(kimi, session, args, label=args.playbook or "")
         except Exception:
+            # The request was never answered. Leave the conversation as it was,
+            # or the next chat message follows an orphaned prompt and both
+            # are sent as consecutive user turns.
+            if session.messages and session.messages[-1].get("role") == "user":
+                session.messages.pop()
+            print("  The request was not answered and was not added to the conversation.")
             if not args.chat:
                 return 1
 
