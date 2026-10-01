@@ -853,6 +853,26 @@ class TestSessionFlow:
         pp, _, _ = K.load_session_proposals(s, skips=["a.py"])
         assert [p.raw_path for p in pp] == ["b.py"]
 
+    def test_bare_announcement_superseded_by_later_full_path(self, repo):
+        # 2026-10-01, item 1: turn 1 announced "orchestrator.py" with no block,
+        # turn 2 emitted packages/.../orchestrator.py; the exact-key supersede
+        # check kept turn 1's problem fatal and refused a complete reply.
+        w(repo, "pkg/deep/orchestrator.py", "a = 1\n")
+        s = self.new_session(repo)
+        K.stage_turn(s, 1, "Files:\n- orchestrator.py - EDIT - next turn\n\n### END CHANGES\n", "stop")
+        K.stage_turn(s, 2, edit("pkg/deep/orchestrator.py", "a = 1\n", "a = 2\n") + "### END CHANGES\n", "stop")
+        pp, blocking, _ = K.load_session_proposals(s)
+        assert len(pp) == 1 and not blocking
+
+    def test_bare_announcement_still_blocks_when_never_emitted(self, repo):
+        w(repo, "pkg/deep/orchestrator.py", "a = 1\n")
+        w(repo, "pkg/other.py", "b = 1\n")
+        s = self.new_session(repo)
+        K.stage_turn(s, 1, "Files:\n- orchestrator.py - EDIT - next turn\n\n### END CHANGES\n", "stop")
+        K.stage_turn(s, 2, edit("pkg/other.py", "b = 1\n", "b = 2\n") + "### END CHANGES\n", "stop")
+        _pp, blocking, _ = K.load_session_proposals(s)
+        assert blocking and "orchestrator.py" in blocking[0]
+
     def test_legacy_rows_still_apply(self, repo):
         w(repo, "pkg/old.py", "x = 1\n")
         s = self.new_session(repo)
@@ -1121,6 +1141,53 @@ DRIVER = textwrap.dedent(r'''
     sys.argv = ["kimicli.py"] + json.loads(os.environ["ARGS"])
     sys.exit(K.main())
 ''')
+
+
+def _transcript(*kimi_replies: str) -> str:
+    """A kimicli transcript.md: one YOU + one KIMI section per turn, real banners."""
+    out = []
+    for n, reply in enumerate(kimi_replies, 1):
+        for kind, body in (("YOU", f"prompt {n}"), ("KIMI - effort=max", reply)):
+            out.append(f"\n\n{'=' * 78}\n== TURN {n} - {kind}\n{'=' * 78}\n\n{body}")
+    return "".join(out)
+
+
+DESIGN_ONLY = "Files:\n- m.py - EDIT - next turn\n\n### END CHANGES\n"
+
+
+def test_transcript_file_applies_its_one_turn_with_blocks(repo):
+    # 2026-10-01: a two-turn transcript.md staged nothing - every turn-2 block
+    # sat after turn 1's ### END CHANGES.
+    w(repo, "pkg/deep/m.py", "a = 1\n")
+    (repo / "transcript.md").write_text(
+        _transcript(DESIGN_ONLY, edit("pkg/deep/m.py", "a = 1\n", "a = 2\n") + "### END CHANGES\n"),
+        encoding="utf-8")
+    r = cli(repo, "--apply-fixes", "transcript.md", "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "using Kimi's reply in turn 2" in r.stdout and "PASS 1 clean" in r.stdout
+
+
+def test_transcript_file_with_blocks_in_two_turns_needs_turn(repo):
+    w(repo, "a.py", "a = 1\n")
+    w(repo, "b.py", "b = 1\n")
+    (repo / "transcript.md").write_text(
+        _transcript(edit("a.py", "a = 1\n", "a = 2\n") + "### END CHANGES\n",
+                    edit("b.py", "b = 1\n", "b = 2\n") + "### END CHANGES\n"),
+        encoding="utf-8")
+    r = cli(repo, "--apply-fixes", "transcript.md", "--dry-run")
+    assert r.returncode == 1 and "--turn" in r.stdout
+    r = cli(repo, "--apply-fixes", "transcript.md", "--dry-run", "--turn", "1")
+    assert r.returncode == 0 and "turn 1" in r.stdout and "PASS 1 clean" in r.stdout
+    assert "b.py" not in r.stdout.split("PASS 1")[1]
+
+
+def test_transcript_file_rejects_a_turn_it_does_not_have(repo):
+    w(repo, "pkg/deep/m.py", "a = 1\n")
+    (repo / "transcript.md").write_text(
+        _transcript(DESIGN_ONLY, edit("pkg/deep/m.py", "a = 1\n", "a = 2\n") + "### END CHANGES\n"),
+        encoding="utf-8")
+    r = cli(repo, "--apply-fixes", "transcript.md", "--dry-run", "--turn", "5")
+    assert r.returncode == 1 and "--turn must name exactly one" in r.stdout
 
 
 def run_main(repo: Path, args, reply: str, finish: str = "stop"):

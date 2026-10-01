@@ -2840,7 +2840,12 @@ def load_session_proposals(session: "Session", turns: Optional[Sequence[int]] = 
             k = p.get("key")
             if k and k in skip_keys:
                 continue
-            if k and k in chosen and int(chosen[k].get("turn", 0)) > t:
+            # A later emission supersedes this problem when it is the same file -
+            # matched the way announcement_problems() matches, so a bare name a
+            # design-only turn announced ("orchestrator.py") is cleared by the
+            # full path the next turn emitted.
+            if k and any((ck == k or ck.endswith("/" + k) or k.endswith("/" + ck))
+                         and int(chosen[ck].get("turn", 0)) > t for ck in chosen):
                 continue
             if not k and any((r or {}).get("repairs") == t for tt, r in all_reports.items() if tt > t):
                 continue
@@ -2885,6 +2890,39 @@ def load_session_proposals(session: "Session", turns: Optional[Sequence[int]] = 
             prop.notes.append("staged by the older kimicli (whole-file, no staging hash)")
         out.append(prop)
     return out, blocking, info
+
+
+#: kimicli's own transcript banner (Session.banner): "== TURN 3 - KIMI - effort=max".
+TRANSCRIPT_TURN_RE = re.compile(r"^== TURN (\d+) - (YOU|KIMI)\b[^\n]*$", re.M)
+
+
+def split_transcript_turns(text: str) -> Optional[Dict[int, str]]:
+    """Kimi's reply for each turn, when *text* is a kimicli transcript.md; else None.
+
+    A transcript holds every turn of a session and each reply ends with its own
+    ### END CHANGES. Parsed as ONE reply, every block after turn 1's END is
+    treated as discussion and never staged - so a multi-turn transcript applied
+    nothing. Each reply is returned on its own, banner rules stripped."""
+    marks = list(TRANSCRIPT_TURN_RE.finditer(text))
+    if not any(m.group(2) == "KIMI" for m in marks):
+        return None
+
+    def _rule(line: str) -> bool:
+        s = line.strip()
+        return not s or (len(s) >= 20 and set(s) == {"="})
+
+    out: Dict[int, str] = {}
+    for i, m in enumerate(marks):
+        if m.group(2) != "KIMI":
+            continue
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        lines = text[m.end():end].split("\n")
+        while lines and _rule(lines[0]):
+            lines.pop(0)
+        while lines and _rule(lines[-1]):
+            lines.pop()
+        out[int(m.group(1))] = "\n".join(lines) + "\n"
+    return out
 
 
 def proposals_from_text(text: str, source: str) -> Tuple[List[Proposal], List[str], ParseResult]:
@@ -4227,6 +4265,19 @@ def absent_function():
             lst = resolve_session("last")
             check("'last' skips a session that never completed a call",
                   lst is not None and lst.id == "selftest_b", lst.id if lst else "None")
+
+            # e) a file ANNOUNCED by bare name in a design-only turn and emitted
+            # at its full path the next turn is superseded, not a blocking problem
+            s = Session("selftest_c")
+            s.messages, s.turn = sys_msgs + [{"role": "user", "content": "q"}], 2
+            s.save()
+            with contextlib.redirect_stdout(quiet):
+                stage_turn(s, 1, "Files:\n- lib.py - EDIT - next turn\n\n### END CHANGES\n", "stop")
+                stage_turn(s, 2, "### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n"
+                           "    return 43\n>>>>>>> REPLACE\n\n### END CHANGES\n", "stop")
+            _sp_c, sb_c, _ = load_session_proposals(s)
+            check("a file announced by bare name, emitted at its full path next turn, does not block",
+                  len(_sp_c) == 1 and not sb_c, str(sb_c))
         finally:
             g.update(saved_paths)
 
@@ -4243,6 +4294,14 @@ def absent_function():
                             "### EDIT: pkg/y.py\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n")
         check("a file list written as a markdown table is checked against the blocks",
               [a[1] for a in tbl.announced] == ["pkg/x.py"])
+        tr = "".join(f"\n\n{'=' * 78}\n== TURN {n} - {k}\n{'=' * 78}\n\n{b}" for n, k, b in (
+            (1, "YOU", "q"), (1, "KIMI - effort=max", "Files:\n- a.py - EDIT - later\n\n### END CHANGES\n"),
+            (2, "YOU", "go"), (2, "KIMI - effort=max",
+                               "### EDIT: a.py\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n\n### END CHANGES\n")))
+        tt = split_transcript_turns(tr) or {}
+        t2 = parse_changes(tt.get(2, ""))
+        check("a multi-turn transcript.md is split per Kimi turn - turn 2's block is not 'after END'",
+              sorted(tt) == [1, 2] and len(t2.blocks) == 1 and not t2.blocks_after_end, str(sorted(tt)))
 
         class _NoNet:
             def count_tokens(self, *_a: Any) -> None:
@@ -4408,7 +4467,28 @@ def main() -> int:
         if not f.is_file():
             print(f"No session or file named '{token}'.")
             return 1
-        props, blocking, pr = proposals_from_text(read_text(f), f.name)
+        text, label = read_text(f), f.name
+        turn_texts = split_transcript_turns(text)
+        if turn_texts is not None:
+            with_blocks = [n for n in sorted(turn_texts) if parse_changes(turn_texts[n]).blocks]
+            if args.turn:
+                if len(args.turn) != 1 or args.turn[0] not in turn_texts:
+                    print(f"{f.name} is a kimicli transcript with replies for turn(s) "
+                          f"{', '.join(map(str, sorted(turn_texts)))}; --turn must name exactly one of them.")
+                    return 1
+                pick = args.turn[0]
+            elif len(with_blocks) > 1:
+                print(f"{f.name} is a kimicli transcript with change blocks in turns "
+                      f"{', '.join(map(str, with_blocks))}. A file is applied one reply at a time: "
+                      f"name one with --turn N, or apply the session by id, which merges turns "
+                      f"(latest emission per file).")
+                return 1
+            else:
+                pick = with_blocks[0] if with_blocks else max(turn_texts)
+            text, label = turn_texts[pick], f"{f.name} turn {pick}"
+            print(f"{f.name} is a kimicli transcript: using Kimi's reply in turn {pick} "
+                  f"(reply line numbers below count from the start of that reply).")
+        props, blocking, pr = proposals_from_text(text, label)
         skip_keys = {k for k in (_key_or_none(s) for s in args.skip) if k}
         props = [p for p in props if _key_or_none(p.raw_path) not in skip_keys]
         print(f"{f.name}: {len(pr.blocks)} block(s) in {len(props)} file(s).")
