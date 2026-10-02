@@ -11,7 +11,7 @@ Startup Sequence:
     2. Configure structured logging.
     3. Parse command-line arguments (--cli, --debug, --check-config,
        --seed, --profile, --portable, --export-research, --research-summary,
-       --label, --encrypt-profile).
+       --research, --label, --encrypt-profile).
     4. Initialize infrastructure (SQLite database with WAL mode).
     5. Launch the selected interface or print configuration summary.
 
@@ -38,6 +38,7 @@ Usage:
     python -m auto_apply --export-research          # Export research signals and exit
     python -m auto_apply --export-research --export-format parquet
     python -m auto_apply --research-summary         # Summarise discovery data, exit
+    python -m auto_apply --research                 # View/change research participation, exit
     python -m auto_apply --label                    # Label pages and log applications
     python -m auto_apply --encrypt-profile          # Encrypt the current profile
 """
@@ -439,6 +440,21 @@ def _handle_research_summary() -> None:
     sys.exit(0)
 
 
+def _handle_research() -> None:
+    """Run the interactive research-consent screen and exit.
+
+    Composition only, mirroring --label and --research-summary: every print
+    and every input lives in the CLI adapter, so this file's pinned
+    print-site count does not move. The screen works with no profile and no
+    session — consent is device-scoped and pre-profile by design.
+    """
+    from auto_apply.adapters.primary.cli.research_consent_screen import (  # noqa: PLC0415
+        run,
+    )
+
+    sys.exit(run())
+
+
 def _handle_label() -> None:
     """Run the labelling tool (item 5), then exit.
 
@@ -621,6 +637,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--research",
+        action="store_true",
+        help=(
+            "Open the interactive research screen: see whether research is "
+            "on, read the consent text, agree, withdraw (optionally "
+            "deleting collected data), turn page copies on or off, and "
+            "export research data. Exits when you leave the screen; starts "
+            "no session and needs no profile."
+        ),
+    )
+    parser.add_argument(
         "--label",
         action="store_true",
         help=(
@@ -686,6 +713,10 @@ def main() -> None:
     # 4c. Labelling mode (exits when the person quits — no session started)
     if args.label:
         _handle_label()
+
+    # 4d. Research consent screen (interactive; exits when the user quits)
+    if args.research:
+        _handle_research()
 
     # 5. Profile encryption mode (exits after encryption)
     if args.encrypt_profile:

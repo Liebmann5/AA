@@ -28,6 +28,7 @@ auto-apply                # console script, available after install
 | `--export-research` | — | Export collected research signals and exit, without running a session |
 | `--export-format` | `csv` \| `ndjson` \| `parquet` | Output format for `--export-research`. Default `csv` |
 | `--research-summary` | — | Print what the discovery research tables hold, then exit. Read-only; starts no session |
+| `--research` | — | Open the interactive research screen (see whether research is on, read the consent text, agree, withdraw with optional export-then-delete, page copies, export), then exit. Needs no profile; starts no session |
 | `--label` | — | Label saved pages and log the applications you make by hand. See [Labelling](../user_guide/labelling.md) |
 | `--encrypt-profile` | — | Encrypt the current plaintext profile into a `.vault` file behind a master password |
 
@@ -107,8 +108,9 @@ you forget the password — that is a property of the encryption, not an oversig
 
 AA is a long-running interactive agent rather than a batch tool, and **does not
 yet publish a stable exit-code contract**. `--check-config`,
-`--export-research`, `--research-summary`, `--label` and `--encrypt-profile`
-exit after their work; the others run until you stop the session.
+`--export-research`, `--research-summary`, `--research`, `--label` and
+`--encrypt-profile` exit after their work; the others run until you stop the
+session.
 
 `[PLANNED]` — a documented exit-code table. Do not script against exit codes
 until it exists.

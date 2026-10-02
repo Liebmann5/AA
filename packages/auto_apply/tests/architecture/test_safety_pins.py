@@ -178,6 +178,13 @@ def test_print_sites_outside_the_primary_adapters() -> None:
 # Stage U4 drives this to empty by retyping both surfaces against UIPort.
 #
 EXPECTED_REACHES: dict[str, set[str]] = {
+    # The research-consent screen reaches the wiring layer for the consent
+    # service factory and the export helper (composition_root) — the same
+    # precedent as cli/startup.py below. It may NOT import the secondary
+    # exporter itself; that is why export_research_bundle exists.
+    "cli/research_consent_screen.py": {
+        "auto_apply.infrastructure.composition_root",
+    },
     "cli/startup.py": {
         "auto_apply.application.services.autonomy",
         "auto_apply.application.services.session_controller",
@@ -195,6 +202,12 @@ EXPECTED_REACHES: dict[str, set[str]] = {
     },
     "gui/dashboard.py": {
         "auto_apply.application.services.session_controller",
+    },
+    "gui/research_window.py": {
+        # The research window reaches the wiring layer for the export
+        # helper (composition_root) — the same precedent as the CLI
+        # consent screen above. It may NOT import the secondary exporter.
+        "auto_apply.infrastructure.composition_root",
     },
     "gui/settings_editor.py": {
         "auto_apply.application.services.ui_schema",

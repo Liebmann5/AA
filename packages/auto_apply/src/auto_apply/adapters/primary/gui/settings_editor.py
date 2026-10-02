@@ -23,6 +23,11 @@ and _build_scrollable_tab's docstring for the full reasoning):
        scrolling canvas. A 1366x768 laptop is AA's worst-case user; twelve
        label+entry rows do not fit it otherwise.
 
+The footer carries a Research… button when the app provides one — the second
+door to the research-consent window (File → Research… is the first), which
+keeps the consent text's "Settings → Research" path literally true without
+changing a word of the consent text (a rewording would force re-consent).
+
 Admin Lock Behavior:
     When a field is locked by admin policy, the UI element is disabled (greyed
     out), the label shows a lock icon, and the save logic skips that field
@@ -128,9 +133,11 @@ class SettingsEditor(tk.Toplevel):
         registry: "CapabilitiesRegistry",
         on_save: Callable[[], None],
         profile_repo: ProfileRepositoryPort,
+        on_research: "Callable[[], None] | None" = None,
     ) -> None:
         super().__init__(parent)
         self.registry = registry
+        self._on_research = on_research
         self.profile = registry.get_active_profile()
         self.admin_policy = registry.get_admin_policy() or AdminPolicy.empty()
         self.on_save_callback = on_save
@@ -191,6 +198,10 @@ class SettingsEditor(tk.Toplevel):
         # packer reserves their height no matter how tall the tabs get.
         btn_frame = ttk.Frame(container, padding="0 10 0 0")
         btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        if self._on_research is not None:
+            ttk.Button(
+                btn_frame, text="Research…", command=self._on_research
+            ).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
             side=tk.RIGHT, padx=5
         )

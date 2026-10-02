@@ -741,3 +741,141 @@ def test_dialog_doc_contains_the_canonical_text_verbatim():
         f"RESEARCH_CONSENT_DIALOG.md has drifted from the canonical consent "
         f"text: {missing[:5]}"
     )
+
+
+# ── S2 (measured 2026-10-02): any instance a screen can obtain must stop ─────
+# collection, and collection_stopped must never report a stop that did not
+# happen. Both pins are RED against the pre-fix tree BY ASSERTION: the stop
+# channel was per instance, so the second instance's withdraw() was a no-op
+# for collection and still reported collection_stopped=True.
+
+
+def test_withdrawal_through_a_second_instance_stops_the_running_aggregator(
+    tmp_path, monkeypatch
+):
+    """TEETH vs S2 (deliverable i): the S2 measurement as a test. Instance A
+    (the "session") holds the running aggregator; instance B (what a consent
+    screen obtains by calling build_research_consent() mid-session)
+    withdraws. RED before the process-wide stop channel: B's withdraw()
+    stopped nothing, and the aggregator's next write recreated
+    research_signals.db and minted a NEW provenance key after the purge."""
+    monkeypatch.setenv("AA_RESEARCH_SALT", "s2-second-instance-salt")
+    db = tmp_path / "research" / "research_signals.db"
+    key = tmp_path / "provenance_key.pem"
+    consent_db = tmp_path / "research_consent.db"
+    agg = ResearchSignalAggregator(
+        db_path=db,
+        consent_version=CURRENT_CONSENT_VERSION,
+        provenance_key_path=key,
+    )
+    session_side = ResearchConsentManager(
+        SqliteConsentRepository(
+            consent_db_path=consent_db,
+            research_db_path=db,
+            provenance_key_path=key,
+        )
+    )
+    session_side.grant()
+    agg.start()
+    session_side.register_observer(agg)
+    agg._write_batch([_signal()])
+    assert db.exists() and key.exists()
+
+    screen_side = ResearchConsentManager(
+        SqliteConsentRepository(
+            consent_db_path=consent_db,
+            research_db_path=db,
+            provenance_key_path=key,
+        )
+    )
+    try:
+        result = screen_side.withdraw(purge_data=True)
+        assert not agg.is_enabled, (
+            "a withdrawal through any reachable instance must stop collection"
+        )
+        assert result.collection_stopped
+        agg.observe_application_outcome(ApplicationOutcomeObservation(
+            platform="probe", company_id="x", submitted_date=date.today(),
+        ))
+        time.sleep(0.3)
+        assert not db.exists(), (
+            "a stopped-then-purged aggregator must not recreate the database"
+        )
+        assert not key.exists(), "the provenance key must not be regenerated"
+    finally:
+        session_side.stop_collection()  # idempotent; registry cleanup either way
+
+
+def test_collection_stopped_is_never_reported_while_an_observer_runs(
+    tmp_path, monkeypatch
+):
+    """TEETH vs S2 (deliverable ii): WithdrawalResult.collection_stopped
+    must never be True while the observer is still enabled. RED before the
+    fix: a second instance's withdraw() returned collection_stopped=True
+    over a live aggregator, because `not self.collecting` only consulted
+    the instance's own (empty) slot — the result object told the user the
+    opposite of the truth."""
+    monkeypatch.setenv("AA_RESEARCH_SALT", "s2-honesty-salt")
+    db = tmp_path / "research" / "research_signals.db"
+    key = tmp_path / "provenance_key.pem"
+    consent_db = tmp_path / "research_consent.db"
+    agg = ResearchSignalAggregator(
+        db_path=db,
+        consent_version=CURRENT_CONSENT_VERSION,
+        provenance_key_path=key,
+    )
+    session_side = ResearchConsentManager(
+        SqliteConsentRepository(
+            consent_db_path=consent_db,
+            research_db_path=db,
+            provenance_key_path=key,
+        )
+    )
+    session_side.grant()
+    agg.start()
+    session_side.register_observer(agg)
+
+    screen_side = ResearchConsentManager(
+        SqliteConsentRepository(
+            consent_db_path=consent_db,
+            research_db_path=db,
+            provenance_key_path=key,
+        )
+    )
+    try:
+        result = screen_side.withdraw(purge_data=False)
+        if result.collection_stopped:
+            assert not agg.is_enabled, (
+                "collection_stopped=True over a live observer is a lie"
+            )
+        assert not agg.is_enabled, (
+            "after the fix the stop is real, not merely honestly reported"
+        )
+    finally:
+        session_side.stop_collection()
+
+
+def test_a_failed_stop_is_never_reported_as_stopped() -> None:
+    """TEETH: an observer whose stop() raises and that is still enabled
+    afterwards must read as collection_stopped=False — the slot is cleared
+    before the stop attempt, so without re-registering a still-running
+    observer the result would claim a stop that did not happen."""
+    class _Stubborn:
+        is_enabled = True
+
+        def stop(self) -> None:
+            raise RuntimeError("flush failed")
+
+    stubborn = _Stubborn()
+    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    mgr.grant_consent()
+    mgr.register_observer(stubborn)
+    try:
+        result = mgr.withdraw(purge_data=False)
+        assert result.collection_stopped is False
+        # A second instance still sees it, and can retry the stop.
+        other = ResearchConsentManager(InMemoryConsentRepository())
+        assert other.collecting is True
+    finally:
+        stubborn.is_enabled = False
+        ResearchConsentManager(InMemoryConsentRepository()).stop_collection()

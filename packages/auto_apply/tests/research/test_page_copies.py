@@ -50,6 +50,11 @@ from auto_apply.application.services.research_consent import (
     InMemoryConsentRepository,
     ResearchConsentManager,
 )
+from auto_apply.domain.ports.research_consent_port import (
+    PageCopiesState,
+    ResearchConsentPort,
+)
+from auto_apply.domain.services import research_consent_text
 from auto_apply.application.workflows.vetting_workflow import VettingWorkflow
 from auto_apply.domain.constants import (
     CURRENT_CONSENT_VERSION,
@@ -432,8 +437,11 @@ def test_page_copies_need_research_consent_first() -> None:
     assert not mgr.should_copy_pages()
     mgr.grant_page_copies()
     assert mgr.should_copy_pages()
-    title, body = mgr.page_copies_dialog()
-    assert "Keep Copies" in title and "never kept" in body
+    # The dialog became a versioned PageCopiesDialog with the port extension
+    # (FORK 3): attribute access replaces tuple unpacking. The content
+    # assertions are unchanged; version and labels are pinned below.
+    dialog = mgr.page_copies_dialog()
+    assert "Keep Copies" in dialog.title and "never kept" in dialog.body
 
 
 def test_research_regrant_resets_page_copies() -> None:
@@ -927,3 +935,49 @@ def test_the_oldest_copies_go_first_past_the_size_budget(tmp_path: Path) -> None
     keep("2026-09-04", "d", 1)  # a budget smaller than one copy
     assert [p.parent.name for p in tmp_path.rglob("*.warc.gz")] == ["2026-09-04"]
     assert store.count() == 1
+
+
+# ── The port surface (S3 / FORK 3): versioned dialog, status, satisfaction ────
+
+
+def test_page_copies_dialog_is_versioned_like_the_research_dialog() -> None:
+    """TEETH — pre-change the page-copies dialog was a bare (title, body)
+    tuple with no version and no button labels, unlike ResearchConsentDialog.
+    Red on the old tree by AttributeError on a tuple."""
+    dialog = _manager(InMemoryConsentRepository()).page_copies_dialog()
+    assert dialog.version == CURRENT_PAGE_COPIES_VERSION
+    assert dialog.title == research_consent_text.PAGE_COPIES_TITLE
+    assert dialog.body == research_consent_text.PAGE_COPIES_BODY
+    assert dialog.agree_label == research_consent_text.PAGE_COPIES_AGREE_LABEL
+    assert dialog.decline_label == research_consent_text.DECLINE_LABEL
+
+
+def test_status_reports_the_page_copies_state() -> None:
+    """TEETH — ResearchConsentStatus said nothing about page copies, so a
+    surface could not show or change them without reaching into the manager.
+    Red on the old tree by AttributeError (no page_copies field)."""
+    repo = InMemoryConsentRepository()
+    mgr = _manager(repo)
+    assert mgr.status().page_copies is PageCopiesState.OFF
+    mgr.grant_consent()
+    mgr.grant_page_copies()
+    status = mgr.status()
+    assert status.page_copies is PageCopiesState.ON
+    assert status.page_copies_version == CURRENT_PAGE_COPIES_VERSION
+    assert status.current_page_copies_version == CURRENT_PAGE_COPIES_VERSION
+    rec = repo.load_consent()
+    repo.save_consent(ConsentRecord(
+        granted=rec.granted,
+        consent_version=rec.consent_version,
+        granted_at=rec.granted_at,
+        page_copies=True,
+        page_copies_version="0.9",
+    ))
+    assert mgr.status().page_copies is PageCopiesState.NEEDS_RECONSENT
+
+
+def test_manager_satisfies_the_extended_consent_port() -> None:
+    """GUARD — ResearchConsentPort now declares the page-copies surface; the
+    manager already carried all three methods, so this passes on both trees
+    and freezes the structural satisfaction (no wrapper class)."""
+    assert isinstance(_manager(InMemoryConsentRepository()), ResearchConsentPort)

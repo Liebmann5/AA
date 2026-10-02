@@ -26,6 +26,7 @@ from auto_apply.domain.config import (
     IS_FROZEN,
     PAGE_COPIES_DIR,
     PROVENANCE_KEY_PATH,
+    REPORTS_DIR,
     RESEARCH_DB_PATH,
     USER_DATA_DIR,
 )
@@ -51,6 +52,9 @@ if TYPE_CHECKING:
     from auto_apply.domain.ports.page_copy_port import PageCopierPort
     from auto_apply.application.services.session_controller import SessionController
     from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
+    from auto_apply.adapters.secondary.research.research_exporter import (
+        ExportResult,
+    )
 
 # Re-export so existing callers don't break.
 __all__ = [
@@ -60,6 +64,7 @@ __all__ = [
     "build_research_consent",
     "build_session",
     "build_session_controller",
+    "export_research_bundle",
 ]
 
 logger = logging.getLogger(__name__)
@@ -236,6 +241,47 @@ def build_page_copier(
         allowed=consent_service.should_copy_pages,
         nonce=lambda content: derive_nonce(key, content),
     )
+
+
+def export_research_bundle(fmt: str = "csv") -> "ExportResult":
+    """Export the research database as one verifiable bundle — the consent
+    screens' route to the exporter (FORK 5).
+
+    Primary adapters may not import the secondary exporter
+    (tests/architecture/test_safety_pins.py EXPECTED_REACHES), so the CLI
+    research screen and the GUI research window call this helper instead.
+    main.py's --export-research keeps its own inline path; both construct
+    the same ResearchExporter over the same two paths.
+
+    Callers check domain.config.RESEARCH_DB_PATH.exists() first for the
+    nothing-to-export case — the exporter opens the database read-only and
+    raises for a missing file, which a screen should never have to render.
+
+    Args:
+        fmt: 'csv', 'ndjson', or 'parquet'. A plain str, validated here,
+            because the ExportFormat Literal lives in the secondary adapter
+            the screens may not import.
+
+    Raises:
+        ValueError: For an unknown format.
+        ExportError: For any database or filesystem failure (a missing
+            optional dependency degrades to CSV instead — that is not an
+            error here, exactly as in main.py's --export-research).
+    """
+    from auto_apply.adapters.secondary.research.research_exporter import (  # noqa: PLC0415
+        ExportFormat,
+        ResearchExporter,
+    )
+
+    # A typed lookup narrows the plain str to the exporter's Literal without
+    # a cast or a type: ignore.
+    formats: dict[str, ExportFormat] = {"csv": "csv", "ndjson": "ndjson", "parquet": "parquet"}
+    if fmt not in formats:
+        raise ValueError(
+            f"Unsupported format {fmt!r}. Accepted values: csv, ndjson, parquet"
+        )
+    exporter = ResearchExporter(db_path=RESEARCH_DB_PATH, export_root=REPORTS_DIR)
+    return exporter.export(formats[fmt])
 
 
 # --------------------------------------------------------------------------

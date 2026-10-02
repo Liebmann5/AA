@@ -53,7 +53,8 @@ bypassed.
 
 Research collection is **opt‑in only**. It is disabled by default. No data is
 ever collected without an explicit, recorded consent from the user. You enable
-it by granting consent through the Settings → Research dialog. You can disable
+it by granting consent through the Research screen — File → Research… in the
+app, or `--research` on the command line. You can disable
 it at any time, and existing data is not deleted unless you explicitly
 request deletion.
 
@@ -232,27 +233,33 @@ Full schema details are in [Data Format](data_format.md).
 
 === "GUI"
 
-    *(The Research screen arrives with the GUI/CLI consent change that
-    follows the consent backend; until then there is no GUI control.)*
-
-    1. Open **Settings** → **Research**.
-    2. Read the consent dialog and choose **“I Agree — Enable Research
-       Participation.”**
+    1. Open **File** → **Research…** (available from first launch, before
+       any profile exists; the Settings dialog's **Research…** button opens
+       the same window).
+    2. Choose **Turn research on…**, read the consent dialog, and choose
+       **“I Agree — Enable Research Participation.”** Declining — or simply
+       closing the window — records nothing.
 
     The decision is recorded in AA's consent database (not in your profile)
     and collection starts on your next session. Withdraw from the same
     screen at any time — withdrawal stops collection immediately, and you
-    can delete everything collected so far in the same step.
+    can delete everything collected so far in the same step (export is
+    offered first). Page copies have their own on/off choice there.
 
 === "CLI"
 
-    *(The research-consent command arrives with the GUI/CLI consent change
-    that follows the consent backend; until then there is no CLI command.)*
+    ```bash
+    python -m auto_apply --research
+    ```
 
-    Use the research-consent command, which calls the same consent interface
-    as the GUI (`composition_root.build_research_consent()`), shows the same
-    dialog text, and records the same versioned decision. Collection starts
-    on your next session.
+    The interactive research screen shows the current state in plain words,
+    the same consent text as the GUI, and the same actions: agree, withdraw
+    (with optional export-then-delete), page copies on/off, and export. It
+    calls the same consent interface as the GUI
+    (`composition_root.build_research_consent()`), records the same
+    versioned decision, and starts collection on your next session. A blank
+    answer, EOF, or Ctrl-C never grants and never deletes; deletion asks
+    you to type DELETE.
 
     Editing the profile JSON does **not** enable research:
     `app_config.enable_research_collection` is not read for consent (the

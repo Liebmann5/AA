@@ -349,10 +349,12 @@ You can delete all research data at any time by:
 1.  Deleting the `research/` directory inside AA's data directory (the
     database and its WAL sidecars live there). To also retire the signing
     identity, delete `provenance_key.pem` one level up.
-2.  Disabling research collection in Settings (this stops future collection
-    but does not delete existing data).
-3.  Withdrawing consent with deletion requested (**Settings → Research →
-    Delete My Data**, where available): AA deletes ALL of it — every table
+2.  Withdrawing in the Research screen WITHOUT deletion (this stops future
+    collection but does not delete existing data).
+3.  Withdrawing consent with deletion requested (the Research screen —
+    **File → Research…** in the app, **Settings → Research…**, or
+    **`python -m auto_apply --research`** — then confirm deletion): AA
+    deletes ALL of it — every table
     in the database, the database files themselves, and the private
     provenance key, so a contribution you make later cannot be linked to
     the deleted one. If another process is holding the database open at

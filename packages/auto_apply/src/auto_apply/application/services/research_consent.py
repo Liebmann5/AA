@@ -18,6 +18,7 @@ and the UI must re-prompt before research resumes.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -29,6 +30,8 @@ from auto_apply.domain.constants import (
 from auto_apply.domain.models.consent import ConsentRecord
 from auto_apply.domain.ports.consent_repository_port import ConsentRepositoryPort
 from auto_apply.domain.ports.research_consent_port import (
+    PageCopiesDialog,
+    PageCopiesState,
     ResearchConsentDialog,
     ResearchConsentReason,
     ResearchConsentState,
@@ -41,6 +44,33 @@ from auto_apply.domain.services.research_identity import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── The process-wide observer slot (S2 fix, 2026-10-02) ─────────────────────
+# register_observer() stores the session's aggregator on the instance AND
+# here. Measured on f800d09: a second consent instance — exactly what a
+# consent screen obtains when it calls build_research_consent() while a
+# session runs — could withdraw() without stopping the running aggregator,
+# and its WithdrawalResult reported collection_stopped=True anyway, because
+# `not self.collecting` only consulted the instance's own (empty) slot. The
+# aggregator then recreated the purged database and minted a new provenance
+# key. With the process-wide slot, ANY instance's stop_collection() reaches
+# the running observer of THIS process. It cannot reach a session running
+# in a DIFFERENT process: that session's own shutdown stops its observer,
+# and the withdrawn record means its next build collects nothing.
+_PROCESS_OBSERVER_LOCK = threading.Lock()
+_process_observer: Any = None
+
+
+def _set_process_observer(observer: Any) -> None:
+    global _process_observer
+    with _PROCESS_OBSERVER_LOCK:
+        _process_observer = observer
+
+
+def _get_process_observer() -> Any:
+    with _PROCESS_OBSERVER_LOCK:
+        return _process_observer
 
 
 class InMemoryConsentRepository:
@@ -200,6 +230,20 @@ class ResearchConsentManager:
 
     # ── The consent interface (FORK 2 — satisfies ResearchConsentPort) ───────
 
+    @staticmethod
+    def _page_copies_state(record: ConsentRecord) -> PageCopiesState:
+        """The page-copies state behind status(): off, on, or agreed to a
+        superseded page-copies text (NEEDS_RECONSENT under the newer
+        CURRENT_PAGE_COPIES_VERSION). "On but not copying" is deliberately
+        not a fourth state — it is ON combined with research not
+        collecting, which the surfaces derive from the research state and
+        collecting_now."""
+        if not record.page_copies:
+            return PageCopiesState.OFF
+        if record.page_copies_version != CURRENT_PAGE_COPIES_VERSION:
+            return PageCopiesState.NEEDS_RECONSENT
+        return PageCopiesState.ON
+
     def status(self) -> ResearchConsentStatus:
         """Everything a surface needs to render, without internals access."""
         record = self._repository.load_consent()
@@ -211,6 +255,9 @@ class ResearchConsentManager:
             collecting_now=self.collecting,
             consent_version=record.consent_version,
             current_version=CURRENT_CONSENT_VERSION,
+            page_copies=self._page_copies_state(record),
+            page_copies_version=record.page_copies_version,
+            current_page_copies_version=CURRENT_PAGE_COPIES_VERSION,
         )
 
     def consent_dialog(self) -> ResearchConsentDialog:
@@ -263,36 +310,64 @@ class ResearchConsentManager:
         long as the controller that owns the session.
         """
         self._active_observer = observer
+        # Also process-wide: any instance's stop_collection() — including one
+        # a consent screen built mid-session — must be able to stop this
+        # observer (the S2 measurement; see the slot's comment above).
+        _set_process_observer(observer)
 
     @property
     def collecting(self) -> bool:
-        """True while a registered observer is live (enabled)."""
-        observer = self._active_observer
-        return bool(observer is not None and getattr(observer, "is_enabled", False))
+        """True while a registered observer is live (enabled) — this
+        instance's OR the process-wide one. This is what makes
+        WithdrawalResult.collection_stopped honest: it is computed after the
+        stop attempt, and it is True only if no enabled observer remains in
+        this process."""
+        own = self._active_observer
+        if own is not None and getattr(own, "is_enabled", False):
+            return True
+        process = _get_process_observer()
+        return bool(process is not None and getattr(process, "is_enabled", False))
 
     def stop_collection(self) -> bool:
-        """Stop the registered observer, if any. Idempotent.
+        """Stop every observer this process can reach. Idempotent.
 
-        The observer's stop() flushes its queue through the tested drain —
-        items collected under consent are written, not lost — and marks it
-        disabled, so later observe_* calls become no-ops instead of feeding
-        a queue no thread will ever drain. A failure to stop is logged and
-        NOT raised: a withdrawal must not fail because the flush hiccuped.
+        Stops this instance's registered observer AND the process-wide one
+        (they are usually the same object — stopped once). The observer's
+        stop() flushes its queue through the tested drain — items collected
+        under consent are written, not lost — and marks it disabled, so
+        later observe_* calls become no-ops instead of feeding a queue no
+        thread will ever drain. A failure to stop is logged and NOT raised:
+        a withdrawal must not fail because the flush hiccuped — and because
+        collecting consults the process-wide slot too, a failed stop still
+        reads as collection_stopped=False rather than a lie.
 
         Returns:
             True if an observer was registered (and stop was attempted).
         """
-        observer = self._active_observer
+        stopped = False
+        seen: set[int] = set()
+        own = self._active_observer
         self._active_observer = None
-        if observer is None:
-            return False
-        try:
-            observer.stop()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "ResearchConsentManager | observer stop failed: %s", exc
-            )
-        return True
+        process = _get_process_observer()
+        _set_process_observer(None)
+        for observer in (own, process):
+            if observer is None or id(observer) in seen:
+                continue
+            seen.add(id(observer))
+            stopped = True
+            try:
+                observer.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ResearchConsentManager | observer stop failed: %s", exc
+                )
+            if getattr(observer, "is_enabled", False):
+                # Still running after the attempt (the stop raised, or did
+                # not take): keep it reachable, so `collecting` stays True
+                # and collection_stopped cannot report a stop that did not
+                # happen, and a later stop_collection() can try again.
+                _set_process_observer(observer)
+        return stopped
 
     @property
     def consent_version(self) -> str | None:
@@ -317,11 +392,17 @@ class ResearchConsentManager:
 
     # ── Page copies (item 6): a second, specific consent ─────────────────────
 
-    def page_copies_dialog(self) -> tuple[str, str]:
-        """(title, body) a surface must show before grant_page_copies()."""
-        return (
-            research_consent_text.PAGE_COPIES_TITLE,
-            research_consent_text.PAGE_COPIES_BODY,
+    def page_copies_dialog(self) -> PageCopiesDialog:
+        """The versioned page-copies dialog a surface must render before
+        grant_page_copies() — version, title, body and both button labels,
+        mirroring consent_dialog(), so what the user saw and what was
+        recorded cannot diverge."""
+        return PageCopiesDialog(
+            version=CURRENT_PAGE_COPIES_VERSION,
+            title=research_consent_text.PAGE_COPIES_TITLE,
+            body=research_consent_text.PAGE_COPIES_BODY,
+            agree_label=research_consent_text.PAGE_COPIES_AGREE_LABEL,
+            decline_label=research_consent_text.DECLINE_LABEL,
         )
 
     def page_copies_on(self) -> bool:

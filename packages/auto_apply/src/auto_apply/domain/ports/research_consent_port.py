@@ -33,6 +33,15 @@ Semantics (ruled 2026-10-01, FORKs 1-4):
       research clearly OFF (status reports INACTIVE / NO_SALT) and the
       session builds normally. Rows are never written without a private salt
       because no aggregator exists to write them.
+    * Page copies (item 6) are a second, specific consent on the SAME port:
+      their own versioned dialog, their own grant and withdraw, and their
+      own state on ResearchConsentStatus. They require current research
+      consent (the record, not collection) and never imply it.
+    * Registration of the session's observer is process-wide
+      (application/services/research_consent.py): a withdraw() through ANY
+      instance of this port stops the running observer of this process, so a
+      surface can never report a stop that did not happen (the S2
+      measurement, 2026-10-02).
 """
 
 from __future__ import annotations
@@ -40,6 +49,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
+
+from auto_apply.domain.constants import CURRENT_PAGE_COPIES_VERSION
+from auto_apply.domain.models.consent import ConsentRecord
 
 
 class ResearchConsentState(str, Enum):
@@ -71,6 +83,24 @@ class ResearchConsentReason(str, Enum):
     NOT_OFFERED = "not_offered"
 
 
+class PageCopiesState(str, Enum):
+    """The state of the page-copies consent (item 6) on ResearchConsentStatus.
+
+    OFF             — page copies were never granted, or were turned off.
+    ON              — granted under the current page-copies text. Whether any
+                      copy is actually being kept right now is NOT a state
+                      here: it is ON combined with the research state and
+                      collecting_now, which the surfaces render.
+    NEEDS_RECONSENT — granted, but for an older page-copies version; the
+                      page-copies text must be shown again before copies
+                      resume.
+    """
+
+    OFF = "off"
+    ON = "on"
+    NEEDS_RECONSENT = "needs_reconsent"
+
+
 @dataclass(frozen=True)
 class ResearchConsentStatus:
     """Everything a surface needs to render without reaching into internals.
@@ -88,6 +118,11 @@ class ResearchConsentStatus:
         consent_version: The version the user most recently agreed to.
         current_version: The version the current dialog carries
             (CURRENT_CONSENT_VERSION).
+        page_copies: The state of the second, specific page-copies consent.
+        page_copies_version: The page-copies text version the user most
+            recently agreed to.
+        current_page_copies_version: The version the current page-copies
+            dialog carries (CURRENT_PAGE_COPIES_VERSION).
     """
 
     state: ResearchConsentState
@@ -96,6 +131,9 @@ class ResearchConsentStatus:
     collecting_now: bool
     consent_version: str | None
     current_version: str
+    page_copies: PageCopiesState = PageCopiesState.OFF
+    page_copies_version: str | None = None
+    current_page_copies_version: str = CURRENT_PAGE_COPIES_VERSION
 
 
 @dataclass(frozen=True)
@@ -125,8 +163,32 @@ class ResearchConsentDialog:
 
 
 @dataclass(frozen=True)
+class PageCopiesDialog:
+    """The exact text a surface must render before calling grant_page_copies().
+
+    Mirrors ResearchConsentDialog for the second, specific consent: the
+    strings come from the one canonical module
+    (``domain/services/research_consent_text.py``), are quoted verbatim in
+    docs/RESEARCH_CONSENT_DIALOG.md under the same pin, and ``version`` is
+    what grant_page_copies() records — so what the user saw and what was
+    recorded cannot diverge.
+    """
+
+    version: str
+    title: str
+    body: str
+    agree_label: str
+    decline_label: str
+
+
+@dataclass(frozen=True)
 class WithdrawalResult:
-    """The outcome of withdraw(), for the surface's confirmation screen."""
+    """The outcome of withdraw(), for the surface's confirmation screen.
+
+    collection_stopped is True only when no enabled observer exists in this
+    process after the stop attempt — it can never report a stop that did
+    not happen (the S2 measurement, 2026-10-02).
+    """
 
     purged: int
     collection_stopped: bool
@@ -135,16 +197,19 @@ class WithdrawalResult:
 
 @runtime_checkable
 class ResearchConsentPort(Protocol):
-    """The complete consent surface: status, the dialog text, grant, withdraw.
+    """The complete consent surface: status, the dialog text, grant, withdraw,
+    and the page-copies consent.
 
     Satisfied structurally by ResearchConsentManager (application layer).
-    Both user surfaces call exactly these four operations:
+    Both user surfaces (the CLI research screen and the GUI research
+    window) call exactly these operations:
 
         * pre-session (first run, settings): build the service via
           composition_root.build_research_consent() (no registry needed);
-        * during a session: use controller.research_consent — the SAME
-          instance the session's research observer registered with, so
-          withdraw() stops collection immediately.
+        * during a session: controller.research_consent is the instance the
+          session's observer registered with. Registration is also
+          process-wide, so a withdraw() through ANY instance stops the
+          running observer of this process — see the module docstring.
     """
 
     def status(self) -> ResearchConsentStatus:
@@ -173,5 +238,29 @@ class ResearchConsentPort(Protocol):
         A running observer is stopped before the record is written; with no
         session running, the stop is a no-op and only the record (and the
         data, when purge_data is True) changes.
+        """
+        ...
+
+    # ── Page copies (item 6): the second, specific consent ──────────────────
+
+    def page_copies_dialog(self) -> PageCopiesDialog:
+        """The exact text a surface must render before grant_page_copies()."""
+        ...
+
+    def grant_page_copies(self) -> ConsentRecord:
+        """Record agreement to keep cleaned page copies on this device.
+
+        Requires current research consent (the record, not collection):
+        raises ValueError otherwise. Copies start only when research
+        collection does — granting during INACTIVE/NO_SALT is allowed and
+        remembered, mirroring the research grant itself.
+        """
+        ...
+
+    def withdraw_page_copies(self, delete: bool = True) -> int:
+        """Stop keeping page copies NOW; by default delete every kept copy.
+
+        Research participation is unaffected. Returns how many copies were
+        deleted (0 when delete is False).
         """
         ...

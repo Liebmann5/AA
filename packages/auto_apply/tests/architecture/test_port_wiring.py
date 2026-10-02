@@ -174,12 +174,6 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
         "file until the driving adapters are retyped. Delete when gui/app.py "
         "and cli/startup.py type against UIPort at stage U4.",
     ),
-    "ResearchConsentPort": (
-        "WIRE-LATER",
-        "added 2026-10-01 with the consent backend: ResearchConsentManager "
-        "satisfies it structurally; its consumers are the GUI and CLI "
-        "consent screens, built in the next change. Delete this entry then.",
-    ),
 }
 
 # Ceiling, not equality (R-E). A lower count is success.
@@ -188,10 +182,12 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
 # its "no consumer" state is a consequence of the design, not a defect. The
 # ceiling comes back down to 22 when gui/app.py and cli/startup.py type
 # against UIPort at stage U4 and the UIPort entry is deleted.
-# Raised 23 → 24 for ResearchConsentPort (2026-10-01): the consent backend
-# landed one change ahead of the GUI/CLI consent screens that consume it.
-# Back to 23 when those screens land and its entry is deleted.
-MAX_EXEMPTIONS = 24
+# ResearchConsentPort was raised 23 → 24 on 2026-10-01, ahead of its
+# consumers, and returned to 23 when the consent screens landed:
+# adapters/primary/cli/research_consent_screen.py consumes the port (a
+# runtime isinstance guard on the injected service — an executable use, so
+# the pin's R-B-2 rules count it).
+MAX_EXEMPTIONS = 23
 
 
 # ─────────────────────────────────────────────────────────────────────────────

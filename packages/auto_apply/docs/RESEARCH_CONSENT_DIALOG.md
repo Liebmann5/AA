@@ -9,7 +9,9 @@ audience: researchers
 # Research Consent Dialog — Exact UI Text (v2.4)
 
 This document is the AUTHORITATIVE SOURCE for the consent dialog text shown
-to users when they enable research data collection in Settings → Research.
+to users when they enable research data collection in the Research screen —
+**File → Research…** in the app (also reachable as **Settings → Research…**),
+or `python -m auto_apply --research` on the command line.
 
 The canonical strings live in code —
 `src/auto_apply/domain/services/research_consent_text.py` — so the GUI and
@@ -197,15 +199,14 @@ Button:
 >
 > This cannot be undone.
 
-## Data Export Confirmation
+## Data Export (what exists)
 
-> **Export Your Research Contribution**
->
-> This will create a folder containing all anonymized data collected from
-> your AutoApply sessions — one file per research table, an index, and the
-> public verification key. It is saved under `reports/` in AutoApply's data
-> folder.
->
-> Format: [ CSV ▾ ]  (options: CSV, NDJSON, Parquet)
->
-> [ Export ]   [ Cancel ]
+Export is offered from the Research screen — as its own action, and again
+inside the withdraw-and-delete flow, before anything is deleted — and from
+the command line with
+`python -m auto_apply --export-research [--export-format csv|ndjson|parquet]`.
+Every route creates one folder under `reports/` in AutoApply's data folder
+containing one file per research table, an `index.json`, and (once signals
+have been signed) a `verification.json` carrying the public verification key.
+The CLI screen offers all three formats; the app exports CSV; a missing
+optional dependency degrades Parquet to CSV rather than failing.

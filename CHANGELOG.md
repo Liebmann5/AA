@@ -76,6 +76,26 @@ from its first tag onward.
 - **`--research-summary`** prints what the discovery research tables hold —
   pages, cards, candidates, and destinations grouped by hiring platform — with
   every share shown against its denominator. Read-only; starts no session.
+- **Research consent screens on both surfaces.** Research participation is now
+  reachable by the people it belongs to: **File → Research…** in the app (from
+  first launch, before any profile exists; the Settings dialog also has a
+  **Research…** button) and **`python -m auto_apply --research`** on the
+  command line. Both show the current state in plain words — off, withdrawn,
+  changed-since-you-agreed, agreed-but-not-collecting (and why), or on — show
+  the same consent text from the single canonical copy, and offer the same
+  actions: agree, decline, withdraw with or without deleting what was
+  collected (export is offered first; deletion requires typing DELETE in the
+  terminal and has no default button in the app), export, and turn page copies
+  on or off with a keep-or-delete choice. A blank answer, Escape, or closing
+  the window never grants and never deletes.
+- **Withdrawal now really stops collection.** The stop channel is
+  process-wide: withdrawing through any consent instance stops the running
+  research observer, and the result can no longer report "stopped" while
+  collection continues. Previously a second consent instance — exactly what a
+  screen obtains mid-session — withdrew on paper while the aggregator kept
+  writing and recreated the purged database and signing key.
+- **Research export from the app and the CLI screen**, through the same
+  verifiable bundle as `--export-research`.
 
 ### Changed
 

@@ -19,7 +19,9 @@ checklist for data science and software projects involving data collection.
   through the consent dialog. Collection is OFF by default; the decision is stored in
   a versioned consent record and the version is stored with each record.
 - [x] **Right to withdraw**: Users can delete their research contribution at any time
-  via Settings → Research → Delete My Data. Deletion is immediate: every research
+  via the Research screen — File → Research… in the app (also Settings →
+  Research…), or `python -m auto_apply --research` on the command line — by
+  choosing withdraw with deletion. Deletion is immediate: every research
   table, the database files, and the installation's research signing key are
   removed.
 - [x] **Data minimization**: Only the minimum data needed for each research signal is

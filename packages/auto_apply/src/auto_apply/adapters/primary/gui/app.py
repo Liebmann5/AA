@@ -27,12 +27,14 @@ Threading Safety:
 
 Menu Bar:
     File -> Settings opens the SettingsEditor modal.
+    File -> Research… opens the research-consent window — ALWAYS enabled:
+    consent is device-scoped and works before any profile or session exists.
     File -> Export Profile writes the active profile to a chosen directory.
     File -> Session History lists past runs from the reports directory.
     File -> Exit triggers graceful shutdown.
     Settings, Export Profile, and Session History are disabled until the
     relevant objects exist (registry for Settings/Export, controller for
-    History).
+    History); Research… is never disabled.
 
 Onboarding Contract:
     First-run onboarding builds a profile ENTIRELY from what the user types.
@@ -86,6 +88,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from pydantic import ValidationError
 
 from auto_apply.adapters.primary.gui.dashboard import Dashboard as GUIDashboard
+from auto_apply.adapters.primary.gui.research_window import ResearchWindow
 from auto_apply.adapters.primary.gui.settings_editor import SettingsEditor
 from auto_apply.adapters.primary.gui.strings import get_strings
 from auto_apply.adapters.primary.gui.wizard import SessionConfigWizard as GUIWizard
@@ -98,6 +101,7 @@ from auto_apply.domain.models.ui_contract import (
     SessionSummary,
 )
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
+from auto_apply.infrastructure.composition_root import build_research_consent
 
 if TYPE_CHECKING:
     from auto_apply.application.services.session_controller import SessionController
@@ -381,6 +385,9 @@ class AutoApplyApp(tk.Tk):
         )
         file_menu.add_command(
             label="Settings", command=self._open_settings, state=tk.DISABLED,
+        )
+        file_menu.add_command(
+            label="Research…", command=self._open_research,
         )
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
@@ -709,7 +716,26 @@ class AutoApplyApp(tk.Tk):
             self.profile = self.registry.get_active_profile()
             logger.info("Settings saved — registry rebuilt")
 
-        SettingsEditor(self, registry=self.registry, on_save=_on_save, profile_repo=self._repo)
+        SettingsEditor(self, registry=self.registry, on_save=_on_save, profile_repo=self._repo, on_research=self._open_research)
+
+    def _open_research(self) -> None:
+        """Opens the research-consent window (File -> Research… and the
+        Settings dialog's Research… button).
+
+        Available from first launch — consent is device-scoped and works
+        before any profile or session exists (S6). During a session the
+        window uses the controller's consent instance (the one the
+        session's observer registered with); before or between sessions it
+        builds the pre-session service. Either is safe: the stop channel is
+        process-wide (the S2 fix), so a withdrawal stops the running
+        observer regardless of which instance issues it.
+        """
+        consent = None
+        if self.controller is not None:
+            consent = self.controller.research_consent
+        if consent is None:
+            consent = build_research_consent()
+        ResearchWindow(self, consent)
 
     # =====================================================================
     # CUSTODY DIALOGS (C2)
