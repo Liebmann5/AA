@@ -71,7 +71,7 @@ Signals that detect compensation opacity and wage violations.
 
 | Signal | Identifier | Detector Class | Description |
 |--------|------------|----------------|-------------|
-| Legal Salary Non‑Disclosure | `ST-01` | `SalaryTransparencyLegalViolationDetector` | No salary disclosed in a jurisdiction where disclosure is legally required (≥15 US states/cities as of 2026). |
+| Legal Salary Non‑Disclosure | `ST-01` | `SalaryTransparencyLegalViolationDetector` | No US‑dollar pay figure found in a jurisdiction whose pay‑transparency law was in effect on the posting's capture date. Severity is `violation` only where the law covers every employer (AA never knows employer size), otherwise `concern`; the evidence text states what AA saw and what it could not know. A single pay figure where the law requires a range is recorded at severity `flag`. Jurisdictions whose law requires disclosure only on request (RI) produce no signal. |
 | Salary Range Washing | `ST-02` | `SalaryRangeWashingDetector` | Disclosed range is so wide (max/min > 2x) that it conveys no genuine information, violating “good faith” requirements. |
 | Below‑Market Salary | `ST-03` | `BelowMarketSalaryDetector` | Offered salary is below the 25th percentile for equivalent role/skills in AA’s accumulated salary corpus (self‑calibrating). |
 | Salary History Inquiry | `ST-04` | `SalaryHistoryInquiryDetector` | Application form asks for prior salary in a jurisdiction that has banned salary‑history questions. Direct form‑field evidence. |

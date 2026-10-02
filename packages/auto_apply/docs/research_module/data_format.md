@@ -59,7 +59,7 @@ This is the primary table. Every row is a single anonymised observation.
 | `company_id` | TEXT | HMAC‑SHA256 of the company name's canonical form (format characters removed, NFKC, casefolded, whitespace collapsed; punctuation and legal suffixes kept; salt never stored). 16‑hex‑character anonymised identifier. NULL means no usable company name — including the placeholders discovery emits when extraction fails (`Unknown`, `N/A`, `None`); NULL is absence, never a company. Databases below `user_version` 4 were minted from the lower‑cased name only; the v4 migration NULLs their placeholder ids and leaves the rest. | `a3f2b1c4d5e6f7a8` |
 | `job_category` | TEXT | BLS SOC code when available. | `15-1252` |
 | `detected_date` | TEXT NOT NULL | ISO‑8601 date when the signal was recorded (no time component). | `2026-05-01` |
-| `schema_version` | INTEGER | Version of the research schema (incremented when data practices change). | `2` |
+| `schema_version` | INTEGER | Version of the research schema (incremented when data practices change). Version 3: ST‑01 reworded and re‑graded, salary extraction added. | `3` |
 | `consent_version` | TEXT | Version of the consent dialog the user agreed to. | `2.1` |
 | `posting_hash` | TEXT | Structural hash of the job posting for lifecycle tracking and deduplication. | `e4f5a6b7...` |
 | `content_hash` | TEXT | SHA‑256 of the signal’s evidentiary payload (used for provenance signing). | `b8c9d0e1...` |
@@ -142,12 +142,25 @@ Primary key: `(job_fingerprint, platform)`.
 Builds a self‑calibrating salary corpus used by the “below‑market salary”
 (ST‑03) detector.
 
+Rows are written only when a US‑dollar pay figure was found on the posting
+(see `domain/services/salary_extraction.py`). `salary_min` / `salary_max`
+are ANNUAL USD equivalents: hourly figures are converted at 2,080 hours
+per year (40 h × 52 weeks — the BLS full‑time convention, a stated
+assumption, not a fact about the job), weekly ×52, biweekly ×26,
+semi‑monthly ×24, monthly ×12 (pay per day, per shift or per pay period
+is not read: it has no single annual equivalent), and
+`salary_type` is therefore `annual` on extracted rows. The figure exactly
+as stated on the page (with `[OTE]` for on‑target earnings) is kept in
+`source_text`, so every stored number can be audited against the text it
+came from. Rows written before salary extraction existed have
+`source_text` NULL.
+
 | Column | Type | Description |
 | ------ | ---- | ----------- |
 | `obs_id` | TEXT PRIMARY KEY | Unique observation ID. |
-| `salary_min` | INTEGER | Minimum disclosed salary, or NULL. |
-| `salary_max` | INTEGER | Maximum disclosed salary, or NULL. |
-| `salary_type` | TEXT | `"annual"`, `"hourly"`, etc. |
+| `salary_min` | INTEGER | Minimum disclosed salary, annualised USD, or NULL. |
+| `salary_max` | INTEGER | Maximum disclosed salary, annualised USD, or NULL. |
+| `salary_type` | TEXT | `"annual"` on extracted rows (stored values are annualised). |
 | `currency` | TEXT | ISO 4217 currency code. |
 | `role_title_normalized` | TEXT | Lowercased, stripped job title for grouping. |
 | `experience_years_min` | INTEGER | Minimum years of experience required. |
@@ -159,6 +172,7 @@ Builds a self‑calibrating salary corpus used by the “below‑market salary�
 | `industry_sic` | TEXT | Standard Industrial Classification code. |
 | `posted_date` | TEXT | Date the posting was observed. |
 | `schema_version` | INTEGER | Schema version. |
+| `source_text` | TEXT | The pay span as stated on the page (e.g. `$38.00 - $46.00 per hour`, with `[OTE]` for on-target earnings), or NULL on rows written before salary extraction existed. |
 
 ### `form_observations`
 

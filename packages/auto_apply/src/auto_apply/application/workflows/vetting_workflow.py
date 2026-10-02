@@ -328,8 +328,9 @@ class VettingWorkflow:
               fallback possible, a content hash could collapse distinct
               postings into one identity and fabricate repetition findings.
               Real posting identity is item 4's.
-            * salary fields stay None: Job has no salary fields and
-              _parse_with_spacy extracts none.
+            * salary fields come from extract_salary() over the fetched
+              description (annualised USD; None when nothing is found),
+              with the as-stated span in salary_source_text.
 
         Failure containment: a research observation must never fail a vetting
         run — but it must not fail silently either; silence is how this

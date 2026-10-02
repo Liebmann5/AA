@@ -97,7 +97,7 @@ SEVERITY_FLAG: str = "flag"
 SEVERITY_CONCERN: str = "concern"
 SEVERITY_VIOLATION: str = "violation"
 
-RESEARCH_SCHEMA_VERSION: int = 2
+RESEARCH_SCHEMA_VERSION: int = 3
 RESEARCH_SALT_ENV_VAR: str = "AA_RESEARCH_SALT"
 
 # ── EventBus Event Names (Research Module) ───────────────────────────────────

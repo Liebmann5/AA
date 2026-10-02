@@ -422,9 +422,14 @@ class Session:
         atomic_write(self.messages_path, json.dumps(blob, indent=1, ensure_ascii=False))
 
     # -- transcript --------------------------------------------------
-    def banner(self, kind: str, extra: str = "") -> None:
+    def banner(self, kind: str, extra: str = "", also_thinking: bool = False) -> None:
+        """Turn separator in transcript.md. also_thinking=True writes the same
+        separator to thinking.md, so each call's reasoning is findable by turn
+        instead of running together with the call before it."""
         line = f"\n\n{'=' * 78}\n== TURN {self.turn} - {kind}{(' - ' + extra) if extra else ''}\n{'=' * 78}\n\n"
         self._append(self.transcript, line)
+        if also_thinking:
+            self._append(self.thinking, line)
 
     def write(self, text: str, to_thinking: bool = False) -> None:
         self._append(self.thinking if to_thinking else self.transcript, text)
@@ -3849,7 +3854,7 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
     if last_user:
         text = last_user["content"]
         session.write(text if len(text) < 8000 else text[:8000] + "\n[... prompt truncated in transcript ...]\n")
-    session.banner("KIMI", f"effort={args.effort}")
+    session.banner("KIMI", f"effort={args.effort}", also_thinking=True)
 
     print()
     # The input this request carries: preflight's exact count for the first
@@ -4445,6 +4450,19 @@ def absent_function():
             _sp_c, sb_c, _ = load_session_proposals(s)
             check("a file announced by bare name, emitted at its full path next turn, does not block",
                   len(_sp_c) == 1 and not sb_c, str(sb_c))
+
+            # f) thinking.md separates calls exactly as transcript.md does
+            s = Session("selftest_d")
+            for t in (1, 2):
+                s.turn = t
+                s.banner("YOU")
+                s.banner("KIMI", "effort=max", also_thinking=True)
+                s.write(f"reasoning {t}", to_thinking=True)
+            th = s.thinking.read_text(encoding="utf-8")
+            tr_marks = [m.group(1) for m in TRANSCRIPT_TURN_RE.finditer(th)]
+            check("thinking.md carries one TURN separator per call, matching transcript.md",
+                  tr_marks == ["1", "2"] and "- YOU" not in th
+                  and th.index("reasoning 1") < th.index("== TURN 2"), str(tr_marks))
         finally:
             g.update(saved_paths)
 

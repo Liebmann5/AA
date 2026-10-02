@@ -42,8 +42,14 @@ class JobPostingObservation:
         company_name: Raw company name (anonymized downstream).
         location: Location string.
         jurisdiction: Detected US jurisdiction code.
-        salary_min: Minimum disclosed salary, or None.
-        salary_max: Maximum disclosed salary, or None.
+        salary_min: Minimum disclosed salary, annualised USD, or None when
+            no US-dollar pay figure was found (see
+            domain/services/salary_extraction.py).
+        salary_max: Maximum disclosed salary, annualised USD, or None.
+        salary_source_text: The pay span as stated on the page (with an
+            "[OTE]" tag for on-target earnings), or None. The audit trail
+            for the two annualised figures; the aggregator stores it as
+            salary_observations.source_text.
         platform: Source platform identifier.
         first_seen_date: When AA first observed this exact posting.
         posting_hash: Structural hash for deduplication/lifecycle tracking.
@@ -72,6 +78,7 @@ class JobPostingObservation:
     company_domain_age_days: int | None = None
     company_has_web_presence: bool | None = None
     page_copy_id: str | None = None
+    salary_source_text: str | None = None
 
 
 @dataclass(frozen=True)

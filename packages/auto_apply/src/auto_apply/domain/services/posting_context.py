@@ -27,6 +27,7 @@ from auto_apply.domain.services.posting_observation import (
     infer_metro_area,
     looks_like_generic_apply_url,
 )
+from auto_apply.domain.services.salary_extraction import extract_salary
 from auto_apply.domain.services.signal_detectors import DetectionContext
 
 __all__ = ["posting_observation", "posting_detection_context"]
@@ -50,17 +51,26 @@ def posting_observation(
           title standing in for one;
         * ``posting_hash`` stays None (no posting identity is minted:
           re-fetched pages do not re-hash identically);
-        * salary fields stay None: nothing extracts them yet.
+        * salary fields come from extract_salary() over the description
+          (domain/services/salary_extraction.py): annualised USD, None when
+          no US-dollar pay figure is found, with the as-stated span in
+          ``salary_source_text``. An extraction failure is contained to
+          "no salary found" — it must never lose the observation.
     """
     place = location or ""
+    try:
+        pay = extract_salary(job_description) if job_description else None
+    except Exception:  # noqa: BLE001 — extraction must never lose the observation
+        pay = None
     return JobPostingObservation(
         job_title=job_title,
         job_description=job_description,
         company_name=company_name,
         location=location,
         jurisdiction=infer_jurisdiction(place),
-        salary_min=None,
-        salary_max=None,
+        salary_min=pay.salary_min if pay else None,
+        salary_max=pay.salary_max if pay else None,
+        salary_source_text=pay.source_text if pay else None,
         platform=platform,
         first_seen_date=seen_on,
         posting_hash=None,

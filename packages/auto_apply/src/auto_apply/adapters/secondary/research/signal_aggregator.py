@@ -293,6 +293,9 @@ _PHANTOM_IDENTITY_MIGRATION_VERSION: int = 4
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("research_signals", "page_copy_id", "TEXT"),
     ("detector_examinations", "page_copy_id", "TEXT"),
+    # Rows written before salary extraction read NULL: "no as-stated span
+    # recorded", which is true of them.
+    ("salary_observations", "source_text", "TEXT"),
 )
 
 
@@ -808,6 +811,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     role_title=observation.job_title,
                     platform=observation.platform,
                     jurisdiction=observation.jurisdiction,
+                    source_text=observation.salary_source_text,
                 )
         except Exception as exc:
             # Item 5, R2: counted and surfaced; class name only (C2).
@@ -1077,17 +1081,24 @@ class ResearchSignalAggregator(ResearchObserverPort):
         jurisdiction: str | None = None,
         experience_min: int | None = None,
         experience_max: int | None = None,
+        source_text: str | None = None,
     ) -> None:
         """Record a salary data point for market benchmarking.
 
         Args:
-            salary_min: Minimum salary in USD/year.
-            salary_max: Maximum salary in USD/year.
+            salary_min: Minimum salary in USD/year (annualised — see
+                domain/services/salary_extraction.py).
+            salary_max: Maximum salary in USD/year (annualised).
             role_title: Normalized job title.
             platform: Source platform.
             jurisdiction: US state/city code.
             experience_min: Min years experience required.
             experience_max: Max years experience required.
+            source_text: The pay span as stated on the page (with "[OTE]"
+                for on-target earnings), so every stored figure can be
+                audited against the text it came from. salary_type stays
+                'annual': the stored values ARE annual; the stated period
+                is visible in source_text.
         """
         if not self._enabled or (salary_min is None and salary_max is None):
             return
@@ -1100,14 +1111,16 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     """INSERT OR IGNORE INTO salary_observations
                        (obs_id, salary_min, salary_max, role_title_normalized,
                         platform, jurisdiction, experience_years_min,
-                        experience_years_max, posted_date, schema_version)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        experience_years_max, posted_date, schema_version,
+                        source_text)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (obs_id, salary_min, salary_max,
                      role_title.lower().strip(),
                      platform, jurisdiction,
                      experience_min, experience_max,
                      date.today().isoformat(),
-                     RESEARCH_SCHEMA_VERSION),
+                     RESEARCH_SCHEMA_VERSION,
+                     source_text),
                 )
             self._record_written("salary_observations", 1)
         except Exception as exc:

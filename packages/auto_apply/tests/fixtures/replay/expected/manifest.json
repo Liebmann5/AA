@@ -2,7 +2,7 @@
   "aa_version": "0.1.0",
   "artifact": {
     "name": "replay.jsonl",
-    "sha256": "a447da7a52b1a8da94ada9d23d24da907027307f4dc61d3bf859f960d819dbc4"
+    "sha256": "5c31e8d8d9ec5edcfe9cf6b4a791e10fff58de54be600a440fa9fb965b157849"
   },
   "corpus": {
     "digest": "810d75326703d4abd49900a9a9351d41e007bceda3d85ba6dd03d4e4904da27a",
@@ -106,8 +106,8 @@
       "why": "application forms are not kept as page copies"
     }
   ],
-  "research_schema_version": 2,
-  "signals": 10,
+  "research_schema_version": 3,
+  "signals": 7,
   "skipped": [
     {
       "reason": "not a readable page copy (BadGzipFile)",

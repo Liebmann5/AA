@@ -109,6 +109,22 @@ from its first tag onward.
   writing and recreated the purged database and signing key.
 - **Research export from the app and the CLI screen**, through the same
   verifiable bundle as `--export-research`.
+- **Salary extraction from posting text.** One pure domain function reads
+  US-dollar pay — ranges and single figures, hourly, weekly, biweekly,
+  semi-monthly, monthly and annual, "$100k" forms, "up to" / "starting
+  at" — and vetting, replay and
+  the research aggregator all share it, so a live run and a replay see the
+  same salary. Figures are stored as annual USD equivalents (hourly ×2,080
+  = 40 h × 52 weeks, a stated assumption) with the as-stated span saved
+  beside them (`salary_observations.source_text`). Non-USD, ambiguous or
+  conflicting figures are recorded as not found, never guessed; so is pay
+  per day, per shift or per pay period, which has no single annual
+  equivalent. A figure counts as pay only with a pay word, a range word or
+  an hourly rate beside it, so a bare "$75,000" with no label is a
+  deliberate miss: precision first. Pinned against 95 labelled strings plus
+  a 40-string held-out table with precision and recall floors; scored
+  separately on a 45-string set written independently of the rules, which
+  found the biweekly misreading fixed here.
 
 ### Changed
 
@@ -137,9 +153,22 @@ from its first tag onward.
   dialog says kept page copies are deleted either way. The page-copies choice
   has its own text, versioned separately (1.0). Anyone who agreed to 2.3 is
   asked again before collection resumes.
+- **ST-02's evidence text** no longer cites Colorado's standard on rows from
+  other jurisdictions; it names the generic good-faith range standard.
 
 ### Fixed
 
+- **ST-01 recorded violations on postings that disclosed pay.** Nothing in
+  AA read salaries, so every posting in a pay-transparency jurisdiction —
+  including ones showing their range — was recorded as a legal violation.
+  ST-01 now fires only when no US-dollar pay figure was found, respects each
+  law's effective date against the posting's own capture date, and claims
+  only what AA can know: severity `violation` only where the law covers
+  every employer (AA never knows employer size), `concern` otherwise, and a
+  single figure where a range is required is a separate `flag`. Rhode Island
+  no longer fires — its law requires disclosure only on request. Research
+  schema version is now 3; old and new rows are told apart by the
+  `schema_version` column.
 - **First-run identity defect.** GUI onboarding no longer seeds a new user with
   the template profile's identity; a whole-profile contamination check blocks a
   session start at two or more template matches.
