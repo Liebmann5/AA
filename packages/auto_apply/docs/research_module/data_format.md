@@ -78,12 +78,41 @@ This is the primary table. Every row is a single anonymised observation.
 
 The database also includes these tables, used by detectors that require
 accumulated data (lifecycle tracking, salary benchmarking, form analysis,
-application outcomes). Five more tables exist and are not yet documented
-column-by-column here: `discovery_pages`, `discovery_cards` and
-`discovery_candidates` (what the discovery surface looked like), and
-`detector_examinations` and `detector_outcomes` (one accounting row per
-detector run). All eleven tables are covered by research export and by
-consent withdrawal's delete-all.
+application outcomes). Two more tables exist and are not yet documented
+column-by-column here: `detector_examinations` and `detector_outcomes` (one
+accounting row per detector run). All eleven tables are covered by research
+export and by consent withdrawal's delete-all.
+
+### Discovery tables: `discovery_pages`, `discovery_cards`, `discovery_candidates`
+
+What the search surface looked like: one row per results page, one per result
+card on it, one per URL candidate on each card. Child rows join to their
+parent through random surrogate keys (`page_id`, `card_id`) that claim no
+sameness across observations — re-observing a page is a new page row.
+
+**Never stored:** the search query and any full URL — of the results page, of
+a card's destination, or of a candidate. Hosts are the granularity kept
+(`page_host`, `selected_host`, `resolved_host`). Text columns
+(`discovery_cards.title`, `discovery_candidates.anchor_text`) are stored as
+displayed, except that a URL rendered inside the text — a visible URL, or a
+breadcrumb such as `www.indeed.com › jobs › …` — is cut down to its host.
+`ad_evidence` names the advertising word a URL matched, never the URL's path.
+
+**Hosts can name an employer.** A platform that puts the employer in the host
+(`acme.wd5.myworkdayjobs.com`) stores it there. It also makes raw hosts a
+poor grouping variable: fifty employers on such a platform are fifty hosts,
+while fifty employers on a platform that puts the employer in the path
+(`boards.greenhouse.io/acme`) are one. Group destinations by **platform**
+instead. The `hosts:` list in each `resources/ats/*.yaml` descriptor is the
+classification AA uses (`ATSRegistry.platform_for_host`); it is applied when
+the data is read, never stored on the row, so a better list reclassifies
+every row already written. A host no list claims is reported as unclassified.
+
+| Table | Key columns |
+|---|---|
+| `discovery_pages` | `provider`, `page_host`, `page_state`, `blocked`, `architecture`, the per-page card counts, `activation_attempts` / `activation_resolved`, `learned_identity`, `observed_date` |
+| `discovery_cards` | `page_id`, `card_index`, `title`, `resolution_state`, `selected_host` |
+| `discovery_candidates` | `card_id`, `resolved_host`, `anchor_text`, `source`, `outcome`, `rejection_reason`, `ad_evidence`, `apply_intent`, `title_overlap`, `method` |
 
 ### `job_lifecycles`
 
@@ -223,6 +252,18 @@ data directory — one data file per research table, an `index.json`
 describing them, and (once signals have been signed) a `verification.json`
 carrying the public key a recipient needs to authenticate every signed row.
 CSV and NDJSON open directly in Excel, Google Sheets, or any analysis tool.
+
+### Summarise from the CLI
+
+```bash
+python -m auto_apply --research-summary
+```
+
+Prints the discovery funnel — pages by provider, state and architecture;
+cards by resolution; candidates by outcome and rejection reason; and selected
+destinations grouped by hiring platform — with every share shown against its
+denominator ("12 of 40 (30.0%)"). It opens the database read-only and never
+creates one.
 
 ---
 

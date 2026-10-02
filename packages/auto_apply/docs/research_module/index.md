@@ -66,12 +66,16 @@ opt‑in toggle in the user interface is locked and the user cannot enable it.
 The research module **never** records:
 
 - Job URLs (which could identify a user’s browsing pattern)
-- Your search queries and full result-page URLs
+- Your search queries and full web addresses (URLs). A web address shown
+  inside a link text is cut down to its host before it is stored.
 
 One honest qualification: in **signal** rows, employer names exist only as an
-irreversible anonymous code. But job titles and link texts on result pages
-are recorded exactly as displayed (see “What Is Collected”), and those may
-include employer names. If that is more than you want recorded, do not opt in.
+irreversible anonymous code. But job titles, link texts and destination hosts
+on result pages are recorded exactly as displayed (see “What Is Collected”),
+and those may include employer names — `acme.myworkdayjobs.com` names its
+employer. A results page that repeats your search words in a title or link
+text (a listing called “20 Python jobs in Sacramento”) is recorded as shown
+too. If that is more than you want recorded, do not opt in.
 - User names, emails, resume details, or any profile data
 - IP addresses or network information
 - Timestamps at a granularity that could correlate to a specific user
@@ -195,9 +199,10 @@ Full schema details are in [Data Format](data_format.md).
 - The data contains **no personally identifiable information** — not your
   name, email, IP address, or specific job URLs.
 - In signal rows, company names are stored only as an irreversible anonymous
-  code (HMAC with a private per-installation salt). Job titles and link texts
-  from result pages are stored as displayed and may name employers — the
-  consent dialog says so explicitly, in the list of what IS collected.
+  code (HMAC with a private per-installation salt). Job titles, link texts
+  and destination hosts from result pages are stored as displayed and may
+  name employers — the consent dialog says so explicitly, in the list of
+  what IS collected.
 - The **session ID** is a random UUID that changes every session. It cannot
   be linked to your identity across sessions.
 - You can **delete all research data** at any time via the Settings menu or

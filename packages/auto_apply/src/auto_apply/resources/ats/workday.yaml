@@ -11,6 +11,15 @@ url_patterns:
   - "*.wd5.myworkdayjobs.com/*/job/*"
   - "*.myworkday.com/*/job/*"
 
+# The platform's own domains (a host equal to one, or a subdomain of one).
+# Research analysis groups destinations by these, so one platform counts
+# as one destination however it names its tenants (acme.myworkdayjobs.com
+# and boards.greenhouse.io/acme are each one platform). Custom domains an
+# employer points at the platform are not listed and cannot be.
+hosts:
+  - "myworkdayjobs.com"
+  - "myworkday.com"
+
 login_wall_signals:
   - "you must sign in"
   - "please sign in"

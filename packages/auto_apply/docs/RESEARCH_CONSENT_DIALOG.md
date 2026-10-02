@@ -1,12 +1,12 @@
 ---
-title: "Research Consent Dialog — Exact UI Text (v2.2)"
+title: "Research Consent Dialog — Exact UI Text (v2.3)"
 status: needs-review
 last_verified: 2026-09-27
 verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
 audience: researchers
 ---
 
-# Research Consent Dialog — Exact UI Text (v2.2)
+# Research Consent Dialog — Exact UI Text (v2.3)
 
 This document is the AUTHORITATIVE SOURCE for the consent dialog text shown
 to users when they enable research data collection in Settings → Research.
@@ -57,9 +57,13 @@ way that changes what data is collected or how, increment
 > - Which search providers and result-page hosts your sessions visited,
 >   what those result pages looked like (job titles shown, whether a page
 >   was a block or CAPTCHA page), and the link texts and destination hosts
->   behind result links. Your search query and full result-page URLs are
->   NOT recorded. Job titles and link texts are stored exactly as shown
->   and may include employer names.
+>   behind result links. Your search query and full web addresses (URLs)
+>   are NOT recorded; a web address shown inside a link text is cut down
+>   to its host. Job titles, link texts and destination hosts are stored
+>   as shown and may include employer names (a host such as
+>   acme.myworkdayjobs.com names its employer). A results page that
+>   repeats your search words in a title or link text (a listing called
+>   "20 Python jobs in Sacramento") is stored as shown too.
 > - Which detectors ran on each posting and how each concluded, so rates
 >   in published research have a trustworthy denominator
 > - A public verification key that lets recipients confirm exported rows
@@ -73,7 +77,7 @@ way that changes what data is collected or how, increment
 > - Your answers to application questions
 > - Login credentials (never stored or logged, with or without research)
 > - Full job description text (only short excerpts proving a detected pattern)
-> - Your search queries or full result-page URLs
+> - Your search queries or full web addresses (URLs)
 >
 > How your data is used:
 >
@@ -84,8 +88,8 @@ way that changes what data is collected or how, increment
 > only aggregate statistics (e.g. "23% of postings in Sector X showed signs
 > of being ghost jobs") — never information that could identify you. Rows
 > that name an employer at all store the name only as an irreversible
-> anonymous code; job titles and link texts are recorded as displayed
-> (see above).
+> anonymous code; job titles, link texts and destination hosts are
+> recorded as displayed (see above).
 >
 > Your rights:
 >

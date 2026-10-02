@@ -10,7 +10,8 @@ Startup Sequence:
        import time.
     2. Configure structured logging.
     3. Parse command-line arguments (--cli, --debug, --check-config,
-       --seed, --profile, --portable, --export-research, --encrypt-profile).
+       --seed, --profile, --portable, --export-research, --research-summary,
+       --encrypt-profile).
     4. Initialize infrastructure (SQLite database with WAL mode).
     5. Launch the selected interface or print configuration summary.
 
@@ -36,6 +37,7 @@ Usage:
     python -m auto_apply --portable       # Force portable mode (data in ./data/)
     python -m auto_apply --export-research          # Export research signals and exit
     python -m auto_apply --export-research --export-format parquet
+    python -m auto_apply --research-summary         # Summarise discovery data, exit
     python -m auto_apply --encrypt-profile          # Encrypt the current profile
 """
 
@@ -390,6 +392,52 @@ def _handle_export_research(args) -> None:
     sys.exit(0)
 
 
+def _handle_research_summary() -> None:
+    """Print what the discovery research tables hold, then exit.
+
+    Composition only: reads the research database read-only (never creates,
+    migrates or writes it), classifies destinations by hiring platform
+    through the ATS descriptors' ``hosts`` lists so a platform counts once
+    however it names its tenants (the ATS-host confound), and hands the
+    summary to the CLI adapter to render. Does not start a session.
+    """
+    from auto_apply.adapters.primary.cli.research_summary import (
+        print_discovery_summary,
+        print_no_research_data,
+        print_research_read_error,
+    )
+    from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
+    from auto_apply.adapters.secondary.research.discovery_reader import (
+        read_discovery_rows,
+    )
+    from auto_apply.domain.config import RESEARCH_DB_PATH
+    from auto_apply.domain.services.discovery_taxonomy import summarize_discovery
+
+    try:
+        rows = read_discovery_rows(RESEARCH_DB_PATH)
+    except FileNotFoundError:
+        print_no_research_data()
+        sys.exit(0)
+    except Exception as exc:
+        print_research_read_error(exc)
+        sys.exit(1)
+
+    registry = ATSRegistry()
+    classifier = "; ".join(
+        f"{d.name}={','.join(d.hosts)}" for d in registry.all_descriptors() if d.hosts
+    ) or "none (no ATS descriptors loaded)"
+    print_discovery_summary(
+        summarize_discovery(
+            rows.pages,
+            rows.cards,
+            rows.candidates,
+            platform_for_host=registry.platform_for_host,
+            classifier=classifier,
+        )
+    )
+    sys.exit(0)
+
+
 def _handle_encrypt_profile(profile_repo) -> None:
     """Encrypt the current plaintext profile into a .vault file.
 
@@ -530,6 +578,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--research-summary",
+        action="store_true",
+        help=(
+            "Print what the discovery research tables hold (pages, cards, "
+            "candidates, destinations by hiring platform) and exit. Reads "
+            "the research database read-only; does not start a session."
+        ),
+    )
+    parser.add_argument(
         "--encrypt-profile",
         action="store_true",
         help=(
@@ -578,6 +635,10 @@ def main() -> None:
     # 4. Research export mode (exits after export — no session started)
     if args.export_research:
         _handle_export_research(args)
+
+    # 4b. Research summary mode (exits after printing — no session started)
+    if args.research_summary:
+        _handle_research_summary()
 
     # 5. Profile encryption mode (exits after encryption)
     if args.encrypt_profile:

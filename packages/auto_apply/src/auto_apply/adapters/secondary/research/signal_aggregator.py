@@ -23,6 +23,7 @@ import queue
 import sqlite3
 import threading
 import time
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from pathlib import Path
 from auto_apply.domain.constants import RESEARCH_SCHEMA_VERSION
 from auto_apply.domain.ports.research_port import (
     ApplicationOutcomeObservation,
+    DiscoveryCandidateObservation,
     DiscoveryObservation,
     FormObservation,
     JobPostingObservation,
@@ -56,6 +58,7 @@ from auto_apply.domain.services.signal_detectors import (
     ResearchSignal,
     run_all_detectors,
 )
+from auto_apply.domain.services.url_evidence import redact_rendered_urls
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +280,19 @@ _COMPANY_IDENTITY_MIGRATION_VERSION: int = 3
 #: ids are recomputable (the names are known constants, the salt is in hand),
 #: so exactly those — and nothing else — are nulled once, at first open.
 _PHANTOM_IDENTITY_MIGRATION_VERSION: int = 4
+
+
+def _candidate_hosts(cand: DiscoveryCandidateObservation) -> set[str]:
+    """Every host a candidate's own URLs name — the context the text guard
+    needs to recognise a bare ``host/path`` as a rendered URL."""
+    hosts = {cand.resolved_host}
+    for url in (cand.original_url, cand.resolved_url):
+        try:
+            hosts.add((urllib.parse.urlsplit(url).hostname or "").lower())
+        except ValueError:
+            continue
+    hosts.discard("")
+    return hosts
 
 
 class ResearchSignalAggregator(ResearchObserverPort):
@@ -1576,6 +1592,15 @@ class ResearchSignalAggregator(ResearchObserverPort):
         need); full URLs exist only in process memory for the lifetime of
         the observation.
 
+        Text guard (item 2, the follow-on to R1): link text and card titles
+        can RENDER a URL — a visible URL used as the link text, or the
+        breadcrumb a results page puts inside its link ("www.indeed.com ›
+        q-<search words>-jobs"). Both are written through
+        url_evidence.redact_rendered_urls, which cuts any rendered URL to
+        its host, so the query cannot reach the record through the text
+        columns either. This is the one place discovery text is persisted,
+        so every producer passes through it.
+
         Identity ruling (item 4c, R3): ``page_id`` / ``card_id`` /
         ``candidate_id`` are random surrogate keys minted here, at write
         time. Nothing content-derived is used — page content is measured
@@ -1608,15 +1633,20 @@ class ResearchSignalAggregator(ResearchObserverPort):
             ))
             for card in obs.cards:
                 card_id = uuid.uuid4().hex
+                card_hosts = {card.selected_host}
+                for cand in card.candidates:
+                    card_hosts.update(_candidate_hosts(cand))
                 card_rows.append((
-                    card_id, page_id, card.card_index, card.title,
+                    card_id, page_id, card.card_index,
+                    redact_rendered_urls(card.title, card_hosts),
                     card.resolution_state, card.selected_host,
                     RESEARCH_SCHEMA_VERSION,
                 ))
                 for cand in card.candidates:
                     candidate_rows.append((
                         uuid.uuid4().hex, card_id, cand.resolved_host,
-                        cand.anchor_text, cand.source, cand.outcome,
+                        redact_rendered_urls(cand.anchor_text, _candidate_hosts(cand)),
+                        cand.source, cand.outcome,
                         cand.rejection_reason,
                         json.dumps(list(cand.ad_evidence)),
                         int(cand.apply_intent), cand.title_overlap,

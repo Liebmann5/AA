@@ -45,6 +45,9 @@ from its first tag onward.
   ([ADR-017](packages/auto_apply/docs/adr/017_documentation_gate.md))
 - **Repository health files**: `SECURITY.md`, `SUPPORT.md`, `GOVERNANCE.md`,
   `DISCLAIMER.md`, issue and pull-request templates.
+- **`--research-summary`** prints what the discovery research tables hold —
+  pages, cards, candidates, and destinations grouped by hiring platform — with
+  every share shown against its denominator. Read-only; starts no session.
 
 ### Changed
 
@@ -62,6 +65,12 @@ from its first tag onward.
   significant claim.
 - **Canonical repository is GitHub**; Codeberg is a mirror. `CITATION.cff`,
   `pyproject.toml` and the documentation now agree.
+- **Research consent text 2.3.** The dialog now says that destination hosts
+  are stored as shown and can name an employer (`acme.myworkdayjobs.com`),
+  that a web address inside a link text is cut to its host, and that a results
+  page repeating your search words in a title or link text is stored as shown.
+  Anyone who agreed to an earlier version is asked again before collection
+  resumes.
 
 ### Fixed
 
@@ -84,6 +93,11 @@ from its first tag onward.
 - **Type gate floor.** An unused import forced mypy to run at 3.12 while
   `requires-python` declared 3.10; restoring the floor immediately caught a
   3.11-only API that raises on the supported minimum.
+- **Search words reached the research record through link text.** A results
+  page that renders a URL inside its link (a visible URL, or a breadcrumb
+  such as `www.indeed.com › q-<search words>-jobs`) had that text stored
+  verbatim, and advertising evidence quoted whole URL path segments. Both now
+  keep the host only, and the evidence names the advertising word it matched.
 - **Session history ordering** now sorts by the session's own `started_at`
   rather than file mtime, which collapses when a reports directory is copied to
   a USB stick.

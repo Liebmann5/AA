@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import base64
 import posixpath
+import re
 import urllib.parse
+from collections.abc import Iterable
 
 from auto_apply.domain.ports.page_understanding_port import (
     CardResolutionState,
@@ -142,9 +144,16 @@ def advertising_evidence(url: str) -> tuple[str, ...]:
         elif _url_tokens(label) & AD_TOKENS:
             evidence.append(f"host label {label!r} contains advertising token")
 
+    # A path segment is quoted by the token it matched, never by its text:
+    # this evidence is persisted (discovery_candidates.ad_evidence), and a
+    # segment such as "sponsored-<search words>" carries the user's search
+    # into the research record, which the item-4c ruling forbids. Host labels
+    # stay quoted (host granularity is what the research record keeps) and
+    # query KEYS stay quoted (keys are parameter names, not search text).
     for segment in parts.path.split("/"):
-        if segment and (_url_tokens(segment) & AD_TOKENS):
-            evidence.append(f"path segment {segment!r} contains advertising token")
+        hits = sorted(_url_tokens(segment) & AD_TOKENS) if segment else []
+        if hits:
+            evidence.append(f"path segment contains advertising token {hits}")
 
     for key, _value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
         hits = sorted(_url_tokens(key) & AD_TOKENS)
@@ -219,6 +228,88 @@ def has_pending_redirect(href: str) -> bool:
 def has_apply_intent(text: str) -> bool:
     """General intent signal: the anchor itself says the user applies."""
     return "apply" in _url_tokens(text)
+
+
+# ---------------------------------------------------------------------------
+# Research boundary: text that RENDERS a URL is cut to its host.
+# ---------------------------------------------------------------------------
+
+#: One DNS host: dot-separated labels ending in an alphabetic label.
+_HOST_RE = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}"
+
+#: A URL with a scheme, up to the next whitespace or quote.
+_SCHEME_URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+")
+
+#: A search-result breadcrumb: a host, then "›" or "»" and the rest of the
+#: line (Google renders www.indeed.com › q-<words>-jobs inside the link).
+_BREADCRUMB = re.compile(
+    rf"(?P<host>{_HOST_RE})(?::\d+)?[ \t\u00a0]*[\u203a\u00bb][^\n]*"
+)
+
+#: A bare host immediately followed by a path, query or fragment.
+_HOST_WITH_PATH = re.compile(
+    rf"(?<![\w.@-])(?P<host>{_HOST_RE})(?::\d+)?[/?#][^\s<>\"']*"
+)
+
+
+def _hosts_related(a: str, b: str) -> bool:
+    """Whether two hosts name the same site (equal, or one a subdomain of the other)."""
+    a, b = a.lower().strip("."), b.lower().strip(".")
+    return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
+
+
+def redact_rendered_urls(text: str, related_hosts: Iterable[str] = ()) -> str:
+    """Cut every URL rendered as text down to its host.
+
+    The research record keeps destination HOSTS and never full URLs (item
+    4c, R1): the set of URLs on one results page is that page's query. Link
+    text can render a URL anyway (a visible URL as the link text, or the
+    breadcrumb Google puts inside its result link), so the same cut is
+    applied to text at the research boundary. What is removed is the path,
+    query and fragment; the host survives, at the granularity the record
+    already keeps. All other text is left exactly as shown.
+
+    Three shapes are recognised without any site knowledge:
+
+    * a URL with a scheme (``https://host/path``);
+    * a breadcrumb: a host followed by "›" or "»" (the rest of that line
+      is breadcrumb);
+    * a host followed directly by ``/``, ``?`` or ``#`` when it starts with
+      ``www.`` or is related to one of ``related_hosts`` (the candidate's
+      own URLs). The relation test is what keeps ``Node.js/React`` intact
+      while ``indeed.com/q-...`` is cut.
+
+    Not recognised, by design: page text that merely repeats the words of
+    a search (a listing titled "20 Python jobs in Sacramento"). Telling
+    that apart from a job title would need the query itself, and titles
+    that match the query are exactly what a search returns. The consent
+    text discloses this limit.
+
+    Deterministic, standard library only.
+    """
+    if not text:
+        return text
+    hosts = tuple(h for h in related_hosts if h)
+
+    def _scheme(match: re.Match[str]) -> str:
+        try:
+            return (urllib.parse.urlsplit(match.group(0)).hostname or "").lower()
+        except ValueError:
+            return ""
+
+    def _keep_host(match: re.Match[str]) -> str:
+        return match.group("host")
+
+    def _host_path(match: re.Match[str]) -> str:
+        host = match.group("host")
+        www = host.lower().startswith("www.")
+        if www or any(_hosts_related(host, h) for h in hosts):
+            return host
+        return match.group(0)
+
+    text = _SCHEME_URL.sub(_scheme, text)
+    text = _BREADCRUMB.sub(_keep_host, text)
+    return _HOST_WITH_PATH.sub(_host_path, text)
 
 
 def merge_candidates(
