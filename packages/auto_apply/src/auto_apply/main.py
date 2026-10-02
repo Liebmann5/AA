@@ -11,7 +11,7 @@ Startup Sequence:
     2. Configure structured logging.
     3. Parse command-line arguments (--cli, --debug, --check-config,
        --seed, --profile, --portable, --export-research, --research-summary,
-       --research, --label, --encrypt-profile).
+       --research, --replay, --label, --encrypt-profile).
     4. Initialize infrastructure (SQLite database with WAL mode).
     5. Launch the selected interface or print configuration summary.
 
@@ -39,6 +39,7 @@ Usage:
     python -m auto_apply --export-research --export-format parquet
     python -m auto_apply --research-summary         # Summarise discovery data, exit
     python -m auto_apply --research                 # View/change research participation, exit
+    python -m auto_apply --replay <corpus folder>   # Re-run the detectors over kept pages, exit
     python -m auto_apply --label                    # Label pages and log applications
     python -m auto_apply --encrypt-profile          # Encrypt the current profile
 """
@@ -394,6 +395,36 @@ def _handle_export_research(args) -> None:
     sys.exit(0)
 
 
+def _handle_replay(args) -> None:
+    """Replay a corpus of kept page copies, then exit (item 7).
+
+    Composition only: composition_root.run_replay reads the corpus, runs the
+    pure replay and writes the artifact byte for byte; the CLI adapter
+    renders the report. Exit code 0 on success, 2 when the corpus folder
+    does not exist, 1 for any other failure.
+    """
+    from pathlib import Path
+
+    from auto_apply.adapters.primary.cli.replay_report import (
+        print_replay_error,
+        print_replay_report,
+    )
+    from auto_apply.infrastructure.composition_root import run_replay
+
+    corpus = Path(args.replay).expanduser()
+    out = Path(args.replay_out).expanduser() if args.replay_out else None
+    try:
+        report = run_replay(corpus, out)
+    except FileNotFoundError as exc:
+        print_replay_error(str(exc))
+        sys.exit(2)
+    except Exception as exc:  # noqa: BLE001 — the message is the user-facing contract
+        print_replay_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+    print_replay_report(report)
+    sys.exit(0)
+
+
 def _handle_research_summary() -> None:
     """Print what the discovery research tables hold, then exit.
 
@@ -648,6 +679,24 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--replay",
+        metavar="CORPUS",
+        default=None,
+        help=(
+            "Re-run text extraction and the research detectors over a folder "
+            "of kept page copies (*.warc.gz) — no browser, no network, no "
+            "research key — and write replay.jsonl and manifest.json. The "
+            "same folder and AA version give the same bytes on any machine. "
+            "Exits when done; starts no session."
+        ),
+    )
+    parser.add_argument(
+        "--replay-out",
+        metavar="DIR",
+        default=None,
+        help="Where --replay writes (default: reports/replay_<corpus digest> in AA's data folder).",
+    )
+    parser.add_argument(
         "--label",
         action="store_true",
         help=(
@@ -717,6 +766,10 @@ def main() -> None:
     # 4d. Research consent screen (interactive; exits when the user quits)
     if args.research:
         _handle_research()
+
+    # 4e. Replay (exits when done — no session started)
+    if args.replay:
+        _handle_replay(args)
 
     # 5. Profile encryption mode (exits after encryption)
     if args.encrypt_profile:

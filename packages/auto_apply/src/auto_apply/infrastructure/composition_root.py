@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 from auto_apply.application.services.i18n import configure_locale
 from auto_apply.application.services.mathematical_web_analyzer import MathematicalWebAnalyzer
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
     from auto_apply.adapters.secondary.research.research_exporter import (
         ExportResult,
     )
+    from auto_apply.domain.models.replay import ReplayReport
 
 # Re-export so existing callers don't break.
 __all__ = [
@@ -65,6 +67,7 @@ __all__ = [
     "build_session",
     "build_session_controller",
     "export_research_bundle",
+    "run_replay",
 ]
 
 logger = logging.getLogger(__name__)
@@ -282,6 +285,57 @@ def export_research_bundle(fmt: str = "csv") -> "ExportResult":
         )
     exporter = ResearchExporter(db_path=RESEARCH_DB_PATH, export_root=REPORTS_DIR)
     return exporter.export(formats[fmt])
+
+
+def run_replay(corpus_dir: Path, out_dir: Path | None = None) -> "ReplayReport":
+    """Replay a corpus of kept page copies and write the artifact (item 7).
+
+    No browser, no network, no research database and no research key: the
+    replay is a pure function of the corpus and this AA version
+    (domain/services/replay.py). Composition only — the corpus reader, the
+    byte-exact writer and the version are chosen here.
+
+    Args:
+        corpus_dir: A folder of ``*.warc.gz`` page copies (for example
+            AA's own ``research/page_copies``, or a corpus someone shared).
+        out_dir: Where to write; default ``reports/replay_<corpus digest
+            prefix>`` in AA's data folder, so the same corpus always lands
+            in the same place.
+
+    Raises:
+        FileNotFoundError: corpus_dir is not a folder.
+    """
+    import platform  # noqa: PLC0415
+    from importlib import metadata  # noqa: PLC0415
+
+    from auto_apply.adapters.secondary.research.replay_artifact_dir import (  # noqa: PLC0415
+        ReplayArtifactDir,
+    )
+    from auto_apply.adapters.secondary.research.warc_replay_corpus import (  # noqa: PLC0415
+        WarcReplayCorpus,
+    )
+    from auto_apply.application.services.replay_service import (  # noqa: PLC0415
+        ReplayService,
+    )
+
+    try:
+        aa_version = metadata.version("auto_apply")
+    except metadata.PackageNotFoundError:
+        aa_version = "unknown"
+
+    def sink_for(corpus_digest: str) -> ReplayArtifactDir:
+        return ReplayArtifactDir(out_dir or REPORTS_DIR / f"replay_{corpus_digest[:12]}")
+
+    return ReplayService(
+        WarcReplayCorpus(corpus_dir),
+        sink_for,
+        aa_version=aa_version,
+        environment={
+            "python": platform.python_version(),
+            "implementation": platform.python_implementation(),
+            "os": platform.system(),
+        },
+    ).run()
 
 
 # --------------------------------------------------------------------------

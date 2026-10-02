@@ -59,6 +59,7 @@ from auto_apply.domain.services.signal_detectors import (
     ResearchSignal,
     run_all_detectors,
 )
+from auto_apply.domain.services.posting_context import posting_detection_context
 from auto_apply.domain.services.url_evidence import redact_rendered_urls
 
 logger = logging.getLogger(__name__)
@@ -784,28 +785,18 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 role_key = observation.job_title.lower().strip()
                 p25, sample_size = self._compute_role_percentile(role_key, 25.0)
 
-            ctx = DetectionContext(
-                job_title=observation.job_title,
-                job_description=observation.job_description,
-                company_name=observation.company_name,
-                location=observation.location,
-                jurisdiction=observation.jurisdiction,
-                salary_min=observation.salary_min,
-                salary_max=observation.salary_max,
-                platform=observation.platform,
-                first_seen_date=updated_record.first_seen if updated_record else observation.first_seen_date,
+            # One builder for live and replay (posting_context, item 7): the
+            # aggregator adds only what it alone has — lifecycle history and
+            # the salary corpus percentile.
+            ctx = posting_detection_context(
+                observation,
+                current_date=date.today(),
+                first_seen_date=updated_record.first_seen if updated_record else None,
                 days_live=days_live(updated_record, date.today()) if updated_record else None,
-                posting_hash=observation.posting_hash,
-                times_seen_cross_platform=max(n_platforms, 1),
+                times_seen_cross_platform=n_platforms,
                 previous_posting_dates=all_first_seen,
-                application_url_is_generic=observation.application_url_is_generic,
-                metro_area=observation.metro_area,
-                company_linkedin_age_days=observation.company_linkedin_age_days,
-                company_domain_age_days=observation.company_domain_age_days,
-                company_has_web_presence=observation.company_has_web_presence,
                 salary_corpus_p25_for_role=p25,
                 salary_corpus_sample_size=sample_size,
-                page_copy_id=observation.page_copy_id,
             )
             self.submit_context(ctx)
 

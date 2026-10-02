@@ -20,7 +20,12 @@ import secrets
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 
-from auto_apply.domain.models.page_copy import PageCopy, PageSnapshot, commitment
+from auto_apply.domain.models.page_copy import (
+    PageCopy,
+    PageSnapshot,
+    PostingFacts,
+    commitment,
+)
 from auto_apply.domain.ports.page_copy_port import PageCopyStorePort
 from auto_apply.domain.services.page_redaction import redact_page
 
@@ -71,7 +76,13 @@ class NullPageCopier:
 
     is_enabled = False
 
-    def copy(self, context: str, url: str, read_html: Callable[[], str]) -> str | None:
+    def copy(
+        self,
+        context: str,
+        url: str,
+        read_html: Callable[[], str],
+        facts: PostingFacts | None = None,
+    ) -> str | None:
         return None
 
 
@@ -112,7 +123,13 @@ class PageCopier:
     def _fail(self, reason: str) -> None:
         self.failures[reason] = self.failures.get(reason, 0) + 1
 
-    def copy(self, context: str, url: str, read_html: Callable[[], str]) -> str | None:
+    def copy(
+        self,
+        context: str,
+        url: str,
+        read_html: Callable[[], str],
+        facts: PostingFacts | None = None,
+    ) -> str | None:
         if context not in COPY_CONTEXTS:
             self._fail("context_not_allowed")
             return None
@@ -145,6 +162,7 @@ class PageCopier:
             captured_at=snapshot.captured_at,
             content=content,
             redactions=redactions,
+            facts=facts,
         )
         try:
             kept = self._store.save(page_copy)

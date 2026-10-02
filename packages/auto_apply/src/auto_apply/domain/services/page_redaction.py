@@ -37,12 +37,14 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from auto_apply.domain.services.html_elements import remove_paired
+
 __all__ = ["REDACTED", "redact_page"]
 
 REDACTED = "[redacted]"
 
 #: Elements removed with everything inside them: (rule, tag names). Each is
-#: removed open-tag-to-matching-close-tag by _remove_paired, which pairs the
+#: removed open-tag-to-matching-close-tag by remove_paired (html_elements), which pairs the
 #: tags in one linear pass; an open tag with no close is then removed on its
 #: own by _LONE. A lazy ``<script.*?</script>`` regex would rescan to the end
 #: of the page from every unclosed open tag — quadratic, and a page with
@@ -60,38 +62,6 @@ _LONE: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("embed", re.compile(r"<(?:object|embed)\b[^<>]*>", re.I)),
 )
 
-
-def _remove_paired(html: str, tag: str, keep_tags: bool = False) -> tuple[str, int]:
-    """Remove every ``<tag …>…</tag>`` span, pairing each open tag with the
-    first close tag after it. Linear in the page size. With ``keep_tags``
-    only what is BETWEEN the tags goes (a textarea stays, its text does not)."""
-    opens = [m.start() for m in re.finditer(rf"<{tag}\b", html, re.I)]
-    closes = [(m.start(), m.end()) for m in re.finditer(rf"</{tag}\s*>", html, re.I)]
-    if not opens or not closes:
-        return html, 0
-    kept: list[str] = []
-    pos = 0
-    removed = 0
-    ci = 0
-    for start in opens:
-        if start < pos:
-            continue  # inside a span already removed
-        while ci < len(closes) and closes[ci][0] < start:
-            ci += 1
-        if ci == len(closes):
-            break
-        if keep_tags:
-            open_end = html.find(">", start, closes[ci][0])
-            if open_end == -1:
-                continue  # an open tag that never ends before the close: leave it
-            kept.append(html[pos : open_end + 1])
-            kept.append(html[closes[ci][0] : closes[ci][1]])
-        else:
-            kept.append(html[pos:start])
-        pos = closes[ci][1]
-        removed += 1
-    kept.append(html[pos:])
-    return "".join(kept), removed
 
 _HIDDEN_INPUT = re.compile(
     r"<input\b[^<>]*?\btype\s*=\s*[\"']?hidden[\"']?[^<>]*>", re.I
@@ -146,7 +116,7 @@ def redact_page(
 
     for rule, tags in _PAIRED:
         for tag in tags:
-            html, n = _remove_paired(html, tag)
+            html, n = remove_paired(html, tag)
             if n:
                 counts[rule] = counts.get(rule, 0) + n
     for rule, pattern in _LONE:
@@ -154,7 +124,7 @@ def redact_page(
     html = sub("event_handler", _HANDLER, "", html)
     html = sub("hidden_input", _HIDDEN_INPUT, "", html)
     html = sub("form_value", _VALUE_ATTR, r"\1", html)
-    html, n = _remove_paired(html, "textarea", keep_tags=True)
+    html, n = remove_paired(html, "textarea", keep_tags=True)
     if n:
         counts["textarea_text"] = n
     token_metas = 0

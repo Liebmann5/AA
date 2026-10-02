@@ -45,6 +45,21 @@ ALL_DETECTORS: list[SignalDetector] = (
 )
 
 
+def _detector_name(index: int, detector: SignalDetector) -> str:
+    """A detector's signal_type, or a stable stand-in if reading it raises."""
+    try:
+        return detector.signal_type
+    except Exception:
+        return f"detector_{index}:{type(detector).__name__}"
+
+
+def detector_roster() -> tuple[str, ...]:
+    """Every registered detector's name, in registry order — the roster
+    run_all_detectors reports, available without running anything (a
+    replay manifest names it even for an empty corpus, item 7)."""
+    return tuple(_detector_name(i, d) for i, d in enumerate(ALL_DETECTORS))
+
+
 def run_all_detectors(ctx: DetectionContext) -> DetectionResult:
     """Run every registered detector against a DetectionContext.
 
@@ -101,10 +116,7 @@ def run_all_detectors(ctx: DetectionContext) -> DetectionResult:
         # Name the detector BEFORE running it: if the signal_type property
         # itself raises, the outcome still has to name something — a raised
         # detector is a recorded fact, never silence (item 5, R3).
-        try:
-            signal_type = detector.signal_type
-        except Exception:
-            signal_type = f"detector_{index}:{type(detector).__name__}"
+        signal_type = _detector_name(index, detector)
         roster.append(signal_type)
         try:
             raw: list[ResearchSignal] | None = detector.detect(ctx)
@@ -163,6 +175,7 @@ def run_all_detectors(ctx: DetectionContext) -> DetectionResult:
 
 __all__ = [
     "ALL_DETECTORS",
+    "detector_roster",
     "OUTCOME_CLEAN",
     "OUTCOME_FIRED",
     "OUTCOME_RAISED",

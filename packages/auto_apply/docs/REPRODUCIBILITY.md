@@ -29,7 +29,13 @@ With the same seed, same profile, and same runtime configuration, AA produces:
 
 - Identical discovery ordering (which provider runs first, query iteration order)
 - Identical jitter and timing sequences (mouse offsets, keystroke delays)
-- Identical research signal IDs (deterministic hashing from posting hash + date)
+
+A seed makes **AA's own choices** repeatable. It cannot make a live session's
+**research output** repeatable: the job sites change between visits, and live
+signal IDs are random (no posting identity is minted — see
+`tests/architecture/test_identity_pins.py`). The research step that *is*
+repeatable, byte for byte, is replay — see [Replay](#replay-the-reproducible-step)
+below.
 
 **Requirements for bit-identical traces:**
 
@@ -48,28 +54,68 @@ needs randomness. Components use `self._rng.uniform()` instead of the global
 `secrets.SystemRandom()` directly — if you find one that does, it is a bug
 and should be reported.
 
-### Verifying Determinism
+### Replay: the reproducible step
 
-Run the same session twice and compare the research signal files:
+Two live sessions cannot produce the same research rows: the web changes
+between them. What can be re-run is the step from a page AA kept to the
+signals AA derived from it. With page copies turned on (Research screen),
+AA keeps a cleaned copy of every job page it reads; `--replay` re-runs text
+extraction and every per-posting detector over a folder of those copies —
+**no browser, no network, no research database, no research key, no clock**:
 
 ```bash
-# First run
-python -m auto_apply --seed 42 --cli --portable
-python -m auto_apply --export-research --export-format ndjson
-mv data/reports/aa_research_export_* run1_bundle
-
-# Second run (identical configuration)
-python -m auto_apply --seed 42 --cli --portable
-python -m auto_apply --export-research --export-format ndjson
-mv data/reports/aa_research_export_* run2_bundle
-
-# Compare
-diff -r run1_bundle run2_bundle
+python -m auto_apply --replay path/to/page_copies --replay-out replay_out
 ```
 
-If the two bundles differ, check that no component is using un-seeded
-randomness (common culprits: `random.choice()` in provider selection,
-`time.sleep()` without going through the injected `BehaviorSimulator`).
+It writes three files:
+
+| File | What it is | Part of the result? |
+| ---- | ---------- | ------------------- |
+| `replay.jsonl` | One canonical JSON line per page copy: the observation (title, location, jurisdiction, platform, a digest of the extracted text), the non-clean detector outcomes, and the signals | Yes |
+| `manifest.json` | Format, AA version, extraction method, detector roster, every corpus file with its sha256, the corpus and artifact digests, skipped files, and what a replay cannot reproduce | Yes — its sha256 is the **replay digest** |
+| `environment.json` | The Python version and operating system it ran on | No — outside every digest |
+
+**The claim:** the same corpus and the same AA version give the same
+`replay.jsonl` and `manifest.json`, byte for byte, on any operating system and
+Python version AA supports. CI checks it on all six legs (Linux, Windows,
+macOS × Python 3.10, 3.12): `tests/research/test_replay.py` replays a committed
+synthetic corpus (`tests/fixtures/replay/`) and requires the committed bytes,
+in-process and again in a separate process with a different hash seed.
+
+What makes it hold:
+
+- each posting is replayed **as of its capture date** — the replay's own date
+  never enters the result;
+- signal IDs are **derived** from (page copy, signal type, index), never random;
+- text is extracted by AA's own extractor (`aa-static-text/1`), not a parser
+  library whose behaviour varies by version;
+- corpus files are named by their path inside the corpus, never an absolute
+  path, and everything is sorted;
+- output is canonical JSON (sorted keys, fixed separators, UTF-8, `\n` line
+  ends) written as bytes, so Windows does not translate newlines.
+
+**What a replay does not claim** (listed in every manifest under
+`not_replayed`):
+
+- that it reproduces the live run's signals exactly. A live run reads page
+  text through the browser, which applies CSS; a replay extracts it from the
+  cleaned copy, so hidden text is included and your own details are already
+  `[redacted]`;
+- the anonymous company code (keyed by the contributor's private research
+  key), lifecycle history, the salary-corpus percentile, corpus-level macro
+  signals and form observations — none of these come from a single page.
+
+Page copies made before replay existed carry no posting facts (title,
+location, platform); they replay with no jurisdiction, so jurisdiction-based
+detectors do not fire for them. `replay.jsonl` marks them
+`"facts_recorded": false`.
+
+To change the fixture on purpose (a detector, the extractor or the record
+layout changed), regenerate it and review the diff:
+
+```bash
+AA_REPLAY_REGENERATE=1 uv run pytest tests/research/test_replay.py
+```
 
 ---
 

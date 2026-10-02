@@ -22,6 +22,19 @@ from its first tag onward.
 
 ### Added
 
+- **Replay (`--replay`).** Re-runs text extraction and every per-posting
+  research detector over a folder of kept page copies, with no browser,
+  network, research database, research key or clock, and writes
+  `replay.jsonl` and `manifest.json`. The same corpus and AA version give the
+  same bytes on any operating system and Python version; CI proves it on all
+  six legs against a committed synthetic corpus. The manifest names the AA
+  version, the extraction method, the detector roster, every corpus file
+  with its digest, and what a replay cannot reproduce. Vetting, the research
+  aggregator and replay now build a posting's observation with the same code,
+  so a replay cannot drift from a live run. Page copies now also keep the
+  listing's title, location and platform, which a replay needs to find the
+  jurisdiction.
+
 - **Typed UI contract.** `SessionRequest` and a `UIPort` driving protocol; both
   the GUI and the CLI now emit the same typed request instead of an untyped
   dict. ([ADR-014](packages/auto_apply/docs/adr/014_typed_ui_port.md))

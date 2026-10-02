@@ -343,15 +343,28 @@ def test_one_page_one_fingerprint(tmp_path: Path) -> None:
     assert (tmp_path / "2026-10-02").is_dir() and not (tmp_path / "2026-10-03").exists()
 
 
-def test_a_new_key_replaces_the_kept_copy(tmp_path: Path) -> None:
-    """GUARD — after the research key changes, the kept copy is the one the
-    newest rows name, so their fingerprints verify."""
-    _copier(tmp_path).copy("job_posting", "u", lambda: PAGE)
+def test_a_new_key_keeps_both_copies_verifiable(tmp_path: Path) -> None:
+    """GUARD — after the research key changes, the same page is kept again
+    under its new fingerprint; the older copy stays (until it expires), so
+    rows naming either fingerprint still find their copy."""
+    older = _copier(tmp_path).copy("job_posting", "u", lambda: PAGE)
     newer = _copier(tmp_path, nonce=lambda c: derive_nonce(b"rotated", c)).copy(
         "job_posting", "u", lambda: PAGE)
+    assert older != newer
+    kept = {json.loads(read_warc_records(p)[2][1])["copy_id"] for p in tmp_path.rglob("*.warc.gz")}
+    assert kept == {older, newer}
+
+
+def test_file_names_reveal_no_plain_page_hash(tmp_path: Path) -> None:
+    """TEETH (item 7) — a copy's file name comes from its keyed fingerprint,
+    never from a plain hash of the page: replay manifests publish file
+    names, and a plain page hash there would let anyone holding the same
+    public page test whether it was read."""
+    copy_id = _copier(tmp_path).copy("job_posting", "u", lambda: PAGE)
     (path,) = tmp_path.rglob("*.warc.gz")
-    meta = json.loads(read_warc_records(path)[2][1])
-    assert meta["copy_id"] == newer
+    content = read_warc_records(path)[1][1]
+    assert path.name == copy_id.split(":", 1)[1][:16] + ".warc.gz"
+    assert hashlib.sha256(content).hexdigest()[:16] not in path.name
 
 
 def test_derived_nonces_are_keyed_and_separated() -> None:

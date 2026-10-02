@@ -231,7 +231,7 @@ any web-archive tool (warcio, pywb, ReplayWeb.page). Three records per file:
 | ------ | ----- |
 | `warcinfo` | What wrote the file. |
 | `resource` | The cleaned page, with `WARC-Target-URI` (where it was read) and `WARC-Payload-Digest`. A *resource* record, not a *response*: AA has the page as the browser rendered it, not the bytes the server sent. |
-| `metadata` | JSON: `copy_id`, `nonce`, `context`, `captured_at`, `method`, and `redactions` (rule → count of what cleaning removed). |
+| `metadata` | JSON: `copy_id`, `nonce`, `context`, `captured_at`, `method`, `redactions` (rule → count of what cleaning removed), and `posting` — the listing's `job_title`, `location` and `platform`, which a replay needs to find the jurisdiction (null in copies made before replay existed). |
 
 **Cleaned before writing.** Scripts, noscript blocks, frames, objects and
 embeds, event-handler attributes, every form value, hidden input and

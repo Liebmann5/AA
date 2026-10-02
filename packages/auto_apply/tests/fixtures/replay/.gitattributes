@@ -1,0 +1,3 @@
+# Replay fixture files are compared byte for byte (item 7): never let git
+# convert their line endings or treat them as text.
+* -text

@@ -1,0 +1,77 @@
+{
+  "_about": "Synthetic job pages written for AA's replay fixture (item 7). No real employer, posting or person. 'job_title' null means the copy is made WITHOUT posting facts, as copies made before item 7 were.",
+  "postings": [
+    {
+      "url": "https://careers.example-analytics.test/jobs/1001",
+      "captured_at": "2026-09-14T16:02:11Z",
+      "job_title": "Senior Data Analyst",
+      "location": "Sacramento, CA",
+      "platform": "greenhouse",
+      "html": "<!DOCTYPE html><html><head><title>Senior Data Analyst</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>Senior Data Analyst</h1><p>Example Analytics Co is hiring a Senior Data Analyst to join our growing team.</p><h2>What you will do</h2><ul><li>Build dashboards in SQL and Python</li><li>Partner with product teams</li></ul><h2>Compensation</h2><p>Competitive pay and great benefits. Salary is commensurate with experience.</p><p>Apply today!</p></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    },
+    {
+      "url": "https://jobs.example-fintech.test/positions/2002",
+      "captured_at": "2026-09-15T09:30:00Z",
+      "job_title": "Software Engineer",
+      "location": "New York, NY",
+      "platform": "lever",
+      "html": "<!DOCTYPE html><html><head><title>Software Engineer</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>Software Engineer</h1><p>Fictional Fintech Inc. is building the future of payments.</p><p><strong>Pay range:</strong> $90,000 &ndash; $250,000 per year, depending on experience.</p><ul><li>3+ years of Python</li><li>Experience with distributed systems</li></ul></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    },
+    {
+      "url": "https://careers.example-media.test/openings/3003",
+      "captured_at": "2026-09-16T12:00:00Z",
+      "job_title": "Marketing Coordinator",
+      "location": "Austin, TX",
+      "platform": "workday",
+      "html": "<!DOCTYPE html><html><head><title>Marketing Coordinator</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>Marketing Coordinator</h1><p>We are a young, energetic team looking for digital natives! Recent graduates strongly preferred.</p><p>The ideal candidate is a culture fit who will thrive in our work hard, play hard environment. He will report to the Marketing Director.</p><p>Salary: $45,000 - $52,000.</p></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    },
+    {
+      "url": "https://jobs.example-cloud.test/req/4004",
+      "captured_at": "2026-09-17T08:45:00Z",
+      "job_title": "Junior Cloud Engineer (Entry Level)",
+      "location": "Remote",
+      "platform": "greenhouse",
+      "html": "<!DOCTYPE html><html><head><title>Junior Cloud Engineer (Entry Level)</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>Junior Cloud Engineer (Entry Level)</h1><p>This is an entry-level position.</p><h2>Requirements</h2><ul><li>8+ years of professional experience with Kubernetes</li><li>Master's degree in Computer Science required</li><li>Expert in AWS, GCP, Azure, Terraform, Rust, Go, Java, Scala, Haskell and COBOL</li></ul><p>Salary: competitive.</p></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    },
+    {
+      "url": "https://careers.example-design.test/apply/5005",
+      "captured_at": "2026-09-18T15:20:00Z",
+      "job_title": "UX Designer",
+      "location": "Denver, CO",
+      "platform": "ashby",
+      "html": "<!DOCTYPE html><html><head><title>UX Designer</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>UX Designer</h1><p>Salary range: $85,000 - $105,000 per year.</p><p>As part of the hiring process, candidates complete an unpaid take-home design project that takes approximately 15-20 hours, followed by a second unpaid trial week working with our team.</p></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    },
+    {
+      "url": "https://jobs.example-sales.test/listing/6006",
+      "captured_at": "2026-09-19T10:10:10Z",
+      "job_title": "Account Executive",
+      "location": "San Francisco, CA",
+      "platform": "lever",
+      "html": "<!DOCTYPE html><html><head><title>Account Executive</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>Account Executive</h1><p>OTE $120,000 - $160,000.</p><p>All employees must sign a non-compete agreement that prohibits working for a competitor for 24 months after leaving.</p><p>Applicants must provide current salary and salary history.</p></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    },
+    {
+      "url": "https://careers.example-health.test/jobs/7007",
+      "captured_at": "2026-09-20T13:00:00Z",
+      "job_title": "Registered Nurse",
+      "location": "Boulder, CO",
+      "platform": "workday",
+      "html": "<!DOCTYPE html><html><head><title>Registered Nurse</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>Registered Nurse</h1><p>Pay: $38.00 - $46.00 per hour. Full-time, day shift.</p><h2>Qualifications</h2><ul><li>Active Colorado RN license</li><li>BLS certification</li></ul><p>We provide reasonable accommodations to applicants with disabilities.</p><script>window.tracking = {\"session\": \"x\"};</script></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    },
+    {
+      "url": "https://www.example-retail.test/",
+      "captured_at": "2026-09-21T11:11:11Z",
+      "job_title": "Store Associate",
+      "location": "Seattle, WA",
+      "platform": "indeed",
+      "html": "<!DOCTYPE html><html><head><title>Store Associate</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>Store Associate</h1><p>Join our team! Flexible hours.</p><p>To apply, visit our website.</p><!-- old listing --><table><tr><td>Location</td><td>Seattle</td></tr></table></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    },
+    {
+      "url": "https://careers.example-legacy.test/jobs/9009",
+      "captured_at": "2026-09-01T07:00:00Z",
+      "job_title": null,
+      "location": null,
+      "platform": null,
+      "html": "<!DOCTYPE html><html><head><title>Operations Manager</title></head><body><header><nav>Jobs | About | Sign in</nav></header><main><h1>Operations Manager</h1><p>Operations Manager, Chicago, IL. Salary not disclosed. 15 years of experience required for this junior role.</p></main><footer><p>&copy; 2026 Fictional employer. All rights reserved.</p></footer></body></html>"
+    }
+  ]
+}

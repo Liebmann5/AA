@@ -33,7 +33,14 @@ import hashlib
 import hmac
 from dataclasses import dataclass
 
-__all__ = ["PageSnapshot", "PageCopy", "content_digest", "commitment", "derive_nonce"]
+__all__ = [
+    "PageSnapshot",
+    "PageCopy",
+    "PostingFacts",
+    "content_digest",
+    "commitment",
+    "derive_nonce",
+]
 
 #: Domain separation for the nonce: the research key also keys company ids,
 #: and a value derived here must never coincide with one minted there.
@@ -57,6 +64,32 @@ def derive_nonce(key: bytes, content: bytes) -> bytes:
     Deterministic per (installation, page), unguessable without the key.
     """
     return hmac.new(key, _NONCE_CONTEXT + content, hashlib.sha256).digest()[:16]
+
+
+@dataclass(frozen=True)
+class PostingFacts:
+    """What AA knew about a posting from the listing, besides its page.
+
+    Kept with a page copy (item 7) because a replay needs them to observe
+    the posting the way the live run did: the location decides the
+    jurisdiction and metro area, and with them which pay-transparency
+    detectors apply. They describe the job, not the person. The company is
+    deliberately absent: detectors use it only to mint the anonymous
+    company code, which needs the contributor's private key and is not
+    replayed.
+
+    Attributes:
+        job_title: The title as the listing showed it.
+        location: The location string as the listing showed it.
+        platform: The job board or ATS the listing came from.
+    """
+
+    job_title: str = ""
+    location: str | None = None
+    platform: str | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {"job_title": self.job_title, "location": self.location, "platform": self.platform}
 
 
 @dataclass(frozen=True)
@@ -94,6 +127,8 @@ class PageCopy:
         captured_at: UTC time the page was read (see PageSnapshot).
         content: The cleaned page, UTF-8.
         redactions: (rule, count) pairs: what cleaning removed, by rule.
+        facts: The posting facts from the listing (item 7), or None for a
+            copy made without them.
         method: How the page was obtained, stated plainly for anyone who
             later reads the copy ("rendered DOM, read after load").
     """
@@ -106,6 +141,7 @@ class PageCopy:
     content: bytes
     redactions: tuple[tuple[str, int], ...]
     method: str = "rendered DOM (browser page source after load)"
+    facts: PostingFacts | None = None
 
     @property
     def digest(self) -> str:

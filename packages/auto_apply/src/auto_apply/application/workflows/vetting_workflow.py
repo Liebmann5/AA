@@ -60,17 +60,13 @@ from auto_apply.domain.models.session_plan import SessionExecutionMode
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.types import JobStatus
 from auto_apply.application.services.page_copier import NullPageCopier
+from auto_apply.domain.models.page_copy import PostingFacts
 from auto_apply.domain.ports.page_copy_port import PageCopierPort
 from auto_apply.domain.ports.research_port import (
-    JobPostingObservation,
     NullResearchObserver,
     ResearchObserverPort,
 )
-from auto_apply.domain.services.posting_observation import (
-    infer_jurisdiction,
-    infer_metro_area,
-    looks_like_generic_apply_url,
-)
+from auto_apply.domain.services.posting_context import posting_observation
 
 logger = logging.getLogger(__name__)
 
@@ -210,8 +206,10 @@ class VettingWorkflow:
 
         try:
             self._perception_port.navigate(job.url)
-            # Canonical text path (PerceptionPort.get_page_text): works for both
-            # the live-browser and BS4 zero-browser adapters.
+            # Canonical text path (PerceptionPort.get_page_text). Every
+            # perception adapter reads it from the live browser; there is no
+            # browser-free adapter (a replay re-extracts text from a kept
+            # page copy instead: domain/services/text_extraction.py).
             text = self._perception_port.get_page_text() or ""
         except Exception as exc:
             logger.warning(
@@ -237,7 +235,16 @@ class VettingWorkflow:
         if perception is None:
             return None
         try:
-            return self._page_copier.copy("job_posting", job.url, perception.get_page_html)
+            return self._page_copier.copy(
+                "job_posting",
+                job.url,
+                perception.get_page_html,
+                PostingFacts(
+                    job_title=job.title or "",
+                    location=job.location,
+                    platform=getattr(job, "source", None),
+                ),
+            )
         except Exception as exc:  # noqa: BLE001 — a copy must never fail vetting
             logger.warning(
                 "VettingWorkflow: page copy failed (non-fatal) | url=%s error=%s",
@@ -332,20 +339,17 @@ class VettingWorkflow:
         a WARNING here means a REAL observer is broken.
         """
         try:
+            # Built by the one shared builder, so a replay of this page's
+            # copy (item 7) observes it exactly as this run did.
             self._research_observer.observe_job_posting(
-                JobPostingObservation(
+                posting_observation(
                     job_title=job.title,
                     job_description=fetch.for_research(),
                     company_name=job.company,
                     location=job.location,
-                    jurisdiction=infer_jurisdiction(job.location or ""),
-                    salary_min=None,
-                    salary_max=None,
                     platform=getattr(job, "source", None),
-                    first_seen_date=date.today(),
-                    posting_hash=None,
-                    application_url_is_generic=looks_like_generic_apply_url(job.url),
-                    metro_area=infer_metro_area(job.location or ""),
+                    url=job.url,
+                    seen_on=date.today(),
                     page_copy_id=fetch.page_copy_id,
                 )
             )

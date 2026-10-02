@@ -1,0 +1,117 @@
+{
+  "aa_version": "0.1.0",
+  "artifact": {
+    "name": "replay.jsonl",
+    "sha256": "a447da7a52b1a8da94ada9d23d24da907027307f4dc61d3bf859f960d819dbc4"
+  },
+  "corpus": {
+    "digest": "810d75326703d4abd49900a9a9351d41e007bceda3d85ba6dd03d4e4904da27a",
+    "files": [
+      {
+        "sha256": "d1055f329c655e1070627942eed3a25238949807d524b91e4a8b380a743a7ef8",
+        "source": "2026-09-01/88eb1b52382e2a63.warc.gz"
+      },
+      {
+        "sha256": "c6030d935a845f827f6cbdb813ee0a00f52721f1e3fe06f815769809c6bc86d5",
+        "source": "2026-09-14/ae86019f185ce644.warc.gz"
+      },
+      {
+        "sha256": "b6d05c0792e92e10e17f2e16dcf955cad353ff4f70b8ec6518de1f0168684c03",
+        "source": "2026-09-15/840a8db13d1df6e7.warc.gz"
+      },
+      {
+        "sha256": "93d3958fd53662e20c0a657a16cb6d66069967a3eeb16546bb1c0290879394d9",
+        "source": "2026-09-16/ca7da141ec8dabb4.warc.gz"
+      },
+      {
+        "sha256": "649e836866b80d80f2ca93cead493a23f7afb48c5d24731ada7c3e22dc98355a",
+        "source": "2026-09-17/4999a747c0f4f67f.warc.gz"
+      },
+      {
+        "sha256": "d53bc5fead342d5e74decc27476ba7b9a2a9b511078dcc7f99a9d5c0016b040a",
+        "source": "2026-09-18/c16e67576b1be759.warc.gz"
+      },
+      {
+        "sha256": "e3e51953109bc509bdb1e66cffc0489586422d92660ed5552ba4f40d33a44fe8",
+        "source": "2026-09-19/569660a6a1898ae5.warc.gz"
+      },
+      {
+        "sha256": "311c4a0f3e6b90b5da194d060a20e3d6e50ca6aeaea1c3852dd105e7a17c6766",
+        "source": "2026-09-20/190779ec55670b3f.warc.gz"
+      },
+      {
+        "sha256": "7170d53620521487b293053a605fa0a1d36d7121c3a5a6b22fde55eae3ca8e4c",
+        "source": "2026-09-21/2fc4721815ef39f2.warc.gz"
+      },
+      {
+        "sha256": "26a4adba7bb617832fff77a714ff17c099bb3ada8c285acc0e9c5e32744a2f21",
+        "source": "broken/not-a-page-copy.warc.gz"
+      }
+    ]
+  },
+  "dates": "each posting is replayed as of its own capture date; the date of the replay is never used",
+  "detectors": [
+    "GJ-01",
+    "GJ-02",
+    "GJ-03",
+    "GJ-05",
+    "DISC-01",
+    "DISC-02",
+    "DISC-03",
+    "DISC-04",
+    "DISC-06",
+    "QS-01",
+    "QS-02",
+    "QS-04",
+    "QS-05",
+    "ST-01",
+    "ST-02",
+    "ST-04",
+    "ST-03",
+    "DP-02",
+    "DP-03",
+    "DP-04",
+    "RC-01",
+    "RC-02",
+    "RC-03",
+    "GJ-04",
+    "DISC-05",
+    "DP-01",
+    "DP-05",
+    "AH-01",
+    "AH-02"
+  ],
+  "extraction": "aa-static-text/1",
+  "format": "aa-replay/1",
+  "items": 9,
+  "not_replayed": [
+    {
+      "input": "company_id",
+      "why": "the anonymous company code is keyed by the contributor's private research key; detectors use the company name for nothing else"
+    },
+    {
+      "input": "lifecycle history",
+      "why": "days live, reposting and cross-platform sightings come from the contributor's research database, not from a page"
+    },
+    {
+      "input": "salary corpus percentile",
+      "why": "the below-market comparison (ST-03) reads the contributor's salary corpus"
+    },
+    {
+      "input": "corpus-level macro signals",
+      "why": "LM-01..LM-03 are computed over a whole research database"
+    },
+    {
+      "input": "form observations",
+      "why": "application forms are not kept as page copies"
+    }
+  ],
+  "research_schema_version": 2,
+  "signals": 10,
+  "skipped": [
+    {
+      "reason": "not a readable page copy (BadGzipFile)",
+      "source": "broken/not-a-page-copy.warc.gz"
+    }
+  ]
+}

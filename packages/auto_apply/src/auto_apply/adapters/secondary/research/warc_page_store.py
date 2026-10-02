@@ -9,24 +9,29 @@ three records, each gzipped separately as the format recommends:
   ``response``: AA reads the page through a browser and has the rendered
   page, not the bytes the server sent, and the record type says so rather
   than pretending otherwise;
-* ``metadata`` — why the page was read, when, how, and what cleaning
-  removed (rule by rule).
+* ``metadata`` — why the page was read, when, how, what cleaning removed
+  (rule by rule), and what the listing said about the posting (title,
+  location, platform) for replays.
 
 Deterministic: record ids are derived from the copy's fingerprint and the
 gzip headers carry no timestamp, so the same copy always produces the same
-bytes. A page already kept under the same fingerprint is not written again;
-one kept under a different fingerprint (the research key changed) is
-replaced, so the newest rows always verify against the kept copy.
+bytes. A page already kept under the same fingerprint is not written again.
+After the research key changes, the same page gets a new fingerprint and is
+kept again under it; the older copy stays until it expires, and each
+verifies the rows that name it.
 
 Bounded: with ``max_bytes`` set, the oldest copies (by capture day) are
 deleted once the folder grows past it — a person whose only storage is a USB
 drive must not find it filled by research copies. The copy just written is
 never the one deleted.
 
-Layout: ``<root>/<YYYY-MM-DD>/<first 16 hex of sha256(page)>.warc.gz``, one
-folder per capture day, so expiry deletes whole days. The file name comes
-from the plain digest (local only); the research-row fingerprint is the
-commitment stored in the metadata record (see domain/models/page_copy.py).
+Layout: ``<root>/<YYYY-MM-DD>/<first 16 hex of the fingerprint>.warc.gz``,
+one folder per capture day, so expiry deletes whole days. The name comes
+from the fingerprint (the keyed commitment research rows carry), NOT from a
+plain hash of the page: file names appear in replay manifests (item 7), and
+a plain page hash there would let anyone holding the same public page test
+whether it is in someone's corpus — the guess the commitment exists to stop
+(see domain/models/page_copy.py).
 
 Standard library only: worst-case machines get page copies without an extra
 dependency.
@@ -101,10 +106,10 @@ class WarcPageStore:
         self.evicted = 0
 
     def _name(self, copy: PageCopy) -> str:
-        return f"{copy.digest.split(':', 1)[1][:16]}.warc.gz"
+        return f"{copy.copy_id.split(':', 1)[1][:16]}.warc.gz"
 
     def _kept(self, copy: PageCopy) -> Path | None:
-        """The file already keeping these bytes, on any day, if one exists."""
+        """The file already keeping this copy, on any day, if one exists."""
         if not self._root.is_dir():
             return None
         for found in self._root.glob(f"*/{self._name(copy)}"):
@@ -144,6 +149,10 @@ class WarcPageStore:
                 "captured_at": copy.captured_at,
                 "method": copy.method,
                 "redactions": dict(copy.redactions),
+                # What the listing said (item 7): a replay needs it to
+                # observe the posting as the live run did. null when the
+                # copy was made without it.
+                "posting": copy.facts.as_dict() if copy.facts else None,
             },
             sort_keys=True,
         ).encode("utf-8")

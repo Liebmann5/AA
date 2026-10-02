@@ -426,29 +426,33 @@ def test_research_company_identity_has_one_definition() -> None:
 EXPECTED_POSTING_IDENTITY_SITES: dict[str, IdentitySite] = {}
 
 # The consumers, and what each one does with a value nothing has ever produced:
-#   signal_aggregator        3 — forwards observation.posting_hash into two records,
-#                                and ctx.posting_hash into the item 5 examination
-#                                record. That third site is where the denominator
+#   signal_aggregator        2 — forwards observation.posting_hash into the
+#                                lifecycle record, and ctx.posting_hash into the
+#                                item 5 examination record (the context itself is
+#                                now built by posting_context, item 7). That third site is where the denominator
 #                                becomes per-posting once item 2 mints an identity;
 #                                until then the column is uniformly NULL, so
 #                                COUNT(DISTINCT posting_hash) over
 #                                detector_examinations returns 0 and the answerable
 #                                denominator is the examination count itself.
 #   applications_workflow    2 — reads job.metadata["posting_hash"], forwards it
-#   vetting_workflow         1 — passes posting_hash=None DELIBERATELY. Item 2 moved
-#                                the observation here and declined to mint an identity
-#                                from a description that may be a title fallback;
+#   posting_context          2 — the one builder vetting and replay share (item 7):
+#                                posting_observation passes posting_hash=None
+#                                DELIBERATELY (moved here from vetting_workflow, which
+#                                declined to mint an identity from a description that
+#                                may be a title fallback;
 #                                test_posting_hash_is_none_on_every_observation in
-#                                tests/workflows/test_vetting_workflow.py is the pin
-#                                that holds that choice. Item 4 turns this site into
-#                                the producer.
+#                                tests/workflows/test_vetting_workflow.py still holds
+#                                that choice), and posting_detection_context forwards
+#                                observation.posting_hash into the context. Item 4's
+#                                producer, when it exists, lands here.
 #   signal_detectors/__init__ 1 — the dedup key, so it currently dedups on None
 #
 # discovery_workflow was a consumer (2) until item 2 deleted its observation block.
 EXPECTED_POSTING_CONSUMERS: dict[str, int] = {
-    "adapters/secondary/research/signal_aggregator.py": 3,
+    "adapters/secondary/research/signal_aggregator.py": 2,
     "application/workflows/applications_workflow.py": 2,
-    "application/workflows/vetting_workflow.py": 1,
+    "domain/services/posting_context.py": 2,
     "domain/services/signal_detectors/__init__.py": 1,
 }
 
@@ -545,6 +549,9 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     # by the RETIRED construction — it mints nothing (see
     # signal_aggregator._null_phantom_company_ids), so it is not and must not
     # become an entry in EXPECTED_COMPANY_IDENTITY_SITES.
+    # Replay corpus file digests (item 7): the sha256 of each corpus file, so
+    # a manifest names exactly which bytes were replayed. A FILE identity.
+    "adapters/secondary/research/warc_replay_corpus.py": ["hashlib.sha256"],
     "adapters/secondary/research/signal_aggregator.py": ["hashlib.sha256", "hmac.new"],
     "adapters/secondary/security/data_protection.py": ["hashlib.sha256"],
     "application/services/data_processing/deduplication_manager.py": ["hashlib.md5"],
@@ -561,6 +568,10 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     # with a company_id. None of them is a company or posting identity.
     "domain/models/page_copy.py": ["hashlib.sha256", "hmac.new"],
     "domain/models/timing.py": ["hashlib.sha256"],
+    # Replay (item 7): corpus and artifact digests, the text digest in each
+    # record, and replay signal ids derived from (copy, type, index). Result
+    # identifiers — never a company or posting identity, and never keyed.
+    "domain/services/replay.py": ["hashlib.sha256"],
     "domain/services/research_identity.py": ["hmac.new"],
     "domain/services/signal_detectors/__init__.py": ["hashlib.sha256"],
     "domain/services/structural_hashing.py": ["hashlib.md5"],

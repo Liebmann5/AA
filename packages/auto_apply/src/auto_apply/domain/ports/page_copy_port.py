@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import date
 from typing import Protocol, runtime_checkable
 
-from auto_apply.domain.models.page_copy import PageCopy
+from auto_apply.domain.models.page_copy import PageCopy, PostingFacts
 
 __all__ = ["PageCopyStorePort", "PageCopierPort"]
 
@@ -59,8 +59,18 @@ class PageCopierPort(Protocol):
     def is_enabled(self) -> bool:
         ...
 
-    def copy(self, context: str, url: str, read_html: Callable[[], str]) -> str | None:
+    def copy(
+        self,
+        context: str,
+        url: str,
+        read_html: Callable[[], str],
+        facts: PostingFacts | None = None,
+    ) -> str | None:
         """Keep a cleaned copy of the page just read, if allowed.
+
+        ``facts`` (item 7) is what the listing said about the posting; it
+        is kept with the copy so a replay can observe the posting as the
+        live run did.
 
         ``read_html`` is called only when a copy will be kept, so a
         workflow pays nothing when page copies are off. Returns the copy's
