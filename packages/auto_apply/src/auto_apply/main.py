@@ -11,7 +11,7 @@ Startup Sequence:
     2. Configure structured logging.
     3. Parse command-line arguments (--cli, --debug, --check-config,
        --seed, --profile, --portable, --export-research, --research-summary,
-       --encrypt-profile).
+       --label, --encrypt-profile).
     4. Initialize infrastructure (SQLite database with WAL mode).
     5. Launch the selected interface or print configuration summary.
 
@@ -38,6 +38,7 @@ Usage:
     python -m auto_apply --export-research          # Export research signals and exit
     python -m auto_apply --export-research --export-format parquet
     python -m auto_apply --research-summary         # Summarise discovery data, exit
+    python -m auto_apply --label                    # Label pages and log applications
     python -m auto_apply --encrypt-profile          # Encrypt the current profile
 """
 
@@ -438,6 +439,39 @@ def _handle_research_summary() -> None:
     sys.exit(0)
 
 
+def _handle_label() -> None:
+    """Run the labelling tool (item 5), then exit.
+
+    Composition only: labels live in USER_DATA_DIR/annotations as
+    append-only JSON Lines; the block-pages study reads the pages AA saved
+    in USER_DATA_DIR/detector_samples. Starts no session, opens no browser
+    automation — only the person's own browser, on a safe copy.
+    """
+    from auto_apply.adapters.primary.cli.labeller import CliLabeller
+    from auto_apply.adapters.secondary.annotation.detector_sample_source import (
+        DetectorSampleSource,
+    )
+    from auto_apply.adapters.secondary.annotation.jsonl_store import (
+        JsonlAnnotationStore,
+    )
+    from auto_apply.application.services.labelling import LabellingService
+    from auto_apply.domain.config import USER_DATA_DIR
+    from auto_apply.domain.services.annotation_studies import STUDIES
+
+    annotations_dir = USER_DATA_DIR / "annotations"
+    service = LabellingService(
+        studies=STUDIES,
+        store=JsonlAnnotationStore(annotations_dir),
+        sources=(
+            DetectorSampleSource(
+                samples_dir=USER_DATA_DIR / "detector_samples",
+                view_dir=annotations_dir / "_view",
+            ),
+        ),
+    )
+    sys.exit(CliLabeller(service).run())
+
+
 def _handle_encrypt_profile(profile_repo) -> None:
     """Encrypt the current plaintext profile into a .vault file.
 
@@ -587,6 +621,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--label",
+        action="store_true",
+        help=(
+            "Label the pages AA saved and log the applications you make by "
+            "hand (item 5 of the research plan). Labels are saved as you go "
+            "in the annotations folder of AA's data directory."
+        ),
+    )
+    parser.add_argument(
         "--encrypt-profile",
         action="store_true",
         help=(
@@ -639,6 +682,10 @@ def main() -> None:
     # 4b. Research summary mode (exits after printing — no session started)
     if args.research_summary:
         _handle_research_summary()
+
+    # 4c. Labelling mode (exits when the person quits — no session started)
+    if args.label:
+        _handle_label()
 
     # 5. Profile encryption mode (exits after encryption)
     if args.encrypt_profile:

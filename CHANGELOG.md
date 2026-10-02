@@ -45,6 +45,12 @@ from its first tag onward.
   ([ADR-017](packages/auto_apply/docs/adr/017_documentation_gate.md))
 - **Repository health files**: `SECURITY.md`, `SUPPORT.md`, `GOVERNANCE.md`,
   `DISCLAIMER.md`, issue and pull-request templates.
+- **Labelling tool (`--label`).** A blind, resumable way to record ground
+  truth: say what each saved block-detector page really was, and log the
+  applications you make by hand for the paired audit. Answers are saved as
+  append-only JSON Lines; saved pages open only as copies that run no code and
+  load nothing; insights show every rate with its denominator and a 95%
+  interval. New studies are data, not code. See the Labelling user guide.
 - **Research accounting per session.** The end-of-session summary on both
   surfaces, and the saved session report's new `research` section, say what
   research collection recorded, what it could NOT record (by the step that

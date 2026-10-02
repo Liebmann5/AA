@@ -535,6 +535,10 @@ def test_posting_identity_has_exactly_one_definition() -> None:
 # becoming code. A module that computes both families is where they merge.
 #
 EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
+    # Labelling item ids (item 5): the digest of a saved page's bytes, so a
+    # label stays on its page when the file is renamed. A FILE identity —
+    # neither family below, never written to a research row.
+    "adapters/secondary/annotation/detector_sample_source.py": ["hashlib.sha256"],
     "adapters/secondary/persistence/database.py": ["hashlib.sha256"],
     "adapters/secondary/research/research_exporter.py": ["hashlib.sha256"],
     # hmac.new here is the phantom-identity migration recognising ids minted
@@ -544,6 +548,10 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     "adapters/secondary/research/signal_aggregator.py": ["hashlib.sha256", "hmac.new"],
     "adapters/secondary/security/data_protection.py": ["hashlib.sha256"],
     "application/services/data_processing/deduplication_manager.py": ["hashlib.md5"],
+    # Labelling item ids (item 5): the digest of the link a person logged, so
+    # logging the same posting twice revises one item. Local to the labels;
+    # never joined to research rows, so it is not a posting identity.
+    "application/services/labelling.py": ["hashlib.sha256"],
     "application/workflows/applications_workflow.py": ["hashlib.sha256"],
     "domain/models/math_dom.py": ["hashlib.md5"],
     "domain/models/timing.py": ["hashlib.sha256"],

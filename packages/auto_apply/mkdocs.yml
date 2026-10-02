@@ -76,6 +76,7 @@ nav:
       - Overview: user_guide/index.md
       - Running a Job Hunt: user_guide/running_a_job_hunt.md
       - Understanding the Output: user_guide/understanding_output.md
+      - Labelling: user_guide/labelling.md
       - Profiles and Privacy: user_guide/profiles_and_privacy.md
       - Admin Policy: user_guide/admin_policy.md
 
