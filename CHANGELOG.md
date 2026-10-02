@@ -99,6 +99,13 @@ from its first tag onward.
 - **Type gate floor.** An unused import forced mypy to run at 3.12 while
   `requires-python` declared 3.10; restoring the floor immediately caught a
   3.11-only API that raises on the supported minimum.
+- **Wrong pay-transparency jurisdictions and metros.** The location matchers
+  matched substrings, so "Chicago, IL" was California, "Canada" was California
+  and "Memphis, TN" was Hawaii; ST-01 then reported violations of laws that do
+  not cover the posting. On a 107-location table, 33 jurisdictions (22 of them
+  a law where none applies) and 25 metros were wrong. They now read whole
+  tokens, check a town against its stated state, and can return every
+  jurisdiction the law file defines (Rhode Island was unreachable).
 - **Search words reached the research record through link text.** A results
   page that renders a URL inside its link (a visible URL, or a breadcrumb
   such as `www.indeed.com › q-<search words>-jobs`) had that text stored
