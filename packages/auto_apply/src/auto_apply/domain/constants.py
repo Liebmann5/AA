@@ -118,4 +118,9 @@ EVENT_RESEARCH_SIGNAL_DETECTED: str = "RESEARCH_SIGNAL_DETECTED"
 # ── Research Consent ───────────────────────────────────────────────────────────
 # Current consent dialog version. Increment whenever the data collection
 # practices documented in docs/ETHICS.md change. Stored with every signal.
-CURRENT_CONSENT_VERSION: str = "2.3"
+CURRENT_CONSENT_VERSION: str = "2.4"
+
+# The page-copies consent (item 6) is a separate, specific consent with its
+# own text and version: domain/services/research_consent_text.py
+# PAGE_COPIES_BODY. Bump it whenever that text changes what is kept or how.
+CURRENT_PAGE_COPIES_VERSION: str = "1.0"

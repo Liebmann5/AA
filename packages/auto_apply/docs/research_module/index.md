@@ -182,9 +182,17 @@ directory — the single home of everything the module collects. The database
 can be exported to CSV, NDJSON, or Parquet via
 `python -m auto_apply --export-research`.
 
-The `research_signals` table has 15 columns covering signal metadata,
+The `research_signals` table has 16 columns covering signal metadata,
 evidence text, jurisdiction, platform, company anonymization, provenance
-signing, and schema versioning.
+signing, schema versioning, and the fingerprint of the page copy a signal was
+detected on.
+
+If you separately turn on **page copies**, AA also keeps a cleaned copy of
+each job posting page it reads — on this device only, as a standard WARC
+file, deleted after 90 days — so research rows can be checked against the
+pages they came from. Your own details, form values and scripts are removed
+before anything is written; search pages are never kept. See
+[Page Copies](data_format.md#page-copies).
 
 Full schema details are in [Data Format](data_format.md).
 

@@ -46,3 +46,7 @@ class ConsentRepositoryPort(Protocol):
             Number of records deleted (for user-facing confirmation).
         """
         ...
+
+    def purge_page_copies(self) -> int:
+        """Delete every kept page copy (item 6). Returns how many."""
+        ...

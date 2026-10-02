@@ -68,6 +68,11 @@ def run_all_detectors(ctx: DetectionContext) -> DetectionResult:
     signals, which have no single posting), signal_id remains a random
     UUID as before — every macro signal is distinct by definition.
 
+    PAGE COPIES (item 6): if ctx.page_copy_id is set, every returned signal
+    carries it, linking the row to the cleaned page copy kept on this
+    device. It never changes signal_id: the copy is evidence about the
+    observation, not part of its identity.
+
     Args:
         ctx: All available data for the job posting being analyzed.
 
@@ -142,6 +147,11 @@ def run_all_detectors(ctx: DetectionContext) -> DetectionResult:
             deterministic_id = hashlib.sha256(dedup_key.encode()).hexdigest()
             deduped.append(replace(sig, signal_id=deterministic_id, posting_hash=ctx.posting_hash))
         results = deduped
+
+    if ctx.page_copy_id:
+        # Item 6: every signal names the cleaned page copy it was detected
+        # on, so a row can be checked against the page it came from.
+        results = [replace(sig, page_copy_id=ctx.page_copy_id) for sig in results]
 
     ordered = sorted(results, key=lambda s: s.confidence, reverse=True)
     return DetectionResult(

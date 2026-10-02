@@ -46,6 +46,10 @@ class ResearchSignal:
             noticing "no salary disclosed in CA") collapses to one row
             via INSERT OR IGNORE — and (b) joining signals back to
             job_lifecycles / salary_observations for corpus analysis.
+        page_copy_id: Fingerprint of the cleaned page copy this signal was
+            detected on (item 6), or None. Links a row to the copy kept on
+            this device; it is not part of the signed content (see
+            ResearchSignalAggregator._write_batch).
     """
     signal_id: str
     signal_type: str
@@ -59,6 +63,7 @@ class ResearchSignal:
     detected_date: date = field(default_factory=date.today)
     schema_version: int = RESEARCH_SCHEMA_VERSION
     posting_hash: str | None = None
+    page_copy_id: str | None = None
 
     @classmethod
     def create(
@@ -186,6 +191,9 @@ class DetectionContext:
         form_wcag_violations: List of WCAG violation codes from form analysis.
         posting_hash: Structural hash of description for deduplication.
         times_seen_cross_platform: How many platforms have this posting hash.
+        page_copy_id: Fingerprint of the cleaned page copy kept for this
+            posting (item 6), or None. Detectors never read it; it is
+            carried onto every signal and the examination row.
     """
     job_title: str = ""
     job_description: str = ""
@@ -208,6 +216,7 @@ class DetectionContext:
     previous_posting_dates: list[date] = field(default_factory=list)
     company_has_warn_filing: bool = False
     estimated_completion_minutes: int | None = None
+    page_copy_id: str | None = None
 
     # ── Extended fields (Research Module v2.1) ──────────────────────────────
     # GJ-04: Apply-with-no-ATS

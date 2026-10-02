@@ -330,10 +330,10 @@ def test_platform_grouping_removes_the_confound() -> None:
 
 
 def test_consent_text_discloses_what_the_record_keeps() -> None:
-    """GUARD — the 2.3 text names destination hosts among what may name an
-    employer, and says rendered URLs are cut to their host."""
+    """GUARD — the text since 2.3 names destination hosts among what may
+    name an employer, and says rendered URLs are cut to their host."""
     body = " ".join(research_consent_text.DIALOG_BODY.split())
-    assert CURRENT_CONSENT_VERSION == "2.3"
+    assert tuple(int(p) for p in CURRENT_CONSENT_VERSION.split(".")) >= (2, 3)
     assert "Job titles, link texts and destination hosts are stored as shown" in body
     assert "a web address shown inside a link text is cut down to its host" in body
 

@@ -10,6 +10,7 @@ doesn't accidentally also erase the record that they withdrew consent
 from __future__ import annotations
 
 import logging
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -32,6 +33,15 @@ CREATE TABLE IF NOT EXISTS research_consent (
 );
 """
 
+#: Columns added after the first schema (item 6: page copies). Added to an
+#: existing consent database by _add_missing_columns, never by recreation,
+#: so a recorded decision survives the upgrade.
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("page_copies", "INTEGER NOT NULL DEFAULT 0"),
+    ("page_copies_version", "TEXT"),
+    ("page_copies_at", "TEXT"),
+)
+
 
 class SqliteConsentRepository(ConsentRepositoryPort):
     """SQLite-backed ConsentRepositoryPort implementation.
@@ -45,6 +55,9 @@ class SqliteConsentRepository(ConsentRepositoryPort):
             installation's research identity. composition_root injects
             domain.config.PROVENANCE_KEY_PATH; None disables key handling
             (tests that never signed anything).
+        page_copies_dir: The folder of kept page copies (item 6), deleted by
+            purge_page_copies() and by purge_research_data(). None means no
+            page copies are kept here.
     """
 
     def __init__(
@@ -52,13 +65,23 @@ class SqliteConsentRepository(ConsentRepositoryPort):
         consent_db_path: Path,
         research_db_path: Path,
         provenance_key_path: Path | None = None,
+        page_copies_dir: Path | None = None,
     ) -> None:
         self._consent_db_path = consent_db_path
         self._research_db_path = research_db_path
         self._provenance_key_path = provenance_key_path
+        self._page_copies_dir = page_copies_dir
         self._consent_db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._get_connection(self._consent_db_path) as conn:
             conn.executescript(_CONSENT_SCHEMA_SQL)
+            self._add_missing_columns(conn)
+
+    @staticmethod
+    def _add_missing_columns(conn: sqlite3.Connection) -> None:
+        present = {row[1] for row in conn.execute("PRAGMA table_info(research_consent)")}
+        for name, ddl in _ADDED_COLUMNS:
+            if name not in present:
+                conn.execute(f"ALTER TABLE research_consent ADD COLUMN {name} {ddl}")
 
     @contextmanager
     def _get_connection(self, path: Path):
@@ -93,6 +116,12 @@ class SqliteConsentRepository(ConsentRepositoryPort):
                     datetime.fromisoformat(row["withdrawn_at"])
                     if row["withdrawn_at"] else None
                 ),
+                page_copies=bool(row["page_copies"]),
+                page_copies_version=row["page_copies_version"],
+                page_copies_at=(
+                    datetime.fromisoformat(row["page_copies_at"])
+                    if row["page_copies_at"] else None
+                ),
             )
         except Exception as exc:
             logger.error("SqliteConsentRepository | load_consent failed: %s", exc)
@@ -104,17 +133,23 @@ class SqliteConsentRepository(ConsentRepositoryPort):
             with self._get_connection(self._consent_db_path) as conn:
                 conn.execute(
                     """INSERT INTO research_consent
-                       (id, granted, consent_version, granted_at, withdrawn_at)
-                       VALUES (1, ?, ?, ?, ?)
+                       (id, granted, consent_version, granted_at, withdrawn_at,
+                        page_copies, page_copies_version, page_copies_at)
+                       VALUES (1, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(id) DO UPDATE SET
                          granted=excluded.granted,
                          consent_version=excluded.consent_version,
                          granted_at=excluded.granted_at,
-                         withdrawn_at=excluded.withdrawn_at""",
+                         withdrawn_at=excluded.withdrawn_at,
+                         page_copies=excluded.page_copies,
+                         page_copies_version=excluded.page_copies_version,
+                         page_copies_at=excluded.page_copies_at""",
                     (
                         int(record.granted), record.consent_version,
                         record.granted_at.isoformat() if record.granted_at else None,
                         record.withdrawn_at.isoformat() if record.withdrawn_at else None,
+                        int(record.page_copies), record.page_copies_version,
+                        record.page_copies_at.isoformat() if record.page_copies_at else None,
                     ),
                 )
         except Exception as exc:
@@ -264,6 +299,9 @@ class SqliteConsentRepository(ConsentRepositoryPort):
         private provenance key is deleted so the purge also rotates the
         installation's research identity.
 
+        Kept page copies (item 6) are deleted too: they are research data
+        held on this device, and "all" means all.
+
         Not touched: the consent record itself (it lives in its own
         database and is the record that the user withdrew), and export
         bundles already written under the reports directory — they left the
@@ -285,4 +323,27 @@ class SqliteConsentRepository(ConsentRepositoryPort):
                     total_deleted,
                 )
         self._delete_provenance_key()
+        self.purge_page_copies()
         return total_deleted
+
+    def purge_page_copies(self) -> int:
+        """Delete every kept page copy (item 6). Returns how many files.
+
+        The whole folder goes, so a copy cannot survive by sitting in a
+        folder nothing knew about. A folder that cannot be removed is
+        logged and tried again by the next purge.
+        """
+        folder = self._page_copies_dir
+        if folder is None or not folder.exists():
+            return 0
+        removed = sum(1 for _ in folder.rglob("*.warc.gz"))
+        shutil.rmtree(folder, ignore_errors=True)
+        if folder.exists():
+            logger.warning(
+                "SqliteConsentRepository | some page copies in %s could not be "
+                "deleted; the next purge will try again",
+                folder,
+            )
+        else:
+            logger.info("SqliteConsentRepository | deleted %d page copies", removed)
+        return removed

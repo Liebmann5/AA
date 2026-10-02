@@ -1,12 +1,12 @@
 ---
-title: "Research Consent Dialog — Exact UI Text (v2.3)"
+title: "Research Consent Dialog — Exact UI Text (v2.4)"
 status: needs-review
 last_verified: 2026-09-27
 verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
 audience: researchers
 ---
 
-# Research Consent Dialog — Exact UI Text (v2.3)
+# Research Consent Dialog — Exact UI Text (v2.4)
 
 This document is the AUTHORITATIVE SOURCE for the consent dialog text shown
 to users when they enable research data collection in Settings → Research.
@@ -101,6 +101,10 @@ way that changes what data is collected or how, increment
 > - You can export a copy of everything collected from your sessions before
 >   deleting it
 >
+> Separately, AutoApply can also keep cleaned copies of the job pages it
+> reads, on this device only. That is a second, optional choice with its own
+> explanation, and it stays off unless you turn it on.
+>
 > Note: research collection also needs a private research key on this
 > device (the AA_RESEARCH_SALT setting). If it is missing, research stays
 > off and AutoApply works normally — your choice is remembered and takes
@@ -111,6 +115,54 @@ way that changes what data is collected or how, increment
 ## Buttons
 
 > I Agree — Enable Research Participation
+> Not Now
+
+## Page Copies (separate, optional) — v1.0
+
+Shown only after research participation is granted, and only when the
+person chooses to turn page copies on. Recorded by
+`ResearchConsentManager.grant_page_copies()` with
+`CURRENT_PAGE_COPIES_VERSION`; turned off by `withdraw_page_copies()`.
+
+> Keep Copies of the Job Pages AutoApply Reads? (Optional)
+>
+> This is a second, separate choice. It is OFF unless you turn it on,
+> and it only works while research participation is on.
+>
+> What it does:
+>
+> - When AutoApply reads a job posting, it keeps a cleaned copy of that
+>   page in the research folder on this device, so what research records
+>   can later be checked against the page it came from.
+> - Before anything is saved, AutoApply removes your own name, email,
+>   phone and address wherever they appear, every form value and hidden
+>   field, and all scripts. The page as first read is never saved.
+> - Search result pages are never kept: they contain your search.
+> - Copies are deleted automatically after 90 days (the
+>   page_copy_keep_days setting changes this), and the oldest go first once
+>   all copies together pass 200 MB (page_copy_max_mb).
+> - Copies are ordinary files and are not encrypted. On a shared or public
+>   computer, anyone who can open AutoApply's data folder can read them:
+>   leave this off on a computer you share.
+>
+> What stays the same:
+>
+> - Research rows keep only a fingerprint of each copy, never the copy,
+>   its web address or the full job description. Exported research data
+>   contains no page copies.
+> - Copies never leave this device unless a future "share pages" step
+>   asks you first and shows you exactly which pages would go.
+>
+> Your rights:
+>
+> - You can turn page copies off at any time in Settings → Research;
+>   turning them off deletes every kept copy unless you choose otherwise.
+> - Withdrawing from research deletes all copies along with everything
+>   else.
+
+Button:
+
+> Keep Cleaned Page Copies on This Device
 > Not Now
 
 ## Re-Consent Prompt (shown when `needs_reconsent()` is True)
@@ -139,6 +191,9 @@ way that changes what data is collected or how, increment
 > deleted. Files you previously exported yourself are not touched; delete
 > those separately if you want them gone. Your consent record itself is
 > kept, so AutoApply remembers that you withdrew.
+>
+> Cleaned page copies kept on this device, if you turned them on, are
+> deleted either way.
 >
 > This cannot be undone.
 

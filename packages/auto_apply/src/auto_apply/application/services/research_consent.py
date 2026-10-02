@@ -22,7 +22,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from auto_apply.domain.constants import CURRENT_CONSENT_VERSION
+from auto_apply.domain.constants import (
+    CURRENT_CONSENT_VERSION,
+    CURRENT_PAGE_COPIES_VERSION,
+)
 from auto_apply.domain.models.consent import ConsentRecord
 from auto_apply.domain.ports.consent_repository_port import ConsentRepositoryPort
 from auto_apply.domain.ports.research_consent_port import (
@@ -62,6 +65,9 @@ class InMemoryConsentRepository:
         count = self._purge_count
         self._purge_count = 0
         return count
+
+    def purge_page_copies(self) -> int:
+        return 0
 
     def _set_purge_count(self, n: int) -> None:
         """Test helper — not part of the port contract."""
@@ -309,6 +315,81 @@ class ResearchConsentManager:
         logger.info("ResearchConsent | Consent granted (version=%s)", CURRENT_CONSENT_VERSION)
         return record
 
+    # ── Page copies (item 6): a second, specific consent ─────────────────────
+
+    def page_copies_dialog(self) -> tuple[str, str]:
+        """(title, body) a surface must show before grant_page_copies()."""
+        return (
+            research_consent_text.PAGE_COPIES_TITLE,
+            research_consent_text.PAGE_COPIES_BODY,
+        )
+
+    def page_copies_on(self) -> bool:
+        """Whether the person agreed to the CURRENT page-copies text and
+        their research consent is current. Says nothing about whether
+        research actually runs; should_copy_pages() decides that."""
+        record = self._repository.load_consent()
+        return (
+            self.is_active()
+            and record.page_copies
+            and record.page_copies_version == CURRENT_PAGE_COPIES_VERSION
+        )
+
+    def should_copy_pages(self) -> bool:
+        """The ONE page-copy decision: research collection runs AND the
+        person agreed to page copies under the current text. Read on every
+        copy (not cached for the session), so turning copies off takes
+        effect at the very next page."""
+        return self.should_collect() and self.page_copies_on()
+
+    def grant_page_copies(self) -> ConsentRecord:
+        """Record agreement to keep cleaned page copies on this device.
+
+        Page copies extend research participation and are meaningless
+        without it, so a person who has not given current research consent
+        cannot grant them: that raises rather than recording a decision the
+        surface never showed the research text for.
+        """
+        if not self.is_active():
+            raise ValueError(
+                "page copies need current research consent first; show "
+                "consent_dialog() and grant() before page_copies_dialog()"
+            )
+        previous = self._repository.load_consent()
+        record = ConsentRecord(
+            granted=previous.granted,
+            consent_version=previous.consent_version,
+            granted_at=previous.granted_at,
+            withdrawn_at=previous.withdrawn_at,
+            page_copies=True,
+            page_copies_version=CURRENT_PAGE_COPIES_VERSION,
+            page_copies_at=datetime.now(timezone.utc),
+        )
+        self._repository.save_consent(record)
+        logger.info(
+            "ResearchConsent | page copies granted (version=%s)",
+            CURRENT_PAGE_COPIES_VERSION,
+        )
+        return record
+
+    def withdraw_page_copies(self, delete: bool = True) -> int:
+        """Stop keeping page copies NOW; by default delete every kept copy.
+
+        Research participation is unaffected. Returns how many copies were
+        deleted (0 when ``delete`` is False).
+        """
+        previous = self._repository.load_consent()
+        self._repository.save_consent(
+            ConsentRecord(
+                granted=previous.granted,
+                consent_version=previous.consent_version,
+                granted_at=previous.granted_at,
+                withdrawn_at=previous.withdrawn_at,
+            )
+        )
+        logger.info("ResearchConsent | page copies withdrawn")
+        return self._repository.purge_page_copies() if delete else 0
+
     def withdraw_consent(self, purge_data: bool = True) -> int:
         """Withdraw consent and optionally purge all collected research data.
 
@@ -328,6 +409,9 @@ class ResearchConsentManager:
         out, the purge still proceeds: the repository's row-deletion fallback
         exists for exactly a locked/held database.
 
+        Kept page copies are deleted in both cases (purge_research_data
+        includes them; without it they are deleted on their own).
+
         Returns:
             Number of records purged (0 if purge_data=False).
         """
@@ -346,4 +430,8 @@ class ResearchConsentManager:
             count = self._repository.purge_research_data()
             logger.info("ResearchConsent | Purged %d research records", count)
             return count
+        # Page copies (item 6) go either way: they exist only to check
+        # research rows against their pages while the person participates,
+        # and the withdraw text promises they are deleted.
+        self._repository.purge_page_copies()
         return 0

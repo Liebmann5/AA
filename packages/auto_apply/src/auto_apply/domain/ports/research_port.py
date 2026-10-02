@@ -52,6 +52,9 @@ class JobPostingObservation:
         company_linkedin_age_days: Enrichment data, if available.
         company_domain_age_days: Enrichment data, if available.
         company_has_web_presence: Enrichment data, if available.
+        page_copy_id: Fingerprint of the cleaned page copy kept on this
+            device for this posting (item 6), or None when page copies are
+            off or no copy was kept. Never the copy, never its address.
     """
     job_title: str = ""
     job_description: str = ""
@@ -68,6 +71,7 @@ class JobPostingObservation:
     company_linkedin_age_days: int | None = None
     company_domain_age_days: int | None = None
     company_has_web_presence: bool | None = None
+    page_copy_id: str | None = None
 
 
 @dataclass(frozen=True)

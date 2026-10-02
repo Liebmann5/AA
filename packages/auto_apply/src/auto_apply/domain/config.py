@@ -132,6 +132,11 @@ RESEARCH_DB_PATH: Path = RESEARCH_DIR / "research_signals.db"
 # the key that signs their rows.
 PROVENANCE_KEY_PATH: Path = USER_DATA_DIR / "provenance_key.pem"
 
+# Cleaned copies of the job pages AA read (item 6), kept on this device only
+# when the person turned page copies on. Inside RESEARCH_DIR, so withdrawing
+# from research deletes them with everything else.
+PAGE_COPIES_DIR: Path = RESEARCH_DIR / "page_copies"
+
 # Browser profile (Chromium user-data-dir).
 # ``USER_DATA_DIR`` env var is set by the launcher to keep the profile on the
 # drive rather than under the host user's home directory.

@@ -554,6 +554,12 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     "application/services/labelling.py": ["hashlib.sha256"],
     "application/workflows/applications_workflow.py": ["hashlib.sha256"],
     "domain/models/math_dom.py": ["hashlib.md5"],
+    # Page copies (item 6): the plain digest of a cleaned copy's bytes (local
+    # file name and WARC payload digest, never in a row), the nonce
+    # commitment research rows carry, and the nonce itself — HMAC under the
+    # research key with its own context label, so it can never coincide
+    # with a company_id. None of them is a company or posting identity.
+    "domain/models/page_copy.py": ["hashlib.sha256", "hmac.new"],
     "domain/models/timing.py": ["hashlib.sha256"],
     "domain/services/research_identity.py": ["hmac.new"],
     "domain/services/signal_detectors/__init__.py": ["hashlib.sha256"],

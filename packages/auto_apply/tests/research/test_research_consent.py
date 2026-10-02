@@ -728,6 +728,9 @@ def test_dialog_doc_contains_the_canonical_text_verbatim():
         *research_consent_text.RECONSENT_BODY_TEMPLATE.splitlines(),
         research_consent_text.WITHDRAW_TITLE,
         *research_consent_text.WITHDRAW_BODY.splitlines(),
+        research_consent_text.PAGE_COPIES_TITLE,
+        *research_consent_text.PAGE_COPIES_BODY.splitlines(),
+        research_consent_text.PAGE_COPIES_AGREE_LABEL,
     ]
     missing = [
         line.strip()

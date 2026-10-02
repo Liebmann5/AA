@@ -86,6 +86,11 @@ perception_strategy: math
 # ─────────────────────────────────────────────────────────────────────────────
 store_session_logs: true
 log_retention_days: 30
+# Cleaned job-page copies (research, separate opt-in; see
+# docs/RESEARCH_CONSENT_DIALOG.md) are deleted this many days after capture,
+# and the oldest go first once all copies together pass page_copy_max_mb.
+page_copy_keep_days: 90
+page_copy_max_mb: 200
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Vetting workflow tuning

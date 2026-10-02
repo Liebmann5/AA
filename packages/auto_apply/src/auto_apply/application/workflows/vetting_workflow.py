@@ -59,6 +59,8 @@ from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.session_plan import SessionExecutionMode
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.types import JobStatus
+from auto_apply.application.services.page_copier import NullPageCopier
+from auto_apply.domain.ports.page_copy_port import PageCopierPort
 from auto_apply.domain.ports.research_port import (
     JobPostingObservation,
     NullResearchObserver,
@@ -98,10 +100,15 @@ class FetchedDescription:
     ``for_research()`` is the single place where the fallback becomes an
     honest empty string: the observation path cannot receive title-shaped
     text without writing that choice out explicitly.
+
+    ``page_copy_id`` is the fingerprint of the cleaned page copy kept for
+    this fetch (item 6), or None — always None unless the text came from the
+    page and the person turned page copies on.
     """
 
     text: str
     from_page: bool
+    page_copy_id: str | None = None
 
     def for_research(self) -> str:
         """The text safe to record as a job description: "" unless it came from the page."""
@@ -135,6 +142,7 @@ class VettingWorkflow:
         borderline_band: tuple[float, float] = (0.45, 0.65),
         weights: dict[str, float] | None = None,
         research_observer: ResearchObserverPort | None = None,
+        page_copier: PageCopierPort | None = None,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -152,6 +160,9 @@ class VettingWorkflow:
             borderline_band: Fit scores in this range trigger GPT4All reasoning.
             weights: Per-filter weight overrides. Defaults to DEFAULT_WEIGHTS.
             research_observer: ResearchObserverPort — research data collector (optional).
+            page_copier: PageCopierPort — keeps a cleaned copy of each job page
+                read, when the person turned page copies on. Defaults to
+                NullPageCopier (nothing read, nothing kept).
         """
         self._profile = profile
         self._filters = filters
@@ -166,6 +177,7 @@ class VettingWorkflow:
         self._borderline_band = borderline_band
         self._weights = weights or self.DEFAULT_WEIGHTS
         self._research_observer = research_observer or NullResearchObserver()
+        self._page_copier: PageCopierPort = page_copier or NullPageCopier()
 
     def _cfg(self, key: str, default: Any) -> Any:
         """Read a dot-path config key from self._config with a default fallback."""
@@ -209,8 +221,29 @@ class VettingWorkflow:
             return FetchedDescription(text=job.title or "", from_page=False)
 
         if text:
-            return FetchedDescription(text=text, from_page=True)
+            return FetchedDescription(
+                text=text, from_page=True, page_copy_id=self._keep_page_copy(job)
+            )
         return FetchedDescription(text=job.title or "", from_page=False)
+
+    def _keep_page_copy(self, job: Job) -> str | None:
+        """Keep a cleaned copy of the job page just read, if allowed (item 6).
+
+        Only reached when the page gave real text, so a copy and a research
+        row always describe the same page. The copier never raises; the
+        guard here is for a copier that breaks that promise.
+        """
+        perception = self._perception_port
+        if perception is None:
+            return None
+        try:
+            return self._page_copier.copy("job_posting", job.url, perception.get_page_html)
+        except Exception as exc:  # noqa: BLE001 — a copy must never fail vetting
+            logger.warning(
+                "VettingWorkflow: page copy failed (non-fatal) | url=%s error=%s",
+                job.url, exc,
+            )
+            return None
 
     def _parse_with_spacy(self, job: Job, description: str) -> ParsedJobDescription:
         """Run NLP extraction on the job description and store results in metadata.
@@ -313,6 +346,7 @@ class VettingWorkflow:
                     posting_hash=None,
                     application_url_is_generic=looks_like_generic_apply_url(job.url),
                     metro_area=infer_metro_area(job.location or ""),
+                    page_copy_id=fetch.page_copy_id,
                 )
             )
         except Exception as exc:

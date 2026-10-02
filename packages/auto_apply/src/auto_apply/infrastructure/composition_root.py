@@ -24,6 +24,7 @@ from auto_apply.application.services.mathematical_web_analyzer import Mathematic
 from auto_apply.domain.config import (
     DB_PATH,
     IS_FROZEN,
+    PAGE_COPIES_DIR,
     PROVENANCE_KEY_PATH,
     RESEARCH_DB_PATH,
     USER_DATA_DIR,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     #from auto_apply.application.agent.task_kernel import TaskKernel
     from auto_apply.domain.models.profile import UserProfile
     from auto_apply.application.services.research_consent import ResearchConsentManager
+    from auto_apply.domain.ports.page_copy_port import PageCopierPort
     from auto_apply.application.services.session_controller import SessionController
     from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
@@ -54,6 +56,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CapabilitiesRegistry",
     "build_orchestrator",
+    "build_page_copier",
     "build_research_consent",
     "build_session",
     "build_session_controller",
@@ -141,6 +144,7 @@ def build_research_consent(
         consent_db_path=USER_DATA_DIR / "research_consent.db",
         research_db_path=RESEARCH_DB_PATH,
         provenance_key_path=PROVENANCE_KEY_PATH,
+        page_copies_dir=PAGE_COPIES_DIR,
     )
     return ResearchConsentManager(
         repo,
@@ -149,6 +153,88 @@ def build_research_consent(
         # explicit True prohibits. It also keeps MagicMock-built registries
         # (tests) from reading as prohibitions.
         admin_prohibited=getattr(policy, "disable_research_collection", None) is True,
+    )
+
+
+def _positive_int_setting(registry: CapabilitiesRegistry, key: str) -> int:
+    """A positive int setting from the effective config; anything else falls
+    back to runtime_defaults.yaml's value (via the parity-pinned
+    _RUNTIME_DEFAULTS), never to a second literal here (Absolute Rule 2)."""
+    from auto_apply.infrastructure.registry import _RUNTIME_DEFAULTS  # noqa: PLC0415
+
+    value = registry.get_effective_config(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return int(_RUNTIME_DEFAULTS[key])
+    return value
+
+
+def build_page_copier(
+    registry: CapabilitiesRegistry,
+    consent_service: "ResearchConsentManager",
+    profile: object,
+    research_active: bool,
+) -> "PageCopierPort":
+    """Expire old page copies, then build the session's page copier (item 6).
+
+    Expiry runs on EVERY build, whatever the consent state: copies kept
+    before the person turned page copies off (choosing to keep them) still
+    reach their deletion date. A copier that keeps pages is built only when
+    research is actually recording this session AND the person agreed to
+    page copies; it re-reads that agreement before every copy, and the
+    background writer re-reads it before every write, so turning copies off
+    mid-session stops the next one. Anything else gets NullPageCopier,
+    which reads and keeps nothing.
+
+    Writes go through QueuedPageCopyStore: vetting reads and cleans the
+    page, the disk work happens on a background writer ("Non-Blocking by
+    Design", docs/research_module/index.md).
+    """
+    from datetime import date  # noqa: PLC0415
+
+    from auto_apply.adapters.secondary.research.queued_page_store import (  # noqa: PLC0415
+        QueuedPageCopyStore,
+    )
+    from auto_apply.adapters.secondary.research.warc_page_store import (  # noqa: PLC0415
+        WarcPageStore,
+    )
+    from auto_apply.application.services.page_copier import (  # noqa: PLC0415
+        NullPageCopier,
+        PageCopier,
+        own_details,
+    )
+    from auto_apply.domain.models.page_copy import derive_nonce  # noqa: PLC0415
+    from auto_apply.domain.services.research_identity import (  # noqa: PLC0415
+        ResearchSaltError,
+        resolve_research_salt,
+    )
+
+    keep_days = _positive_int_setting(registry, "page_copy_keep_days")
+    max_mb = _positive_int_setting(registry, "page_copy_max_mb")
+    store = WarcPageStore(PAGE_COPIES_DIR, max_bytes=max_mb * 1024 * 1024)
+    try:
+        expired = store.expire(date.today(), keep_days)
+        if expired:
+            logger.info("Page copies | deleted %d copies older than %d days", expired, keep_days)
+    except Exception as exc:  # noqa: BLE001 — expiry retries at the next build
+        logger.warning("Page copies | expiry failed (%s); retried next session", type(exc).__name__)
+
+    if not research_active or not consent_service.should_copy_pages():
+        return NullPageCopier()
+    try:
+        key = resolve_research_salt().encode("utf-8")
+    except ResearchSaltError:
+        # should_collect() checked the key; one that vanished since means no
+        # copies, not copies under a weaker nonce.
+        logger.warning("Page copies | research key unavailable; no copies this session")
+        return NullPageCopier()
+    values, names = own_details(getattr(profile, "personal_info", None))
+    logger.info("Page copies | on: cleaned job pages are kept on this device")
+    return PageCopier(
+        QueuedPageCopyStore(store, allowed=consent_service.should_copy_pages),
+        own_values=values,
+        own_names=names,
+        allowed=consent_service.should_copy_pages,
+        nonce=lambda content: derive_nonce(key, content),
     )
 
 
@@ -916,6 +1002,12 @@ def build_orchestrator(  # noqa: PLR0914
         perception_port=perception_port,
         config=_effective_config,
         research_observer=research_observer,
+        page_copier=build_page_copier(
+            registry,
+            consent_service,
+            profile,
+            research_active=not isinstance(research_observer, NullResearchObserver),
+        ),
     )
 
     # ApplicationsWorkflow — try to construct each optional component.

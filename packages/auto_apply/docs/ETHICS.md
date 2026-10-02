@@ -23,7 +23,13 @@ checklist for data science and software projects involving data collection.
   table, the database files, and the installation's research signing key are
   removed.
 - [x] **Data minimization**: Only the minimum data needed for each research signal is
-  collected. Full job descriptions are never stored; only anonymized excerpts ≤200 chars.
+  collected. Full job descriptions are never stored in research data; only anonymized
+  excerpts ≤200 chars. A separate, optional choice (page copies, off unless turned on
+  and only while research participation is on) keeps cleaned copies of job posting
+  pages on the device only — the person's own details, form values, hidden fields
+  and scripts removed before writing, search pages never kept — so rows can be
+  checked against their pages. Research rows carry only a fingerprint of a copy;
+  export carries no copies.
 - [x] **Anonymization**: Company names are HMAC-SHA256 anonymized. No personally
   identifiable information (PII) is ever stored in research tables.
 - [x] **Third-party data**: Research data may include signals from third-party job
@@ -37,8 +43,12 @@ checklist for data science and software projects involving data collection.
 - [x] **Access controls**: Research data is stored locally on the user's device.
   No data is transmitted to external servers without explicit user action (export).
 - [x] **Data retention**: Research data is kept until the user withdraws and purges
-  it or deletes it; there is no automatic expiry. (An earlier draft of this document
-  promised a configurable 90-day default; that mechanism was never built.)
+  it or deletes it; there is no automatic expiry for research rows. (An earlier draft
+  of this document promised a configurable 90-day default; that mechanism was never
+  built for rows.) Page copies, the separate opt-in above, do expire: after 90 days by
+  default (`page_copy_keep_days`), oldest first past 200 MB (`page_copy_max_mb`), and
+  on any withdrawal from research. They are not encrypted; the consent text says to
+  leave them off on a shared computer.
 - [x] **Breach response**: In the event of a discovered vulnerability affecting
   research data, users will be notified via the project's issue tracker within 72 hours.
 

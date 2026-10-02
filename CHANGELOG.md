@@ -57,6 +57,22 @@ from its first tag onward.
   failed, counted in records) and what it recorded in a weaker form — such as
   a signal written without its provenance signature. Every site that loses or
   weakens research data now counts it; before, most were a log line only.
+- **Page copies (research, a separate opt-in).** When the person turns them
+  on — only possible while research participation is on — AA keeps a cleaned
+  copy of each job posting page it reads, on this device only, as a standard
+  WARC file. Cleaning happens before anything is written: the person's own
+  name, email, phone and street address, every form value and hidden field,
+  scripts, frames and token tags are removed; the page as first read is never
+  saved. Search result pages are never copied. Research rows gain a
+  `page_copy_id` — a fingerprint (a salted commitment, so it cannot be matched
+  against public pages to reveal which postings someone read) that proves a
+  row came from a kept copy. Copies are written by a background writer, so
+  they never slow a session. They are deleted after 90 days
+  (`page_copy_keep_days`), oldest first past 200 MB (`page_copy_max_mb`), when
+  page copies are turned off (unless the person chooses to keep them) and on
+  any withdrawal from research. Export contains no page copies. The consent
+  text says copies are not encrypted and should stay off on a shared
+  computer.
 - **`--research-summary`** prints what the discovery research tables hold —
   pages, cards, candidates, and destinations grouped by hiring platform — with
   every share shown against its denominator. Read-only; starts no session.
@@ -83,6 +99,11 @@ from its first tag onward.
   page repeating your search words in a title or link text is stored as shown.
   Anyone who agreed to an earlier version is asked again before collection
   resumes.
+- **Research consent text 2.4.** The dialog says page copies exist as a
+  second, separate choice that stays off unless turned on, and the withdraw
+  dialog says kept page copies are deleted either way. The page-copies choice
+  has its own text, versioned separately (1.0). Anyone who agreed to 2.3 is
+  asked again before collection resumes.
 
 ### Fixed
 

@@ -83,6 +83,7 @@ class _DetectorExamination:
     signals_fired: int
     detectors_raised: int
     outcomes: tuple[DetectorOutcome, ...]
+    page_copy_id: str | None = None
 
 # ── SQLite schema (version 2 + provenance columns) ───────────────────────────
 _SCHEMA_SQL = """
@@ -104,7 +105,8 @@ CREATE TABLE IF NOT EXISTS research_signals (
     consent_version TEXT,
     posting_hash    TEXT,
     content_hash    TEXT,
-    provenance_signature TEXT
+    provenance_signature TEXT,
+    page_copy_id    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS job_lifecycles (
@@ -230,7 +232,8 @@ CREATE TABLE IF NOT EXISTS detector_examinations (
     signals_fired      INTEGER NOT NULL,
     detectors_raised   INTEGER NOT NULL,
     examined_date      TEXT NOT NULL,
-    schema_version     INTEGER DEFAULT 2
+    schema_version     INTEGER DEFAULT 2,
+    page_copy_id       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS detector_outcomes (
@@ -281,6 +284,15 @@ _COMPANY_IDENTITY_MIGRATION_VERSION: int = 3
 #: ids are recomputable (the names are known constants, the salt is in hand),
 #: so exactly those — and nothing else — are nulled once, at first open.
 _PHANTOM_IDENTITY_MIGRATION_VERSION: int = 4
+
+#: Columns added after a table first shipped (table, column, type). A
+#: database created before them gains them by ALTER TABLE at open, never by
+#: recreation; rows written earlier read NULL — "no page copy", which is
+#: true of them (item 6).
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("research_signals", "page_copy_id", "TEXT"),
+    ("detector_examinations", "page_copy_id", "TEXT"),
+)
 
 
 def _candidate_hosts(cand: DiscoveryCandidateObservation) -> set[str]:
@@ -414,6 +426,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             with self._get_connection() as conn:
                 conn.executescript(_SCHEMA_SQL)
+                self._add_missing_columns(conn)
                 self._null_legacy_company_ids(conn)
                 self._null_phantom_company_ids(conn)
             self._db_ready = True
@@ -424,6 +437,14 @@ class ResearchSignalAggregator(ResearchObserverPort):
             # Nothing this session observes can be recorded, and how much
             # that is cannot be counted; the report must at least say so.
             self._record_degraded("database_init")
+
+    @staticmethod
+    def _add_missing_columns(conn: sqlite3.Connection) -> None:
+        """Add every _ADDED_COLUMNS column a database created earlier lacks."""
+        for table, column, ddl in _ADDED_COLUMNS:
+            present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in present:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def _null_legacy_company_ids(self, conn: sqlite3.Connection) -> None:
         """NULL every pre-migration research ``company_id``, exactly once.
@@ -624,6 +645,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     outcomes=tuple(
                         o for o in result.outcomes if o.outcome != OUTCOME_CLEAN
                     ),
+                    page_copy_id=ctx.page_copy_id,
                 )
             )
             if result.signals:
@@ -783,6 +805,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 company_has_web_presence=observation.company_has_web_presence,
                 salary_corpus_p25_for_role=p25,
                 salary_corpus_sample_size=sample_size,
+                page_copy_id=observation.page_copy_id,
             )
             self.submit_context(ctx)
 
@@ -1630,6 +1653,11 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 try:
                     # Compute a deterministic content hash over the fields
                     # that constitute the signal's evidentiary payload.
+                    # page_copy_id (item 6) is deliberately NOT signed: it
+                    # is a local link to a copy that may expire or be
+                    # deleted, and adding it would change the hash of every
+                    # signal ever written. Binding rows to page copies
+                    # cryptographically belongs to the attestation item.
                     content = json.dumps({
                         "signal_type": s.signal_type,
                         "severity": s.severity,
@@ -1659,6 +1687,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 s.detected_date.isoformat(),
                 s.schema_version, self._consent_version,
                 s.posting_hash, content_hash, provenance_signature,
+                s.page_copy_id,
             ))
 
         try:
@@ -1669,8 +1698,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                         evidence_text, platform, jurisdiction, company_id,
                         job_category, detected_date, schema_version,
                         consent_version, posting_hash,
-                        content_hash, provenance_signature)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        content_hash, provenance_signature, page_copy_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     rows,
                 )
             # rowcount sums executemany's inserts; INSERT OR IGNORE skips a
@@ -1849,6 +1878,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 json.dumps(list(exam.detectors_roster)),
                 exam.detectors_fired, exam.signals_fired,
                 exam.detectors_raised, examined_date, RESEARCH_SCHEMA_VERSION,
+                exam.page_copy_id,
             ))
             for outcome in exam.outcomes:
                 outcome_rows.append((
@@ -1863,8 +1893,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                        (examination_id, posting_hash, platform, jurisdiction,
                         detectors_run, detectors_roster, detectors_fired,
                         signals_fired, detectors_raised, examined_date,
-                        schema_version)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        schema_version, page_copy_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     exam_rows,
                 )
                 if outcome_rows:

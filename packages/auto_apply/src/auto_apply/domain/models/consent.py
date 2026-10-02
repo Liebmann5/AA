@@ -29,9 +29,17 @@ class ConsentRecord:
         consent_version: The version of the consent dialog the user agreed to.
         granted_at: UTC timestamp when consent was granted (None if never granted).
         withdrawn_at: UTC timestamp when consent was withdrawn (None if active).
+        page_copies: Whether the person ALSO allowed cleaned copies of the job
+            pages AA reads to be kept on this device (item 6). A separate,
+            specific consent: it needs research consent, and never implies it.
+        page_copies_version: The page-copies text version agreed to.
+        page_copies_at: UTC timestamp of that agreement.
     """
 
     granted: bool = False
     consent_version: str | None = None
     granted_at: datetime | None = None
     withdrawn_at: datetime | None = None
+    page_copies: bool = False
+    page_copies_version: str | None = None
+    page_copies_at: datetime | None = None

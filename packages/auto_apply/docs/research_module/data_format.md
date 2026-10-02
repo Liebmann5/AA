@@ -64,6 +64,7 @@ This is the primary table. Every row is a single anonymised observation.
 | `posting_hash` | TEXT | Structural hash of the job posting for lifecycle tracking and deduplication. | `e4f5a6b7...` |
 | `content_hash` | TEXT | SHA‑256 of the signal’s evidentiary payload (used for provenance signing). | `b8c9d0e1...` |
 | `provenance_signature` | TEXT | Hex‑encoded Ed25519 signature of `content_hash` using an installation‑unique key. | `9f8e7d6c...` |
+| `page_copy_id` | TEXT | Fingerprint of the cleaned page copy this signal was detected on, kept on the contributor's device (see [Page Copies](#page-copies)). NULL when page copies were off or no copy was kept, and on every row written before page copies existed. **Not** part of the signed content. | `commit-sha256:5d1e...` |
 
 !!! warning "PII safety"
     The `evidence_text` column is passed through a PII‑redacting filter that
@@ -80,7 +81,8 @@ The database also includes these tables, used by detectors that require
 accumulated data (lifecycle tracking, salary benchmarking, form analysis,
 application outcomes). Two more tables exist and are not yet documented
 column-by-column here: `detector_examinations` and `detector_outcomes` (one
-accounting row per detector run). All eleven tables are covered by research
+accounting row per detector run). `detector_examinations` carries the same
+`page_copy_id` column as `research_signals`. All eleven tables are covered by research
 export and by consent withdrawal's delete-all.
 
 ### Discovery tables: `discovery_pages`, `discovery_cards`, `discovery_candidates`
@@ -211,6 +213,66 @@ This table has exactly one row.
 
 ---
 
+## Page Copies
+
+A second, separate opt-in (its own consent text, versioned on its own; see
+[the consent dialog](../RESEARCH_CONSENT_DIALOG.md)). Only while research
+participation is on, AA keeps a **cleaned** copy of each job posting page it
+reads, so a research row can later be checked against the page it came from.
+
+**Where.** `research/page_copies/<YYYY-MM-DD>/<16 hex>.warc.gz` inside AA's
+data directory — one folder per capture day, one file per distinct page.
+Copies never leave the device: research export contains no page copies.
+
+**Format.** WARC/1.1 (ISO 28500), each record gzipped separately, readable by
+any web-archive tool (warcio, pywb, ReplayWeb.page). Three records per file:
+
+| Record | Holds |
+| ------ | ----- |
+| `warcinfo` | What wrote the file. |
+| `resource` | The cleaned page, with `WARC-Target-URI` (where it was read) and `WARC-Payload-Digest`. A *resource* record, not a *response*: AA has the page as the browser rendered it, not the bytes the server sent. |
+| `metadata` | JSON: `copy_id`, `nonce`, `context`, `captured_at`, `method`, and `redactions` (rule → count of what cleaning removed). |
+
+**Cleaned before writing.** Scripts, noscript blocks, frames, objects and
+embeds, event-handler attributes, every form value, hidden input and
+textarea text, token/session meta tags, and the person's own name, email,
+phone and street address. Single names (a first or last name on its own) are
+matched as written, so a name that is also a word is not wiped from every
+page; a name written in another case survives. City, state and ZIP are kept:
+they are the job's location. Search result pages are never copied.
+
+**The fingerprint.** `page_copy_id = "commit-sha256:" + sha256(nonce ‖ page)`,
+where `page` is the resource record's block and `nonce` is 16 bytes stored
+only in the copy's metadata record (hex). The nonce is
+HMAC-SHA256(the installation's private research key, a fixed context label ‖
+page), cut to 16 bytes: the same page gets the same fingerprint on one
+device, and nobody without the key can compute it. A plain hash of the page
+would let anyone who fetches the same public posting test whether it appears
+in someone's rows; the nonce prevents that. To verify a row: take the copy's
+`nonce` and resource block, recompute, compare — the key is not needed.
+
+`page_copy_id` is not covered by the provenance signature: it links to a
+local file that may expire, and signing it would have changed the content
+hash of every earlier signal.
+
+**Written in the background.** Vetting reads and cleans the page; the file
+is written by a background writer with a bounded queue, so a copy never
+slows a session. When the queue is full the copy is dropped and the row
+carries no `page_copy_id`. A write that fails after being queued is counted
+in the log, and its row then names a copy that does not exist — check
+`page_copy_id` against the folder before relying on it.
+
+**Expiry, size and deletion.** Copies are deleted after
+`page_copy_keep_days` (default 90) counted from their capture day, checked
+each time a session is built, and the oldest are deleted first whenever all
+copies together pass `page_copy_max_mb` (default 200). Turning page copies
+off deletes every copy unless the person chooses to keep them; withdrawing
+from research deletes them in every case. Copies are plain, unencrypted
+files: the consent text tells people to leave them off on a shared
+computer.
+
+---
+
 ## Loading the Data
 
 ### Python (pandas + sqlite3)
@@ -296,6 +358,9 @@ You can delete all research data at any time by:
     the deleted one. If another process is holding the database open at
     that moment, AA falls back to erasing every row and compacting the
     file; the result is the same once that process closes.
+
+Page copies under `research/page_copies/` go with the `research/` directory,
+and are deleted by any withdrawal from research (see [Page Copies](#page-copies)).
 
 Deletion is immediate and irreversible. Export bundles you already created
 under `reports/` are not touched — they are your copies; delete them

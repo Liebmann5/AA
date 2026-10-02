@@ -137,6 +137,8 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "perception_strategy": "math",
     "store_session_logs": True,
     "log_retention_days": 30,
+    "page_copy_keep_days": 90,
+    "page_copy_max_mb": 200,
     "vetting": {
         "hard_skills_min_overlap": 0.5,
         "role_alignment_threshold": 0.6,
