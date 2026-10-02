@@ -65,6 +65,11 @@ from auto_apply.domain.ports.repository_port import JobRepositoryPort
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
 
 from auto_apply.domain.ports.registry_port import RegistryPort
+from auto_apply.domain.ports.research_port import (
+    NullResearchObserver,
+    ResearchAccounting,
+    ResearchSessionPort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +159,7 @@ class AgentOrchestrator:
         progress: Any | None = None,  # ← optional SessionProgressDisplay (CLI adapter)
         workflows: dict[str, Any] | None = None,
         behavior_parameters: BehaviorParameters | None = None,
+        research_session: ResearchSessionPort | None = None,
     ) -> None:
         """Initializes all orchestrator components.
 
@@ -176,6 +182,10 @@ class AgentOrchestrator:
                 access will fail until a driver is available.
             captcha_resolver: Optional CAPTCHA resolution service. Injected by
                 composition_root. If None, CAPTCHAs escalate to manual solving.
+            research_session: The session's research collector, as its
+                session-lifetime port (item 3). Teardown stops it — flushing
+                what is queued — and writes its accounting into the session
+                report. None means research is off (NullResearchObserver).
         """
         # ── Core dependencies ─────────────────────────────────────────────
         self.profile = profile
@@ -198,6 +208,11 @@ class AgentOrchestrator:
         self.state_machine = StateMachine(initial_state=AgentState.IDLE)
         self.running: bool = False
         self.paused: bool = False
+
+        # ── Research collection, session side (item 3) ────────────────────
+        self._research_session: ResearchSessionPort = (
+            research_session if research_session is not None else NullResearchObserver()
+        )
 
         # ── Session report (accumulates application outcomes incrementally)
         self._session_report = SessionReport(
@@ -1961,6 +1976,19 @@ class AgentOrchestrator:
     # TEARDOWN
     # =========================================================================
 
+    def research_accounting(self) -> ResearchAccounting:
+        """What research collection recorded, lost and degraded this session.
+
+        Public so the controller's results view reads it without reaching
+        into the private session report. Final once teardown has stopped the
+        collector; before that it says it is not complete.
+        """
+        try:
+            return self._research_session.accounting()
+        except Exception as exc:  # noqa: BLE001 — a results view must not fail
+            logger.warning("Research accounting unavailable | %s", exc)
+            return ResearchAccounting(active=True, complete=False)
+
     def _teardown(self) -> None:
         """Cleans up all resources after the event loop exits.
 
@@ -1970,6 +1998,8 @@ class AgentOrchestrator:
         expired with a task mid-flight and the caller's thread is doing the
         releasing. Ordering matters:
             0. Shutdown workflows that may still hold background threads.
+            0b. Stop research collection, flushing what is queued, so the
+               accounting written into the report is final (item 3).
             1. Transition to STOPPED state (signals all observers that the
                session has ended). Routes through STOPPING first in case an
                engine state is current.
@@ -1991,6 +2021,18 @@ class AgentOrchestrator:
                     wf.shutdown()
                 except Exception as exc:
                     logger.warning("Workflow %s shutdown error: %s", wf_name, exc)
+
+        # ── 0b. Finish research collection (item 3) ──────────────────────
+        # After the workflows (the observers' producers) have stopped and
+        # before the report is written: stop() flushes everything queued, so
+        # the accounting written into the report at step 5 is final. On the
+        # queue-drained path this is the ONLY stop before the report — the
+        # controller's stop_collection() runs later and is then a no-op
+        # (stop is idempotent).
+        try:
+            self._research_session.stop()
+        except Exception as exc:
+            logger.warning("Research collection stop error: %s", exc)
 
         # Attempt STOPPING first (no-op if already there or invalid), then
         # STOPPED. Both return False on invalid transitions rather than raising.
@@ -2035,6 +2077,7 @@ class AgentOrchestrator:
             self._driver = None
 
         # ── 5. Finalize and save session report ───────────────────────────
+        self._session_report.research = self.research_accounting()
         try:
             self._session_report.finalize(
                 duration_seconds=self.context.elapsed_seconds()

@@ -239,6 +239,117 @@ class DiscoveryObservation:
     cards: tuple[DiscoveryCardObservation, ...] = ()
 
 
+# ---------------------------------------------------------------------------
+# Session accounting (item 3).
+# ---------------------------------------------------------------------------
+
+#: One accounting dimension: (name, count) pairs, sorted by name.
+Tally = tuple[tuple[str, int], ...]
+
+
+def _tally(counts: dict[str, int]) -> Tally:
+    return tuple(sorted((k, int(v)) for k, v in counts.items() if v))
+
+
+@dataclass(frozen=True)
+class ResearchAccounting:
+    """What research collection did during one session.
+
+    Item 5 counted observation-path failures in process and nothing ever
+    read them; this record is how they leave the process. It separates three
+    things a reader must not confuse:
+
+    * ``recorded`` — rows newly written this session, per table.
+    * ``lost`` — observations or rows that were NOT recorded because a step
+      failed, per site, counted in records (a failed batch of five counts
+      five). A non-empty ``lost`` means the database under-represents this
+      session.
+    * ``degraded`` — work that was recorded in a weaker form, per site: a
+      signal written without its provenance signature, a detector that ran
+      without its lifecycle history, an analysis pass that failed.
+
+    ``corpus`` holds totals for the whole research database (all sessions)
+    at the time of reading. ``complete`` is False when collection was still
+    flushing at the time of reading, so the counts may still grow; a report
+    must say so rather than present them as final.
+
+    ``active`` is False when research was off for the session; every other
+    field is then empty.
+    """
+
+    active: bool = False
+    complete: bool = True
+    recorded: Tally = ()
+    lost: Tally = ()
+    degraded: Tally = ()
+    corpus: Tally = ()
+
+    @classmethod
+    def from_counts(
+        cls,
+        *,
+        complete: bool,
+        recorded: dict[str, int],
+        lost: dict[str, int],
+        degraded: dict[str, int],
+        corpus: dict[str, int],
+    ) -> ResearchAccounting:
+        """Build an active record from plain counters. Session tallies drop
+        zero counts; corpus totals keep them."""
+        return cls(
+            active=True,
+            complete=complete,
+            recorded=_tally(recorded),
+            lost=_tally(lost),
+            degraded=_tally(degraded),
+            # Corpus totals keep their zeros: "0 signals on record" is a
+            # fact, where a missing session tally simply means none.
+            corpus=tuple(sorted((k, int(v)) for k, v in corpus.items())),
+        )
+
+    @property
+    def records_recorded(self) -> int:
+        return sum(n for _, n in self.recorded)
+
+    @property
+    def records_lost(self) -> int:
+        return sum(n for _, n in self.lost)
+
+    @property
+    def records_degraded(self) -> int:
+        return sum(n for _, n in self.degraded)
+
+    def to_dict(self) -> dict[str, object]:
+        """JSON-ready form, as the session report stores it."""
+        return {
+            "active": self.active,
+            "complete": self.complete,
+            "recorded": dict(self.recorded),
+            "lost": dict(self.lost),
+            "degraded": dict(self.degraded),
+            "corpus": dict(self.corpus),
+        }
+
+
+@runtime_checkable
+class ResearchSessionPort(Protocol):
+    """The session-lifetime side of research collection (item 3).
+
+    Workflows only observe (ResearchObserverPort); the orchestrator owns the
+    session's end, so it alone needs to finish collection and read what it
+    did. Satisfied structurally by ResearchSignalAggregator and by
+    NullResearchObserver.
+    """
+
+    def stop(self) -> None:
+        """Flush everything queued, then accept nothing more. Idempotent."""
+        ...
+
+    def accounting(self) -> ResearchAccounting:
+        """What this session recorded, lost and degraded. Never raises."""
+        ...
+
+
 @runtime_checkable
 class ResearchObserverPort(Protocol):
     """Contract for research data collection, injected into workflows.
@@ -316,3 +427,10 @@ class NullResearchObserver:
     @property
     def is_enabled(self) -> bool:
         return False
+
+    def stop(self) -> None:
+        pass
+
+    def accounting(self) -> ResearchAccounting:
+        """Research was off: nothing recorded, nothing lost."""
+        return ResearchAccounting()

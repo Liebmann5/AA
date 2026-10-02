@@ -586,9 +586,13 @@ def build_orchestrator(  # noqa: PLR0914
     from auto_apply.domain.ports.research_port import (  # noqa: PLC0415
         NullResearchObserver,
         ResearchObserverPort,
+        ResearchSessionPort,
     )
 
     research_observer: ResearchObserverPort = NullResearchObserver()
+    # The same object seen through its session-lifetime port (item 3): the
+    # orchestrator stops it at teardown and reports its accounting.
+    research_session: ResearchSessionPort = NullResearchObserver()
 
     consent_service = (
         research_consent
@@ -620,6 +624,7 @@ def build_orchestrator(  # noqa: PLR0914
             # shutdown — stop the running aggregator (FORK 3).
             consent_service.register_observer(_aggregator)
             research_observer = _aggregator
+            research_session = _aggregator
             logger.info(
                 "Research pipeline active (consent granted, version=%s)",
                 consent_service.consent_version,
@@ -1075,6 +1080,9 @@ def build_orchestrator(  # noqa: PLR0914
             "ApplicationsWorkflow": applications_workflow,
         },
         behavior_parameters=behavior_params,
+        # The same instance the workflows observe through — aggregator or
+        # Null — seen through its session-lifetime port (item 3).
+        research_session=research_session,
     )
 
     logger.info(

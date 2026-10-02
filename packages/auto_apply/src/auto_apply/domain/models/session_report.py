@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from auto_apply.domain.ports.research_port import ResearchAccounting
+
 if TYPE_CHECKING:
     from auto_apply.domain.models.application_evidence import ApplicationEvidence
 
@@ -125,6 +127,12 @@ class SessionReport:
 
     # Application records
     applications: list[ApplicationRecord] = field(default_factory=list)
+
+    # Research accounting (item 3): what research collection recorded, lost
+    # and degraded this session. Set by the orchestrator at teardown, after
+    # collection has stopped and flushed. Research-off sessions record the
+    # inactive accounting, so every report carries the section.
+    research: ResearchAccounting = field(default_factory=ResearchAccounting)
 
     # ── Derived counts (computed from applications list) ──────────────────
 
@@ -322,6 +330,7 @@ class SessionReport:
                 ),
                 "records": [a.to_dict() for a in self.applications],
             },
+            "research": self.research.to_dict(),
         }
 
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")

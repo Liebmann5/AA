@@ -37,6 +37,7 @@ from auto_apply.domain.ports.research_port import (
     DiscoveryObservation,
     FormObservation,
     JobPostingObservation,
+    ResearchAccounting,
     ResearchObserverPort,
 )
 from auto_apply.domain.services.job_lifecycle_tracker import (
@@ -372,10 +373,21 @@ class ResearchSignalAggregator(ResearchObserverPort):
         # ── Discovery-surface observation counter (§4b) ──────────────────
         self._discovery_observation_count: int = 0
 
-        # Accounting-failure counters (item 5, R2), keyed by site label and
-        # surfaced in get_statistics_summary: a failure in the observation
-        # path becomes a readable fact about the run, not only a log line.
+        # Session accounting (item 5 R2; item 3). Three tallies, keyed by
+        # site or table, read through accounting() into the session report
+        # and both end-of-session views:
+        #   _recorded — rows newly written this session, per table;
+        #   _failures — records LOST (not written) per failing site, counted
+        #               in records, so a failed batch of five counts five;
+        #   _degraded — work written in a weaker form (unsigned signal,
+        #               detector without lifecycle history, failed analysis).
+        # Producers run on the discovery and workflow threads and the flush
+        # daemon writes, so every update holds _counter_lock: a bare
+        # d[k] = d.get(k, 0) + n can drop increments across threads.
+        self._recorded: dict[str, int] = {}
         self._failures: dict[str, int] = {}
+        self._degraded: dict[str, int] = {}
+        self._counter_lock = threading.Lock()
 
         if self._enabled:
             # The salt is resolved HERE — at adapter construction, not at the
@@ -409,6 +421,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
         except Exception as exc:
             logger.error("ResearchSignalAggregator | DB init failed: %s", exc)
             self._enabled = False
+            # Nothing this session observes can be recorded, and how much
+            # that is cannot be counted; the report must at least say so.
+            self._record_degraded("database_init")
 
     def _null_legacy_company_ids(self, conn: sqlite3.Connection) -> None:
         """NULL every pre-migration research ``company_id``, exactly once.
@@ -635,9 +650,72 @@ class ResearchSignalAggregator(ResearchObserverPort):
         """Whether research collection is currently active (consent given)."""
         return self._enabled
 
-    def _record_failure(self, site: str) -> None:
-        """Count an observation-path failure (item 5, R2)."""
-        self._failures[site] = self._failures.get(site, 0) + 1
+    def _failures_snapshot(self) -> dict[str, int]:
+        with self._counter_lock:
+            return dict(self._failures)
+
+    @staticmethod
+    def _bump(counts: dict[str, int], key: str, n: int) -> None:
+        if n > 0:
+            counts[key] = counts.get(key, 0) + n
+
+    def _record_failure(self, site: str, n: int = 1) -> None:
+        """Count records LOST at a failing site (item 5 R2; item 3)."""
+        with self._counter_lock:
+            self._bump(self._failures, site, n)
+
+    def _record_degraded(self, site: str, n: int = 1) -> None:
+        """Count work recorded in a weaker form (item 3)."""
+        with self._counter_lock:
+            self._bump(self._degraded, site, n)
+
+    def _record_written(self, table: str, n: int) -> None:
+        """Count rows newly written this session (item 3)."""
+        with self._counter_lock:
+            self._bump(self._recorded, table, n)
+
+    def accounting(self) -> ResearchAccounting:
+        """What this session recorded, lost and degraded (ResearchSessionPort).
+
+        Read after stop() it is final; read while the daemon is still
+        flushing it says so (``complete=False``). ``corpus`` comes from
+        get_statistics_summary(), the totals for the whole database. A
+        research-off aggregator (no consent) reports inactive. Never raises:
+        a report must not fail because accounting could not be read.
+        """
+        if self._consent_version is None:
+            return ResearchAccounting()
+        try:
+            thread = self._thread
+            flushing = thread is not None and thread.is_alive()
+            complete = not flushing and self._queue.empty()
+            with self._counter_lock:
+                recorded = dict(self._recorded)
+                lost = dict(self._failures)
+                degraded = dict(self._degraded)
+            summary = self.get_statistics_summary()
+            corpus = {
+                key: int(summary.get(key, 0) or 0)
+                for key in (
+                    "total_signals",
+                    "examinations",
+                    "detectors_fired",
+                    "detectors_raised",
+                )
+            }
+            return ResearchAccounting.from_counts(
+                complete=complete,
+                recorded=recorded,
+                lost=lost,
+                degraded=degraded,
+                corpus=corpus,
+            )
+        except Exception as exc:  # noqa: BLE001 — accounting must never raise
+            logger.warning(
+                "ResearchSignalAggregator | accounting unavailable (%s)",
+                type(exc).__name__,
+            )
+            return ResearchAccounting(active=True, complete=False)
 
     def observe_job_posting(self, observation: JobPostingObservation) -> None:
         """Process a job posting observation: update lifecycle, build context, detect.
@@ -795,7 +873,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
                         RESEARCH_SCHEMA_VERSION,
                     ),
                 )
+            self._record_written("application_outcomes", 1)
         except Exception as exc:
+            self._record_failure("observe_application_outcome")
             logger.debug("ResearchSignalAggregator | observe_application_outcome error: %s", exc)
 
     def observe_discovery(self, observation: DiscoveryObservation) -> None:
@@ -842,6 +922,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
             )
             self._queue.put_nowait(observation)
         except Exception as exc:
+            self._record_failure("observe_discovery")
             logger.debug("ResearchSignalAggregator | observe_discovery error: %s", exc)
 
     # ── Job lifecycle persistence (GJ-02, GJ-03) ─────────────────────────────
@@ -871,6 +952,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 response_date=date.fromisoformat(row["response_date"]) if row["response_date"] else None,
             )
         except Exception as exc:
+            self._record_degraded("lifecycle_load")
             logger.debug("ResearchSignalAggregator | _load_lifecycle error: %s", exc)
             return None
 
@@ -901,6 +983,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     ),
                 )
         except Exception as exc:
+            self._record_failure("lifecycle_write")
             logger.debug("ResearchSignalAggregator | _save_lifecycle error: %s", exc)
 
     def _load_all_lifecycles_for_fingerprint(
@@ -932,6 +1015,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 for r in rows
             ]
         except Exception as exc:
+            self._record_degraded("lifecycle_load")
             logger.debug("ResearchSignalAggregator | _load_all_lifecycles error: %s", exc)
             return []
 
@@ -966,6 +1050,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 return None, 0
             return percentile(values, p), len(values)
         except Exception as exc:
+            self._record_degraded("salary_percentile")
             logger.debug("ResearchSignalAggregator | _compute_role_percentile error: %s", exc)
             return None, 0
 
@@ -1010,7 +1095,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
                      date.today().isoformat(),
                      RESEARCH_SCHEMA_VERSION),
                 )
+            self._record_written("salary_observations", 1)
         except Exception as exc:
+            self._record_failure("salary_write")
             logger.debug("ResearchSignalAggregator | Salary obs error: %s", exc)
 
     def record_form_observation(
@@ -1054,7 +1141,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
                      estimated_minutes, date.today().isoformat(),
                      RESEARCH_SCHEMA_VERSION),
                 )
+            self._record_written("form_observations", 1)
         except Exception as exc:
+            self._record_failure("form_write")
             logger.debug("ResearchSignalAggregator | Form obs error: %s", exc)
 
     def get_statistics_summary(self) -> dict:
@@ -1091,11 +1180,12 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     # Item 5: the denominator, readable back. examinations =
                     # detection passes recorded; raised/fired = per-detector
                     # outcomes across those passes; accounting_failures =
-                    # observation-path failures counted in-process (R2).
+                    # records lost this session, per site (R2; item 3 —
+                    # accounting() carries the full three-way tally).
                     "examinations": exam_row["examinations"],
                     "detectors_raised": exam_row["raised"],
                     "detectors_fired": exam_row["fired"],
-                    "accounting_failures": dict(self._failures),
+                    "accounting_failures": self._failures_snapshot(),
                 }
         except Exception:
             return {}
@@ -1158,6 +1248,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 )
 
         except Exception as exc:
+            self._record_degraded("macro_signals")
             logger.error(
                 "ResearchSignalAggregator: macro_analysis failed: %s", exc
             )
@@ -1203,6 +1294,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     )
                 )
         except Exception as exc:
+            self._record_degraded("macro_query")
             logger.warning(
                 "ResearchSignalAggregator | _query_sector_counts failed: %s", exc
             )
@@ -1266,6 +1358,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                         )
                     )
         except Exception as exc:
+            self._record_degraded("macro_query")
             logger.warning(
                 "ResearchSignalAggregator | _query_response_rate_records failed: %s",
                 exc,
@@ -1312,6 +1405,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     )
                 )
         except Exception as exc:
+            self._record_degraded("macro_query")
             logger.warning(
                 "ResearchSignalAggregator | _query_metro_salary_demographics failed: %s",
                 exc,
@@ -1495,6 +1589,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
             )
             return True
         except Exception as exc:
+            self._record_degraded("public_key_store")
             logger.warning(
                 "ResearchSignalAggregator: could not store public key: %s", exc
             )
@@ -1523,6 +1618,10 @@ class ResearchSignalAggregator(ResearchObserverPort):
 
         # ── Build rows with provenance ────────────────────────────────────
         rows: list[tuple] = []
+        # Rows that will be written WITHOUT a signature (no signer, or this
+        # signal's signing failed): counted as degraded, because a dataset
+        # that says "every row signed" must be able to say when one is not.
+        unsigned = 0
         for s in signals:
             content_hash: str | None = None
             provenance_signature: str | None = None
@@ -1551,6 +1650,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                         s.signal_type, exc,
                     )
 
+            if provenance_signature is None:
+                unsigned += 1
             rows.append((
                 s.signal_id, s.signal_type, s.severity,
                 s.confidence, s.evidence_text, s.platform,
@@ -1562,7 +1663,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
 
         try:
             with self._get_connection() as conn:
-                conn.executemany(
+                cursor = conn.executemany(
                     """INSERT OR IGNORE INTO research_signals
                        (signal_id, signal_type, severity, confidence,
                         evidence_text, platform, jurisdiction, company_id,
@@ -1572,10 +1673,16 @@ class ResearchSignalAggregator(ResearchObserverPort):
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     rows,
                 )
+            # rowcount sums executemany's inserts; INSERT OR IGNORE skips a
+            # signal already on record (the dedup documented above), and a
+            # skipped duplicate is not a new row.
+            self._record_written("research_signals", max(cursor.rowcount, 0))
+            self._record_degraded("signal_unsigned", unsigned)
             logger.debug(
                 "ResearchSignalAggregator | Wrote %d signals to DB", len(signals)
             )
         except Exception as exc:
+            self._record_failure("signal_write", len(signals))
             logger.error("ResearchSignalAggregator | Write batch failed: %s", exc)
 
     def _write_discovery_batch(self, observations: list[DiscoveryObservation]) -> None:
@@ -1680,11 +1787,13 @@ class ResearchSignalAggregator(ResearchObserverPort):
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     candidate_rows,
                 )
+            self._record_written("discovery_pages", len(page_rows))
             logger.debug(
                 "ResearchSignalAggregator | Wrote %d discovery observation(s) to DB",
                 len(observations),
             )
         except Exception as exc:
+            self._record_failure("discovery_write", len(observations))
             logger.error(
                 "ResearchSignalAggregator | Discovery write batch failed: %s", exc
             )
@@ -1767,12 +1876,13 @@ class ResearchSignalAggregator(ResearchObserverPort):
                            VALUES (?,?,?,?,?,?,?,?)""",
                         outcome_rows,
                     )
+            self._record_written("detector_examinations", len(examinations))
             logger.debug(
                 "ResearchSignalAggregator | Wrote %d detector examination(s) to DB",
                 len(examinations),
             )
         except Exception as exc:
-            self._record_failure("examination_write")
+            self._record_failure("examination_write", len(examinations))
             logger.error(
                 "ResearchSignalAggregator | Examination write batch failed: %s", exc
             )

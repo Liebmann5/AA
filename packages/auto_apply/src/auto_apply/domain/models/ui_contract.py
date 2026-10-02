@@ -401,6 +401,49 @@ class DiscoveredJob(_FrozenModel):
     source: str = ""
 
 
+class ResearchSessionView(_FrozenModel):
+    """What research collection did this session, for both results views.
+
+    Built by the controller from the orchestrator's ResearchAccounting
+    (domain/ports/research_port.py). ``lines`` is the ONE rendering both the
+    CLI and the GUI print, so the two surfaces cannot disagree (ruling C).
+    Inactive (research off) renders nothing at all.
+    """
+
+    active: bool = False
+    complete: bool = True
+    recorded: int = 0
+    lost: int = 0
+    degraded: int = 0
+    lost_by_site: tuple[tuple[str, int], ...] = ()
+    degraded_by_site: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        """Plain lines; empty when research was off."""
+        if not self.active:
+            return ()
+        out = [f"Research: {self.recorded} record(s) saved this session."]
+        if self.lost:
+            sites = ", ".join(f"{k} {v}" for k, v in self.lost_by_site)
+            out.append(
+                f"Research: {self.lost} record(s) could NOT be saved ({sites}) "
+                "- the research data under-counts this session; see the "
+                "session report and the log."
+            )
+        if self.degraded:
+            sites = ", ".join(f"{k} {v}" for k, v in self.degraded_by_site)
+            out.append(
+                f"Research: {self.degraded} saved in a weaker form ({sites})."
+            )
+        if not self.complete:
+            out.append(
+                "Research: still saving when this was read - these counts "
+                "may be low."
+            )
+        return tuple(out)
+
+
 class SessionSummary(_FrozenModel):
     """The end-of-session / results view.
 
@@ -426,6 +469,7 @@ class SessionSummary(_FrozenModel):
     discovered: tuple[DiscoveredJob, ...] = ()
     report_path: Path | None = None
     autonomy_enabled: bool = False
+    research: ResearchSessionView = ResearchSessionView()
 
     @property
     def duration_str(self) -> str:

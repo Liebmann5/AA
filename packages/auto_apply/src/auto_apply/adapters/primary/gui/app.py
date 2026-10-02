@@ -214,6 +214,8 @@ def format_results_lines(summary: SessionSummary, limit: int = 200) -> list[str]
             "Autonomy: ON — submissions were authorized by policy "
             "(fully automated session)."
         )
+    # Research accounting (item 3): the same lines the CLI prints.
+    lines.extend(summary.research.lines)
     lines.append("")
     if summary.discovered:
         lines.append("Discovered jobs:")

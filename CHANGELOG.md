@@ -45,6 +45,12 @@ from its first tag onward.
   ([ADR-017](packages/auto_apply/docs/adr/017_documentation_gate.md))
 - **Repository health files**: `SECURITY.md`, `SUPPORT.md`, `GOVERNANCE.md`,
   `DISCLAIMER.md`, issue and pull-request templates.
+- **Research accounting per session.** The end-of-session summary on both
+  surfaces, and the saved session report's new `research` section, say what
+  research collection recorded, what it could NOT record (by the step that
+  failed, counted in records) and what it recorded in a weaker form — such as
+  a signal written without its provenance signature. Every site that loses or
+  weakens research data now counts it; before, most were a log line only.
 - **`--research-summary`** prints what the discovery research tables hold —
   pages, cards, candidates, and destinations grouped by hiring platform — with
   every share shown against its denominator. Read-only; starts no session.

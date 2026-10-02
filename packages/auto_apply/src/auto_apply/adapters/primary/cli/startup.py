@@ -752,6 +752,10 @@ class CLIStartup:
             if summary.autonomy_enabled:
                 print("  Autonomy: ON — this session submitted without review (fully automated).")  # noqa: T201
 
+            # Research accounting (item 3): the same lines the GUI shows.
+            for line in summary.research.lines:
+                print(f"  {line}")  # noqa: T201
+
             if gate_remedy:
                 print(f"\n  {gate_remedy}")  # noqa: T201
 

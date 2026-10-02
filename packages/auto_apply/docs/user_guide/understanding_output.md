@@ -135,15 +135,41 @@ for AA to function.
 
 ## 4. Research data (opt‑in only)
 
-If you enable **Research Collection** in your profile (it is off by default),
+If you agree to the research consent dialog (research is off by default),
 AA records anonymised signals about hiring market patterns. No personal
-information — not your name, email, job URLs, or company names — is ever
-stored in research data.
+information about you — not your name, email, or job URLs — is ever stored
+in research data. Employer names are stored only as an anonymous code in
+signal rows; job titles, link texts and destination hosts from result pages
+are stored as shown and can name an employer (the consent dialog says so).
 
 Research data is written to `research/research_signals.db`, a SQLite
 database. Export it to CSV, NDJSON, or Parquet with
 `python -m auto_apply --export-research` — the exported files open in Excel,
-Google Sheets, or any data analysis tool.
+Google Sheets, or any data analysis tool. `python -m auto_apply
+--research-summary` prints what the discovery tables hold without exporting.
+
+**What each session recorded.** When research is on, the end-of-session
+summary (CLI and GUI alike) says how many research records were saved, and
+names anything that could NOT be saved or was saved in a weaker form — for
+example a signal written without its provenance signature. The saved
+session report carries the same accounting in its `research` section:
+
+```json
+"research": {
+  "active": true,
+  "complete": true,
+  "recorded": {"discovery_pages": 3, "research_signals": 5},
+  "lost": {"signal_write": 2},
+  "degraded": {"signal_unsigned": 1},
+  "corpus": {"detectors_fired": 9, "detectors_raised": 0, "examinations": 14, "total_signals": 31}
+}
+```
+
+`recorded` is rows newly written this session; `lost` is records that were
+not written, by the step that failed, so a non-empty `lost` means the
+research data under-counts the session; `degraded` is work recorded in a
+weaker form; `corpus` is the whole research database's totals. A session
+with research off says `"active": false`.
 
 Each row represents a single observation, such as:
 

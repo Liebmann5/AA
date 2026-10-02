@@ -156,6 +156,7 @@ from auto_apply.domain.models.ui_contract import (
     DiscoveredJob,
     EntryPoint,
     QueueSnapshot,
+    ResearchSessionView,
     SessionEventRecord,
     SessionHistoryEntry,
     SessionRequest,
@@ -166,6 +167,7 @@ from auto_apply.domain.models.ui_contract import (
     entry_point_from_label,
     view_state_from_agent_state,
 )
+from auto_apply.domain.ports.research_port import ResearchAccounting
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 from auto_apply.domain.ports.registry_port import RegistryPort
@@ -1494,6 +1496,32 @@ class SessionController:
             discovered=self._load_discovered_jobs(),
             report_path=report.report_path,
             autonomy_enabled=self.autonomy(),
+            research=self._research_view(),
+        )
+
+    def _research_view(self) -> ResearchSessionView:
+        """This session's research accounting, as the typed results view.
+
+        Read from the orchestrator's public research_accounting(). Degrades
+        to the inactive view when it cannot be read (a test double, a
+        broken orchestrator): a results view must never break because
+        research accounting was unavailable.
+        """
+        try:
+            acc = self.orchestrator.research_accounting()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("SessionController: research accounting unavailable | %s", exc)
+            return ResearchSessionView()
+        if not isinstance(acc, ResearchAccounting):
+            return ResearchSessionView()
+        return ResearchSessionView(
+            active=acc.active,
+            complete=acc.complete,
+            recorded=acc.records_recorded,
+            lost=acc.records_lost,
+            degraded=acc.records_degraded,
+            lost_by_site=acc.lost,
+            degraded_by_site=acc.degraded,
         )
 
     def _load_discovered_jobs(self) -> tuple[DiscoveredJob, ...]:
