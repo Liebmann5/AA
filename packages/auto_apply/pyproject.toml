@@ -157,7 +157,7 @@ nlp = [
 
 # ── Semantic NLP Tier (Tier 2 — opt-in, higher accuracy) ─────────────────────
 semantic = [
-    "sentence-transformers>=2.7.0,<4.0.0",
+    "sentence-transformers>=2.7.0,<7.0.0",
 ]
 
 # ── Browser Power User (Playwright) ──────────────────────────────────────────
