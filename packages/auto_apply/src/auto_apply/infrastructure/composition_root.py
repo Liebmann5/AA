@@ -29,6 +29,7 @@ from auto_apply.domain.config import (
     PROVENANCE_KEY_PATH,
     REPORTS_DIR,
     RESEARCH_DB_PATH,
+    RESEARCH_SALT_PATH,
     USER_DATA_DIR,
 )
 from auto_apply.domain.exceptions import BrowserSetupError
@@ -56,6 +57,9 @@ if TYPE_CHECKING:
     from auto_apply.adapters.secondary.research.research_exporter import (
         ExportResult,
     )
+    from auto_apply.adapters.secondary.research.research_verifier import (
+        VerifyResult,
+    )
     from auto_apply.domain.models.replay import ReplayReport
 
 # Re-export so existing callers don't break.
@@ -67,7 +71,9 @@ __all__ = [
     "build_session",
     "build_session_controller",
     "export_research_bundle",
+    "research_public_key_fingerprint",
     "run_replay",
+    "verify_research_bundle",
 ]
 
 logger = logging.getLogger(__name__)
@@ -148,11 +154,25 @@ def build_research_consent(
         is_offered = bool(_RUNTIME_DEFAULTS.get("enable_research_collection", True))
         policy = PolicyManager.load_admin_policy()
 
+    from auto_apply.adapters.secondary.security.data_protection import (  # noqa: PLC0415
+        provision_research_salt,
+        read_research_salt,
+    )
+    from auto_apply.domain.services.research_identity import (  # noqa: PLC0415
+        configure_salt_file_reader,
+    )
+
+    # Wire the ONE salt-file seam (V1): the domain resolves through this
+    # reader; the manager provisions through this callable. Both point at
+    # the secondary adapter where the salt lives, beside the key.
+    configure_salt_file_reader(lambda: read_research_salt(RESEARCH_SALT_PATH))
+
     repo = SqliteConsentRepository(
         consent_db_path=USER_DATA_DIR / "research_consent.db",
         research_db_path=RESEARCH_DB_PATH,
         provenance_key_path=PROVENANCE_KEY_PATH,
         page_copies_dir=PAGE_COPIES_DIR,
+        research_salt_path=RESEARCH_SALT_PATH,
     )
     return ResearchConsentManager(
         repo,
@@ -161,6 +181,7 @@ def build_research_consent(
         # explicit True prohibits. It also keeps MagicMock-built registries
         # (tests) from reading as prohibitions.
         admin_prohibited=getattr(policy, "disable_research_collection", None) is True,
+        provision_salt=lambda: provision_research_salt(RESEARCH_SALT_PATH),
     )
 
 
@@ -283,8 +304,38 @@ def export_research_bundle(fmt: str = "csv") -> "ExportResult":
         raise ValueError(
             f"Unsupported format {fmt!r}. Accepted values: csv, ndjson, parquet"
         )
-    exporter = ResearchExporter(db_path=RESEARCH_DB_PATH, export_root=REPORTS_DIR)
+    exporter = ResearchExporter(
+        db_path=RESEARCH_DB_PATH,
+        export_root=REPORTS_DIR,
+        provenance_key_path=PROVENANCE_KEY_PATH,
+    )
     return exporter.export(formats[fmt])
+
+
+def research_public_key_fingerprint() -> str | None:
+    """The installation's research public-key fingerprint, for both consent
+    surfaces to show (F5): SHA-256 of the raw public key bytes, hex.
+
+    Read-only — opening a consent screen must never mint a key, so this
+    returns None when no key exists yet (one is generated the first time
+    research data is recorded or a bundle is exported).
+    """
+    from auto_apply.adapters.secondary.security.data_protection import (  # noqa: PLC0415
+        read_public_key_fingerprint,
+    )
+
+    return read_public_key_fingerprint(PROVENANCE_KEY_PATH)
+
+
+def verify_research_bundle(bundle_dir: Path) -> "VerifyResult":
+    """Verify a research export bundle offline — the CLI's route to the
+    verifier, mirroring export_research_bundle (primary adapters may not
+    import the secondary adapters directly)."""
+    from auto_apply.adapters.secondary.research.research_verifier import (  # noqa: PLC0415
+        verify_bundle,
+    )
+
+    return verify_bundle(bundle_dir)
 
 
 def run_replay(corpus_dir: Path, out_dir: Path | None = None) -> "ReplayReport":
@@ -786,6 +837,12 @@ def build_orchestrator(  # noqa: PLR0914
         else build_research_consent(registry)
     )
     _warn_if_legacy_research_db()
+
+    if consent_service.is_active():
+        # The salt is provisioned at grant; retry creation here so a grant
+        # made when creation failed (read-only folder, transient error)
+        # heals at the next session build instead of staying INACTIVE.
+        consent_service.ensure_salt()
 
     if consent_service.should_collect():
         # Imported BEFORE the try so the `except ResearchSaltError` clause below

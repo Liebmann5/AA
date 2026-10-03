@@ -160,6 +160,8 @@ def _service_in_state(
     )
     if state is ResearchConsentState.INACTIVE:
         monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)  # INACTIVE/NO_SALT
+    # The conftest fixture reset the salt-file reader to no-file, so the
+    # INACTIVE leg cannot see any real file this machine may have.
     repo = SqliteConsentRepository(
         consent_db_path=tmp_path / "research_consent.db",
         research_db_path=tmp_path / "research" / "research_signals.db",
@@ -310,3 +312,18 @@ def test_both_surfaces_offer_page_copies_with_the_keep_choice() -> None:
     gui_source = Path(gui_window.__file__).read_text(encoding="utf-8")
     assert "Delete every kept page copy? [Y/n]" in cli_source
     assert "Delete every kept page copy?" in gui_source
+
+
+def test_both_surfaces_show_the_public_key_fingerprint_with_one_wording() -> None:
+    """TEETH (F5 + parity): both surfaces source the fingerprint through the
+    composition root and word the line through the shared wording module.
+    RED before item 10: neither surface mentioned the key at all."""
+    cli_source = Path(cli_screen.__file__).read_text(encoding="utf-8")
+    gui_source = Path(gui_window.__file__).read_text(encoding="utf-8")
+    for name, source in (("cli", cli_source), ("gui", gui_source)):
+        assert "research_public_key_fingerprint" in source, name
+        assert "public_key_line" in source, name
+    assert research_consent_wording.public_key_line("f" * 64) != (
+        research_consent_wording.public_key_line(None)
+    )
+    assert research_consent_wording.public_key_line(None)

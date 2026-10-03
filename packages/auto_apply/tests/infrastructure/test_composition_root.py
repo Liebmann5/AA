@@ -166,16 +166,25 @@ def test_grant_with_salt_yields_an_active_research_observer(
 def test_grant_without_salt_still_builds_and_reports_inactive(
     minimal_profile, tmp_path, monkeypatch
 ):
-    """TEETH vs M3 (FORK 4, deliverable ii): consent granted, no
-    AA_RESEARCH_SALT — the build must NOT raise, research must stay clearly
-    off, and the interface must say why. Rows are never written without a
-    salt because no aggregator exists to write them.
+    """TEETH (V3, original M3/FORK-4 intent): consent granted, no
+    AA_RESEARCH_SALT, and the salt file CANNOT be created — the build must
+    NOT raise, research must stay clearly off, and the interface must say
+    why. Rows are never written without a salt because no aggregator
+    exists to write them.
 
-    RED today: composition_root re-raises ResearchSaltError and the session
-    never starts (measured 2026-10-01 through the real wiring).
+    The pre-V3 version of this test encoded the pre-item-10 contract (a
+    grant could never create a salt) and failed even run alone once
+    grant-time provisioning landed: the state after a plain grant is
+    ACTIVE by design. The intent survives unchanged — a missing salt
+    never stops AA starting — so the salt is made unCREATABLE here.
     """
     monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
     composition_root = _patch_research_paths(monkeypatch, tmp_path)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, not a directory")
+    monkeypatch.setattr(
+        composition_root, "RESEARCH_SALT_PATH", blocker / "research_salt.txt"
+    )
     registry = _research_registry_stub(minimal_profile)
 
     consent = composition_root.build_research_consent(registry)

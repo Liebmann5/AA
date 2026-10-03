@@ -11,7 +11,7 @@ Startup Sequence:
     2. Configure structured logging.
     3. Parse command-line arguments (--cli, --debug, --check-config,
        --seed, --profile, --portable, --export-research, --research-summary,
-       --research, --replay, --label, --encrypt-profile).
+       --research, --replay, --verify-research, --label, --encrypt-profile).
     4. Initialize infrastructure (SQLite database with WAL mode).
     5. Launch the selected interface or print configuration summary.
 
@@ -40,6 +40,7 @@ Usage:
     python -m auto_apply --research-summary         # Summarise discovery data, exit
     python -m auto_apply --research                 # View/change research participation, exit
     python -m auto_apply --replay <corpus folder>   # Re-run the detectors over kept pages, exit
+    python -m auto_apply --verify-research <bundle> # Verify a research export bundle, exit
     python -m auto_apply --label                    # Label pages and log applications
     python -m auto_apply --encrypt-profile          # Encrypt the current profile
 """
@@ -363,7 +364,11 @@ def _handle_export_research(args) -> None:
         ExportError,
         ResearchExporter,
     )
-    from auto_apply.domain.config import REPORTS_DIR, RESEARCH_DB_PATH
+    from auto_apply.domain.config import (
+        PROVENANCE_KEY_PATH,
+        REPORTS_DIR,
+        RESEARCH_DB_PATH,
+    )
 
     fmt: ExportFormat = _parse_export_format(args.export_format or "csv")
     print(f"Exporting research data as {fmt.upper()}...")
@@ -371,6 +376,7 @@ def _handle_export_research(args) -> None:
     exporter = ResearchExporter(
         db_path=RESEARCH_DB_PATH,
         export_root=REPORTS_DIR,
+        provenance_key_path=PROVENANCE_KEY_PATH,
     )
     try:
         result = exporter.export(fmt)
@@ -484,6 +490,19 @@ def _handle_research() -> None:
     )
 
     sys.exit(run())
+
+
+def _handle_verify_research(args) -> None:
+    """Verify a research export bundle offline and exit (item 10, P6).
+
+    Composition only, mirroring --label: every print lives in the CLI
+    adapter, so this file's pinned print-site count does not move.
+    """
+    from auto_apply.adapters.primary.cli.research_verify import (  # noqa: PLC0415
+        run_verify_research,
+    )
+
+    sys.exit(run_verify_research(Path(args.verify_research).expanduser()))
 
 
 def _handle_label() -> None:
@@ -697,6 +716,18 @@ def main() -> None:
         help="Where --replay writes (default: reports/replay_<corpus digest> in AA's data folder).",
     )
     parser.add_argument(
+        "--verify-research",
+        metavar="BUNDLE",
+        default=None,
+        help=(
+            "Verify a research export bundle folder offline — every file "
+            "hash, the bundle digest, the bundle signature and every signed "
+            "row — and exit. Needs no database, no key and no session. "
+            "Exit code 0 when the bundle is intact, 1 when it is not, 2 "
+            "when the folder is not a bundle."
+        ),
+    )
+    parser.add_argument(
         "--label",
         action="store_true",
         help=(
@@ -770,6 +801,10 @@ def main() -> None:
     # 4e. Replay (exits when done — no session started)
     if args.replay:
         _handle_replay(args)
+
+    # 4f. Research bundle verification (exits when done — no session started)
+    if args.verify_research:
+        _handle_verify_research(args)
 
     # 5. Profile encryption mode (exits after encryption)
     if args.encrypt_profile:

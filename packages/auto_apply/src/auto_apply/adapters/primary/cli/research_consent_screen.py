@@ -45,6 +45,7 @@ from auto_apply.domain.services import research_consent_wording as _wording
 from auto_apply.infrastructure.composition_root import (
     build_research_consent,
     export_research_bundle,
+    research_public_key_fingerprint,
 )
 
 __all__ = ["run"]
@@ -120,6 +121,7 @@ def _print_status(service: ResearchConsentPort) -> None:
     print(f"  {_wording.status_headline(status)}")  # noqa: T201
     print(f"  {_wording.status_detail(status)}")  # noqa: T201
     print(f"  {_wording.page_copies_line(status)}")  # noqa: T201
+    print(f"  {_wording.public_key_line(research_public_key_fingerprint())}")  # noqa: T201
 
 
 def _show_dialog(service: ResearchConsentPort) -> None:

@@ -125,6 +125,35 @@ from its first tag onward.
   a 40-string held-out table with precision and recall floors; scored
   separately on a 45-string set written independently of the rules, which
   found the biweekly misreading fixed here.
+- **Research key provisioning.** Agreeing to research now creates a private
+  research salt on the device (`research_salt.txt`, owner-only where the OS
+  allows) — no environment variable, so a real user can actually contribute.
+  `AA_RESEARCH_SALT` still overrides it (and changes every employer identity
+  the installation mints). Withdrawing with deletion removes the salt with
+  the signing key, rotating employer-name identities too.
+- **Signed research exports.** Every export bundle now carries
+  `bundle_signature.json` — an Ed25519 signature over the bundle digest and
+  the index, made with the installation key — and a signed run identity in
+  `index.json` (AA version, a SHA-256 of the installed code, Python, OS;
+  never a fabricated commit). The signature file states plainly what it
+  proves (bytes unaltered since export) and what it does not (unmodified
+  code, contributor identity).
+- **`--verify-research`.** Verifies a bundle offline with only its own
+  files: every file hash, the bundle digest, the bundle signature and every
+  signed row, printing what it checked and what it did not. Exit 0/1/2.
+- **Research public-key fingerprint on both research screens**, so a
+  contributor has something to publish that recipients can match a bundle
+  against.
+- **Release attestation.** Published releases now carry Sigstore
+  build-provenance attestations, minted by the new release workflow on
+  GitHub's runners, over exactly two subject sets: the replay outputs
+  (`replay.jsonl`, `manifest.json` — after a byte-equality check against the
+  committed expected digest) and the built sdist and wheel. A version-gate
+  job refuses to publish when the tag, `pyproject.toml` and `CITATION.cff`
+  disagree, and every attesting job waits on it. The workflow runs only on
+  published releases, with empty top-level permissions and least-privilege
+  per-job grants, so the signing identity is unreachable from pull-request
+  code. The one-person runbook is `docs/developer_guide/releasing.md`.
 
 ### Changed
 
@@ -153,10 +182,35 @@ from its first tag onward.
   dialog says kept page copies are deleted either way. The page-copies choice
   has its own text, versioned separately (1.0). Anyone who agreed to 2.3 is
   asked again before collection resumes.
+- **Research consent text 2.5.** The dialog now says AutoApply creates the
+  private research key on the device when you agree (no AA_RESEARCH_SALT
+  setting to find), and the withdraw dialog says deletion also removes the
+  private research key that anonymised employer names. Anyone who agreed to
+  2.4 is asked again before collection resumes.
 - **ST-02's evidence text** no longer cites Colorado's standard on rows from
   other jurisdictions; it names the generic good-faith range standard.
 
 ### Fixed
+
+- **Research salt storage moved out of the domain, and both research
+  secrets are created atomically.** Salt file I/O now lives beside the
+  provenance key in the security adapter; the domain resolves through one
+  injected reader wired by the composition root, and an unwired manager
+  cannot create files. The salt and the key are created with
+  `O_CREAT | O_EXCL` and owner-only permissions from the first byte — no
+  write-then-chmod window, no silent last-writer-wins race — and the test
+  suite can no longer mint real research secrets into the data folder: a
+  conftest guard fails the run if the real files change.
+- **Exporting research no longer mints a private key.** A bundle is signed
+  only when a key already exists; otherwise `index.json` declares the
+  bundle unsigned, the verifier reports that state instead of failing it,
+  and nothing but the bundle is written.
+- **Release workflow build attestation.** `uv build` in a workspace member
+  writes to the workspace root's `dist/`; the build now uses
+  `--out-dir dist` so the attested and uploaded paths exist. The release
+  runbook routes the version bump and the DOI commit through pull requests
+  and verifies the replay digest by regenerating it rather than
+  downloading it.
 
 - **ST-01 recorded violations on postings that disclosed pay.** Nothing in
   AA read salaries, so every posting in a pay-transparency jurisdiction —
@@ -203,6 +257,22 @@ from its first tag onward.
 - **Session history ordering** now sorts by the session's own `started_at`
   rather than file mtime, which collapses when a reports directory is copied to
   a USB stick.
+- **Export bundles differed by operating system.** `index.json` and
+  `verification.json` were written in text mode, so the same database
+  produced a different bundle digest on Windows than on Linux. Every bundle
+  file is now written as exact bytes, with an AST ratchet against text-mode
+  writes of bundle files.
+- **The provenance key was world-readable** on shared machines (written
+  with the default umask). New and existing keys are restricted to their
+  owner where the OS allows.
+- **Dead signing code.** `ProvenanceSigner.sign_payload` had no caller;
+  removed. Bundle signing goes through `sign_hex`, like row signing.
+- **`CITATION.cff` was invalid CFF 1.2.0.** Empty `doi:` and `orcid:` strings
+  fail the DOI/ORCID patterns (a Zenodo deposit would have failed or been
+  wrong), and `date-released: "2026-09-19"` named a release that does not
+  exist. All three are removed; the DOI returns as the Zenodo concept DOI
+  after the first deposit, per the runbook. A docs-gate pin now fails on any
+  empty pattern-bearing field.
 
 ### Removed
 

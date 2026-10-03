@@ -545,6 +545,9 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     "adapters/secondary/annotation/detector_sample_source.py": ["hashlib.sha256"],
     "adapters/secondary/persistence/database.py": ["hashlib.sha256"],
     "adapters/secondary/research/research_exporter.py": ["hashlib.sha256"],
+    # Bundle verification (item 10): file hashes, the recomputed digest and
+    # the signed-payload hash. Verification only — it mints no identity.
+    "adapters/secondary/research/research_verifier.py": ["hashlib.sha256"],
     # hmac.new here is the phantom-identity migration recognising ids minted
     # by the RETIRED construction — it mints nothing (see
     # signal_aggregator._null_phantom_company_ids), so it is not and must not
@@ -602,9 +605,10 @@ def _digest_modules() -> dict[str, list[str]]:
 def test_hash_families_stay_disjoint() -> None:
     """RATCHET: the exact inventory of modules that compute any digest.
 
-    Eleven today. This is the widest net in the file and the cheapest one to
-    read: any new hashing anywhere in ``src`` shows up here first, before the
-    narrower pins above have to decide what it is.
+    The count lives in the map above and nowhere else (a literal count here
+    had already drifted from it once). This is the widest net in the file
+    and the cheapest one to read: any new hashing anywhere in ``src`` shows
+    up here first, before the narrower pins above have to decide what it is.
     """
     actual = _digest_modules()
     assert actual == EXPECTED_DIGEST_MODULES, (

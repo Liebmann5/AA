@@ -18,8 +18,11 @@ consent file lives under tmp_path.
 from __future__ import annotations
 
 import ast
+import hashlib
 import inspect
+import os
 import sqlite3
+import stat
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +40,12 @@ from auto_apply.domain.constants import RESEARCH_SCHEMA_VERSION
 from auto_apply.domain.services.signal_detectors import ResearchSignal
 
 SALT = "data-home-test-salt"
+
+# Captured at import time, BEFORE the conftest containment fixture
+# (tests/conftest.py, V2) redirects these constants into each test's tmp
+# tree — the two location pins below assert on the REAL values.
+_REAL_PROVENANCE_KEY_PATH = domain_config.PROVENANCE_KEY_PATH
+_REAL_RESEARCH_SALT_PATH = domain_config.RESEARCH_SALT_PATH
 
 
 @pytest.fixture
@@ -403,7 +412,7 @@ def test_provenance_key_lives_outside_the_research_and_reports_dirs():
     and the key was resolved as RESEARCH_DIR / 'provenance_key.pem' — inside
     what this change makes the data home.
     """
-    key = domain_config.PROVENANCE_KEY_PATH
+    key = _REAL_PROVENANCE_KEY_PATH
     assert domain_config.RESEARCH_DIR not in key.parents
     assert domain_config.REPORTS_DIR not in key.parents
 
@@ -482,3 +491,57 @@ def test_legacy_db_warning_names_both_paths(tmp_path, monkeypatch, caplog):
     caplog.clear()
     composition_root._warn_if_legacy_research_db()
     assert caplog.text == ""
+
+
+# ── item 10: the salt's home, key permissions, and the fingerprint helper ────
+
+
+def test_research_salt_lives_beside_the_provenance_key():
+    """GUARD (F1): the salt sits next to the provenance key — outside every
+    folder a 'share your research data' instruction names.
+
+    RED before item 10: domain.config had no RESEARCH_SALT_PATH."""
+    salt = _REAL_RESEARCH_SALT_PATH
+    assert salt.parent == _REAL_PROVENANCE_KEY_PATH.parent
+    assert domain_config.RESEARCH_DIR not in salt.parents
+    assert domain_config.REPORTS_DIR not in salt.parents
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions")
+def test_provenance_key_is_not_group_or_world_readable(tmp_path):
+    """TEETH (P5): a private key written under a shared machine's default
+    umask is readable by every account on it (measured 0o644 under umask
+    022). RED before item 10: nothing set permissions on the key file."""
+    from auto_apply.adapters.secondary.security.data_protection import (
+        ProvenanceSigner,
+    )
+
+    key_path = tmp_path / "provenance_key.pem"
+    ProvenanceSigner(key_path)
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+
+
+def test_fingerprint_is_none_without_a_key_and_never_creates_one(tmp_path, monkeypatch):
+    """TEETH (F5): the surfaces' fingerprint helper is read-only — asking
+    must not mint a key."""
+    import auto_apply.infrastructure.composition_root as composition_root
+
+    key = tmp_path / "provenance_key.pem"
+    monkeypatch.setattr(composition_root, "PROVENANCE_KEY_PATH", key)
+    assert composition_root.research_public_key_fingerprint() is None
+    assert not key.exists()
+
+
+def test_fingerprint_matches_the_key_on_disk(tmp_path, monkeypatch):
+    """GUARD (F5): the fingerprint is SHA-256 of the raw public key bytes —
+    the value a recipient recomputes from a bundle's verification.json."""
+    import auto_apply.infrastructure.composition_root as composition_root
+    from auto_apply.adapters.secondary.security.data_protection import (
+        ProvenanceSigner,
+    )
+
+    key = tmp_path / "provenance_key.pem"
+    signer = ProvenanceSigner(key)
+    monkeypatch.setattr(composition_root, "PROVENANCE_KEY_PATH", key)
+    expected = hashlib.sha256(bytes.fromhex(signer.public_key_hex)).hexdigest()
+    assert composition_root.research_public_key_fingerprint() == expected

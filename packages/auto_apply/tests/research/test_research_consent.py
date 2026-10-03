@@ -14,7 +14,9 @@ Coverage:
     - Consent record round‑trip through SqliteConsentRepository
 """
 
+import os
 import sqlite3
+import stat
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -27,6 +29,11 @@ from auto_apply.application.services.research_consent import (
     ConsentRecord,
     InMemoryConsentRepository,
 )
+from auto_apply.adapters.secondary.security.data_protection import (
+    provision_research_salt,
+    read_research_salt,
+)
+from auto_apply.domain.services import research_identity
 from auto_apply.domain.ports.research_port import (
     NullResearchObserver,
     JobPostingObservation,
@@ -234,6 +241,35 @@ def test_withdraw_consent_with_purge():
     assert not mgr.is_active()
 
 
+def test_purge_deletes_the_research_salt(tmp_path):
+    """TEETH (item 10, F2): withdrawal-with-deletion deletes the salt with
+    the signing key, so employer-name identities rotate too and a later
+    contribution cannot be joined to the purged one by employer. RED before
+    item 10: SqliteConsentRepository had no salt handling at all."""
+    salt_path = tmp_path / "research_salt.txt"
+    salt_path.write_text("salt", encoding="utf-8")
+    repo = SqliteConsentRepository(
+        consent_db_path=tmp_path / "consent.db",
+        research_db_path=tmp_path / "research_signals.db",
+        research_salt_path=salt_path,
+    )
+    repo.purge_research_data()
+    assert not salt_path.exists()
+
+
+def test_purge_without_a_salt_path_leaves_the_salt_alone(tmp_path):
+    """GUARD (F2): a repository built without a salt path (tests, minimal
+    wiring) must not go looking for one."""
+    salt_path = tmp_path / "research_salt.txt"
+    salt_path.write_text("salt", encoding="utf-8")
+    repo = SqliteConsentRepository(
+        consent_db_path=tmp_path / "consent.db",
+        research_db_path=tmp_path / "research_signals.db",
+    )
+    repo.purge_research_data()
+    assert salt_path.exists()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SqliteConsentRepository persistence
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,14 +419,45 @@ def test_status_active_after_grant_when_salt_available(monkeypatch):
     assert mgr.should_collect()
 
 
-def test_status_inactive_with_no_salt_reason_when_granted_without_salt(monkeypatch):
-    """TEETH vs M3 (FORK 4): a grant with NO salt is recorded-but-inactive,
-    with the reason reported — and the consent record itself is still valid.
-
-    RED today: no status(); the only no-salt behaviour was a build-time raise.
-    """
+def test_fresh_install_grants_and_reaches_active_without_any_environment_variable(
+    tmp_path, monkeypatch
+):
+    """TEETH (item 10, deliverable 1 — the P1 pin): a fresh install with NO
+    AA_RESEARCH_SALT grants consent and lands ACTIVE, because grant()
+    provisions the salt itself. RED before item 10: the grant landed
+    INACTIVE / NO_SALT and nothing anywhere could create a salt — no real
+    user could ever contribute a row."""
     monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
-    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    salt_path = tmp_path / "research_salt.txt"
+    # Wire exactly what build_research_consent wires in production (V1).
+    research_identity.configure_salt_file_reader(
+        lambda: read_research_salt(salt_path)
+    )
+    mgr = ResearchConsentManager(
+        InMemoryConsentRepository(),
+        provision_salt=lambda: provision_research_salt(salt_path),
+    )
+    status = mgr.grant()
+    assert status.state is ResearchConsentState.ACTIVE
+    assert mgr.should_collect()
+    assert salt_path.exists()
+    if os.name == "posix":
+        assert stat.S_IMODE(salt_path.stat().st_mode) == 0o600
+
+
+def test_grant_with_uncreatable_salt_reports_no_salt_and_stays_valid(
+    tmp_path, monkeypatch
+):
+    """TEETH (M3/FORK 4, kept): when the salt can neither be resolved nor
+    created, the grant is recorded-but-INACTIVE with the NO_SALT reason —
+    and the consent record itself is still valid."""
+    monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, not a directory")
+    mgr = ResearchConsentManager(
+        InMemoryConsentRepository(),
+        provision_salt=lambda: provision_research_salt(blocker / "research_salt.txt"),
+    )
     status = mgr.grant()
     assert status.state is ResearchConsentState.INACTIVE
     assert status.reason is ResearchConsentReason.NO_SALT
@@ -440,7 +507,7 @@ def test_grant_interface_records_current_version_and_returns_status(monkeypatch)
     assert record.granted_at is not None
 
 
-def test_should_collect_is_the_and_of_all_gates(monkeypatch):
+def test_should_collect_is_the_and_of_all_gates(tmp_path, monkeypatch):
     """GUARD (FORK 1): should_collect() is the single collection decision —
     consent AND offered AND not admin-prohibited AND salt. Each gate alone
     must be able to shut it."""
@@ -456,6 +523,8 @@ def test_should_collect_is_the_and_of_all_gates(monkeypatch):
     prohibited = ResearchConsentManager(repo, admin_prohibited=True)
     assert not prohibited.should_collect()
     monkeypatch.delenv("AA_RESEARCH_SALT")
+    # The conftest fixture reset the salt-file reader to no-file, so the
+    # no-salt leg cannot see any real file this machine may have.
     no_salt = ResearchConsentManager(repo)
     assert not no_salt.should_collect()
 

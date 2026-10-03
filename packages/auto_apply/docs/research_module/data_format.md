@@ -27,7 +27,14 @@ Everything the research module writes lives in that one `research/`
 directory — the database and its WAL sidecars. The private provenance
 signing key does NOT live there: it sits one level up, beside AA's other
 state files, so zipping or sharing the `research/` folder can never leak
-the key that signs your rows.
+the key that signs your rows. The private research salt
+(`research_salt.txt`, next to the key) lives there too for the same
+reason. AA creates it when you agree to research — no environment
+variable is needed; setting `AA_RESEARCH_SALT` overrides it and changes
+every employer identity this installation mints. Because each
+installation has its own salt, the same employer has a different
+`company_id` in two people's data: rows can be joined by employer only
+within one installation, never across contributors.
 
 The database is created automatically the first time research collection is
 enabled and a session runs. If the database already exists, new signals are
@@ -49,14 +56,14 @@ This is the primary table. Every row is a single anonymised observation.
 
 | Column | Type | Description | Example |
 | ------ | ---- | ----------- | ------- |
-| `signal_id` | TEXT PRIMARY KEY | Deterministic UUID derived from (signal_type, posting_hash, detected_date) to deduplicate the same fact observed via multiple code paths. | `a1b2c3d4...` |
+| `signal_id` | TEXT PRIMARY KEY | Random UUID per live run (no posting identity is minted yet); `INSERT OR IGNORE` collapses only exact repeats of the same row. | `a1b2c3d4...` |
 | `signal_type` | TEXT NOT NULL | The signal identifier, e.g. `"GJ-01"`, `"DISC-01"`. See [Signals Taxonomy](signals_taxonomy.md). | `GJ-01` |
 | `severity` | TEXT NOT NULL | One of `"flag"`, `"concern"`, `"violation"`. | `violation` |
 | `confidence` | REAL NOT NULL | Detection confidence 0.0–1.0. | `0.88` |
 | `evidence_text` | TEXT | Anonymised excerpt proving the signal (max 200 chars). | `"Posting live 120 days (SHRM fill threshold: 41 days)"` |
 | `platform` | TEXT | ATS or job‑board identifier (never a raw URL). | `greenhouse`, `linkedin` |
 | `jurisdiction` | TEXT | US state/city code, e.g. `"CA"`, `"NYC"`, or NULL. | `CA` |
-| `company_id` | TEXT | HMAC‑SHA256 of the company name's canonical form (format characters removed, NFKC, casefolded, whitespace collapsed; punctuation and legal suffixes kept; salt never stored). 16‑hex‑character anonymised identifier. NULL means no usable company name — including the placeholders discovery emits when extraction fails (`Unknown`, `N/A`, `None`); NULL is absence, never a company. Databases below `user_version` 4 were minted from the lower‑cased name only; the v4 migration NULLs their placeholder ids and leaves the rest. | `a3f2b1c4d5e6f7a8` |
+| `company_id` | TEXT | HMAC‑SHA256 of the company name's canonical form (format characters removed, NFKC, casefolded, whitespace collapsed; punctuation and legal suffixes kept; salt never stored). 16‑hex‑character anonymised identifier. The salt is per‑installation, so the identifier joins only within one contributor's data. NULL means no usable company name — including the placeholders discovery emits when extraction fails (`Unknown`, `N/A`, `None`); NULL is absence, never a company. Databases below `user_version` 4 were minted from the lower‑cased name only; the v4 migration NULLs their placeholder ids and leaves the rest. | `a3f2b1c4d5e6f7a8` |
 | `job_category` | TEXT | BLS SOC code when available. | `15-1252` |
 | `detected_date` | TEXT NOT NULL | ISO‑8601 date when the signal was recorded (no time component). | `2026-05-01` |
 | `schema_version` | INTEGER | Version of the research schema (incremented when data practices change). Version 3: ST‑01 reworded and re‑graded, salary extraction added. | `3` |
@@ -349,10 +356,10 @@ creates one.
 - New rows are appended; existing rows are never updated or deleted by the
   research pipeline (the user may manually purge data via Settings).
 - The `research_signals` table uses `INSERT OR IGNORE` keyed on
-  `signal_id`. When the same underlying fact is observed via multiple code
-  paths (e.g., a job posting observation and a form observation both
-  detecting a salary gap), the deterministic `signal_id` ensures only one
-  row is recorded — the correct unit of observation for aggregate statistics.
+  `signal_id`, so an exact duplicate row collapses to one. Repeat detections
+  of the same fact via different code paths are recorded separately today,
+  because no posting identity is minted yet (see
+  `tests/architecture/test_identity_pins.py`).
 
 ---
 
@@ -362,16 +369,18 @@ You can delete all research data at any time by:
 
 1.  Deleting the `research/` directory inside AA's data directory (the
     database and its WAL sidecars live there). To also retire the signing
-    identity, delete `provenance_key.pem` one level up.
+    and employer-name identities, delete `provenance_key.pem` and
+    `research_salt.txt` one level up.
 2.  Withdrawing in the Research screen WITHOUT deletion (this stops future
     collection but does not delete existing data).
 3.  Withdrawing consent with deletion requested (the Research screen —
     **File → Research…** in the app, **Settings → Research…**, or
     **`python -m auto_apply --research`** — then confirm deletion): AA
     deletes ALL of it — every table
-    in the database, the database files themselves, and the private
-    provenance key, so a contribution you make later cannot be linked to
-    the deleted one. If another process is holding the database open at
+    in the database, the database files themselves, the private
+    provenance key, and the research salt, so a contribution you make
+    later cannot be linked to the deleted one — by signature or by
+    employer identity. If another process is holding the database open at
     that moment, AA falls back to erasing every row and compacting the
     file; the result is the same once that process closes.
 

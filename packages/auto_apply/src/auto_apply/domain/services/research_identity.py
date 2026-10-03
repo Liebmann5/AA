@@ -11,14 +11,21 @@ Two construction rules, both load-bearing:
    join returned nothing instead of failing. Every research company identity
    in the tree now comes from ``compute_company_id`` below.
 
-2. NO DEFAULT SALT, EVER. Both retired sites fell back to the literal
+2. NO PUBLISHED SALT, EVER. Both retired sites fell back to the literal
    ``"default_dev_salt"`` when the environment variable was unset — a salt
-   published in the source tree, which is not anonymisation. An unset or
-   blank salt is fatal: ``resolve_research_salt`` raises ``ResearchSaltError``.
-   Where that raise surfaces is a deliberate choice — ResearchSignalAggregator
-   resolves the salt at construction so "research enabled, salt unset"
-   refuses the session instead of being swallowed inside a detector's
-   try/except.
+   published in the source tree, which is not anonymisation. The salt is
+   provisioned per installation, and the FILE half of that lives outside
+   the domain (V1): ``data_protection.provision_research_salt`` creates it
+   atomically and owner-only when research consent is granted (retried at
+   each session build while consent is active), and this module reaches it
+   only through the injected reader below. The ``AA_RESEARCH_SALT``
+   environment variable overrides the file when set — an explicit override
+   that rotates every identity this installation mints. With neither
+   present, ``resolve_research_salt`` raises ``ResearchSaltError``. Where
+   that raise surfaces is a deliberate choice — ResearchSignalAggregator
+   resolves the salt at construction so "research enabled, salt
+   unavailable" refuses the research pipeline instead of being swallowed
+   inside a detector's try/except.
 
 3. ONE CANONICAL FORM. The HMAC message is the output of
    ``_normalise_company_name`` — stripped of invisible format characters,
@@ -36,8 +43,9 @@ Two construction rules, both load-bearing:
    empty-string defect one layer up. The placeholders in
    ``ABSENT_COMPANY_TOKENS`` canonicalise to None.
 
-This module is domain code: no I/O beyond reading one environment variable,
-no imports outside the stdlib and ``domain.constants``.
+This module is domain code: its only I/O is one environment variable and
+whatever the injected salt-file reader does (nothing, by default), and its
+only imports are the stdlib and ``domain.constants``.
 """
 from __future__ import annotations
 
@@ -45,16 +53,47 @@ import hashlib
 import hmac
 import os
 import unicodedata
+from collections.abc import Callable
 
 from auto_apply.domain.constants import RESEARCH_SALT_ENV_VAR
 
 __all__ = [
     "ABSENT_COMPANY_TOKENS",
     "ResearchSaltError",
+    "configure_salt_file_reader",
     "resolve_research_salt",
     "salt_available",
     "compute_company_id",
 ]
+
+
+# ── The salt-file seam (item 10, V1) ────────────────────────────────────────
+# The domain does no file I/O. The file half of salt resolution reaches this
+# module through ONE injected reader, wired once per process by the
+# composition root (build_research_consent) from the secondary adapter where
+# the salt actually lives — adapters/secondary/security/data_protection.py,
+# beside the provenance key. The default is no file: an unwired domain
+# resolves from the environment alone, exactly as it did before item 10, and
+# the test suite's conftest restores that default around every test so no
+# test can read the real salt file (V2).
+SaltFileReader = Callable[[], str | None]
+
+
+def _no_salt_file() -> None:
+    """The domain-pure default: there is no salt file."""
+    return None
+
+
+_salt_file_reader: SaltFileReader = _no_salt_file
+
+
+def configure_salt_file_reader(reader: SaltFileReader | None) -> None:
+    """Install the salt-file reader (composition root only).
+
+    Passing None restores the domain-pure default.
+    """
+    global _salt_file_reader
+    _salt_file_reader = reader if reader is not None else _no_salt_file
 
 
 class ResearchSaltError(ValueError):
@@ -69,28 +108,36 @@ class ResearchSaltError(ValueError):
 def resolve_research_salt() -> str:
     """Return the configured research salt, or raise.
 
-    The value is used VERBATIM — leading or trailing whitespace is part of
-    the salt — but a value that is empty or whitespace-only is treated as
-    unset, because a whitespace-only salt is a configuration accident, not a
-    choice. The literal ``"default_dev_salt"`` is NOT special-cased: it is a
-    legal (bad) salt, and magic-stringing it would be a second hidden
-    default.
+    Resolution order: the ``AA_RESEARCH_SALT`` environment variable when set
+    and non-blank (an explicit override — it wins over the file, so setting
+    it rotates every identity this installation mints), then whatever the
+    wired salt-file reader returns (the provisioned file in production;
+    nothing when unwired). The environment value is used VERBATIM — leading
+    or trailing whitespace is part of the salt — but a value that is empty
+    or whitespace-only is treated as unset, because a whitespace-only salt
+    is a configuration accident, not a choice. The literal
+    ``"default_dev_salt"`` is NOT special-cased: it is a legal (bad) salt,
+    and magic-stringing it would be a second hidden default.
 
     Raises:
-        ResearchSaltError: If the variable is unset, empty, or whitespace-only.
+        ResearchSaltError: If neither source yields a non-blank salt.
     """
     salt = os.environ.get(RESEARCH_SALT_ENV_VAR, "")
-    if not salt.strip():
-        raise ResearchSaltError(
-            f"{RESEARCH_SALT_ENV_VAR} is unset or blank and research collection "
-            "requires it. There is no default: a fallback salt is published in "
-            "the source tree, and a published salt is not anonymisation — rows "
-            "produced under one are treated as compromised and nulled by "
-            "ResearchSignalAggregator's one-time migration. Set "
-            f"{RESEARCH_SALT_ENV_VAR} to a private, stable value before running "
-            "with research consent active."
-        )
-    return salt
+    if salt.strip():
+        return salt
+    file_salt = _salt_file_reader()
+    if file_salt is not None:
+        return file_salt
+    raise ResearchSaltError(
+        "no research salt is available and research collection requires "
+        "one. AA provisions a private salt when research consent is "
+        "granted; none exists, and none could be read. Agree to research "
+        "again or start a session to recreate it, or set "
+        f"{RESEARCH_SALT_ENV_VAR} to a private, stable value — which "
+        "overrides the file and changes every identity this installation "
+        "mints. There is no default: a fallback salt is published in the "
+        "source tree, and a published salt is not anonymisation."
+    )
 
 
 def salt_available() -> bool:

@@ -41,7 +41,12 @@ from auto_apply.domain.ports.research_consent_port import (
     ResearchConsentState,
     ResearchConsentStatus,
 )
+from auto_apply.adapters.secondary.security.data_protection import (
+    provision_research_salt,
+    read_research_salt,
+)
 from auto_apply.domain.services import research_consent_wording as wording
+from auto_apply.domain.services import research_identity
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,13 +86,27 @@ def _service(
         monkeypatch.setenv("AA_RESEARCH_SALT", "cli-screen-salt")
     else:
         monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
+    # Wire exactly what build_research_consent wires in production (V1),
+    # pinned into the tmp tree so a grant never touches a real file.
+    research_identity.configure_salt_file_reader(
+        lambda: read_research_salt(tmp_path / "research_salt.txt")
+    )
     repo = SqliteConsentRepository(
         consent_db_path=tmp_path / "research_consent.db",
         research_db_path=tmp_path / "research" / "research_signals.db",
         provenance_key_path=tmp_path / "provenance_key.pem",
         page_copies_dir=tmp_path / "research" / "page_copies",
+        research_salt_path=tmp_path / "research_salt.txt",
     )
-    return ResearchConsentManager(repo), repo
+    return (
+        ResearchConsentManager(
+            repo,
+            provision_salt=lambda: provision_research_salt(
+                tmp_path / "research_salt.txt"
+            ),
+        ),
+        repo,
+    )
 
 
 def _write_research_db(path: Path) -> None:
@@ -432,14 +451,21 @@ def test_every_page_copies_state_has_a_line() -> None:
     assert all(lines)
 
 
-def test_no_salt_screen_says_the_choice_is_remembered(
+def test_missing_key_screen_says_the_choice_is_remembered(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    """TEETH (S4's most common screen): a grant with no salt lands on
-    INACTIVE/NO_SALT — the screen must say nothing is collected AND that
-    the choice is remembered and takes effect once the key is present."""
+    """TEETH (S4 + item 10): with no env var the grant now PROVISIONS the
+    key (ACTIVE); if the key then goes missing, the screen lands on
+    INACTIVE/NO_SALT and must say nothing is collected AND that the choice
+    is remembered and takes effect once the key exists."""
     service, _repo = _service(tmp_path, monkeypatch, salt=False)
     _install_input(monkeypatch, ["2", "y"])
+    screen.run(service)
+    assert service.status().state is ResearchConsentState.ACTIVE, (
+        "item 10: a grant with no environment variable provisions the key"
+    )
+    (tmp_path / "research_salt.txt").unlink()
+    _install_input(monkeypatch, [""])
     screen.run(service)
     out = capsys.readouterr().out
     status = service.status()
@@ -447,7 +473,6 @@ def test_no_salt_screen_says_the_choice_is_remembered(
     assert status.reason is ResearchConsentReason.NO_SALT
     assert "nothing is being collected" in out
     assert "remembered" in out
-    assert "AA_RESEARCH_SALT" in out
 
 
 def test_the_screen_prints_the_current_state_in_plain_words(
@@ -463,3 +488,19 @@ def test_the_screen_prints_the_current_state_in_plain_words(
     assert wording.status_headline(status) in out
     assert wording.status_detail(status) in out
     assert wording.page_copies_line(status) in out
+
+
+def test_the_screen_shows_the_public_key_fingerprint(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """TEETH (F5, CLI half): the status block carries the shared wording
+    line with the fingerprint a contributor publishes. RED before item 10:
+    the screen had no fingerprint line at all."""
+    service, _repo = _service(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        screen, "research_public_key_fingerprint", lambda: "f" * 64
+    )
+    _install_input(monkeypatch, [""])
+    screen.run(service)
+    out = capsys.readouterr().out
+    assert wording.public_key_line("f" * 64) in out

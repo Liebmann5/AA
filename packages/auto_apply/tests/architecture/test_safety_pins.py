@@ -203,6 +203,13 @@ EXPECTED_REACHES: dict[str, set[str]] = {
     "gui/dashboard.py": {
         "auto_apply.application.services.session_controller",
     },
+    "cli/research_verify.py": {
+        # The verify-research screen reaches the wiring layer for the
+        # verifier helper (composition_root.verify_research_bundle) — the
+        # same precedent as research_consent_screen above. It may NOT
+        # import the secondary verifier itself.
+        "auto_apply.infrastructure.composition_root",
+    },
     "gui/research_window.py": {
         # The research window reaches the wiring layer for the export
         # helper (composition_root) — the same precedent as the CLI

@@ -17,9 +17,15 @@ R1  An export is ONE DIRECTORY per database state, not loose files in a
     themselves differently can never share one.
 R2  Byte-identity guarantee: same database file + same AA version + same
     format (and, for Parquet, the same pyarrow version) means every file
-    in the bundle is byte-identical. No wall-clock timestamp appears in
-    any filename or in any file content; row order is total (TABLE_SPECS
-    declares an ORDER BY that ends at each table's primary key).
+    in the bundle is byte-identical on one machine. No wall-clock
+    timestamp appears in any filename or in any file content; row order is
+    total (TABLE_SPECS declares an ORDER BY that ends at each table's
+    primary key); every file is written as exact bytes, so the digest
+    never forks on an OS line-ending convention. Across machines the
+    digest-covered files stay identical; ``index.json`` additionally
+    records where it ran (OS, Python), so it — and therefore
+    ``bundle_signature.json``, which signs its hash — may differ while
+    the bundle digest and directory name do not.
 R3  The provenance public key travels as ``verification.json`` —
     structurally distinct from the data files — together with the exact
     recipe for reconstructing a signed payload. If no key is on record,
@@ -31,11 +37,26 @@ R4  A read failure aborts the whole export. Everything is written into a
     carries a header (CSV), zero lines (NDJSON), or a zero-row frame
     (Parquet), and the index records ``"rows": 0`` explicitly.
 
-This module does NOT sign the export and does NOT hash the codebase; that
-is item 10. The per-row signatures it exposes were minted by
-signal_aggregator._write_batch, whose signed content this module never
-touches (C2). The schema version travels in ``index.json`` for the whole
-bundle; it is sourced from domain.constants.RESEARCH_SCHEMA_VERSION.
+Every bundle from an installation WITH a provenance key is SIGNED (item
+10): ``bundle_signature.json`` holds an Ed25519 signature, made with the
+installation's own key, over the bundle digest and the sha256 of
+``index.json`` — so the data files, the index and the run identity inside
+it are all covered. An installation with no signed research rows has no
+key, and an export NEVER creates one (V8 — a private key appearing as a
+side effect of exporting is hidden persistence, and the key would match
+nothing in the bundle): the bundle then declares ``"signature":
+{"status": "unsigned"}`` in ``index.json`` instead, and the verifier
+reports that state plainly rather than failing it. The signature proves
+the bundle is unaltered since this installation exported it; it does not
+prove the exporting code was unmodified (the key is self-generated and
+vouches for bytes, not code) — the exact claim is written into the file
+itself.
+``index.json`` also carries a run identity: AA version, a sha256 of the
+installed code (CodebaseHasher — never a git commit, which a user install
+cannot prove), Python and OS. The per-row signatures it exposes were
+minted by signal_aggregator._write_batch, whose signed content this module
+never touches (C2). The schema version travels in ``index.json`` for the
+whole bundle; it is sourced from domain.constants.RESEARCH_SCHEMA_VERSION.
 """
 from __future__ import annotations
 
@@ -45,12 +66,19 @@ import importlib.util
 import json
 import logging
 import os
+import platform
 import shutil
 import sqlite3
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Callable, Iterable, Literal
 
+from auto_apply.adapters.secondary.security.data_protection import (
+    CodebaseHasher,
+    ProvenanceSigner,
+    read_public_key_fingerprint,
+)
 from auto_apply.domain.constants import RESEARCH_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -247,8 +275,9 @@ def _bundle_digest(
     by two different requests. That is the right trade — a duplicated CSV file
     is cheap, and an artifact that lies about its own origin is not.
 
-    This remains a checksum for integrity and the future signing target for
-    item 10. It is not a signature and makes no trust claim by itself.
+    This digest is what bundle_signature.json signs (with the sha256 of
+    index.json alongside it). Alone it is a checksum and makes no trust
+    claim by itself.
     """
     h = hashlib.sha256()
     for rel, sha in sorted(file_hashes):
@@ -258,17 +287,63 @@ def _bundle_digest(
     return h.hexdigest()
 
 
+def _run_identity() -> dict[str, str]:
+    """What produced this export (F3) — claims, never fabrications.
+
+    ``aa_version`` comes from package metadata and ``codebase_sha256``
+    hashes the installed package's own .py files, so all three install
+    shapes (git checkout, wheel/sdist, dirty tree) are described the same
+    honest way, and a dirty tree simply hashes differently from a clean
+    release. A git commit is deliberately NOT recorded: nothing on a
+    user's machine observes one, and a field that only exists for the
+    maintainer's checkout would fabricate certainty everywhere else. What
+    a recipient can conclude: hash the code of a release themselves and
+    compare — equality means this bundle came from code identical to that
+    release; inequality proves nothing beyond "different".
+    """
+    try:
+        aa_version = importlib_metadata.version("auto_apply")
+    except importlib_metadata.PackageNotFoundError:
+        aa_version = "unknown"
+    import auto_apply  # noqa: PLC0415
+
+    return {
+        "aa_version": aa_version,
+        "codebase_sha256": CodebaseHasher.hash_src_directory(
+            Path(auto_apply.__file__).parent
+        ),
+        "python": platform.python_version(),
+        "os": platform.system(),
+        "note": (
+            "descriptive, covered by the bundle signature but not by the "
+            "bundle digest; verify it only by hashing that code yourself"
+        ),
+    }
+
+
 class ResearchExporter:
-    """Export the research database as one verifiable bundle.
+    """Export the research database as one verifiable, signed bundle.
 
     Args:
         db_path: Path to the research SQLite database.
         export_root: Directory the bundle directory is created in.
+        provenance_key_path: The installation's Ed25519 key, used to sign
+            the bundle. READ-ONLY (V8): the bundle is signed only when a
+            key already exists at this path — the key is created by the
+            first signed research row, never by an export. None resolves
+            to domain.config.PROVENANCE_KEY_PATH lazily; tests inject a
+            tmp path.
     """
 
-    def __init__(self, db_path: Path, export_root: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        export_root: Path,
+        provenance_key_path: Path | None = None,
+    ) -> None:
         self._db_path = db_path
         self._export_root = export_root
+        self._provenance_key_path = provenance_key_path
 
     def export(self, fmt: ExportFormat = "csv") -> ExportResult:
         """Export every research table as one bundle directory.
@@ -385,6 +460,7 @@ class ResearchExporter:
                 file_hashes.append((info.filename, info.sha256))
 
             digest = _bundle_digest(file_hashes, requested_format, degraded)
+            signing_key_exists = self._key_path().exists()
             index = {
                 "bundle_schema_version": 1,
                 "research_schema_version": RESEARCH_SCHEMA_VERSION,
@@ -392,6 +468,20 @@ class ResearchExporter:
                 "format": fmt_spec.extension,
                 "requested_format": requested_format,
                 "degraded": degraded,
+                "run_identity": _run_identity(),
+                "signature": (
+                    {"status": "signed"}
+                    if signing_key_exists
+                    else {
+                        "status": "unsigned",
+                        "reason": (
+                            "no provenance key exists on the exporting "
+                            "installation — one is created when the first "
+                            "research row is signed; an export never "
+                            "creates one"
+                        ),
+                    }
+                ),
                 "tables": [
                     {
                         "table": t.table,
@@ -415,13 +505,102 @@ class ResearchExporter:
                 ),
                 "bundle_digest": digest,
             }
-            (out_dir / "index.json").write_text(
-                json.dumps(index, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            index_bytes = (
+                json.dumps(index, indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            # Exact bytes (R2): a text-mode write would translate "\n" to
+            # the OS line ending and fork verification by platform.
+            (out_dir / "index.json").write_bytes(index_bytes)
+            if signing_key_exists:
+                self._write_bundle_signature(out_dir, digest, index_bytes)
+            else:
+                logger.info(
+                    "ResearchExport | no provenance key on this installation — "
+                    "bundle left unsigned (declared in index.json)"
+                )
             return tuple(tables), verification_status, digest
         finally:
             conn.close()
+
+    def _key_path(self) -> Path:
+        """The provenance key's path: injected, else the config constant."""
+        if self._provenance_key_path is not None:
+            return self._provenance_key_path
+        from auto_apply.domain.config import PROVENANCE_KEY_PATH  # noqa: PLC0415
+
+        return PROVENANCE_KEY_PATH
+
+    def _write_bundle_signature(
+        self, out_dir: Path, digest: str, index_bytes: bytes
+    ) -> None:
+        """Sign the bundle with the installation's Ed25519 key (item 10, F4).
+
+        The signed payload is the bundle digest plus the sha256 of
+        index.json, so the signature covers the data files (through the
+        digest) AND the index — including the run identity, which a
+        contributor therefore cannot edit after the fact. The signature
+        file itself is written after the digest is computed and is not
+        part of it, exactly like index.json. The claim is written into the
+        file, because an honest claim is part of the artifact: the
+        signature vouches for these bytes leaving THIS installation
+        unaltered, not for the code that produced them.
+
+        A signing failure aborts the export (R4) rather than shipping an
+        unsigned bundle that looks finished. Called only when the key file
+        exists (checked by _export_into), so ProvenanceSigner's
+        load-or-generate only ever LOADS here — an export never mints a
+        key (V8).
+        """
+        try:
+            signer = ProvenanceSigner(key_path=self._key_path())
+        except Exception as exc:
+            raise ExportError(
+                f"could not load or create the provenance key for signing: {exc}"
+            ) from exc
+        index_sha256 = hashlib.sha256(index_bytes).hexdigest()
+        signed_payload = {"bundle_digest": digest, "index_sha256": index_sha256}
+        payload_hash = hashlib.sha256(
+            json.dumps(signed_payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        signature = signer.sign_hex(payload_hash)
+        fingerprint = read_public_key_fingerprint(self._key_path())
+        content = {
+            "signature_scheme": "Ed25519",
+            "public_key_hex": signer.public_key_hex,
+            "public_key_fingerprint": fingerprint,
+            "signed_payload": signed_payload,
+            "payload_canonicalization": (
+                "json.dumps(signed_payload, sort_keys=True) with default "
+                "separators, UTF-8 encoded"
+            ),
+            "payload_hash": payload_hash,
+            "signature_message": (
+                "the UTF-8 bytes of the lowercase hex SHA-256 digest of the "
+                "canonical signed payload; the hex string itself is signed, "
+                "not the raw digest bytes"
+            ),
+            "signature": signature,
+            "what_this_proves": (
+                "Every file in this bundle is byte-for-byte what this "
+                "AutoApply installation exported, and nothing in it has been "
+                "altered since. Verify with: python -m auto_apply "
+                "--verify-research <this folder>."
+            ),
+            "what_this_does_not_prove": (
+                "It does not prove the exporting code was unmodified "
+                "AutoApply: the signing key is generated by the installation "
+                "and vouches for bytes, not for code. The run identity in "
+                "index.json is covered by this signature but is only a "
+                "claim until a recipient hashes that code themselves. It "
+                "does not prove who the contributor is: confirm the "
+                "fingerprint above matches one you trust before relying on "
+                "this bundle."
+            ),
+        }
+        (out_dir / "bundle_signature.json").write_bytes(
+            (json.dumps(content, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        )
+        logger.info("ResearchExport | bundle signed (fingerprint %s)", fingerprint)
 
     def _write_table(
         self,
@@ -495,9 +674,10 @@ class ResearchExporter:
             ),
         }
         path = out_dir / "verification.json"
-        path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        # Exact bytes: this file's on-disk hash feeds the bundle digest, so
+        # a text-mode write would fork the digest by OS (P4).
+        path.write_bytes(
+            (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
         )
         file_hashes.append(("verification.json", _sha256_file(path)))
         logger.info("ResearchExport | verification.json written")

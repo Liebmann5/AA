@@ -131,7 +131,14 @@ class ResearchConsentManager:
             device administrator" rather than merely "unavailable".
         salt_available: Zero-arg callable answering "is a research salt
             configured?". Defaults to domain.research_identity.salt_available,
-            which reads the process environment (fixed for a session).
+            which reads the process environment plus the salt-file reader
+            the composition root wires (V1).
+        provision_salt: Zero-arg callable that creates and returns the salt
+            when none exists — injected by the composition root from the
+            secondary adapter where the salt lives. None (tests, surfaces
+            built without the wiring) means this manager CANNOT create
+            files: ensure_salt then reports False, which reads as
+            INACTIVE / NO_SALT — never a crash, never a leak.
     """
 
     def __init__(
@@ -141,11 +148,13 @@ class ResearchConsentManager:
         is_offered: bool = True,
         admin_prohibited: bool = False,
         salt_available: Callable[[], bool] | None = None,
+        provision_salt: Callable[[], str] | None = None,
     ) -> None:
         self._repository = repository
         self._is_offered = is_offered
         self._admin_prohibited = admin_prohibited
         self._salt_available = salt_available or _research_salt_available
+        self._provision_salt = provision_salt
         self._active_observer: Any = None
 
     def is_active(self) -> bool:
@@ -278,9 +287,40 @@ class ResearchConsentManager:
         acknowledgement, and a grant is reversible at any time via
         withdraw(purge_data=True). Collection starts at the next session
         build, never mid-session (the session's composition is frozen).
+        Granting also provisions the private research salt when none exists
+        (ensure_salt, through the provision callable the composition root
+        injected) — a grant no longer depends on an environment variable
+        the worst-case user has never heard of.
         """
         self.grant_consent()
+        self.ensure_salt()
         return self.status()
+
+    def ensure_salt(self) -> bool:
+        """True when a research salt exists afterwards.
+
+        Checks first (environment, then the wired file reader) and only
+        provisions when nothing resolves — through the callable the
+        composition root injected. Called by grant() (the salt is
+        provisioned when the user agrees) and by the composition root at
+        each session build while consent is active, so a grant made when
+        creation first failed heals itself. An UNWIRED manager (no
+        provision callable) and a creation failure both report False,
+        which reads as INACTIVE / NO_SALT — never fatal, never a hidden
+        file.
+        """
+        if self._salt_available():
+            return True
+        if self._provision_salt is None:
+            return False
+        try:
+            self._provision_salt()
+        except OSError as exc:
+            logger.warning(
+                "ResearchConsent | could not provision the research salt: %s", exc
+            )
+            return False
+        return self._salt_available()
 
     def withdraw(self, purge_data: bool = True) -> WithdrawalResult:
         """Stop collection NOW, record the withdrawal, optionally purge.

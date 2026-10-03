@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import sqlite3
+import stat
 import unicodedata as ud
 from datetime import date
 from pathlib import Path
@@ -44,6 +46,11 @@ from auto_apply.application.workflows.applications_workflow import ApplicationsW
 from auto_apply.domain.models.application_evidence import ApplicationEvidence
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.ports.research_port import ApplicationOutcomeObservation
+from auto_apply.adapters.secondary.security.data_protection import (
+    provision_research_salt,
+    read_research_salt,
+)
+from auto_apply.domain.services import research_identity
 from auto_apply.domain.services.research_identity import (
     ResearchSaltError,
     _normalise_company_name,
@@ -112,6 +119,8 @@ def test_company_id_never_matches_the_retired_concat_scheme(monkeypatch) -> None
 
 def test_unset_salt_is_fatal_at_aggregator_construction(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
+    # The conftest containment fixture has already reset the salt-file
+    # reader to the no-file default, so no machine state can leak in.
     with pytest.raises(ResearchSaltError, match="AA_RESEARCH_SALT"):
         ResearchSignalAggregator(db_path=tmp_path / "research.db", consent_version="2.1")
 
@@ -135,6 +144,65 @@ def test_blank_salt_is_treated_as_unset(monkeypatch, blank: str) -> None:
 def test_default_dev_salt_literal_is_not_special_cased(monkeypatch) -> None:
     monkeypatch.setenv("AA_RESEARCH_SALT", "default_dev_salt")
     assert resolve_research_salt() == "default_dev_salt"
+
+
+# ── Salt provisioning (item 10, F1/V1/V7): the adapter owns the file ────────
+
+
+def test_provision_creates_a_private_salt_file(monkeypatch, tmp_path) -> None:
+    """TEETH (V1/V7): provisioning creates the salt owner-only from the
+    first byte (no write-then-chmod window), and the DOMAIN reaches the
+    file only through the wired reader — unwired, resolve still raises.
+
+    RED before V1: the file half lived inside the domain module itself.
+    """
+    monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
+    salt_path = tmp_path / "research_salt.txt"
+
+    salt = provision_research_salt(salt_path)
+
+    assert len(salt) == 64 and all(c in "0123456789abcdef" for c in salt)
+    assert salt_path.read_text(encoding="utf-8") == salt
+    assert provision_research_salt(salt_path) == salt, (
+        "provisioning must not rotate an existing salt"
+    )
+    if os.name == "posix":
+        assert stat.S_IMODE(salt_path.stat().st_mode) == 0o600, (
+            "the salt keys every employer identity; on a shared machine it "
+            "must not be readable by other accounts"
+        )
+    # The seam itself: an unwired domain cannot see the file at all.
+    with pytest.raises(ResearchSaltError):
+        resolve_research_salt()
+    research_identity.configure_salt_file_reader(
+        lambda: read_research_salt(salt_path)
+    )
+    assert resolve_research_salt() == salt
+
+
+def test_a_racing_provision_reads_the_winner(tmp_path) -> None:
+    """GUARD (V7): O_EXCL creation means a second provisioner can never
+    overwrite the first — it reads the winner's file instead."""
+    salt_path = tmp_path / "research_salt.txt"
+    first = provision_research_salt(salt_path)
+    assert provision_research_salt(salt_path) == first
+    assert read_research_salt(salt_path) == first
+
+
+def test_env_var_wins_over_the_file_salt(monkeypatch, tmp_path) -> None:
+    """GUARD (F1): an explicit AA_RESEARCH_SALT overrides the provisioned
+    file — the override is deliberate and documented, and it rotates every
+    identity the installation mints."""
+    salt_path = tmp_path / "research_salt.txt"
+    monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
+    file_salt = provision_research_salt(salt_path)
+    research_identity.configure_salt_file_reader(
+        lambda: read_research_salt(salt_path)
+    )
+    monkeypatch.setenv("AA_RESEARCH_SALT", "explicit-env-salt")
+    assert resolve_research_salt() == "explicit-env-salt"
+    assert compute_company_id("Acme Corp") == _hmac_id("acme corp", "explicit-env-salt")
+    assert file_salt != "explicit-env-salt"
 
 
 # ── T4: absence of a company is not a company named anything ─────────────────

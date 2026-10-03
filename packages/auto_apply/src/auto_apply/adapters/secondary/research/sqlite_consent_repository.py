@@ -58,6 +58,10 @@ class SqliteConsentRepository(ConsentRepositoryPort):
         page_copies_dir: The folder of kept page copies (item 6), deleted by
             purge_page_copies() and by purge_research_data(). None means no
             page copies are kept here.
+        research_salt_path: The private research salt file, deleted by
+            purge_research_data() so a purge also rotates the employer-name
+            identities — like the provenance key, keeping it would let old
+            and new contributions be linked. None disables salt handling.
     """
 
     def __init__(
@@ -66,11 +70,13 @@ class SqliteConsentRepository(ConsentRepositoryPort):
         research_db_path: Path,
         provenance_key_path: Path | None = None,
         page_copies_dir: Path | None = None,
+        research_salt_path: Path | None = None,
     ) -> None:
         self._consent_db_path = consent_db_path
         self._research_db_path = research_db_path
         self._provenance_key_path = provenance_key_path
         self._page_copies_dir = page_copies_dir
+        self._research_salt_path = research_salt_path
         self._consent_db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._get_connection(self._consent_db_path) as conn:
             conn.executescript(_CONSENT_SCHEMA_SQL)
@@ -286,6 +292,32 @@ class SqliteConsentRepository(ConsentRepositoryPort):
                 key, exc,
             )
 
+    def _delete_research_salt(self) -> None:
+        """Rotate the employer-name identities: delete the research salt.
+
+        company_id is HMAC keyed by this salt, so deleting it is the
+        employer-name half of the identity rotation the provenance-key
+        deletion starts: a contribution made after the purge cannot be
+        joined to the purged one by employer either. The next consented
+        session provisions a fresh salt (ensure_research_salt). A failed
+        delete is logged and retried by the next purge.
+        """
+        path = self._research_salt_path
+        if path is None or not path.exists():
+            return
+        try:
+            path.unlink()
+            logger.info(
+                "SqliteConsentRepository | research salt deleted — "
+                "employer-name identities rotated"
+            )
+        except OSError as exc:
+            logger.warning(
+                "SqliteConsentRepository | could not delete research salt "
+                "%s (%s); employer-name identities are unchanged",
+                path, exc,
+            )
+
     def purge_research_data(self) -> int:
         """Delete ALL research data: every row, the database files, the key.
 
@@ -296,8 +328,9 @@ class SqliteConsentRepository(ConsentRepositoryPort):
         list is derived from the live schema in both paths, so the schema
         can never outgrow the purge (the old five-table literal let six
         tables survive). research_provenance goes with the rest, and the
-        private provenance key is deleted so the purge also rotates the
-        installation's research identity.
+        private provenance key and research salt are deleted so the purge
+        also rotates the installation's research identity — both halves of
+        it (row signatures and employer-name identities).
 
         Kept page copies (item 6) are deleted too: they are research data
         held on this device, and "all" means all.
@@ -323,6 +356,7 @@ class SqliteConsentRepository(ConsentRepositoryPort):
                     total_deleted,
                 )
         self._delete_provenance_key()
+        self._delete_research_salt()
         self.purge_page_copies()
         return total_deleted
 

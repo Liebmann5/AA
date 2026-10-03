@@ -1,12 +1,12 @@
 ---
-title: "Research Consent Dialog — Exact UI Text (v2.4)"
+title: "Research Consent Dialog — Exact UI Text (v2.5)"
 status: needs-review
 last_verified: 2026-09-27
 verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
 audience: researchers
 ---
 
-# Research Consent Dialog — Exact UI Text (v2.4)
+# Research Consent Dialog — Exact UI Text (v2.5)
 
 This document is the AUTHORITATIVE SOURCE for the consent dialog text shown
 to users when they enable research data collection in the Research screen —
@@ -107,10 +107,12 @@ way that changes what data is collected or how, increment
 > reads, on this device only. That is a second, optional choice with its own
 > explanation, and it stays off unless you turn it on.
 >
-> Note: research collection also needs a private research key on this
-> device (the AA_RESEARCH_SALT setting). If it is missing, research stays
-> off and AutoApply works normally — your choice is remembered and takes
-> effect once the key is present.
+> Note: AutoApply creates a private research key on this device when you
+> agree, and keeps it in your AutoApply data folder. It never leaves this
+> device. If it is missing or cannot be created, research stays off and
+> AutoApply works normally — your choice is remembered and takes effect
+> once the key exists, and AutoApply retries creating it each time a
+> session starts.
 >
 > Full details: see docs/ETHICS.md in the AutoApply repository.
 
@@ -189,8 +191,9 @@ Button:
 > If checked, ALL research data linked to your sessions — every anonymized
 > signal, salary, form, discovery and detector record — is deleted
 > immediately and permanently, together with the private key that signed
-> your rows, so nothing you contribute later can be linked back to what was
-> deleted. Files you previously exported yourself are not touched; delete
+> your rows and the private research key that anonymised employer names, so
+> nothing you contribute later can be linked back to what was deleted.
+> Files you previously exported yourself are not touched; delete
 > those separately if you want them gone. Your consent record itself is
 > kept, so AutoApply remembers that you withdrew.
 >

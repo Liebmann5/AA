@@ -73,8 +73,14 @@ def _signal(
     )
 
 
-def _export(db_path: Path, export_root: Path, fmt: str):
-    return ResearchExporter(db_path=db_path, export_root=export_root).export(fmt)  # type: ignore[arg-type]
+def _export(db_path: Path, export_root: Path, fmt: str, key_path: Path | None = None):
+    # A tmp provenance key path is injected by every caller, so an export
+    # in a test never mints a key in the developer's real data folder.
+    return ResearchExporter(
+        db_path=db_path,
+        export_root=export_root,
+        provenance_key_path=key_path,
+    ).export(fmt)  # type: ignore[arg-type]
 
 
 # ── T1: the export is self-verifying ──────────────────────────────────────────
@@ -87,7 +93,9 @@ def test_exported_signature_verifies_against_exported_key(
     agg = _make_aggregator(db, tmp_path / "research_cfg", monkeypatch)
     agg._write_batch([_signal("sig-001", date(2026, 1, 15))])
 
-    result = _export(db, tmp_path / "exports", "ndjson")
+    result = _export(
+        db, tmp_path / "exports", "ndjson", tmp_path / "research_cfg" / "provenance_key.pem"
+    )
     assert result.verification_status == "ok"
 
     bundle = result.directory
@@ -135,9 +143,9 @@ def test_same_database_exports_byte_identical(
 
     export_root = tmp_path / "exports"
     for fmt in ("csv", "ndjson"):
-        first = _export(db, export_root, fmt)
+        first = _export(db, export_root, fmt, tmp_path / "research_cfg" / "provenance_key.pem")
         snapshot = {p.name: p.read_bytes() for p in sorted(first.directory.iterdir())}
-        second = _export(db, export_root, fmt)
+        second = _export(db, export_root, fmt, tmp_path / "research_cfg" / "provenance_key.pem")
         assert second.directory == first.directory
         assert {
             p.name: p.read_bytes() for p in sorted(second.directory.iterdir())
@@ -197,7 +205,9 @@ def test_every_table_in_the_schema_has_an_export_path(
     # A table added to _SCHEMA_SQL without a TableSpec fails HERE.
     assert names == declared
 
-    result = _export(db, tmp_path / "exports", "csv")
+    result = _export(
+        db, tmp_path / "exports", "csv", tmp_path / "research_cfg" / "provenance_key.pem"
+    )
     for spec in TABLE_SPECS:
         if spec.kind == "verification":
             assert (result.directory / "verification.json").exists()
@@ -218,7 +228,9 @@ def test_missing_pyarrow_degrades_format_not_export(
     # Simulate the missing dependency whether or not pyarrow is installed.
     monkeypatch.setattr(research_exporter, "_module_available", lambda _module: False)
 
-    result = _export(db, tmp_path / "exports", "parquet")
+    result = _export(
+        db, tmp_path / "exports", "parquet", tmp_path / "research_cfg" / "provenance_key.pem"
+    )
     assert result.degraded is True
     assert result.requested_format == "parquet"
     assert result.format == "csv"
@@ -250,9 +262,9 @@ def test_degraded_export_does_not_inherit_a_clean_bundles_index(
     agg._write_batch([_signal("sig-001", date(2026, 6, 1))])
     export_root = tmp_path / "exports"
 
-    clean = _export(db, export_root, "csv")
+    clean = _export(db, export_root, "csv", tmp_path / "research_cfg" / "provenance_key.pem")
     monkeypatch.setattr(research_exporter, "_module_available", lambda _module: False)
-    degraded = _export(db, export_root, "parquet")
+    degraded = _export(db, export_root, "parquet", tmp_path / "research_cfg" / "provenance_key.pem")
 
     assert degraded.directory != clean.directory, (
         "a degraded run landed in the clean run's bundle; its index.json was "
@@ -279,12 +291,16 @@ def test_empty_and_populated_corpora_are_distinct_and_complete(
 ) -> None:
     empty_db = tmp_path / "empty" / "research.db"
     _make_aggregator(empty_db, tmp_path / "empty_cfg", monkeypatch)
-    empty_result = _export(empty_db, tmp_path / "exports_empty", "csv")
+    empty_result = _export(
+        empty_db, tmp_path / "exports_empty", "csv", tmp_path / "empty_cfg" / "provenance_key.pem"
+    )
 
     pop_db = tmp_path / "populated" / "research.db"
     agg = _make_aggregator(pop_db, tmp_path / "populated_cfg", monkeypatch)
     agg._write_batch([_signal("sig-001", date(2026, 5, 1))])
-    pop_result = _export(pop_db, tmp_path / "exports_populated", "csv")
+    pop_result = _export(
+        pop_db, tmp_path / "exports_populated", "csv", tmp_path / "populated_cfg" / "provenance_key.pem"
+    )
 
     # Neither resembles a failure: both completed, and both carry every file.
     row_tables = [s for s in TABLE_SPECS if s.kind == "rows"]
@@ -316,3 +332,142 @@ def test_empty_and_populated_corpora_are_distinct_and_complete(
     # And the two are plainly different artifacts.
     assert empty_result.bundle_digest != pop_result.bundle_digest
     assert empty_result.directory != pop_result.directory
+
+
+# ── item 10: byte-exact writes, the bundle signature, and the run identity ───
+
+
+def test_no_bundle_file_is_written_in_text_mode__ratchet() -> None:
+    """RATCHET (P4): a text-mode write of a bundle file translates "\\n" to
+    the OS line ending and forks the bundle digest by platform (the measured
+    Windows/Linux divergence). Scan the exporter AST: no .write_text( calls
+    at all — bundle files go out as bytes. A new text-mode write fails here,
+    not in a user's differing digest."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(research_exporter))
+    offenders = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "write_text"
+    ]
+    assert not offenders, (
+        f"text-mode writes at lines {offenders}; bundle files must be "
+        "written with write_bytes"
+    )
+
+
+def test_bundle_files_have_platform_independent_bytes(tmp_path, monkeypatch) -> None:
+    """TEETH (P4, restated after V4): no byte in the bundle depends on the
+    OS. The csv module terminates rows with \\r\\n on EVERY platform — that
+    is byte-stable, not a defect — so CSVs must be uniformly CRLF, and
+    everything else must contain no \\r at all. The earlier 'no \\r
+    anywhere' pin asserted the wrong property and failed on Linux."""
+    db = tmp_path / "research.db"
+    agg = _make_aggregator(db, tmp_path / "research_cfg", monkeypatch)
+    agg._write_batch([_signal("sig-001", date(2026, 7, 1))])
+    result = _export(
+        db, tmp_path / "exports", "csv", tmp_path / "research_cfg" / "provenance_key.pem"
+    )
+    for path in result.directory.iterdir():
+        data = path.read_bytes()
+        if path.suffix == ".csv":
+            assert data.endswith(b"\r\n"), path.name
+            assert b"\n" not in data.replace(b"\r\n", b""), (
+                f"{path.name}: a bare LF means the OS leaked into the bytes"
+            )
+        else:
+            assert b"\r" not in data, path.name
+
+
+def test_bundle_digest_does_not_depend_on_os_linesep(tmp_path, monkeypatch) -> None:
+    """GUARD (P4): simulating a Windows line-ending convention must not move
+    the digest or the directory. With byte-exact writes os.linesep is never
+    consulted; the ratchet above is what makes that hold under regression."""
+    import os
+
+    db = tmp_path / "research.db"
+    agg = _make_aggregator(db, tmp_path / "research_cfg", monkeypatch)
+    agg._write_batch([_signal("sig-001", date(2026, 7, 2))])
+    key = tmp_path / "research_cfg" / "provenance_key.pem"
+    export_root = tmp_path / "exports"
+    first = _export(db, export_root, "csv", key)
+    snapshot = {p.name: p.read_bytes() for p in sorted(first.directory.iterdir())}
+    monkeypatch.setattr(os, "linesep", "\r\n")
+    second = _export(db, export_root, "csv", key)
+    assert second.directory == first.directory
+    assert second.bundle_digest == first.bundle_digest
+    assert {
+        p.name: p.read_bytes() for p in sorted(second.directory.iterdir())
+    } == snapshot
+
+
+def test_every_bundle_is_signed_and_the_run_identity_is_honest(
+    tmp_path, monkeypatch
+) -> None:
+    """TEETH (P2/P3, deliverables 2 and 4): every export — even one with no
+    signed rows — carries bundle_signature.json, verifiable with only the
+    bundle, and a run identity that never fabricates a commit.
+
+    RED before item 10: no bundle_signature.json existed, and index.json
+    held no run_identity."""
+    db = tmp_path / "research.db"
+    agg = _make_aggregator(db, tmp_path / "research_cfg", monkeypatch)
+    agg._write_batch([_signal("sig-001", date(2026, 7, 3))])
+    result = _export(
+        db, tmp_path / "exports", "csv", tmp_path / "research_cfg" / "provenance_key.pem"
+    )
+    bundle = result.directory
+
+    sig = json.loads((bundle / "bundle_signature.json").read_bytes())
+    index_bytes = (bundle / "index.json").read_bytes()
+    expected_payload = {
+        "bundle_digest": result.bundle_digest,
+        "index_sha256": hashlib.sha256(index_bytes).hexdigest(),
+    }
+    assert sig["signed_payload"] == expected_payload
+    payload_hash = hashlib.sha256(
+        json.dumps(sig["signed_payload"], sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    assert payload_hash == sig["payload_hash"]
+    Ed25519PublicKey.from_public_bytes(
+        bytes.fromhex(sig["public_key_hex"])
+    ).verify(bytes.fromhex(sig["signature"]), payload_hash.encode("utf-8"))
+    assert sig["public_key_fingerprint"] == hashlib.sha256(
+        bytes.fromhex(sig["public_key_hex"])
+    ).hexdigest()
+    # The honest F4 claim travels inside the artifact.
+    assert "does not prove" in sig["what_this_does_not_prove"]
+    assert json.loads(index_bytes)["signature"]["status"] == "signed"
+
+    index = json.loads(index_bytes)
+    run_identity = index["run_identity"]
+    assert run_identity["aa_version"]
+    assert len(run_identity["codebase_sha256"]) == 64
+    int(run_identity["codebase_sha256"], 16)
+    assert run_identity["python"]
+    assert run_identity["os"]
+    assert "commit" not in run_identity, (
+        "a user's install cannot observe a commit; recording one would "
+        "fabricate certainty (F3)"
+    )
+
+
+def test_an_empty_database_exports_an_honestly_unsigned_bundle(tmp_path, monkeypatch) -> None:
+    """TEETH (V8): with no provenance key, the export signs NOTHING, mints
+    NO key, and the index declares the bundle unsigned. RED before V8:
+    _write_bundle_signature load-or-generated a private key as a side
+    effect of exporting — hidden persistence, and a key that matched
+    nothing in the bundle."""
+    db = tmp_path / "research.db"
+    _make_aggregator(db, tmp_path / "research_cfg", monkeypatch)
+    key = tmp_path / "research_cfg" / "provenance_key.pem"
+    result = _export(db, tmp_path / "exports", "csv", key)
+    assert not key.exists(), "an export must never create a private key"
+    assert not (result.directory / "bundle_signature.json").exists()
+    index = json.loads((result.directory / "index.json").read_bytes())
+    assert index["signature"]["status"] == "unsigned"
+    assert result.verification_status == "unavailable"

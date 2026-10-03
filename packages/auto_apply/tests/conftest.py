@@ -134,3 +134,74 @@ def minimal_valid_profile() -> UserProfile:
             "enable_behavior_humanization": True,
         },
     })
+
+
+# ── Research-secret containment (item 10, V2) ───────────────────────────────
+# Measured 2026-10-02: a suite run after item 10 left BOTH
+# dev_data/research_salt.txt and dev_data/provenance_key.pem behind — and on
+# the maintainer's machine dev_data IS the real data folder, so a test run
+# silently became a real research identity. This fixture is the guard: it
+# redirects every composition-root and config path that can hold a secret
+# into the test's own tmp tree, resets the domain's salt-file reader (V1's
+# seam) around every test, and FAILS THE RUN if the real files' existence
+# changes in either direction — created OR deleted.
+
+
+@pytest.fixture(autouse=True)
+def _no_real_research_secrets(monkeypatch, tmp_path):
+    """TEETH (V2): no test may create — or destroy — the real research salt
+    or provenance key. Red against the pre-V1 tree: grants there
+    provisioned the real salt through a module-global path (e.g.
+    test_admin_prohibition_wins_over_grant's plain grant), and an export
+    minted the real key (test_detector_accounting's key-less exporter)."""
+    import auto_apply.domain.config as domain_config
+    from auto_apply.domain.services import research_identity
+    from auto_apply.infrastructure import composition_root
+
+    real_salt = domain_config.RESEARCH_SALT_PATH
+    real_key = domain_config.PROVENANCE_KEY_PATH
+    salt_existed = real_salt.exists()
+    key_existed = real_key.exists()
+
+    # The domain's salt-file reader defaults to no-file; reset it so a test
+    # that wires one cannot leak it to the next test.
+    research_identity.configure_salt_file_reader(None)
+
+    monkeypatch.setattr(
+        domain_config, "RESEARCH_SALT_PATH", tmp_path / "research_salt.txt"
+    )
+    monkeypatch.setattr(
+        domain_config, "PROVENANCE_KEY_PATH", tmp_path / "provenance_key.pem"
+    )
+    monkeypatch.setattr(composition_root, "USER_DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        composition_root,
+        "RESEARCH_DB_PATH",
+        tmp_path / "research" / "research_signals.db",
+    )
+    monkeypatch.setattr(
+        composition_root, "PROVENANCE_KEY_PATH", tmp_path / "provenance_key.pem"
+    )
+    monkeypatch.setattr(
+        composition_root, "RESEARCH_SALT_PATH", tmp_path / "research_salt.txt"
+    )
+    monkeypatch.setattr(
+        composition_root,
+        "PAGE_COPIES_DIR",
+        tmp_path / "research" / "page_copies",
+    )
+
+    yield
+
+    research_identity.configure_salt_file_reader(None)
+    changed = []
+    if real_salt.exists() != salt_existed:
+        changed.append(f"{real_salt} (existed={salt_existed})")
+    if real_key.exists() != key_existed:
+        changed.append(f"{real_key} (existed={key_existed})")
+    assert not changed, (
+        "a test created or deleted REAL research secrets: "
+        + ", ".join(changed)
+        + ". Pin the paths into tmp_path through the seams above; the suite "
+        "must never mint a real research identity."
+    )

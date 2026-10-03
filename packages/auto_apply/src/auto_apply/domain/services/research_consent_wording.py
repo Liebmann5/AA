@@ -11,6 +11,9 @@ in tests/adapters/test_cli_research_screen.py fails if a state or reason
 exists without words, and the parity pin asserts both surfaces read their
 words from here.
 
+The research public-key fingerprint line (public_key_line) lives here too:
+not a state, but a sentence both surfaces must word identically.
+
 Window chrome (button captions, menu labels) is deliberately NOT here and
 NOT translated either way: the consent text itself is never translated —
 a translated dialog would be a different text the user agreed to and would
@@ -31,6 +34,7 @@ __all__ = [
     "status_headline",
     "status_detail",
     "page_copies_line",
+    "public_key_line",
     "view_changes_note",
 ]
 
@@ -72,9 +76,10 @@ _DETAILS: dict[ResearchConsentState, str] = {
 # user can do.
 _REASON_DETAILS: dict[ResearchConsentReason, str] = {
     ResearchConsentReason.NO_SALT: (
-        "The private research key (the AA_RESEARCH_SALT setting) is missing "
-        "on this device. Your choice is remembered and takes effect once "
-        "the key is present — AutoApply works normally either way."
+        "The private research key AutoApply keeps on this device is missing "
+        "and could not be created. Your choice is remembered and takes "
+        "effect once the key exists — AutoApply retries creating it each "
+        "time a session starts, and works normally either way."
     ),
     ResearchConsentReason.ADMIN_PROHIBITED: (
         "An administrator policy on this device disables research "
@@ -147,6 +152,24 @@ def page_copies_line(status: ResearchConsentStatus) -> str:
     return (
         "Page copies are on, but none are being kept right now — keeping "
         "starts when research collection does."
+    )
+
+
+def public_key_line(fingerprint: str | None) -> str:
+    """The one line both surfaces show about the research public key (F5):
+    the fingerprint a contributor publishes with shared research, so a
+    recipient can match it against the key inside an export bundle. None —
+    no key yet — is normal before the first recorded row or export, and
+    says so."""
+    if fingerprint is None:
+        return (
+            "Research public key: none yet — AutoApply creates it the first "
+            "time research data is recorded."
+        )
+    return (
+        f"Research public key fingerprint: {fingerprint} — publish this "
+        "with any research you share, so recipients can match it against "
+        "the key inside your export."
     )
 
 

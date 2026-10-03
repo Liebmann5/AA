@@ -50,7 +50,10 @@ from auto_apply.domain.ports.research_consent_port import (
     WithdrawalResult,
 )
 from auto_apply.domain.services import research_consent_wording as _wording
-from auto_apply.infrastructure.composition_root import export_research_bundle
+from auto_apply.infrastructure.composition_root import (
+    export_research_bundle,
+    research_public_key_fingerprint,
+)
 
 __all__ = [
     "ResearchAction",
@@ -301,7 +304,12 @@ class ResearchWindow(tk.Toplevel):
     def _show_main(self) -> None:
         self._rendered_version = None
         status = self._service.status()
-        self._status_var.set("\n".join(status_lines(status)))
+        self._status_var.set(
+            "\n".join(
+                status_lines(status)
+                + [_wording.public_key_line(research_public_key_fingerprint())]
+            )
+        )
         self._set_text(
             "Choose an action below. Nothing is recorded, changed, or "
             "deleted unless you choose it — and closing this window "

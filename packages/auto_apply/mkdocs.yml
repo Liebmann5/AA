@@ -96,6 +96,7 @@ nav:
       - Contribution Workflow: developer_guide/contribution_workflow.md
       - Adding an ATS Platform: developer_guide/adding_an_ats_platform.md
       - Documentation Standards: DOCUMENTATION_STANDARDS.md
+      - Releasing: developer_guide/releasing.md
 
   - Architecture:
       - Overview: architecture/index.md
