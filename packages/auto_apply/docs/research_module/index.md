@@ -53,7 +53,8 @@ bypassed.
 
 Research collection is **opt‑in only**. It is disabled by default. No data is
 ever collected without an explicit, recorded consent from the user. You enable
-it by granting consent through the Settings → Research dialog. You can disable
+it by granting consent through the Research screen — File → Research… in the
+app, or `--research` on the command line. You can disable
 it at any time, and existing data is not deleted unless you explicitly
 request deletion.
 
@@ -66,7 +67,16 @@ opt‑in toggle in the user interface is locked and the user cannot enable it.
 The research module **never** records:
 
 - Job URLs (which could identify a user’s browsing pattern)
-- Company names (which could identify geography or industry preference)
+- Your search queries and full web addresses (URLs). A web address shown
+  inside a link text is cut down to its host before it is stored.
+
+One honest qualification: in **signal** rows, employer names exist only as an
+irreversible anonymous code. But job titles, link texts and destination hosts
+on result pages are recorded exactly as displayed (see “What Is Collected”),
+and those may include employer names — `acme.myworkdayjobs.com` names its
+employer. A results page that repeats your search words in a title or link
+text (a listing called “20 Python jobs in Sacramento”) is recorded as shown
+too. If that is more than you want recorded, do not opt in.
 - User names, emails, resume details, or any profile data
 - IP addresses or network information
 - Timestamps at a granularity that could correlate to a specific user
@@ -125,15 +135,20 @@ pipeline operates as follows:
    signed with an installation‑unique Ed25519 key. The public key is stored
    in the database so third‑party verifiers can authenticate the data.
 
-The SQLite database uses three additional supporting tables:
+The SQLite database also includes these supporting tables:
 
 - `job_lifecycles` — tracks posting freshness and cross‑platform reposting
 - `salary_observations` — builds a salary corpus for benchmarking
 - `form_observations` — records ATS form complexity and accessibility violations
 - `application_outcomes` — tracks whether applications receive any response (black‑hole detection)
+- `discovery_pages` / `discovery_cards` / `discovery_candidates` — what the
+  discovery surface looked like, page by page
+- `detector_examinations` / `detector_outcomes` — one accounting row per
+  detector run (the denominator behind every rate)
+- `research_provenance` — the public half of this installation's signing key
 
-All tables are in a single `research_signals.db` file inside the AA data
-directory.
+All tables live in one file: `research/research_signals.db` inside AA's
+data directory.
 
 ---
 
@@ -163,13 +178,22 @@ The complete signal catalogue with detailed descriptions is in
 
 ## What the Data Looks Like
 
-Signals are written to `research_signals.db` in AA’s data directory.
-The database can be exported to CSV, JSON, or Parquet via
+Signals are written to `research/research_signals.db` inside AA's data
+directory — the single home of everything the module collects. The database
+can be exported to CSV, NDJSON, or Parquet via
 `python -m auto_apply --export-research`.
 
-The `research_signals` table has 15 columns covering signal metadata,
+The `research_signals` table has 16 columns covering signal metadata,
 evidence text, jurisdiction, platform, company anonymization, provenance
-signing, and schema versioning.
+signing, schema versioning, and the fingerprint of the page copy a signal was
+detected on.
+
+If you separately turn on **page copies**, AA also keeps a cleaned copy of
+each job posting page it reads — on this device only, as a standard WARC
+file, deleted after 90 days — so research rows can be checked against the
+pages they came from. Your own details, form values and scripts are removed
+before anything is written; search pages are never kept. See
+[Page Copies](data_format.md#page-copies).
 
 Full schema details are in [Data Format](data_format.md).
 
@@ -183,13 +207,15 @@ Full schema details are in [Data Format](data_format.md).
   share it.
 - The data contains **no personally identifiable information** — not your
   name, email, IP address, or specific job URLs.
-- Company names are **never recorded** — only ATS platform types
-  (`"greenhouse"`, `"lever"`, etc.) which are extracted from URL domains
-  and immediately discarded.
+- In signal rows, company names are stored only as an irreversible anonymous
+  code (HMAC with a private per-installation salt). Job titles, link texts
+  and destination hosts from result pages are stored as displayed and may
+  name employers — the consent dialog says so explicitly, in the list of
+  what IS collected.
 - The **session ID** is a random UUID that changes every session. It cannot
   be linked to your identity across sessions.
 - You can **delete all research data** at any time via the Settings menu or
-  by deleting the `research_signals.db` file.
+  by deleting the `research/` directory inside AA's data directory.
 - An **admin policy** can globally disable research collection, overriding
   any user opt‑in.
 
@@ -207,20 +233,38 @@ Full schema details are in [Data Format](data_format.md).
 
 === "GUI"
 
-    1. Open **Settings** → **Safety & Throttling**.
-    2. Check or uncheck **“Contribute Anonymized Research Data.”**
-    3. Click **Save Changes**.
+    1. Open **File** → **Research…** (available from first launch, before
+       any profile exists; the Settings dialog's **Research…** button opens
+       the same window).
+    2. Choose **Turn research on…**, read the consent dialog, and choose
+       **“I Agree — Enable Research Participation.”** Declining — or simply
+       closing the window — records nothing.
 
-    The setting takes effect on the next session.
+    The decision is recorded in AA's consent database (not in your profile)
+    and collection starts on your next session. Withdraw from the same
+    screen at any time — withdrawal stops collection immediately, and you
+    can delete everything collected so far in the same step (export is
+    offered first). Page copies have their own on/off choice there.
 
 === "CLI"
 
-    Edit your profile JSON directly:
-    ```json
-    "app_config": {
-        "enable_research_collection": true
-    }
+    ```bash
+    python -m auto_apply --research
     ```
+
+    The interactive research screen shows the current state in plain words,
+    the same consent text as the GUI, and the same actions: agree, withdraw
+    (with optional export-then-delete), page copies on/off, and export. It
+    calls the same consent interface as the GUI
+    (`composition_root.build_research_consent()`), records the same
+    versioned decision, and starts collection on your next session. A blank
+    answer, EOF, or Ctrl-C never grants and never deletes; deletion asks
+    you to type DELETE.
+
+    Editing the profile JSON does **not** enable research:
+    `app_config.enable_research_collection` is not read for consent (the
+    templates no longer carry it), and the `enable_research_collection`
+    config flag only controls whether research is *offered* at all.
 
 === "Admin Policy"
 
@@ -247,11 +291,16 @@ users into a **public research dataset**. This dataset will be:
 - Accompanied by a data dictionary and methodology document.
 - Updated on a regular cadence (e.g. quarterly).
 
-If you would like to contribute your data to the public dataset, you can
-export your `research_signals.db` and submit it via the project’s contribution
-channel (to be announced). Contributions are voluntary, anonymous, and
-irreversible — once data is published, it cannot be retracted. Only share
-what you are comfortable making public.
+If you would like to contribute your data to the public dataset, run
+`python -m auto_apply --export-research` and submit the **export bundle**
+it creates (a directory under `reports/` in AA's data directory) via the
+project’s contribution channel (to be announced). The bundle is the
+contribution format: it is self-verifying — it carries the public key a
+recipient needs to authenticate every signed row — and it contains nothing
+private. Share ONLY the bundle, never the raw `research/` directory.
+Contributions are voluntary, anonymous, and irreversible — once data is
+published, it cannot be retracted. Only share what you are comfortable
+making public.
 
 ---
 

@@ -4,18 +4,28 @@ Central registry for all research signal detectors.
 Usage:
     from auto_apply.domain.services.signal_detectors import ALL_DETECTORS, run_all_detectors
 
-    signals = run_all_detectors(context)
+    result = run_all_detectors(context)
+    signals = result.signals    # what was found
+    outcomes = result.outcomes  # what happened — one per detector (item 5)
 """
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import replace
 
 from auto_apply.domain.services.signal_detectors.base import (
+    OUTCOME_CLEAN,
+    OUTCOME_FIRED,
+    OUTCOME_RAISED,
     DetectionContext,
+    DetectionResult,
+    DetectorOutcome,
     ResearchSignal,
     SignalDetector,
 )
+
+logger = logging.getLogger(__name__)
 from auto_apply.domain.services.signal_detectors.ghost_job_detectors import GHOST_JOB_DETECTORS
 from auto_apply.domain.services.signal_detectors.discrimination_detectors import DISCRIMINATION_DETECTORS
 from auto_apply.domain.services.signal_detectors.qualification_detectors import QUALIFICATION_DETECTORS
@@ -35,7 +45,22 @@ ALL_DETECTORS: list[SignalDetector] = (
 )
 
 
-def run_all_detectors(ctx: DetectionContext) -> list[ResearchSignal]:
+def _detector_name(index: int, detector: SignalDetector) -> str:
+    """A detector's signal_type, or a stable stand-in if reading it raises."""
+    try:
+        return detector.signal_type
+    except Exception:
+        return f"detector_{index}:{type(detector).__name__}"
+
+
+def detector_roster() -> tuple[str, ...]:
+    """Every registered detector's name, in registry order — the roster
+    run_all_detectors reports, available without running anything (a
+    replay manifest names it even for an empty corpus, item 7)."""
+    return tuple(_detector_name(i, d) for i, d in enumerate(ALL_DETECTORS))
+
+
+def run_all_detectors(ctx: DetectionContext) -> DetectionResult:
     """Run every registered detector against a DetectionContext.
 
     Pure function — no I/O, no state, safe to call from any thread.
@@ -58,18 +83,74 @@ def run_all_detectors(ctx: DetectionContext) -> list[ResearchSignal]:
     signals, which have no single posting), signal_id remains a random
     UUID as before — every macro signal is distinct by definition.
 
+    PAGE COPIES (item 6): if ctx.page_copy_id is set, every returned signal
+    carries it, linking the row to the cleaned page copy kept on this
+    device. It never changes signal_id: the copy is evidence about the
+    observation, not part of its identity.
+
     Args:
         ctx: All available data for the job posting being analyzed.
 
+    OUTCOME ACCOUNTING (item 5): every detector that runs produces exactly
+    one DetectorOutcome — "clean", "fired" or "raised" — returned with the
+    signals in the DetectionResult. A raising detector is caught, recorded
+    as "raised" with the exception's CLASS NAME ONLY, and the remaining
+    detectors still run: the no-raise guarantee pinned in
+    tests/property_based/test_math_algorithms.py survives, but the blow-up
+    is now data, not silence. str(exc) is never recorded — an exception
+    message can quote the posting itself (item 5, C2). BaseExceptions
+    (KeyboardInterrupt, SystemExit) still propagate: process control, not
+    detector failure.
+
     Returns:
-        All detected signals from all detectors, sorted by confidence descending.
+        A DetectionResult carrying the signals (sorted by confidence
+        descending), the roster of detectors that ran, and one outcome per
+        roster entry. len(result.outcomes) == len(result.detectors_run) is
+        the completeness invariant; the persistence layer stores only
+        non-clean outcomes and derives clean from the roster (item 5, O1).
     """
     results: list[ResearchSignal] = []
-    for detector in ALL_DETECTORS:
+    roster: list[str] = []
+    outcomes: list[DetectorOutcome] = []
+    for index, detector in enumerate(ALL_DETECTORS):
+        # Name the detector BEFORE running it: if the signal_type property
+        # itself raises, the outcome still has to name something — a raised
+        # detector is a recorded fact, never silence (item 5, R3).
+        signal_type = _detector_name(index, detector)
+        roster.append(signal_type)
         try:
-            results.extend(detector.detect(ctx))
-        except Exception:
-            pass  # A failing detector must never crash the pipeline
+            raw: list[ResearchSignal] | None = detector.detect(ctx)
+            if raw is None:
+                # Contract violation — detect() must return a list. Recorded
+                # as a raise so the defect is data, not a silent clean.
+                raise TypeError(f"{signal_type}.detect() returned None")
+            detected = list(raw)
+        except Exception as exc:
+            # C2: the exception's CLASS NAME only. str(exc) can quote the
+            # posting — a company name, a URL, description text — and
+            # recording it would be a PII leak with a research-data label.
+            outcomes.append(
+                DetectorOutcome(
+                    signal_type=signal_type,
+                    outcome=OUTCOME_RAISED,
+                    signals_count=0,
+                    error_class=type(exc).__name__,
+                )
+            )
+            logger.debug(
+                "run_all_detectors | %s raised %s",
+                signal_type,
+                type(exc).__name__,
+            )
+            continue
+        outcomes.append(
+            DetectorOutcome(
+                signal_type=signal_type,
+                outcome=OUTCOME_FIRED if detected else OUTCOME_CLEAN,
+                signals_count=len(detected),
+            )
+        )
+        results.extend(detected)
 
     if ctx.posting_hash:
         deduped: list[ResearchSignal] = []
@@ -79,13 +160,29 @@ def run_all_detectors(ctx: DetectionContext) -> list[ResearchSignal]:
             deduped.append(replace(sig, signal_id=deterministic_id, posting_hash=ctx.posting_hash))
         results = deduped
 
-    return sorted(results, key=lambda s: s.confidence, reverse=True)
+    if ctx.page_copy_id:
+        # Item 6: every signal names the cleaned page copy it was detected
+        # on, so a row can be checked against the page it came from.
+        results = [replace(sig, page_copy_id=ctx.page_copy_id) for sig in results]
+
+    ordered = sorted(results, key=lambda s: s.confidence, reverse=True)
+    return DetectionResult(
+        signals=tuple(ordered),
+        detectors_run=tuple(roster),
+        outcomes=tuple(outcomes),
+    )
 
 
 __all__ = [
+    "ALL_DETECTORS",
+    "detector_roster",
+    "OUTCOME_CLEAN",
+    "OUTCOME_FIRED",
+    "OUTCOME_RAISED",
     "DetectionContext",
+    "DetectionResult",
+    "DetectorOutcome",
     "ResearchSignal",
     "SignalDetector",
-    "ALL_DETECTORS",
     "run_all_detectors",
 ]

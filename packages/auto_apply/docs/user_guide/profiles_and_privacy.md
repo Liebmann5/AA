@@ -183,7 +183,7 @@ host.
 | Session logs | `~/.auto_apply/logs/app.log` |
 | Failure screenshots | `~/.auto_apply/screenshots/` |
 | Checkpoints | `~/.auto_apply/checkpoints/` |
-| Research signals (opt‑in) | `~/.auto_apply/research_data/hiring_signals.csv` |
+| Research data (opt‑in) | `research/research_signals.db` under the data directory |
 
 All of these paths can be overridden with environment variables. See the
 [Configuration Reference](../getting_started/configuration.md) for details.
@@ -206,7 +206,8 @@ AA records anonymised observations about the hiring market. This data:
 
 - Contains **no personal information** — no names, emails, job URLs, or company
   names.
-- Is stored locally as a CSV file.
+- Is stored locally as a SQLite database (`research/research_signals.db`),
+  exportable to CSV, NDJSON, or Parquet.
 - Is never uploaded unless you manually export and choose to share it.
 
 You can read exactly what is collected and why in the

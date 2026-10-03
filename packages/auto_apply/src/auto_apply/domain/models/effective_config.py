@@ -103,6 +103,8 @@ class EffectiveConfig(_Frozen):
     perception_strategy: str
     store_session_logs: bool
     log_retention_days: int
+    page_copy_keep_days: int
+    page_copy_max_mb: int
     # ── 5 typed nested sections ──────────────────────────────────────────────
     vetting: VettingSettings
     discovery: DiscoverySettings

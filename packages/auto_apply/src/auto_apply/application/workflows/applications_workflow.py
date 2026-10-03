@@ -60,7 +60,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import random
 import re
 import time
@@ -102,6 +101,8 @@ from auto_apply.domain.ports.research_port import (
     FormObservation,
     ResearchObserverPort,
 )
+from auto_apply.domain.services.posting_observation import infer_jurisdiction
+from auto_apply.domain.services.research_identity import compute_company_id
 from auto_apply.application.services.page_analysis_router import (
     PageAnalysisRouter,
     PageAnalysisTier,
@@ -2253,12 +2254,17 @@ class ApplicationsWorkflow:
             )
 
         # ── New research observer: application outcome observation ────────
-        if self._research_observer is not None:
+        # Gated on is_enabled, not merely on an observer being present:
+        # composition injects NullResearchObserver (not None) when research
+        # is off, and minting below resolves the research salt — so the old
+        # check attempted an HMAC on every application with research
+        # disabled and swallowed a ResearchSaltError at DEBUG, once per
+        # attempt, for nothing. An enabled aggregator resolves the salt at
+        # construction, so the mint here can no longer raise for a missing
+        # salt.
+        if self._research_observer is not None and self._research_observer.is_enabled:
             try:
-                salt = os.environ.get("AA_RESEARCH_SALT", "default_dev_salt")
-                company_id = hashlib.sha256(
-                    (job.company or "").lower().encode() + salt.encode()
-                ).hexdigest()[:16]
+                company_id = compute_company_id(job.company)
                 outcome_obs = ApplicationOutcomeObservation(
                     platform=getattr(job, "source", "unknown"),
                     company_id=company_id,
@@ -2510,7 +2516,7 @@ class ApplicationsWorkflow:
                     platform=platform or "",
                     company_name=job.company,
                     job_title=job.title,
-                    jurisdiction=self._infer_jurisdiction(
+                    jurisdiction=infer_jurisdiction(
                         job.location or ""
                     ),
                     posting_hash=posting_hash,
@@ -2536,78 +2542,6 @@ class ApplicationsWorkflow:
     # ------------------------------------------------------------------
     # Static helper methods for research data extraction
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _infer_jurisdiction(location: str) -> str | None:
-        """Map a raw location string to a jurisdiction code used in
-        pay_transparency_laws.yaml.
-
-        Returns None if no match can be confidently made.
-        """
-        if not location:
-            return None
-        loc = location.lower()
-        if any(
-            term in loc
-            for term in (
-                "ca", "california", "san francisco", "los angeles",
-                "san diego",
-            )
-        ):
-            return "CA"
-        if any(
-            term in loc
-            for term in (
-                "ny", "new york", "nyc", "brooklyn", "queens", "manhattan",
-            )
-        ):
-            return "NYC"
-        if any(
-            term in loc
-            for term in ("wa", "washington", "seattle")
-        ):
-            return "WA"
-        if any(
-            term in loc
-            for term in ("co", "colorado", "denver")
-        ):
-            return "CO"
-        if any(
-            term in loc
-            for term in ("il", "illinois", "chicago")
-        ):
-            return "IL"
-        if any(
-            term in loc
-            for term in ("md", "maryland", "baltimore")
-        ):
-            return "MD"
-        if any(
-            term in loc
-            for term in ("hi", "hawaii", "honolulu")
-        ):
-            return "HI"
-        if any(
-            term in loc
-            for term in ("dc", "washington dc", "washington d.c.")
-        ):
-            return "DC"
-        if any(
-            term in loc
-            for term in ("nj", "new jersey", "newark")
-        ):
-            return "NJ"
-        if any(
-            term in loc
-            for term in ("ma", "massachusetts", "boston")
-        ):
-            return "MA"
-        if any(
-            term in loc
-            for term in ("mn", "minnesota", "minneapolis")
-        ):
-            return "MN"
-        return None
 
     @staticmethod
     def _estimate_completion_minutes(form_structure: FormStructure) -> int:

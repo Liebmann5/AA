@@ -124,6 +124,13 @@ class CLIDashboard:
             - The orchestrator state transitions to STOPPED or FAILED.
             - The orchestrator thread dies (is_running becomes False).
             - The user presses Ctrl+C (KeyboardInterrupt).
+
+        Browser release is NOT owned here. Ctrl+C unwinds this loop one way
+        or another — KeyboardInterrupt here, or SystemExit where a
+        process-level handler is installed (main.py) — and the caller's
+        finally (cli/startup.py) releases the controller either way. The
+        except below only halts the work, and is reached only when no such
+        handler pre-empts it.
         """
         try:
             while True:
@@ -151,6 +158,10 @@ class CLIDashboard:
                 time.sleep(self.REFRESH_INTERVAL)
 
         except KeyboardInterrupt:
+            # Reached only where no process-level SIGINT handler pre-empts
+            # (main.py installs one that raises SystemExit instead). Either
+            # way the caller's finally releases the browser via
+            # controller.shutdown(); this stop() only halts the work.
             self.controller.stop()
             sys.exit(0)
 

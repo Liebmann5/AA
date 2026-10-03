@@ -128,13 +128,17 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "macro_pause_max_s": 2.5,
     "settle_min_s": 0.4,
     "settle_max_s": 0.8,
-    "enable_research_collection": False,
+    # "Research is OFFERED" — collection itself is consent-gated and stays
+    # off until the user grants it (see runtime_defaults.yaml, parity-pinned).
+    "enable_research_collection": True,
     "enable_company_batching": True,
     "company_batch_threshold": 3,
     "discovery_strategy": "live_browser",
     "perception_strategy": "math",
     "store_session_logs": True,
     "log_retention_days": 30,
+    "page_copy_keep_days": 90,
+    "page_copy_max_mb": 200,
     "vetting": {
         "hard_skills_min_overlap": 0.5,
         "role_alignment_threshold": 0.6,
@@ -671,16 +675,40 @@ class CapabilitiesRegistry:
         )
         return bool(self._effective_config.get(key, False))
 
-    def is_research_enabled(self) -> bool:
-        """Returns True if the user has opted into research data collection."""
+    def is_research_offered(self) -> bool:
+        """Returns True if research is OFFERED on this device/build.
+
+        This reads the ``enable_research_collection`` flag AFTER the
+        three-tier merge and PolicyEnforcement, so an admin prohibition
+        (which flips the flag off) is already reflected here. It says nothing
+        about consent: collection additionally requires a granted, current
+        consent record and an available salt — the conjunction is
+        ResearchConsentManager.should_collect(), the only collection
+        decision (FORK 1, ruled 2026-10-01).
+        """
         return self.is_feature_enabled("research_collection")
+
+    def is_research_enabled(self) -> bool:
+        """Deprecated alias for is_research_offered().
+
+        The old name lied: this method never measured consent (no user could
+        grant it — the flag lived only in config), yet its docstring claimed
+        it answered "has the user opted in". Kept for RegistryPort consumers
+        written against the old name; new code uses is_research_offered()
+        for the offer question and the consent service for everything else.
+        """
+        return self.is_research_offered()
 
     # =========================================================================
     # CAPABILITY PROFILE
     # =========================================================================
 
     def build_capability_profile(
-        self, driver_available: bool
+        self,
+        driver_available: bool,
+        *,
+        research_consent: bool = False,
+        research_signals_active: bool = False,
     ) -> "ResolvedCapabilityProfile":
         """Build the frozen capability profile for this session.
 
@@ -697,6 +725,14 @@ class CapabilitiesRegistry:
 
         Args:
             driver_available: Whether a live browser driver was successfully created.
+            research_consent: Whether the consent RECORD is granted and
+                current. The registry cannot see the consent database —
+                composition_root injects the value from the consent service.
+                Defaults to False (honest absence), NOT to the offered flag:
+                reporting a flag as consent is the M2 lie.
+            research_signals_active: Whether a live research observer was
+                constructed and started (observer.is_enabled), injected by
+                composition_root for the same reason.
 
         Returns:
             A frozen ResolvedCapabilityProfile.
@@ -731,8 +767,8 @@ class CapabilitiesRegistry:
             ),
             has_spacy=has_spacy,
             has_gpt4all=has_gpt4all,
-            has_research_consent=self.is_research_enabled(),
-            research_signals_active=self.is_research_enabled(),
+            has_research_consent=research_consent,
+            research_signals_active=research_signals_active,
             is_low_resource=self.is_low_resource_environment(),
             max_applications_per_session=self.get_effective_config(
                 "session.max_applications", None

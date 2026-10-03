@@ -16,6 +16,7 @@ introduced by this change.
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -210,6 +211,8 @@ def test_queue_drain_is_recorded_as_completed_not_abandoned(fresh_db, tmp_path, 
     orch.context = MagicMock()
     orch.event_bus = MagicMock()
     orch._driver = None
+    orch._shutdown_lock = threading.Lock()   # run() now ends in shutdown()
+    orch._shutdown_complete = False
     orch._session_report = SessionReport(session_id="drain", profile_name="t")
     orch._engines = {}
     orch._workflows = {

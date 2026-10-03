@@ -9,6 +9,14 @@ url_patterns:
   - "*.ashbyhq.com/*/apply*"
   - "jobs.ashbyhq.com/*"
 
+# The platform's own domains (a host equal to one, or a subdomain of one).
+# Research analysis groups destinations by these, so one platform counts
+# as one destination however it names its tenants (acme.myworkdayjobs.com
+# and boards.greenhouse.io/acme are each one platform). Custom domains an
+# employer points at the platform are not listed and cannot be.
+hosts:
+  - "ashbyhq.com"
+
 login_wall_signals:
   - "sign in to continue"
   - "log in to apply"

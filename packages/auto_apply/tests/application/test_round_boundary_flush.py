@@ -23,6 +23,7 @@ dispatch, not the apply machinery.
 """
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -90,6 +91,8 @@ def _build_orchestrator(scheduler: _FakeScheduler, scripted_queue: list, events:
     orch.context = MagicMock()
     orch.event_bus = MagicMock()
     orch._driver = None
+    orch._shutdown_lock = threading.Lock()   # run() now ends in shutdown()
+    orch._shutdown_complete = False
     orch._session_report = MagicMock()
     orch._engines = {}
     orch._workflows = {

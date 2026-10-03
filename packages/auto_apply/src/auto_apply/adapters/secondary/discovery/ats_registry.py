@@ -103,6 +103,27 @@ class ATSRegistry:
                     return entry.descriptor
         return None
 
+    def platform_for_host(self, host: str) -> str | None:
+        """Return the platform whose ``hosts`` claim *host*, or None.
+
+        A host is claimed when it equals a listed domain or is a subdomain of
+        one (``acme.wd5.myworkdayjobs.com`` -> ``workday``). Case, a port
+        suffix and a userinfo prefix are ignored (research rows store the
+        URL's netloc, which can carry both). Host-only by design: research
+        rows keep the host and never the full URL, so this is the
+        classification they support.
+        The first descriptor in load order wins, matching ``match()``.
+        """
+        normalised = host.lower().strip().strip(".").rsplit("@", 1)[-1]
+        normalised = normalised.split(":", 1)[0]
+        if not normalised:
+            return None
+        for entry in self._entries:
+            for domain in entry.descriptor.hosts:
+                if normalised == domain or normalised.endswith("." + domain):
+                    return entry.descriptor.name
+        return None
+
     def all_descriptors(self) -> list[ATSDescriptor]:
         """Returns every loaded ATSDescriptor, in load order."""
         return [e.descriptor for e in self._entries]
@@ -201,6 +222,7 @@ def _build_descriptor(data: dict, filename: str) -> ATSDescriptor:
     name = str(data.get("name") or Path(filename).stem)
 
     raw_patterns = data.get("url_patterns") or []
+    raw_hosts = data.get("hosts") or []
     raw_login = data.get("login_wall_signals") or []
     raw_success = data.get("success_signals") or []
 
@@ -217,6 +239,9 @@ def _build_descriptor(data: dict, filename: str) -> ATSDescriptor:
         form_root_selector=form_selector,
         submit_button_selector=submit_selector,
         multi_step=bool(data.get("multi_step", False)),
+        hosts=tuple(
+            str(h).strip().lower().strip(".") for h in raw_hosts if str(h).strip(" .")
+        ),
     )
 
 

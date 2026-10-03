@@ -203,11 +203,12 @@ def test_fetch_job_description_uses_get_page_text(
         perception_port=mock_perception_port,
     )
 
-    text = wf._fetch_job_description(sample_job)
+    fetch = wf._fetch_job_description(sample_job)
 
     mock_perception_port.navigate.assert_called_once_with(sample_job.url)
     mock_perception_port.get_page_text.assert_called_once()
-    assert "Software Engineer" in text
+    assert "Software Engineer" in fetch.text
+    assert fetch.from_page is True
 
 
 def test_fetch_job_description_falls_back_to_title_when_text_empty(
@@ -231,9 +232,10 @@ def test_fetch_job_description_falls_back_to_title_when_text_empty(
         perception_port=mock_perception_port,
     )
 
-    text = wf._fetch_job_description(sample_job)
+    fetch = wf._fetch_job_description(sample_job)
 
-    assert text == sample_job.title
+    assert fetch.text == sample_job.title
+    assert fetch.from_page is False
 
 
 def test_fetch_job_description_no_perception_returns_title(
@@ -255,4 +257,182 @@ def test_fetch_job_description_no_perception_returns_title(
         perception_port=None,
     )
 
-    assert wf._fetch_job_description(sample_job) == (sample_job.title or "")
+    fetch = wf._fetch_job_description(sample_job)
+
+    assert fetch.text == (sample_job.title or "")
+    assert fetch.from_page is False
+
+
+# ── Item 2: the job-posting observation moved to the stage that has the description ──
+
+
+def test_observe_job_posting_emitted_once_with_real_page_text(
+    mock_profile,
+    sample_job,
+    mock_event_bus,
+    mock_job_repo,
+    mock_task_queue,
+    mock_text_matcher,
+    mock_perception_port,
+):
+    """TEETH: vetting a job whose perception port returns real page text emits
+    exactly one observe_job_posting call, and its job_description is that text.
+
+    This test FAILS against the pre-change tree: today the only observation
+    call site is DiscoveryWorkflow._enqueue_vet_tasks (with description=""
+    hard-coded), while VettingWorkflow assigns self._research_observer at
+    construction and never reads it — so the call count this asserts (1) is
+    zero today. The constructor already accepts research_observer, so the
+    failure is the assertion, not a construction error.
+    """
+    page_text = (
+        "Senior Software Engineer at Example Corp.\n\n"
+        "We use Python, FastAPI, and AWS."
+    )
+    mock_perception_port.get_page_text.return_value = page_text
+    research_observer = MagicMock()
+
+    wf = VettingWorkflow(
+        profile=mock_profile,
+        filters=[_make_passing_filter()],
+        job_repo=mock_job_repo,
+        task_queue=mock_task_queue,
+        event_bus=mock_event_bus,
+        text_matcher=mock_text_matcher,
+        perception_port=mock_perception_port,
+        research_observer=research_observer,
+    )
+
+    assert wf.run(sample_job) is True
+
+    research_observer.observe_job_posting.assert_called_once()
+    observation = research_observer.observe_job_posting.call_args.args[0]
+    assert observation.job_description == page_text
+    assert observation.job_title == sample_job.title
+    assert observation.company_name == sample_job.company
+
+
+@pytest.mark.parametrize("mode", ["absent", "raising"])
+def test_observe_job_posting_description_empty_on_title_fallback(
+    mode,
+    mock_profile,
+    sample_job,
+    mock_event_bus,
+    mock_job_repo,
+    mock_task_queue,
+    mock_text_matcher,
+    mock_perception_port,
+):
+    """TEETH (the finding-5 guard): when the description fetch falls back to
+    the job title — perception port absent, or navigate raising — the
+    observation records job_description == "", honestly absent, NOT the job
+    title wearing a description's name. A title-shaped description looks like
+    data and gets counted as data; an empty string is visibly absent.
+
+    Also fails against the pre-change tree, where the call count is zero.
+    """
+    research_observer = MagicMock()
+    perception = mock_perception_port
+    if mode == "absent":
+        perception = None
+    else:
+        perception.navigate.side_effect = RuntimeError("boom")
+
+    wf = VettingWorkflow(
+        profile=mock_profile,
+        filters=[_make_passing_filter()],
+        job_repo=mock_job_repo,
+        task_queue=mock_task_queue,
+        event_bus=mock_event_bus,
+        text_matcher=mock_text_matcher,
+        perception_port=perception,
+        research_observer=research_observer,
+    )
+
+    wf.run(sample_job)
+
+    research_observer.observe_job_posting.assert_called_once()
+    observation = research_observer.observe_job_posting.call_args.args[0]
+    assert observation.job_description == ""
+    assert observation.job_description != sample_job.title
+
+
+def test_rejected_job_is_still_observed(
+    mock_profile,
+    sample_job,
+    mock_event_bus,
+    mock_job_repo,
+    mock_task_queue,
+    mock_text_matcher,
+    mock_perception_port,
+):
+    """A job REJECTED by the filter chain is still observed — the property
+    that made placing the observation in VettingWorkflow.run beat emitting a
+    second record from Discovery. Proven, not asserted-by-comment: a failing
+    filter runs, run() returns False, and the observation still fired with
+    the real page text the rejection was based on.
+    """
+    page_text = "Commission-only door-to-door sales role."
+    mock_perception_port.get_page_text.return_value = page_text
+    research_observer = MagicMock()
+
+    wf = VettingWorkflow(
+        profile=mock_profile,
+        filters=[_make_failing_filter("title_blacklisted")],
+        job_repo=mock_job_repo,
+        task_queue=mock_task_queue,
+        event_bus=mock_event_bus,
+        text_matcher=mock_text_matcher,
+        perception_port=mock_perception_port,
+        research_observer=research_observer,
+    )
+
+    assert wf.run(sample_job) is False
+
+    research_observer.observe_job_posting.assert_called_once()
+    observation = research_observer.observe_job_posting.call_args.args[0]
+    assert observation.job_description == page_text
+
+
+@pytest.mark.parametrize("fetch_succeeds", [True, False])
+def test_posting_hash_is_none_on_every_observation(
+    fetch_succeeds,
+    mock_profile,
+    sample_job,
+    mock_event_bus,
+    mock_job_repo,
+    mock_task_queue,
+    mock_text_matcher,
+    mock_perception_port,
+):
+    """C1 with teeth: posting_hash is None on every observation this item
+    produces — on the success path AND the title-fallback path alike.
+
+    Rationale (constraint C1): with the title fallback possible, a content
+    hash over (title, company, description) could collapse distinct postings
+    into one identity and fabricate repetition findings. Real posting
+    identity is item 4's; that item should DELETE this test, not weaken it.
+    """
+    if fetch_succeeds:
+        mock_perception_port.get_page_text.return_value = "A real description."
+        perception = mock_perception_port
+    else:
+        perception = None
+    research_observer = MagicMock()
+
+    wf = VettingWorkflow(
+        profile=mock_profile,
+        filters=[_make_passing_filter()],
+        job_repo=mock_job_repo,
+        task_queue=mock_task_queue,
+        event_bus=mock_event_bus,
+        text_matcher=mock_text_matcher,
+        perception_port=perception,
+        research_observer=research_observer,
+    )
+
+    wf.run(sample_job)
+
+    research_observer.observe_job_posting.assert_called_once()
+    observation = research_observer.observe_job_posting.call_args.args[0]
+    assert observation.posting_hash is None

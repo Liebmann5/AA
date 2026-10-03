@@ -311,8 +311,8 @@ def test_detectors_handle_unicode_characters():
         salary_max=None,
     )
     from auto_apply.domain.services.signal_detectors import run_all_detectors
-    signals = run_all_detectors(ctx)
-    assert isinstance(signals, list)
+    result = run_all_detectors(ctx)
+    assert isinstance(result.signals, tuple)
 
 
 def test_detectors_handle_extremely_long_text():
@@ -323,8 +323,8 @@ def test_detectors_handle_extremely_long_text():
         job_description=long_text,
     )
     from auto_apply.domain.services.signal_detectors import run_all_detectors
-    signals = run_all_detectors(ctx)
-    assert isinstance(signals, list)
+    result = run_all_detectors(ctx)
+    assert isinstance(result.signals, tuple)
 
 
 def test_detectors_handle_all_none_optional_fields():
@@ -348,8 +348,8 @@ def test_detectors_handle_all_none_optional_fields():
         application_url_is_generic=False,
     )
     from auto_apply.domain.services.signal_detectors import run_all_detectors
-    signals = run_all_detectors(ctx)
-    assert isinstance(signals, list)
+    result = run_all_detectors(ctx)
+    assert isinstance(result.signals, tuple)
 
 
 def test_detectors_handle_null_characters():
@@ -359,32 +359,43 @@ def test_detectors_handle_null_characters():
         job_description="We need a \x00 developer with 5 years of React.",
     )
     from auto_apply.domain.services.signal_detectors import run_all_detectors
-    signals = run_all_detectors(ctx)
-    assert isinstance(signals, list)
+    result = run_all_detectors(ctx)
+    assert isinstance(result.signals, tuple)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Integration — run_all_detectors
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_run_all_detectors_returns_list(minimal_context):
-    """The top‑level function always returns a list (possibly empty)."""
+def test_run_all_detectors_returns_detection_result(minimal_context):
+    """The top‑level function returns a DetectionResult, never a bare list.
+
+    Two things are asserted, and the second is the one item 5 rests on:
+    the signals arrive as a tuple, and there is exactly one outcome per
+    roster entry. A context that finds nothing still produces 29 outcomes.
+    """
     from auto_apply.domain.services.signal_detectors import run_all_detectors
-    signals = run_all_detectors(minimal_context)
-    assert isinstance(signals, list)
-    # A completely generic context may produce signals (e.g., salary in a
-    # transparent state not set — but our fixture has salary set and no
-    # jurisdiction → no salary transparency signal). This test only verifies
-    # the return type and that no exception is raised.
+    result = run_all_detectors(minimal_context)
+    assert isinstance(result.signals, tuple)
+    assert len(result.outcomes) == len(result.detectors_run)
+    # Whether this fixture fires anything is not the point and is not
+    # asserted — it has a salary and no jurisdiction, so the salary
+    # transparency detector stays quiet. What is pinned here is the shape of
+    # the return and the completeness of the accounting.
 
 
 def test_run_all_detectors_no_crash_on_bare_context():
     """Passing the absolute minimum context must never raise an exception."""
-    from auto_apply.domain.services.signal_detectors import run_all_detectors
+    from auto_apply.domain.services.signal_detectors import ALL_DETECTORS, run_all_detectors
     try:
-        run_all_detectors(DetectionContext())  # all defaults
+        result = run_all_detectors(DetectionContext())  # all defaults
     except Exception as exc:
         pytest.fail(f"run_all_detectors raised unexpectedly: {exc}")
+    # Every registered detector produced exactly one recorded outcome, even
+    # on an empty context — completeness is the invariant, independent of
+    # which outcomes today's registry happens to produce.
+    assert len(result.detectors_run) == len(ALL_DETECTORS)
+    assert len(result.outcomes) == len(result.detectors_run)
 
 
 def test_run_all_detectors_returns_research_signal_objects():
@@ -402,9 +413,9 @@ def test_run_all_detectors_returns_research_signal_objects():
         jurisdiction="CO",
         days_live=150,
     )
-    signals = run_all_detectors(ctx)
+    result = run_all_detectors(ctx)
 
-    for signal in signals:
+    for signal in result.signals:
         assert isinstance(signal, ResearchSignal)
         assert signal.signal_type  # non‑empty
         assert signal.severity in ("flag", "concern", "violation")
@@ -428,7 +439,7 @@ def test_run_all_detectors_signals_sorted_by_confidence():
         salary_min=None,
         salary_max=None,
     )
-    signals = run_all_detectors(ctx)
+    signals = run_all_detectors(ctx).signals
 
     if len(signals) >= 2:
         for i in range(len(signals) - 1):
@@ -450,8 +461,8 @@ def test_run_all_detectors_deduplicates_by_posting_hash():
         days_live=150,
         posting_hash="test-hash-123",
     )
-    signals1 = run_all_detectors(ctx)
-    signals2 = run_all_detectors(ctx)  # same context → same signals
+    signals1 = run_all_detectors(ctx).signals
+    signals2 = run_all_detectors(ctx).signals  # same context → same signals
 
     # With a posting_hash, each signal_type should produce exactly one signal
     # across both runs (INSERT OR IGNORE on deterministic signal_id)
@@ -464,3 +475,164 @@ def test_run_all_detectors_deduplicates_by_posting_hash():
         count2 = sum(1 for s in signals2 if s.signal_type == st)
         assert count1 == 1, f"{st} appears {count1} times in run 1"
         assert count2 == 1, f"{st} appears {count2} times in run 2"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Detector outcome accounting (item 5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _Fires:
+    """Synthetic detector: always fires one signal."""
+
+    signal_type = "TEST-FIRE"
+
+    def detect(self, ctx: DetectionContext) -> list[ResearchSignal]:
+        return [
+            ResearchSignal.create(
+                signal_type="TEST-FIRE",
+                severity="flag",
+                confidence=0.5,
+                evidence_text="synthetic",
+            )
+        ]
+
+
+class _Cleans:
+    """Synthetic detector: never fires."""
+
+    signal_type = "TEST-CLEAN"
+
+    def detect(self, ctx: DetectionContext) -> list[ResearchSignal]:
+        return []
+
+
+class _Bombs:
+    """Synthetic detector: always raises, with a secret in the message."""
+
+    signal_type = "TEST-BOMB"
+
+    def detect(self, ctx: DetectionContext) -> list[ResearchSignal]:
+        raise RuntimeError("SENTINEL_COMPANY_ACME_SECRET")
+
+
+def _patched_registry(monkeypatch, detectors):
+    from auto_apply.domain.services import signal_detectors as sd
+
+    monkeypatch.setattr(sd, "ALL_DETECTORS", list(detectors))
+    return sd
+
+
+def test_outcome_fired_is_recorded(monkeypatch):
+    """R3: a detector that fires is recorded as fired with its signal count."""
+    sd = _patched_registry(monkeypatch, [_Fires()])
+    result = sd.run_all_detectors(DetectionContext(job_title="x"))
+    assert len(result.signals) == 1
+    assert result.detectors_run == ("TEST-FIRE",)
+    assert len(result.outcomes) == 1
+    outcome = result.outcomes[0]
+    assert outcome.outcome == "fired"
+    assert outcome.signals_count == 1
+    assert outcome.error_class is None
+    assert result.detectors_fired == 1
+    assert result.detectors_raised == 0
+
+
+def test_outcome_clean_is_recorded(monkeypatch):
+    """R3: ran-and-found-nothing is an explicit outcome, not silence."""
+    sd = _patched_registry(monkeypatch, [_Cleans()])
+    result = sd.run_all_detectors(DetectionContext(job_title="x"))
+    assert result.signals == ()
+    assert result.outcomes[0].outcome == "clean"
+    assert result.outcomes[0].signals_count == 0
+    assert result.detectors_fired == 0
+    assert result.detectors_raised == 0
+
+
+def test_outcome_raised_is_recorded_and_pipeline_survives(monkeypatch):
+    """R3 + R5: a raising detector is recorded, named, and stops nothing."""
+    sd = _patched_registry(monkeypatch, [_Bombs(), _Fires()])
+    result = sd.run_all_detectors(DetectionContext(job_title="x"))
+    assert result.detectors_run == ("TEST-BOMB", "TEST-FIRE")
+    assert len(result.outcomes) == 2
+    bomb = result.outcomes[0]
+    assert bomb.outcome == "raised"
+    assert bomb.error_class == "RuntimeError"
+    assert bomb.signals_count == 0
+    # The detector after the bomb still ran and fired.
+    assert result.outcomes[1].outcome == "fired"
+    assert len(result.signals) == 1
+    assert result.detectors_raised == 1
+
+
+def test_raised_outcome_never_records_exception_text(monkeypatch, caplog):
+    """C2: str(exc) can quote the posting — only the class name may survive."""
+    import logging
+
+    sd = _patched_registry(monkeypatch, [_Fires(), _Bombs()])
+    with caplog.at_level(logging.DEBUG):
+        result = sd.run_all_detectors(
+            DetectionContext(
+                job_title="x",
+                job_description="SENTINEL_COMPANY_ACME_SECRET",
+            )
+        )
+    assert result.detectors_raised == 1
+    for outcome in result.outcomes:
+        assert "SENTINEL_COMPANY_ACME_SECRET" not in (outcome.error_class or "")
+    for signal in result.signals:
+        assert "SENTINEL_COMPANY_ACME_SECRET" not in signal.evidence_text
+    for record in caplog.records:
+        assert "SENTINEL_COMPANY_ACME_SECRET" not in record.getMessage()
+
+
+def test_outcome_completeness_invariant_real_registry():
+    """Every registered detector yields exactly one outcome per pass (R3).
+
+    This is the invariant the persistence layer's "clean is derivable"
+    optimisation stands on: roster minus recorded outcomes equals clean.
+    It asserts structure only, so it holds regardless of which outcomes
+    today's real registry produces on this context.
+    """
+    from auto_apply.domain.services.signal_detectors import ALL_DETECTORS, run_all_detectors
+
+    result = run_all_detectors(
+        DetectionContext(job_title="Engineer", job_description="A role.")
+    )
+    assert len(result.detectors_run) == len(ALL_DETECTORS)
+    assert len(result.outcomes) == len(result.detectors_run)
+    assert list(result.detectors_run) == [o.signal_type for o in result.outcomes]
+    # Fired outcomes account for exactly the signals returned.
+    assert sum(o.signals_count for o in result.outcomes) == len(result.signals)
+
+
+def test_detector_returning_none_is_recorded_as_raised(monkeypatch):
+    """Contract violations are data too: detect() -> None lands as raised."""
+
+    class _ReturnsNone:
+        signal_type = "TEST-NONE"
+
+        def detect(self, ctx: DetectionContext):
+            return None
+
+    sd = _patched_registry(monkeypatch, [_ReturnsNone()])
+    result = sd.run_all_detectors(DetectionContext(job_title="x"))
+    assert result.outcomes[0].outcome == "raised"
+    assert result.outcomes[0].error_class == "TypeError"
+
+
+def test_signal_type_property_raising_still_yields_an_outcome(monkeypatch):
+    """Even a detector that cannot be named is accounted, by position."""
+
+    class _Unnameable:
+        @property
+        def signal_type(self):
+            raise RuntimeError("no name")
+
+        def detect(self, ctx: DetectionContext) -> list[ResearchSignal]:
+            return []
+
+    sd = _patched_registry(monkeypatch, [_Unnameable()])
+    result = sd.run_all_detectors(DetectionContext(job_title="x"))
+    assert len(result.outcomes) == 1
+    assert result.outcomes[0].signal_type.startswith("detector_0:")
+    assert result.outcomes[0].outcome == "clean"

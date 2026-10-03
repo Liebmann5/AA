@@ -46,6 +46,11 @@ class ATSDescriptor:
             button on each form step.
         multi_step: ``True`` if the platform uses a wizard with multiple
             pages or steps before a final submission.
+        hosts: The platform's own domains, lower-case. A host belongs to the
+            platform when it equals one of these or is a subdomain of one.
+            Research analysis groups destinations by platform through this
+            field (item 2: the ATS-host confound). Empty means the
+            descriptor claims no hosts.
     """
 
     name: str
@@ -55,6 +60,7 @@ class ATSDescriptor:
     form_root_selector: str
     submit_button_selector: str
     multi_step: bool
+    hosts: tuple[str, ...] = ()
 
     def __repr__(self) -> str:
         return (

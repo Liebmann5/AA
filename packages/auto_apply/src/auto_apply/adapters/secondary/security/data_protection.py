@@ -4,6 +4,9 @@ This module provides:
 1. DataVault: AES-256 (Fernet) encryption for local PII at rest.
 2. ProvenanceSigner: Ed25519 cryptographic signatures for research data.
 3. CodebaseHasher: Integrity verification for academic datasets.
+4. Research salt storage: read/provision the private research salt (item 10,
+   V1). The salt lives here — beside the key it complements — never in the
+   domain; both secrets are created atomically and owner-only (V7).
 """
 
 import base64
@@ -11,6 +14,8 @@ import hashlib
 import json
 import logging
 import os
+import secrets
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,6 +25,131 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 logger = logging.getLogger(__name__)
+
+
+def _chmod_owner_only(path: Path) -> None:
+    """Restrict *path* to its owner (0600) where the OS supports POSIX
+    permissions. A private key written with a shared machine's default
+    umask is readable by every account on it (measured 0o644 under umask
+    022), and the worst-case user runs AA on shared and library computers.
+    No-op on Windows, where the file inherits the directory ACLs — the
+    best a portable app can do without pywin32. Failures are logged,
+    never raised: a permission hiccup must not stop data being written.
+    """
+    if os.name != "posix":
+        return
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.warning("could not set owner-only permissions on %s: %s", path, exc)
+
+
+def read_public_key_fingerprint(key_path: Path) -> str | None:
+    """The research public key's fingerprint: SHA-256 of the raw public key
+    bytes, hex. This is what a contributor publishes; a bundle recipient
+    recomputes it from the public key in verification.json /
+    bundle_signature.json and compares.
+
+    READ-ONLY: never generates a key. Returns None when the key is absent
+    or unreadable — a consent screen that merely asks must not mint one.
+    """
+    try:
+        if not key_path.exists():
+            return None
+        with open(key_path, "rb") as key_file:
+            private_key = serialization.load_pem_private_key(
+                key_file.read(), password=None
+            )
+        raw_public = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return hashlib.sha256(raw_public).hexdigest()
+    except Exception as exc:  # noqa: BLE001 — read-only probe; absence, not an error
+        logger.debug("read_public_key_fingerprint(%s) failed: %s", key_path, exc)
+        return None
+
+
+def _create_file_owner_only(path: Path, data: bytes) -> bool:
+    """Create *path* atomically with owner-only permissions from the first
+    byte (V7: os.open with O_CREAT | O_EXCL and mode 0600 — there is no
+    write-then-chmod window in which the file holds a secret at default
+    permissions, and no silent last-writer-wins between two AA processes).
+
+    Returns False when the file already exists — a racing process won;
+    the caller then READS the winner's file rather than overwriting it.
+    On Windows the mode maps to owner read/write and the file inherits the
+    directory's ACLs, as disclosed for the provenance key.
+    """
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    return True
+
+
+def _read_when_settled(path: Path, attempts: int = 40, delay_s: float = 0.05) -> str:
+    """Read a text file another process may still be writing (O_EXCL race).
+
+    The loser of the creation race can arrive between the winner's open()
+    and its write(); poll briefly for content rather than fork the identity
+    or fail spuriously.
+    """
+    for _ in range(attempts):
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            text = ""
+        if text:
+            return text
+        time.sleep(delay_s)
+    raise OSError(
+        f"{path} is empty after waiting for a racing writer to settle"
+    )
+
+
+def read_research_salt(path: Path) -> str | None:
+    """The salt at *path*, or None when absent, blank or unreadable.
+
+    READ-ONLY: never creates anything. Surrounding whitespace is stripped,
+    matching how the file is written (no trailing newline) rather than how
+    the environment variable is read (verbatim).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    salt = text.strip()
+    return salt or None
+
+
+def provision_research_salt(path: Path) -> str:
+    """Return the salt at *path*, generating and storing it if absent.
+
+    Called when the user agrees to research and retried at each session
+    build while consent is active, so a grant made when creation first
+    failed heals itself. A generated salt is 32 bytes of CSPRNG hex,
+    created atomically and owner-only (_create_file_owner_only, V7); a
+    racing process reads the winner's file instead of overwriting it.
+
+    Raises:
+        OSError: the file cannot be created, or the winner's file cannot
+            be read. Callers treat this as "research stays inactive",
+            never as fatal.
+    """
+    existing = read_research_salt(path)
+    if existing is not None:
+        return existing
+    salt = secrets.token_hex(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if _create_file_owner_only(path, salt.encode("utf-8")):
+        logger.info("Research salt provisioned at %s", path)
+        return salt
+    logger.info("Research salt already provisioned by a racing process at %s", path)
+    return _read_when_settled(path)
+
 
 # =====================================================================
 # 1. LOCAL DATA ENCRYPTION (The Vault)
@@ -86,17 +216,21 @@ class ProvenanceSigner:
                     key_file.read(),
                     password=None # In production, you could encrypt this key too
                 )
+            _chmod_owner_only(self.key_path)
         else:
             # Generate a new anonymous identity for this installation
             logger.info("Generating new Ed25519 Cryptographic Identity for Research Provenance.")  # noqa: E501
             private_key = ed25519.Ed25519PrivateKey.generate()
             self.key_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.key_path, "wb") as key_file:
-                key_file.write(private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption()
-                ))
+            pem = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            )
+            if not _create_file_owner_only(self.key_path, pem):
+                # A racing process won the create; use ITS key, not ours —
+                # last-writer-wins would fork the installation's identity (V7).
+                private_key = self._load_private_key_settled()
 
         # Derive the public key (this is what you will use to verify data later)
         public_key = private_key.public_key()
@@ -109,28 +243,20 @@ class ProvenanceSigner:
         # union; this module only ever writes and reads Ed25519 keys.
         return cast(ed25519.Ed25519PrivateKey, private_key), public_key_hex
 
-    def sign_payload(self, payload: dict[str, Any], code_hash: str) -> dict[str, Any]:
-        """Cryptographically signs a row of research data.
-
-        Adds the signature, the public key (anonymous user ID), and the code hash.
-        """
-        # We must sign a deterministic string representation of the data
-        # We remove any existing signatures to prevent recursive signing
-        clean_payload = {k: v for k, v in payload.items() if not k.startswith("_")}
-
-        # Add your brilliant Codebase Integrity Hash
-        clean_payload["_codebase_hash"] = code_hash
-        clean_payload["_public_key"] = self.public_key_hex
-
-        # Serialize to bytes, sorted by key to ensure exact deterministic matching
-        payload_bytes = json.dumps(clean_payload, sort_keys=True).encode("utf-8")
-
-        # Generate the cryptographic signature
-        signature = self.private_key.sign(payload_bytes)
-
-        # Attach the signature to the final output
-        clean_payload["_signature"] = signature.hex()
-        return clean_payload
+    def _load_private_key_settled(self, attempts: int = 40, delay_s: float = 0.05):
+        """Load the key a racing process may still be writing (V7)."""
+        for _ in range(attempts):
+            try:
+                with open(self.key_path, "rb") as key_file:
+                    return serialization.load_pem_private_key(
+                        key_file.read(), password=None
+                    )
+            except (OSError, ValueError):
+                time.sleep(delay_s)
+        raise OSError(
+            f"provenance key at {self.key_path} is unreadable after a "
+            "creation race"
+        )
 
     def sign_hex(self, content_hash: str) -> str:
         """Sign a hex-encoded content hash and return the hex-encoded signature.

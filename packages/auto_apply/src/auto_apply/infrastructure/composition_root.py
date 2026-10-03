@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 from auto_apply.application.services.i18n import configure_locale
 from auto_apply.application.services.mathematical_web_analyzer import MathematicalWebAnalyzer
 from auto_apply.domain.config import (
     DB_PATH,
     IS_FROZEN,
+    PAGE_COPIES_DIR,
+    PROVENANCE_KEY_PATH,
+    REPORTS_DIR,
+    RESEARCH_DB_PATH,
+    RESEARCH_SALT_PATH,
     USER_DATA_DIR,
 )
 from auto_apply.domain.exceptions import BrowserSetupError
@@ -44,11 +50,31 @@ if TYPE_CHECKING:
     from auto_apply.application.agent.orchestrator import AgentOrchestrator
     #from auto_apply.application.agent.task_kernel import TaskKernel
     from auto_apply.domain.models.profile import UserProfile
+    from auto_apply.application.services.research_consent import ResearchConsentManager
+    from auto_apply.domain.ports.page_copy_port import PageCopierPort
     from auto_apply.application.services.session_controller import SessionController
     from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
+    from auto_apply.adapters.secondary.research.research_exporter import (
+        ExportResult,
+    )
+    from auto_apply.adapters.secondary.research.research_verifier import (
+        VerifyResult,
+    )
+    from auto_apply.domain.models.replay import ReplayReport
 
 # Re-export so existing callers don't break.
-__all__ = ["CapabilitiesRegistry", "build_orchestrator", "build_session", "build_session_controller"]
+__all__ = [
+    "CapabilitiesRegistry",
+    "build_orchestrator",
+    "build_page_copier",
+    "build_research_consent",
+    "build_session",
+    "build_session_controller",
+    "export_research_bundle",
+    "research_public_key_fingerprint",
+    "run_replay",
+    "verify_research_bundle",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +89,306 @@ logger = logging.getLogger(__name__)
 _MAX_LEASES_PER_SHARED_DRIVER = 1
 
 
+def _warn_if_legacy_research_db() -> None:
+    """Warn when a pre-relocation research database exists.
+
+    The collector used to write USER_DATA_DIR / <filename>; the one home is
+    now RESEARCH_DB_PATH (research/ under the data directory). No real user
+    can have research data (consent has no production caller), so this is a
+    signpost for developer machines, not a migration: AA never moves or
+    deletes the old file — its -wal sidecar may hold the only copy of its
+    last rows. The path is derived from RESEARCH_DB_PATH's parts so the
+    filename literal stays spelled in exactly one src file (domain/config).
+    """
+    legacy = RESEARCH_DB_PATH.parent.parent / RESEARCH_DB_PATH.name
+    if legacy == RESEARCH_DB_PATH or not legacy.exists():
+        return
+    logger.warning(
+        "Legacy research database found at %s — it is no longer read or "
+        "written. Research data now lives at %s. AA will not move or delete "
+        "the old file; move it yourself if you want the rows, delete it if "
+        "not.",
+        legacy,
+        RESEARCH_DB_PATH,
+    )
+
+
+def build_research_consent(
+    registry: CapabilitiesRegistry | None = None,
+) -> "ResearchConsentManager":
+    """Build the research-consent service — the one answer to "is research on?".
+
+    Two call sites:
+      * build_orchestrator / build_session_controller, which pass the session
+        registry so the offered flag and the admin policy come from the
+        enforced three-tier merge (PolicyEnforcement has already run inside
+        registry.build());
+      * the user surfaces (GUI settings, CLI) BEFORE any session exists,
+        which pass nothing — the offered flag is the runtime default and the
+        admin policy is read from disk directly.
+
+    The returned service records grant()/withdraw() in the consent database;
+    grants take effect at the next session build. A service a session was
+    built with also stops the running observer on withdrawal, and the
+    controller stops it at shutdown (FORK 3).
+
+    Args:
+        registry: The session registry, or None for pre-session use.
+    """
+    from auto_apply.adapters.secondary.research.sqlite_consent_repository import (  # noqa: PLC0415
+        SqliteConsentRepository,
+    )
+    from auto_apply.application.services.research_consent import (  # noqa: PLC0415
+        ResearchConsentManager,
+    )
+
+    if registry is not None:
+        is_offered = bool(registry.is_research_offered())
+        policy = registry.get_admin_policy()
+    else:
+        from auto_apply.adapters.secondary.persistence.policy_manager import (  # noqa: PLC0415
+            PolicyManager,
+        )
+        from auto_apply.infrastructure.registry import _RUNTIME_DEFAULTS  # noqa: PLC0415
+
+        is_offered = bool(_RUNTIME_DEFAULTS.get("enable_research_collection", True))
+        policy = PolicyManager.load_admin_policy()
+
+    from auto_apply.adapters.secondary.security.data_protection import (  # noqa: PLC0415
+        provision_research_salt,
+        read_research_salt,
+    )
+    from auto_apply.domain.services.research_identity import (  # noqa: PLC0415
+        configure_salt_file_reader,
+    )
+
+    # Wire the ONE salt-file seam (V1): the domain resolves through this
+    # reader; the manager provisions through this callable. Both point at
+    # the secondary adapter where the salt lives, beside the key.
+    configure_salt_file_reader(lambda: read_research_salt(RESEARCH_SALT_PATH))
+
+    repo = SqliteConsentRepository(
+        consent_db_path=USER_DATA_DIR / "research_consent.db",
+        research_db_path=RESEARCH_DB_PATH,
+        provenance_key_path=PROVENANCE_KEY_PATH,
+        page_copies_dir=PAGE_COPIES_DIR,
+        research_salt_path=RESEARCH_SALT_PATH,
+    )
+    return ResearchConsentManager(
+        repo,
+        is_offered=is_offered,
+        # `is True`, deliberately: the policy field is tri-state and only an
+        # explicit True prohibits. It also keeps MagicMock-built registries
+        # (tests) from reading as prohibitions.
+        admin_prohibited=getattr(policy, "disable_research_collection", None) is True,
+        provision_salt=lambda: provision_research_salt(RESEARCH_SALT_PATH),
+    )
+
+
+def _positive_int_setting(registry: CapabilitiesRegistry, key: str) -> int:
+    """A positive int setting from the effective config; anything else falls
+    back to runtime_defaults.yaml's value (via the parity-pinned
+    _RUNTIME_DEFAULTS), never to a second literal here (Absolute Rule 2)."""
+    from auto_apply.infrastructure.registry import _RUNTIME_DEFAULTS  # noqa: PLC0415
+
+    value = registry.get_effective_config(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return int(_RUNTIME_DEFAULTS[key])
+    return value
+
+
+def build_page_copier(
+    registry: CapabilitiesRegistry,
+    consent_service: "ResearchConsentManager",
+    profile: object,
+    research_active: bool,
+) -> "PageCopierPort":
+    """Expire old page copies, then build the session's page copier (item 6).
+
+    Expiry runs on EVERY build, whatever the consent state: copies kept
+    before the person turned page copies off (choosing to keep them) still
+    reach their deletion date. A copier that keeps pages is built only when
+    research is actually recording this session AND the person agreed to
+    page copies; it re-reads that agreement before every copy, and the
+    background writer re-reads it before every write, so turning copies off
+    mid-session stops the next one. Anything else gets NullPageCopier,
+    which reads and keeps nothing.
+
+    Writes go through QueuedPageCopyStore: vetting reads and cleans the
+    page, the disk work happens on a background writer ("Non-Blocking by
+    Design", docs/research_module/index.md).
+    """
+    from datetime import date  # noqa: PLC0415
+
+    from auto_apply.adapters.secondary.research.queued_page_store import (  # noqa: PLC0415
+        QueuedPageCopyStore,
+    )
+    from auto_apply.adapters.secondary.research.warc_page_store import (  # noqa: PLC0415
+        WarcPageStore,
+    )
+    from auto_apply.application.services.page_copier import (  # noqa: PLC0415
+        NullPageCopier,
+        PageCopier,
+        own_details,
+    )
+    from auto_apply.domain.models.page_copy import derive_nonce  # noqa: PLC0415
+    from auto_apply.domain.services.research_identity import (  # noqa: PLC0415
+        ResearchSaltError,
+        resolve_research_salt,
+    )
+
+    keep_days = _positive_int_setting(registry, "page_copy_keep_days")
+    max_mb = _positive_int_setting(registry, "page_copy_max_mb")
+    store = WarcPageStore(PAGE_COPIES_DIR, max_bytes=max_mb * 1024 * 1024)
+    try:
+        expired = store.expire(date.today(), keep_days)
+        if expired:
+            logger.info("Page copies | deleted %d copies older than %d days", expired, keep_days)
+    except Exception as exc:  # noqa: BLE001 — expiry retries at the next build
+        logger.warning("Page copies | expiry failed (%s); retried next session", type(exc).__name__)
+
+    if not research_active or not consent_service.should_copy_pages():
+        return NullPageCopier()
+    try:
+        key = resolve_research_salt().encode("utf-8")
+    except ResearchSaltError:
+        # should_collect() checked the key; one that vanished since means no
+        # copies, not copies under a weaker nonce.
+        logger.warning("Page copies | research key unavailable; no copies this session")
+        return NullPageCopier()
+    values, names = own_details(getattr(profile, "personal_info", None))
+    logger.info("Page copies | on: cleaned job pages are kept on this device")
+    return PageCopier(
+        QueuedPageCopyStore(store, allowed=consent_service.should_copy_pages),
+        own_values=values,
+        own_names=names,
+        allowed=consent_service.should_copy_pages,
+        nonce=lambda content: derive_nonce(key, content),
+    )
+
+
+def export_research_bundle(fmt: str = "csv") -> "ExportResult":
+    """Export the research database as one verifiable bundle — the consent
+    screens' route to the exporter (FORK 5).
+
+    Primary adapters may not import the secondary exporter
+    (tests/architecture/test_safety_pins.py EXPECTED_REACHES), so the CLI
+    research screen and the GUI research window call this helper instead.
+    main.py's --export-research keeps its own inline path; both construct
+    the same ResearchExporter over the same two paths.
+
+    Callers check domain.config.RESEARCH_DB_PATH.exists() first for the
+    nothing-to-export case — the exporter opens the database read-only and
+    raises for a missing file, which a screen should never have to render.
+
+    Args:
+        fmt: 'csv', 'ndjson', or 'parquet'. A plain str, validated here,
+            because the ExportFormat Literal lives in the secondary adapter
+            the screens may not import.
+
+    Raises:
+        ValueError: For an unknown format.
+        ExportError: For any database or filesystem failure (a missing
+            optional dependency degrades to CSV instead — that is not an
+            error here, exactly as in main.py's --export-research).
+    """
+    from auto_apply.adapters.secondary.research.research_exporter import (  # noqa: PLC0415
+        ExportFormat,
+        ResearchExporter,
+    )
+
+    # A typed lookup narrows the plain str to the exporter's Literal without
+    # a cast or a type: ignore.
+    formats: dict[str, ExportFormat] = {"csv": "csv", "ndjson": "ndjson", "parquet": "parquet"}
+    if fmt not in formats:
+        raise ValueError(
+            f"Unsupported format {fmt!r}. Accepted values: csv, ndjson, parquet"
+        )
+    exporter = ResearchExporter(
+        db_path=RESEARCH_DB_PATH,
+        export_root=REPORTS_DIR,
+        provenance_key_path=PROVENANCE_KEY_PATH,
+    )
+    return exporter.export(formats[fmt])
+
+
+def research_public_key_fingerprint() -> str | None:
+    """The installation's research public-key fingerprint, for both consent
+    surfaces to show (F5): SHA-256 of the raw public key bytes, hex.
+
+    Read-only — opening a consent screen must never mint a key, so this
+    returns None when no key exists yet (one is generated the first time
+    research data is recorded or a bundle is exported).
+    """
+    from auto_apply.adapters.secondary.security.data_protection import (  # noqa: PLC0415
+        read_public_key_fingerprint,
+    )
+
+    return read_public_key_fingerprint(PROVENANCE_KEY_PATH)
+
+
+def verify_research_bundle(bundle_dir: Path) -> "VerifyResult":
+    """Verify a research export bundle offline — the CLI's route to the
+    verifier, mirroring export_research_bundle (primary adapters may not
+    import the secondary adapters directly)."""
+    from auto_apply.adapters.secondary.research.research_verifier import (  # noqa: PLC0415
+        verify_bundle,
+    )
+
+    return verify_bundle(bundle_dir)
+
+
+def run_replay(corpus_dir: Path, out_dir: Path | None = None) -> "ReplayReport":
+    """Replay a corpus of kept page copies and write the artifact (item 7).
+
+    No browser, no network, no research database and no research key: the
+    replay is a pure function of the corpus and this AA version
+    (domain/services/replay.py). Composition only — the corpus reader, the
+    byte-exact writer and the version are chosen here.
+
+    Args:
+        corpus_dir: A folder of ``*.warc.gz`` page copies (for example
+            AA's own ``research/page_copies``, or a corpus someone shared).
+        out_dir: Where to write; default ``reports/replay_<corpus digest
+            prefix>`` in AA's data folder, so the same corpus always lands
+            in the same place.
+
+    Raises:
+        FileNotFoundError: corpus_dir is not a folder.
+    """
+    import platform  # noqa: PLC0415
+    from importlib import metadata  # noqa: PLC0415
+
+    from auto_apply.adapters.secondary.research.replay_artifact_dir import (  # noqa: PLC0415
+        ReplayArtifactDir,
+    )
+    from auto_apply.adapters.secondary.research.warc_replay_corpus import (  # noqa: PLC0415
+        WarcReplayCorpus,
+    )
+    from auto_apply.application.services.replay_service import (  # noqa: PLC0415
+        ReplayService,
+    )
+
+    try:
+        aa_version = metadata.version("auto_apply")
+    except metadata.PackageNotFoundError:
+        aa_version = "unknown"
+
+    def sink_for(corpus_digest: str) -> ReplayArtifactDir:
+        return ReplayArtifactDir(out_dir or REPORTS_DIR / f"replay_{corpus_digest[:12]}")
+
+    return ReplayService(
+        WarcReplayCorpus(corpus_dir),
+        sink_for,
+        aa_version=aa_version,
+        environment={
+            "python": platform.python_version(),
+            "implementation": platform.python_implementation(),
+            "os": platform.system(),
+        },
+    ).run()
+
+
 # --------------------------------------------------------------------------
 # MAIN WIRING FUNCTION
 # --------------------------------------------------------------------------
@@ -70,6 +396,7 @@ _MAX_LEASES_PER_SHARED_DRIVER = 1
 def build_orchestrator(  # noqa: PLR0914
     registry: CapabilitiesRegistry,
     driver: "BrowserInterface | None" = ...,  # type: ignore[assignment]
+    research_consent: "ResearchConsentManager | None" = None,
 ) -> "AgentOrchestrator":
     """Assembles and returns a fully wired AgentOrchestrator.
 
@@ -92,7 +419,21 @@ def build_orchestrator(  # noqa: PLR0914
     Args:
         registry: A fully initialised CapabilitiesRegistry for this environment.
         driver: Pre-acquired browser driver. Pass ``None`` to skip the cascade
-            entirely (static/BS4 perception only). Omit to run the cascade.
+            entirely (construction-only callers and tests — no perception or
+            interaction adapters are built then). Omit to run the cascade.
+        research_consent: The session's consent service, built by the caller
+            via :func:`build_research_consent` so the SAME instance can be
+            injected into the SessionController (mid-session withdrawal and
+            shutdown reach the running observer through it). None builds an
+            internal one — fine for construction-only callers, but nothing
+            outside this function can then stop the observer.
+
+    Ownership:
+        The returned orchestrator owns the acquired driver's lifetime from
+        this point. It is released exactly once, by
+        ``AgentOrchestrator.shutdown()`` — reached from run()'s own exit and
+        from ``SessionController.shutdown()``. Callers must not close the
+        driver themselves.
 
     Returns:
         A fully wired AgentOrchestrator ready to call ``.run()``.
@@ -467,55 +808,102 @@ def build_orchestrator(  # noqa: PLR0914
         from auto_apply.domain.ports.page_understanding_port import NullPageUnderstandingAdapter
         page_understanding_port = NullPageUnderstandingAdapter()
 
-    # ── Research observer (consent-gated) ─────────────────────────────────────
-    # Built BEFORE the discovery providers so it can be injected into them:
+    # ── Research consent + observer ───────────────────────────────────────────
+    # The consent service is built ALWAYS — it is the one answer to "is
+    # research on?", for this build and (via the controller) for the user
+    # surfaces. Only the AGGREGATOR is conditional, on
+    # consent_service.should_collect(): consent granted and current, research
+    # offered, no admin prohibition, and a salt available (FORK 1). Built
+    # BEFORE the discovery providers so it can be injected into them:
     # providers hand it to the fast extractor and the SERP strategy, which
     # emit discovery-surface observations (§4b).
+    from auto_apply.domain.ports.research_consent_port import (  # noqa: PLC0415
+        ResearchConsentState,
+    )
     from auto_apply.domain.ports.research_port import (  # noqa: PLC0415
         NullResearchObserver,
         ResearchObserverPort,
+        ResearchSessionPort,
     )
 
     research_observer: ResearchObserverPort = NullResearchObserver()
+    # The same object seen through its session-lifetime port (item 3): the
+    # orchestrator stops it at teardown and reports its accounting.
+    research_session: ResearchSessionPort = NullResearchObserver()
 
-    if registry.is_research_enabled():
+    consent_service = (
+        research_consent
+        if research_consent is not None
+        else build_research_consent(registry)
+    )
+    _warn_if_legacy_research_db()
+
+    if consent_service.is_active():
+        # The salt is provisioned at grant; retry creation here so a grant
+        # made when creation failed (read-only folder, transient error)
+        # heals at the next session build instead of staying INACTIVE.
+        consent_service.ensure_salt()
+
+    if consent_service.should_collect():
+        # Imported BEFORE the try so the `except ResearchSaltError` clause below
+        # can never evaluate an unbound name: an early failure inside the try
+        # would otherwise raise NameError from the handler itself.
+        from auto_apply.domain.services.research_identity import (  # noqa: PLC0415
+            ResearchSaltError,
+        )
+
         try:
-            from auto_apply.adapters.secondary.research.sqlite_consent_repository import (  # noqa: PLC0415
-                SqliteConsentRepository,
+            from auto_apply.adapters.secondary.research.signal_aggregator import (  # noqa: PLC0415
+                ResearchSignalAggregator,
             )
-            from auto_apply.application.services.research_consent import (  # noqa: PLC0415
-                ResearchConsentManager,
+            _aggregator = ResearchSignalAggregator(
+                db_path=RESEARCH_DB_PATH,
+                consent_version=consent_service.consent_version,
+                provenance_key_path=PROVENANCE_KEY_PATH,
             )
-
-            _consent_db = USER_DATA_DIR / "research_consent.db"
-            _signals_db = USER_DATA_DIR / "research_signals.db"
-
-            _consent_repo = SqliteConsentRepository(
-                consent_db_path=_consent_db,
-                research_db_path=_signals_db,
+            _aggregator.start()
+            # Registered BEFORE any workflow can observe: this registration is
+            # the channel that lets a mid-session withdrawal — and session
+            # shutdown — stop the running aggregator (FORK 3).
+            consent_service.register_observer(_aggregator)
+            research_observer = _aggregator
+            research_session = _aggregator
+            logger.info(
+                "Research pipeline active (consent granted, version=%s)",
+                consent_service.consent_version,
             )
-            _consent_mgr = ResearchConsentManager(_consent_repo)
-
-            if _consent_mgr.is_active():
-                from auto_apply.adapters.secondary.research.signal_aggregator import (  # noqa: PLC0415
-                    ResearchSignalAggregator,
-                )
-                _aggregator = ResearchSignalAggregator(
-                    db_path=_signals_db,
-                    consent_version=_consent_mgr.consent_version,
-                )
-                _aggregator.start()
-                research_observer = _aggregator
-                logger.info(
-                    "Research pipeline active (consent granted, version=%s)",
-                    _consent_mgr.consent_version,
-                )
-            else:
-                logger.info("Research disabled: consent not granted by user")
+        except ResearchSaltError as _exc:
+            # A granted consent must never stop AA from starting (FORK 4 —
+            # Option A, ruled 2026-10-01). should_collect() already checked
+            # the salt; this catch covers a salt that vanished between the
+            # check and the constructor. Research stays OFF, loudly, and the
+            # session continues. Rows are never written without a private
+            # salt because no aggregator exists to write them.
+            logger.error(
+                "build_orchestrator: research consent is granted but the "
+                "research salt is unavailable (%s) — research is OFF for "
+                "this session. The session is not affected.",
+                _exc,
+            )
         except Exception as _exc:
             logger.warning(
                 "Research observer failed to initialize — using NullResearchObserver: %s",
                 _exc,
+            )
+    else:
+        _consent_status = consent_service.status()
+        if _consent_status.state is ResearchConsentState.INACTIVE:
+            # The user granted consent and expects collection — say plainly
+            # why it is not happening (the surfaces show the same reason via
+            # status()).
+            logger.warning(
+                "Research consent granted but collection is inactive | reason=%s",
+                _consent_status.reason.value,
+            )
+        else:
+            logger.info(
+                "Research collection not active | state=%s",
+                _consent_status.state.value,
             )
 
     # ── 4. Discovery providers ────────────────────────────────────────────────
@@ -684,7 +1072,11 @@ def build_orchestrator(  # noqa: PLR0914
         browser_lease = BrowserLeaseManager(driver, max_concurrent=_MAX_LEASES_PER_SHARED_DRIVER)
 
     # ── 5. Capability profile — gates task types based on driver availability ──
-    _capability_profile = registry.build_capability_profile(driver is not None)
+    _capability_profile = registry.build_capability_profile(
+        driver is not None,
+        research_consent=consent_service.is_active(),
+        research_signals_active=research_observer.is_enabled,
+    )
     db_manager.set_capability_profile(_capability_profile)
     logger.info(
         "Capability profile active | mode=%s browser=%s workers=%d",
@@ -767,6 +1159,12 @@ def build_orchestrator(  # noqa: PLR0914
         perception_port=perception_port,
         config=_effective_config,
         research_observer=research_observer,
+        page_copier=build_page_copier(
+            registry,
+            consent_service,
+            profile,
+            research_active=not isinstance(research_observer, NullResearchObserver),
+        ),
     )
 
     # ApplicationsWorkflow — try to construct each optional component.
@@ -931,6 +1329,9 @@ def build_orchestrator(  # noqa: PLR0914
             "ApplicationsWorkflow": applications_workflow,
         },
         behavior_parameters=behavior_params,
+        # The same instance the workflows observe through — aggregator or
+        # Null — seen through its session-lifetime port (item 3).
+        research_session=research_session,
     )
 
     logger.info(
@@ -1019,6 +1420,41 @@ def _refuse_no_browser(registry: CapabilitiesRegistry, cascade: BrowserCascade) 
     raise BrowserSetupError(message)
 
 
+def _register_exit_shutdown(controller: "SessionController") -> None:
+    """Registers a WEAK atexit hook that shuts *controller* down at interpreter exit.
+
+    This is the last-resort release net for exits nobody named: a sys.exit
+    on a path without a finally, an unhandled exception, a signal handler
+    that exits the process. The explicit paths — run()'s own exit and
+    SessionController.shutdown() from the GUI close, the CLI finally, or the
+    next Start — run first and make this a no-op.
+
+    The reference is deliberately weak. A strong one would pin every
+    controller — and its live browser, against the shared --user-data-dir —
+    until process exit, turning "controller dropped without shutdown" from a
+    case garbage collection currently rescues into a guaranteed refusal of
+    the next build. With the weak form, a controller still reachable at exit
+    is shut down explicitly; one already collected is left to the GC rescue
+    that works today. A killed process (SIGKILL, Task Manager, power loss)
+    runs no atexit hooks; nothing in-process can cover that.
+    """
+    import atexit  # noqa: PLC0415
+    import weakref  # noqa: PLC0415
+
+    controller_ref = weakref.ref(controller)
+
+    def _shutdown_if_alive() -> None:
+        instance = controller_ref()
+        if instance is None:
+            return
+        try:
+            instance.shutdown()
+        except Exception:  # noqa: BLE001 — an atexit hook must never raise
+            pass
+
+    atexit.register(_shutdown_if_alive)
+
+
 def build_session_controller(
     profile: "UserProfile",
     profile_repo: "ProfileRepositoryPort | None" = None,
@@ -1038,6 +1474,14 @@ def build_session_controller(
 
     Returns:
         A SessionController instance ready to call ``.initialize_session()``.
+
+    Lifecycle:
+        The caller owns ending the session: call ``controller.shutdown()``
+        on every exit path (window close, CLI exit, the next Start). It
+        releases the browser whether or not a run is active. The weak
+        atexit hook registered below is the last resort for exits no caller
+        named — it cannot help a killed process, and it deliberately does
+        not pin the controller; see ``_register_exit_shutdown``.
     """
     from auto_apply.application.services.session_controller import SessionController  # noqa: PLC0415
     from auto_apply.domain.models.profile import UserProfile  # noqa: PLC0415
@@ -1045,20 +1489,40 @@ def build_session_controller(
     # 1. Build authoritative configuration
     registry = CapabilitiesRegistry.build(user_profile=profile)
 
-    # 2. Build the fully wired orchestrator
-    orchestrator = build_orchestrator(registry)
+    # 2. Build the research-consent service, then the fully wired orchestrator.
+    # The consent service comes first so the session's research observer can
+    # register with it; the SAME instance is injected into the controller
+    # below, so a mid-session withdrawal and shutdown both reach the running
+    # observer (FORK 3). The pre-session surfaces use the same builder with
+    # no registry.
+    research_consent = build_research_consent(registry)
+    orchestrator = build_orchestrator(registry, research_consent=research_consent)
 
-    # 3. Assemble the controller (all deps injected)
-    controller = SessionController(
-        registry=registry,
-        db=orchestrator.task_queue,      # DatabaseManager implements WorkQueuePort
-        orchestrator=orchestrator,
-        profile_repo=profile_repo,
-    )
+    # 3. Assemble the controller (all deps injected). If assembly fails after
+    # the orchestrator exists, its browser has no owner yet — release it here
+    # rather than stranding it against the shared profile directory.
+    try:
+        controller = SessionController(
+            registry=registry,
+            db=orchestrator.task_queue,      # DatabaseManager implements WorkQueuePort
+            orchestrator=orchestrator,
+            profile_repo=profile_repo,
+            research_consent=research_consent,
+        )
+    except Exception:
+        orchestrator.shutdown()
+        raise
 
     # 4. Post‑construction initialisation (previously inside from_profile)
     controller._perform_startup_recovery()   # reset stuck IN_PROGRESS tasks
     controller._wire_approval_gate()         # bind HITL gate to workflow
+
+    # 5. Last-resort release net — see _register_exit_shutdown. Covers exits
+    # no caller names (a stray sys.exit, an unhandled exception) by shutting
+    # the controller down at interpreter exit IF it is still alive. Cannot
+    # cover a killed process (SIGKILL, Task Manager, power loss); nothing
+    # in-process can.
+    _register_exit_shutdown(controller)
 
     return controller
 

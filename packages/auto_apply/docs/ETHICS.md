@@ -15,12 +15,23 @@ checklist for data science and software projects involving data collection.
 
 ### A. Data Collection
 
-- [x] **Informed consent**: Users must explicitly opt in to research data collection.
-  Default is `research.enabled: false`. Consent is versioned and stored with each record.
+- [x] **Informed consent**: Users must explicitly opt in to research data collection
+  through the consent dialog. Collection is OFF by default; the decision is stored in
+  a versioned consent record and the version is stored with each record.
 - [x] **Right to withdraw**: Users can delete their research contribution at any time
-  via Settings → Research → Delete My Data. Deletion takes effect within 24 hours.
+  via the Research screen — File → Research… in the app (also Settings →
+  Research…), or `python -m auto_apply --research` on the command line — by
+  choosing withdraw with deletion. Deletion is immediate: every research
+  table, the database files, and the installation's research signing key are
+  removed.
 - [x] **Data minimization**: Only the minimum data needed for each research signal is
-  collected. Full job descriptions are never stored; only anonymized excerpts ≤200 chars.
+  collected. Full job descriptions are never stored in research data; only anonymized
+  excerpts ≤200 chars. A separate, optional choice (page copies, off unless turned on
+  and only while research participation is on) keeps cleaned copies of job posting
+  pages on the device only — the person's own details, form values, hidden fields
+  and scripts removed before writing, search pages never kept — so rows can be
+  checked against their pages. Research rows carry only a fingerprint of a copy;
+  export carries no copies.
 - [x] **Anonymization**: Company names are HMAC-SHA256 anonymized. No personally
   identifiable information (PII) is ever stored in research tables.
 - [x] **Third-party data**: Research data may include signals from third-party job
@@ -33,8 +44,13 @@ checklist for data science and software projects involving data collection.
   file encryption. Future versions will implement AES-256 encryption at the file level.
 - [x] **Access controls**: Research data is stored locally on the user's device.
   No data is transmitted to external servers without explicit user action (export).
-- [x] **Data retention**: Research signals are retained for 90 days by default,
-  configurable via `research.retention_days` in `runtime_defaults.yaml`.
+- [x] **Data retention**: Research data is kept until the user withdraws and purges
+  it or deletes it; there is no automatic expiry for research rows. (An earlier draft
+  of this document promised a configurable 90-day default; that mechanism was never
+  built for rows.) Page copies, the separate opt-in above, do expire: after 90 days by
+  default (`page_copy_keep_days`), oldest first past 200 MB (`page_copy_max_mb`), and
+  on any withdrawal from research. They are not encrypted; the consent text says to
+  leave them off on a shared computer.
 - [x] **Breach response**: In the event of a discovered vulnerability affecting
   research data, users will be notified via the project's issue tracker within 72 hours.
 

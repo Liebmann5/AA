@@ -14,8 +14,13 @@ Coverage:
     - Consent record round‑trip through SqliteConsentRepository
 """
 
+import os
+import sqlite3
+import stat
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,6 +29,11 @@ from auto_apply.application.services.research_consent import (
     ConsentRecord,
     InMemoryConsentRepository,
 )
+from auto_apply.adapters.secondary.security.data_protection import (
+    provision_research_salt,
+    read_research_salt,
+)
+from auto_apply.domain.services import research_identity
 from auto_apply.domain.ports.research_port import (
     NullResearchObserver,
     JobPostingObservation,
@@ -33,6 +43,23 @@ from auto_apply.domain.ports.research_port import (
 from auto_apply.domain.ports.page_understanding_port import FormStructure
 from auto_apply.adapters.secondary.research.sqlite_consent_repository import (
     SqliteConsentRepository,
+)
+from auto_apply.domain.constants import (
+    CURRENT_CONSENT_VERSION,
+    RESEARCH_SCHEMA_VERSION,
+)
+from auto_apply.domain.ports.research_consent_port import (
+    ResearchConsentReason,
+    ResearchConsentState,
+)
+from auto_apply.domain.services import research_consent_text
+from auto_apply.domain.services.signal_detectors import (
+    DetectionContext,
+    ResearchSignal,
+)
+from auto_apply.adapters.secondary.research.signal_aggregator import (
+    _SCHEMA_SQL,
+    ResearchSignalAggregator,
 )
 from auto_apply.domain.constants import CURRENT_CONSENT_VERSION
 
@@ -214,6 +241,35 @@ def test_withdraw_consent_with_purge():
     assert not mgr.is_active()
 
 
+def test_purge_deletes_the_research_salt(tmp_path):
+    """TEETH (item 10, F2): withdrawal-with-deletion deletes the salt with
+    the signing key, so employer-name identities rotate too and a later
+    contribution cannot be joined to the purged one by employer. RED before
+    item 10: SqliteConsentRepository had no salt handling at all."""
+    salt_path = tmp_path / "research_salt.txt"
+    salt_path.write_text("salt", encoding="utf-8")
+    repo = SqliteConsentRepository(
+        consent_db_path=tmp_path / "consent.db",
+        research_db_path=tmp_path / "research_signals.db",
+        research_salt_path=salt_path,
+    )
+    repo.purge_research_data()
+    assert not salt_path.exists()
+
+
+def test_purge_without_a_salt_path_leaves_the_salt_alone(tmp_path):
+    """GUARD (F2): a repository built without a salt path (tests, minimal
+    wiring) must not go looking for one."""
+    salt_path = tmp_path / "research_salt.txt"
+    salt_path.write_text("salt", encoding="utf-8")
+    repo = SqliteConsentRepository(
+        consent_db_path=tmp_path / "consent.db",
+        research_db_path=tmp_path / "research_signals.db",
+    )
+    repo.purge_research_data()
+    assert salt_path.exists()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SqliteConsentRepository persistence
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,3 +379,572 @@ def test_null_observer_matches_port_interface():
     assert callable(observer.observe_job_posting)
     assert callable(observer.observe_form)
     assert callable(observer.observe_application_outcome)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The consent interface (M1/M2, FORKs 1-4, pinned 2026-10-01)
+#
+# Every pin in this section is RED against the tree that had: no caller for
+# grant_consent/withdraw_consent, a config-flag gate no user could open, a
+# ResearchSaltError that stopped AA from starting, and a withdrawal with no
+# channel to the running aggregator.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_status_is_off_by_default():
+    """TEETH: a fresh consent store reports OFF — research is opt-in.
+
+    RED today: ResearchConsentManager has no status().
+    """
+    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    status = mgr.status()
+    assert status.state is ResearchConsentState.OFF
+    assert status.reason is ResearchConsentReason.NONE
+    assert status.consent_version is None
+    assert status.current_version == CURRENT_CONSENT_VERSION
+    assert status.offered is True
+    assert status.collecting_now is False
+
+
+def test_status_active_after_grant_when_salt_available(monkeypatch):
+    """TEETH: with a salt set, grant() yields ACTIVE.
+
+    RED today: no grant()/status() on the manager.
+    """
+    monkeypatch.setenv("AA_RESEARCH_SALT", "status-active-salt")
+    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    status = mgr.grant()
+    assert status.state is ResearchConsentState.ACTIVE
+    assert status.consent_version == CURRENT_CONSENT_VERSION
+    assert mgr.should_collect()
+
+
+def test_fresh_install_grants_and_reaches_active_without_any_environment_variable(
+    tmp_path, monkeypatch
+):
+    """TEETH (item 10, deliverable 1 — the P1 pin): a fresh install with NO
+    AA_RESEARCH_SALT grants consent and lands ACTIVE, because grant()
+    provisions the salt itself. RED before item 10: the grant landed
+    INACTIVE / NO_SALT and nothing anywhere could create a salt — no real
+    user could ever contribute a row."""
+    monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
+    salt_path = tmp_path / "research_salt.txt"
+    # Wire exactly what build_research_consent wires in production (V1).
+    research_identity.configure_salt_file_reader(
+        lambda: read_research_salt(salt_path)
+    )
+    mgr = ResearchConsentManager(
+        InMemoryConsentRepository(),
+        provision_salt=lambda: provision_research_salt(salt_path),
+    )
+    status = mgr.grant()
+    assert status.state is ResearchConsentState.ACTIVE
+    assert mgr.should_collect()
+    assert salt_path.exists()
+    if os.name == "posix":
+        assert stat.S_IMODE(salt_path.stat().st_mode) == 0o600
+
+
+def test_grant_with_uncreatable_salt_reports_no_salt_and_stays_valid(
+    tmp_path, monkeypatch
+):
+    """TEETH (M3/FORK 4, kept): when the salt can neither be resolved nor
+    created, the grant is recorded-but-INACTIVE with the NO_SALT reason —
+    and the consent record itself is still valid."""
+    monkeypatch.delenv("AA_RESEARCH_SALT", raising=False)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, not a directory")
+    mgr = ResearchConsentManager(
+        InMemoryConsentRepository(),
+        provision_salt=lambda: provision_research_salt(blocker / "research_salt.txt"),
+    )
+    status = mgr.grant()
+    assert status.state is ResearchConsentState.INACTIVE
+    assert status.reason is ResearchConsentReason.NO_SALT
+    assert not mgr.should_collect()
+    assert mgr.is_active(), (
+        "the consent RECORD is granted and current — only collection is blocked"
+    )
+
+
+def test_status_needs_reconsent_for_stale_version():
+    """TEETH: a granted-but-stale version reports NEEDS_RECONSENT."""
+    repo = InMemoryConsentRepository()
+    repo.save_consent(ConsentRecord(
+        granted=True,
+        consent_version="v1.0",
+        granted_at=datetime.now(timezone.utc),
+        withdrawn_at=None,
+    ))
+    mgr = ResearchConsentManager(repo)
+    assert mgr.status().state is ResearchConsentState.NEEDS_RECONSENT
+    assert not mgr.should_collect()
+
+
+def test_status_withdrawn_after_withdrawal():
+    """TEETH: a withdrawn record reports WITHDRAWN, never OFF."""
+    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    mgr.grant_consent()
+    mgr.withdraw_consent(purge_data=False)
+    assert mgr.status().state is ResearchConsentState.WITHDRAWN
+    assert not mgr.should_collect()
+
+
+def test_grant_interface_records_current_version_and_returns_status(monkeypatch):
+    """TEETH: grant() is the interface operation — it writes the CURRENT
+    version (the one consent_dialog() carries) and returns the new status.
+
+    RED today: grant() does not exist; grant_consent had no production caller.
+    """
+    monkeypatch.setenv("AA_RESEARCH_SALT", "grant-pin-salt")
+    repo = InMemoryConsentRepository()
+    mgr = ResearchConsentManager(repo)
+    status = mgr.grant()
+    assert status.state is ResearchConsentState.ACTIVE
+    record = repo.load_consent()
+    assert record.granted is True
+    assert record.consent_version == CURRENT_CONSENT_VERSION
+    assert record.granted_at is not None
+
+
+def test_should_collect_is_the_and_of_all_gates(tmp_path, monkeypatch):
+    """GUARD (FORK 1): should_collect() is the single collection decision —
+    consent AND offered AND not admin-prohibited AND salt. Each gate alone
+    must be able to shut it."""
+    monkeypatch.setenv("AA_RESEARCH_SALT", "gates-salt")
+    repo = InMemoryConsentRepository()
+    granted = ResearchConsentManager(repo)
+    granted.grant_consent()
+    assert granted.should_collect()
+    ungranted = ResearchConsentManager(InMemoryConsentRepository())
+    assert not ungranted.should_collect()
+    not_offered = ResearchConsentManager(repo, is_offered=False)
+    assert not not_offered.should_collect()
+    prohibited = ResearchConsentManager(repo, admin_prohibited=True)
+    assert not prohibited.should_collect()
+    monkeypatch.delenv("AA_RESEARCH_SALT")
+    # The conftest fixture reset the salt-file reader to no-file, so the
+    # no-salt leg cannot see any real file this machine may have.
+    no_salt = ResearchConsentManager(repo)
+    assert not no_salt.should_collect()
+
+
+def test_admin_prohibition_wins_over_grant():
+    """GUARD (FORK 1, deliverable vii): an admin prohibition beats a grant —
+    reported as ADMIN_PROHIBITED, not merely "off"."""
+    repo = InMemoryConsentRepository()
+    mgr = ResearchConsentManager(repo, admin_prohibited=True)
+    status = mgr.grant()
+    assert status.state is ResearchConsentState.INACTIVE
+    assert status.reason is ResearchConsentReason.ADMIN_PROHIBITED
+    assert status.offered is False
+    assert not mgr.should_collect()
+
+
+def test_not_offered_wins_over_grant():
+    """GUARD (FORK 1): a deployment that does not offer research reports
+    NOT_OFFERED even to a user who granted."""
+    repo = InMemoryConsentRepository()
+    mgr = ResearchConsentManager(repo, is_offered=False)
+    status = mgr.grant()
+    assert status.state is ResearchConsentState.INACTIVE
+    assert status.reason is ResearchConsentReason.NOT_OFFERED
+    assert not mgr.should_collect()
+
+
+def test_consent_dialog_carries_current_version_and_canonical_text():
+    """GUARD (FORK 2/5): the dialog the surfaces render comes from the one
+    canonical module, versioned with CURRENT_CONSENT_VERSION — so "which text
+    did this user agree to" is answered by construction."""
+    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    dialog = mgr.consent_dialog()
+    assert dialog.version == CURRENT_CONSENT_VERSION
+    assert dialog.title == research_consent_text.DIALOG_TITLE
+    assert dialog.body == research_consent_text.DIALOG_BODY
+    assert dialog.agree_label == research_consent_text.AGREE_LABEL
+    assert dialog.decline_label == research_consent_text.DECLINE_LABEL
+    assert "{old_version}" in dialog.reconsent_body_template
+
+
+# ── FORK 3: withdrawal and shutdown stop the running observer ────────────────
+
+
+def _signal() -> ResearchSignal:
+    return ResearchSignal(
+        signal_id="sig-consent-pin-1",
+        signal_type="GJ-01",
+        severity="violation",
+        confidence=0.9,
+        evidence_text="evidence",
+        platform="indeed",
+        jurisdiction="CA",
+        company_id=None,
+        job_category=None,
+        detected_date=date(2026, 10, 1),
+        schema_version=RESEARCH_SCHEMA_VERSION,
+        posting_hash="posting-hash",
+    )
+
+
+def _rows(db_path: Path, table: str) -> int:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_withdrawal_stops_a_running_aggregator_and_nothing_resurrects(tmp_path, monkeypatch):
+    """TEETH vs M4 and the 91de8c9 measurement (deliverable iii): withdrawing
+    stops the running aggregator FIRST; a later observe writes nothing; after
+    the purge neither research_signals.db nor provenance_key.pem reappears.
+
+    RED today: withdraw_consent has no channel to the aggregator (nothing
+    registers it), so the daemon keeps writing and the next batch after the
+    purge recreates the database file and a fresh key.
+    """
+    monkeypatch.setenv("AA_RESEARCH_SALT", "withdraw-stop-salt")
+    db = tmp_path / "research" / "research_signals.db"
+    key = tmp_path / "provenance_key.pem"
+    agg = ResearchSignalAggregator(
+        db_path=db,
+        consent_version=CURRENT_CONSENT_VERSION,
+        provenance_key_path=key,
+    )
+    repo = SqliteConsentRepository(
+        consent_db_path=tmp_path / "research_consent.db",
+        research_db_path=db,
+        provenance_key_path=key,
+    )
+    mgr = ResearchConsentManager(repo)
+    mgr.grant()
+    agg.start()
+    mgr.register_observer(agg)
+    assert mgr.collecting
+
+    # Something genuinely collected: the database file and the key exist.
+    agg._write_batch([_signal()])
+    assert db.exists()
+    assert key.exists()
+
+    purged = mgr.withdraw_consent(purge_data=True)
+
+    assert purged >= 1
+    assert not agg.is_enabled, "withdrawal must stop collection, not only purge"
+    agg.observe_application_outcome(ApplicationOutcomeObservation(
+        platform="probe", company_id="x", submitted_date=date.today(),
+    ))
+    time.sleep(0.3)
+    assert not db.exists(), (
+        "a stopped-then-purged aggregator must not recreate the database"
+    )
+    assert not key.exists(), "the provenance key must not be regenerated"
+
+
+def test_withdrawal_without_purge_still_stops_collection(tmp_path, monkeypatch):
+    """TEETH (FORK 3, deliverable iv): purge_data=False keeps the data — but
+    collection STILL stops. RED today: nothing stops the aggregator on any
+    withdrawal path."""
+    monkeypatch.setenv("AA_RESEARCH_SALT", "withdraw-keep-salt")
+    db = tmp_path / "research_signals.db"
+    agg = ResearchSignalAggregator(
+        db_path=db,
+        consent_version=CURRENT_CONSENT_VERSION,
+        provenance_key_path=tmp_path / "key.pem",
+    )
+    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    mgr.grant()
+    agg.start()
+    mgr.register_observer(agg)
+    agg._write_batch([_signal()])
+    assert _rows(db, "research_signals") == 1
+
+    purged = mgr.withdraw_consent(purge_data=False)
+
+    assert purged == 0
+    assert db.exists(), "purge_data=False must keep the data"
+    assert not agg.is_enabled
+    agg.observe_application_outcome(ApplicationOutcomeObservation(
+        platform="probe", company_id="x", submitted_date=date.today(),
+    ))
+    time.sleep(0.3)
+    assert _rows(db, "research_signals") == 1, (
+        "a withdrawn aggregator must not write again"
+    )
+
+
+def test_session_shutdown_stops_the_observer_and_flushes_its_queue(tmp_path, monkeypatch):
+    """TEETH (FORK 3, session end, deliverable v): SessionController.shutdown()
+    stops the research observer, and items still queued at that moment are
+    flushed, not lost with the daemon thread.
+
+    RED today: SessionController has no research_consent parameter and nobody
+    in any shutdown path calls the aggregator's stop().
+    """
+    from auto_apply.application.services.session_controller import SessionController
+
+    monkeypatch.setenv("AA_RESEARCH_SALT", "shutdown-flush-salt")
+    db = tmp_path / "research_signals.db"
+    agg = ResearchSignalAggregator(
+        db_path=db,
+        consent_version=CURRENT_CONSENT_VERSION,
+        flush_interval_seconds=3600.0,  # queued items stay queued until stop()
+        provenance_key_path=tmp_path / "key.pem",
+    )
+    agg.start()
+    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    mgr.register_observer(agg)
+    # One queued examination (enqueued on every detection pass, signal or not).
+    agg.submit_context(DetectionContext(job_title="T", posting_hash="ph"))
+
+    registry = MagicMock()
+    registry.get_active_profile.return_value = MagicMock(profile_name="p")
+    orchestrator = MagicMock()
+    orchestrator.context = MagicMock(session_id="s")
+
+    controller = SessionController(
+        registry=registry,
+        db=MagicMock(),
+        orchestrator=orchestrator,
+        research_consent=mgr,
+    )
+    controller.shutdown()
+
+    assert not agg.is_enabled
+    assert _rows(db, "detector_examinations") == 1, (
+        "the queued examination must be flushed by shutdown, not lost"
+    )
+
+
+# ── FORK 5: the text cannot drift from the schema or the version ─────────────
+
+_DIALOG_DOC_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "RESEARCH_CONSENT_DIALOG.md"
+)
+
+
+def test_every_schema_table_is_disclosed_in_the_consent_text():
+    """GUARD/ratchet (FORK 5, deliverable vi): every table the research schema
+    creates maps to a phrase that must appear in the canonical consent text —
+    the same contract TABLE_SPECS gives the exporter. A table added to the
+    schema fails this pin until the text and this map are updated, so the
+    dialog can never again silently fall behind what is collected (M5).
+
+    RED today: the discovery_* and detector_* tables have no disclosure.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(_SCHEMA_SQL)
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+    finally:
+        conn.close()
+    disclosure = {
+        "research_signals": "Anonymized excerpts",
+        "job_lifecycles": "reposted",
+        "salary_observations": "salary range",
+        "form_observations": "Application form structure",
+        "application_outcomes": "acknowledgment within 30 days",
+        "discovery_pages": "result-page hosts",
+        "discovery_cards": "job titles shown",
+        "discovery_candidates": "link texts and destination hosts",
+        "detector_examinations": "Which detectors ran",
+        "detector_outcomes": "how each concluded",
+        "research_provenance": "public verification key",
+    }
+    assert tables == set(disclosure), (
+        f"schema/consent-text drift — update the dialog AND this map: "
+        f"{tables ^ set(disclosure)}"
+    )
+    for table, phrase in disclosure.items():
+        assert phrase in research_consent_text.DIALOG_BODY, (
+            f"{table} is not disclosed in the consent text"
+        )
+
+
+def test_dialog_doc_title_version_matches_current_consent_version():
+    """GUARD (FORK 5, deliverable vi): the doc's title version equals
+    CURRENT_CONSENT_VERSION — the document itself declares this rule and
+    nothing enforced it."""
+    import re
+
+    doc = _DIALOG_DOC_PATH.read_text(encoding="utf-8")
+    match = re.search(r"\(v(\d+\.\d+)\)", doc)
+    assert match, "dialog doc title carries no (vX.Y) version"
+    assert match.group(1) == CURRENT_CONSENT_VERSION
+
+
+def test_dialog_doc_contains_the_canonical_text_verbatim():
+    """GUARD (FORK 2/5): the canonical strings live in
+    domain/services/research_consent_text.py (one source); the doc must quote
+    them byte-for-byte so the authoritative document and what the surfaces
+    render cannot drift."""
+    doc_lines = {
+        line.lstrip("> ").strip()
+        for line in _DIALOG_DOC_PATH.read_text(encoding="utf-8").splitlines()
+    }
+    canonical_lines = [
+        research_consent_text.DIALOG_TITLE,
+        *research_consent_text.DIALOG_BODY.splitlines(),
+        research_consent_text.AGREE_LABEL,
+        research_consent_text.DECLINE_LABEL,
+        research_consent_text.RECONSENT_TITLE,
+        *research_consent_text.RECONSENT_BODY_TEMPLATE.splitlines(),
+        research_consent_text.WITHDRAW_TITLE,
+        *research_consent_text.WITHDRAW_BODY.splitlines(),
+        research_consent_text.PAGE_COPIES_TITLE,
+        *research_consent_text.PAGE_COPIES_BODY.splitlines(),
+        research_consent_text.PAGE_COPIES_AGREE_LABEL,
+    ]
+    missing = [
+        line.strip()
+        for line in canonical_lines
+        if line.strip() and line.strip() not in doc_lines
+    ]
+    assert not missing, (
+        f"RESEARCH_CONSENT_DIALOG.md has drifted from the canonical consent "
+        f"text: {missing[:5]}"
+    )
+
+
+# ── S2 (measured 2026-10-02): any instance a screen can obtain must stop ─────
+# collection, and collection_stopped must never report a stop that did not
+# happen. Both pins are RED against the pre-fix tree BY ASSERTION: the stop
+# channel was per instance, so the second instance's withdraw() was a no-op
+# for collection and still reported collection_stopped=True.
+
+
+def test_withdrawal_through_a_second_instance_stops_the_running_aggregator(
+    tmp_path, monkeypatch
+):
+    """TEETH vs S2 (deliverable i): the S2 measurement as a test. Instance A
+    (the "session") holds the running aggregator; instance B (what a consent
+    screen obtains by calling build_research_consent() mid-session)
+    withdraws. RED before the process-wide stop channel: B's withdraw()
+    stopped nothing, and the aggregator's next write recreated
+    research_signals.db and minted a NEW provenance key after the purge."""
+    monkeypatch.setenv("AA_RESEARCH_SALT", "s2-second-instance-salt")
+    db = tmp_path / "research" / "research_signals.db"
+    key = tmp_path / "provenance_key.pem"
+    consent_db = tmp_path / "research_consent.db"
+    agg = ResearchSignalAggregator(
+        db_path=db,
+        consent_version=CURRENT_CONSENT_VERSION,
+        provenance_key_path=key,
+    )
+    session_side = ResearchConsentManager(
+        SqliteConsentRepository(
+            consent_db_path=consent_db,
+            research_db_path=db,
+            provenance_key_path=key,
+        )
+    )
+    session_side.grant()
+    agg.start()
+    session_side.register_observer(agg)
+    agg._write_batch([_signal()])
+    assert db.exists() and key.exists()
+
+    screen_side = ResearchConsentManager(
+        SqliteConsentRepository(
+            consent_db_path=consent_db,
+            research_db_path=db,
+            provenance_key_path=key,
+        )
+    )
+    try:
+        result = screen_side.withdraw(purge_data=True)
+        assert not agg.is_enabled, (
+            "a withdrawal through any reachable instance must stop collection"
+        )
+        assert result.collection_stopped
+        agg.observe_application_outcome(ApplicationOutcomeObservation(
+            platform="probe", company_id="x", submitted_date=date.today(),
+        ))
+        time.sleep(0.3)
+        assert not db.exists(), (
+            "a stopped-then-purged aggregator must not recreate the database"
+        )
+        assert not key.exists(), "the provenance key must not be regenerated"
+    finally:
+        session_side.stop_collection()  # idempotent; registry cleanup either way
+
+
+def test_collection_stopped_is_never_reported_while_an_observer_runs(
+    tmp_path, monkeypatch
+):
+    """TEETH vs S2 (deliverable ii): WithdrawalResult.collection_stopped
+    must never be True while the observer is still enabled. RED before the
+    fix: a second instance's withdraw() returned collection_stopped=True
+    over a live aggregator, because `not self.collecting` only consulted
+    the instance's own (empty) slot — the result object told the user the
+    opposite of the truth."""
+    monkeypatch.setenv("AA_RESEARCH_SALT", "s2-honesty-salt")
+    db = tmp_path / "research" / "research_signals.db"
+    key = tmp_path / "provenance_key.pem"
+    consent_db = tmp_path / "research_consent.db"
+    agg = ResearchSignalAggregator(
+        db_path=db,
+        consent_version=CURRENT_CONSENT_VERSION,
+        provenance_key_path=key,
+    )
+    session_side = ResearchConsentManager(
+        SqliteConsentRepository(
+            consent_db_path=consent_db,
+            research_db_path=db,
+            provenance_key_path=key,
+        )
+    )
+    session_side.grant()
+    agg.start()
+    session_side.register_observer(agg)
+
+    screen_side = ResearchConsentManager(
+        SqliteConsentRepository(
+            consent_db_path=consent_db,
+            research_db_path=db,
+            provenance_key_path=key,
+        )
+    )
+    try:
+        result = screen_side.withdraw(purge_data=False)
+        if result.collection_stopped:
+            assert not agg.is_enabled, (
+                "collection_stopped=True over a live observer is a lie"
+            )
+        assert not agg.is_enabled, (
+            "after the fix the stop is real, not merely honestly reported"
+        )
+    finally:
+        session_side.stop_collection()
+
+
+def test_a_failed_stop_is_never_reported_as_stopped() -> None:
+    """TEETH: an observer whose stop() raises and that is still enabled
+    afterwards must read as collection_stopped=False — the slot is cleared
+    before the stop attempt, so without re-registering a still-running
+    observer the result would claim a stop that did not happen."""
+    class _Stubborn:
+        is_enabled = True
+
+        def stop(self) -> None:
+            raise RuntimeError("flush failed")
+
+    stubborn = _Stubborn()
+    mgr = ResearchConsentManager(InMemoryConsentRepository())
+    mgr.grant_consent()
+    mgr.register_observer(stubborn)
+    try:
+        result = mgr.withdraw(purge_data=False)
+        assert result.collection_stopped is False
+        # A second instance still sees it, and can retry the stop.
+        other = ResearchConsentManager(InMemoryConsentRepository())
+        assert other.collecting is True
+    finally:
+        stubborn.is_enabled = False
+        ResearchConsentManager(InMemoryConsentRepository()).stop_collection()

@@ -182,6 +182,11 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
 # its "no consumer" state is a consequence of the design, not a defect. The
 # ceiling comes back down to 22 when gui/app.py and cli/startup.py type
 # against UIPort at stage U4 and the UIPort entry is deleted.
+# ResearchConsentPort was raised 23 → 24 on 2026-10-01, ahead of its
+# consumers, and returned to 23 when the consent screens landed:
+# adapters/primary/cli/research_consent_screen.py consumes the port (a
+# runtime isinstance guard on the injected service — an executable use, so
+# the pin's R-B-2 rules count it).
 MAX_EXEMPTIONS = 23
 
 

@@ -68,6 +68,13 @@ class DOMScanner(PerceptionPort):
             return ""
         return raw or ""
 
+    def get_page_html(self) -> str:
+        """Return the rendered page source (PerceptionPort contract); "" on failure."""
+        try:
+            return self.browser.page_source or ""
+        except Exception:
+            return ""
+
     def get_current_state(self) -> ApplicationState:
         """Return ApplicationState.UNKNOWN — DOMScanner does not classify pages.
 

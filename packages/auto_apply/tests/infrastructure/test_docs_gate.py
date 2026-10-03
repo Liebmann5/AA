@@ -405,6 +405,53 @@ def test_citation_version_matches_the_package_version() -> None:
     )
 
 
+def test_citation_cff_has_no_empty_pattern_bearing_fields() -> None:
+    """TEETH (item 10, B2): measured 2026-10-02 with cffconvert --validate
+    against CFF 1.2.0: `doi: ""` fails the DOI pattern and `orcid: ""` fails
+    the ORCID pattern — a Zenodo deposit from the file would fail or be
+    wrong. An empty value in a pattern-bearing field is worse than an absent
+    key: absent is valid. Also asserts the keys CFF 1.2.0 requires are
+    present. This is the offline half of cffconvert --validate; the full
+    schema check needs the network and stays out of the gate.
+    """
+    yaml = pytest.importorskip("yaml")
+    data = yaml.safe_load(_read(CITATION))
+    assert isinstance(data, dict), "CITATION.cff is not a parseable mapping"
+
+    for key in ("cff-version", "title", "message", "authors", "version", "license"):
+        assert data.get(key) not in (None, ""), (
+            f"CITATION.cff: required key {key!r} is missing or empty"
+        )
+
+    pattern_bearing = frozenset({
+        "doi", "orcid", "url", "repository", "repository-code",
+        "repository-artifact", "email", "date-released",
+    })
+    problems: list[str] = []
+
+    def _walk(node: object, path: str = "") -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if (
+                    key in pattern_bearing
+                    and isinstance(value, str)
+                    and not value.strip()
+                ):
+                    problems.append(
+                        f"{path}{key}: empty string — delete the key; absent "
+                        "is valid, empty is not"
+                    )
+                _walk(value, f"{path}{key}.")
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                _walk(item, f"{path}{index}.")
+
+    _walk(data)
+    assert not problems, "CITATION.cff has empty pattern-bearing fields.\n\n  " + "\n  ".join(
+        problems
+    )
+
+
 # --------------------------------------------------------------------------
 # 8. No conversational residue
 # --------------------------------------------------------------------------

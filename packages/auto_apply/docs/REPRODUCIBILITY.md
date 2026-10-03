@@ -29,7 +29,13 @@ With the same seed, same profile, and same runtime configuration, AA produces:
 
 - Identical discovery ordering (which provider runs first, query iteration order)
 - Identical jitter and timing sequences (mouse offsets, keystroke delays)
-- Identical research signal IDs (deterministic hashing from posting hash + date)
+
+A seed makes **AA's own choices** repeatable. It cannot make a live session's
+**research output** repeatable: the job sites change between visits, and live
+signal IDs are random (no posting identity is minted — see
+`tests/architecture/test_identity_pins.py`). The research step that *is*
+repeatable, byte for byte, is replay — see [Replay](#replay-the-reproducible-step)
+below.
 
 **Requirements for bit-identical traces:**
 
@@ -48,28 +54,68 @@ needs randomness. Components use `self._rng.uniform()` instead of the global
 `secrets.SystemRandom()` directly — if you find one that does, it is a bug
 and should be reported.
 
-### Verifying Determinism
+### Replay: the reproducible step
 
-Run the same session twice and compare the research signal files:
+Two live sessions cannot produce the same research rows: the web changes
+between them. What can be re-run is the step from a page AA kept to the
+signals AA derived from it. With page copies turned on (Research screen),
+AA keeps a cleaned copy of every job page it reads; `--replay` re-runs text
+extraction and every per-posting detector over a folder of those copies —
+**no browser, no network, no research database, no research key, no clock**:
 
 ```bash
-# First run
-python -m auto_apply --seed 42 --cli --portable
-python -m auto_apply --export-research --export-format json
-mv research_signals_*.json run1.json
-
-# Second run (identical configuration)
-python -m auto_apply --seed 42 --cli --portable
-python -m auto_apply --export-research --export-format json
-mv research_signals_*.json run2.json
-
-# Compare
-diff <(jq -S . run1.json) <(jq -S . run2.json)
+python -m auto_apply --replay path/to/page_copies --replay-out replay_out
 ```
 
-If the two JSON files differ, check that no component is using un-seeded
-randomness (common culprits: `random.choice()` in provider selection,
-`time.sleep()` without going through the injected `BehaviorSimulator`).
+It writes three files:
+
+| File | What it is | Part of the result? |
+| ---- | ---------- | ------------------- |
+| `replay.jsonl` | One canonical JSON line per page copy: the observation (title, location, jurisdiction, platform, a digest of the extracted text), the non-clean detector outcomes, and the signals | Yes |
+| `manifest.json` | Format, AA version, extraction method, detector roster, every corpus file with its sha256, the corpus and artifact digests, skipped files, and what a replay cannot reproduce | Yes — its sha256 is the **replay digest** |
+| `environment.json` | The Python version and operating system it ran on | No — outside every digest |
+
+**The claim:** the same corpus and the same AA version give the same
+`replay.jsonl` and `manifest.json`, byte for byte, on any operating system and
+Python version AA supports. CI checks it on all six legs (Linux, Windows,
+macOS × Python 3.10, 3.12): `tests/research/test_replay.py` replays a committed
+synthetic corpus (`tests/fixtures/replay/`) and requires the committed bytes,
+in-process and again in a separate process with a different hash seed.
+
+What makes it hold:
+
+- each posting is replayed **as of its capture date** — the replay's own date
+  never enters the result;
+- signal IDs are **derived** from (page copy, signal type, index), never random;
+- text is extracted by AA's own extractor (`aa-static-text/1`), not a parser
+  library whose behaviour varies by version;
+- corpus files are named by their path inside the corpus, never an absolute
+  path, and everything is sorted;
+- output is canonical JSON (sorted keys, fixed separators, UTF-8, `\n` line
+  ends) written as bytes, so Windows does not translate newlines.
+
+**What a replay does not claim** (listed in every manifest under
+`not_replayed`):
+
+- that it reproduces the live run's signals exactly. A live run reads page
+  text through the browser, which applies CSS; a replay extracts it from the
+  cleaned copy, so hidden text is included and your own details are already
+  `[redacted]`;
+- the anonymous company code (keyed by the contributor's private research
+  key), lifecycle history, the salary-corpus percentile, corpus-level macro
+  signals and form observations — none of these come from a single page.
+
+Page copies made before replay existed carry no posting facts (title,
+location, platform); they replay with no jurisdiction, so jurisdiction-based
+detectors do not fire for them. `replay.jsonl` marks them
+`"facts_recorded": false`.
+
+To change the fixture on purpose (a detector, the extractor or the record
+layout changed), regenerate it and review the diff:
+
+```bash
+AA_REPLAY_REGENERATE=1 uv run pytest tests/research/test_replay.py
+```
 
 ---
 
@@ -82,23 +128,26 @@ analysis-ready formats using the built-in CLI:
 # Export all research signals as CSV (default)
 python -m auto_apply --export-research
 
-# Export as JSON
-python -m auto_apply --export-research --export-format json
+# Export as NDJSON
+python -m auto_apply --export-research --export-format ndjson
 
 # Export as Parquet (requires pyarrow; install with `uv sync --extra research`)
 python -m auto_apply --export-research --export-format parquet
 ```
 
-Export files are written to the session reports directory (typically
-`~/.auto_apply/reports/` or `<USB>/data/reports/` in portable mode).
+Export bundles are written to the reports directory inside AA's data
+directory (`reports/`; `<USB>/data/reports/` in portable mode).
 
-The exporter writes three files per invocation:
-
-| File prefix | Contents |
-|---|---|
-| `aa_research_signals_*` | All individual signal events (29 detector types) |
-| `aa_salary_corpus_*` | Salary observations for market benchmarking (ST‑03) |
-| `aa_form_observations_*` | ATS form complexity observations (DP‑04, ST‑04) |
+Each invocation writes ONE bundle directory, `aa_research_export_<digest>/`,
+containing one data file per research table (`research_signals`,
+`job_lifecycles`, `salary_observations`, `form_observations`,
+`application_outcomes`, `discovery_pages`, `discovery_cards`,
+`discovery_candidates`, `detector_examinations`, `detector_outcomes`), an
+`index.json` describing every file plus a signed run identity (AA version,
+a SHA-256 of the installed code, Python and OS — never a git commit, which
+a user install cannot prove), a `bundle_signature.json` signing the whole
+bundle with the installation's key, and — once signed signals exist — a
+`verification.json` carrying the public key.
 
 ---
 
@@ -108,14 +157,14 @@ The exporter writes three files per invocation:
 
 | Column | Type | Description |
 |---|---|---|
-| `signal_id` | `TEXT PK` | Deterministic ID derived from (signal_type, posting_hash, date) |
+| `signal_id` | `TEXT PK` | Random per live run (uuid4) — no posting identity is minted yet; deterministic only in replay output |
 | `signal_type` | `TEXT` | Signal code: `GJ-01`, `DISC-01`, `ST-01`, etc. |
 | `severity` | `TEXT` | `flag`, `concern`, or `violation` |
 | `confidence` | `REAL` | Detection confidence 0.0–1.0 |
 | `evidence_text` | `TEXT` | Anonymized evidence excerpt (max 200 chars) |
 | `platform` | `TEXT` | ATS or job board identifier |
 | `jurisdiction` | `TEXT` | US state/city code (e.g. `CA`, `NYC`) |
-| `company_id` | `TEXT` | HMAC-SHA256 of company name (anonymized) |
+| `company_id` | `TEXT` | HMAC-SHA256 of the company name's canonical form (anonymized); NULL when no usable name exists. See `research_module/data_format.md` |
 | `job_category` | `TEXT` | BLS SOC code when available |
 | `detected_date` | `TEXT` | ISO date of detection |
 | `schema_version` | `INTEGER` | Schema version for longitudinal compatibility |
@@ -200,39 +249,79 @@ The exporter writes three files per invocation:
 Every research signal written to the database is signed with an **Ed25519**
 key unique to the AA installation. The public key is stored in the
 `research_provenance` table so third-party verifiers can authenticate signals
-without the private key ever leaving the device.
+without the private key ever leaving the device. Every export bundle is
+signed as a whole: `bundle_signature.json` signs the bundle digest and the
+hash of `index.json`, so rows cannot be dropped, tables cannot be swapped
+between bundles, and the index (including the run identity) cannot be
+edited, without detection.
 
-**Verifying provenance externally:**
+**Verifying a bundle** needs nothing but the bundle — no database, no key,
+no network:
 
-```python
-import json, hashlib
-from cryptography.hazmat.primitives.asymmetric import ed25519
-
-# 1. Load the public key from the research database
-import sqlite3
-conn = sqlite3.connect("research_signals.db")
-row = conn.execute("SELECT public_key_hex FROM research_provenance WHERE id = 1").fetchone()
-public_key = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(row[0]))
-
-# 2. For each signal, verify the signature
-for signal in exported_signals:
-    content = json.dumps({
-        "signal_type": signal["signal_type"],
-        "severity": signal["severity"],
-        "confidence": signal["confidence"],
-        "evidence_text": signal["evidence_text"] or "",
-        "platform": signal["platform"] or "",
-        "jurisdiction": signal["jurisdiction"] or "",
-        "detected_date": signal["detected_date"],
-        "posting_hash": signal["posting_hash"] or "",
-    }, sort_keys=True).encode("utf-8")
-
-    content_hash = hashlib.sha256(content).hexdigest()
-    signature_bytes = bytes.fromhex(signal["provenance_signature"])
-
-    public_key.verify(signature_bytes, content_hash.encode("utf-8"))
-    # No exception → signature valid
+```bash
+python -m auto_apply --verify-research path/to/aa_research_export_<digest>
 ```
+
+It checks every file hash against `index.json`, recomputes the bundle
+digest, verifies the bundle signature, and re-verifies every signed row in
+`research_signals` using only `verification.json`. It prints exactly what it
+checked, what it did not (the run identity, and who the contributor is),
+and exits 0 only when everything passes. To check by hand instead, the
+exact recipes live inside the bundle: `verification.json` for row
+signatures, `bundle_signature.json` for the bundle signature.
+
+**What the signature does and does not prove.** The signing key is
+generated by the installation itself, so a valid signature proves these
+bytes left that installation unaltered — it does NOT prove the exporting
+code was unmodified AA, and it does not prove who the contributor is. The
+run identity in `index.json` (AA version, SHA-256 of the installed code) is
+signed, but remains a claim until you hash that code yourself. Before
+relying on a bundle, compare its signing-key fingerprint (SHA-256 of the
+public key, printed by the verifier and shown on both research screens)
+with the fingerprint the contributor published.
+
+---
+
+## Verifying a Release
+
+Each published release carries Sigstore attestations minted by the release
+workflow on GitHub-hosted runners — one over the replay outputs
+(`replay.jsonl` and `manifest.json` for the committed corpus), one over the
+built sdist and wheel. The claims are narrow, on purpose:
+
+- **Replay:** "at this commit, the committed corpus replays to this digest,
+  computed on GitHub's machines" — not only on the maintainer's. It says
+  nothing about whether the corpus is representative.
+- **Build:** "this wheel and sdist were built from this commit by the
+  release workflow." It says nothing about whether the code is correct.
+
+Verify the wheel with the GitHub CLI — no AA install needed:
+
+```bash
+gh release download v0.1.0 -R Liebmann5/AA -p "*.whl"
+gh attestation verify auto_apply-0.1.0-py3-none-any.whl -R Liebmann5/AA
+```
+
+The replay outputs are deliberately NOT attached to the release. The
+stronger check reproduces the attested digest on your own machine from
+the tagged source and verifies YOUR bytes:
+
+```bash
+git clone --depth 1 --branch v0.1.0 https://github.com/Liebmann5/AA.git
+cd AA
+uv sync
+cd packages/auto_apply
+uv run python -m auto_apply --replay tests/fixtures/replay/corpus --replay-out replay_out
+gh attestation verify replay_out/manifest.json -R Liebmann5/AA
+```
+
+`gh attestation verify` matches the local file's digest against the
+attested subjects, so a match proves your machine reproduced the digest
+the workflow attested.
+
+The release procedure itself — version discipline, tagging, the one-time
+Zenodo switch, and getting the DOI back into `CITATION.cff` — is the
+[releasing runbook](developer_guide/releasing.md).
 
 ---
 
@@ -315,9 +404,9 @@ When publishing results derived from AA data, please include:
    collection (the YAML file itself is ideal).
 3. **Seed** — the `--seed` value if deterministic mode was used.
 4. **Signal schema version** — `RESEARCH_SCHEMA_VERSION` from
-   `domain/constants.py` (currently `2`).
+   `domain/constants.py` (currently `3`).
 5. **Consent version** — `CURRENT_CONSENT_VERSION` from
-   `domain/constants.py` (currently `"2.1"`).
+   `domain/constants.py` (currently `"2.5"`).
 6. **Citation** — use the `CITATION.cff` file in the repository root.
 
 ---

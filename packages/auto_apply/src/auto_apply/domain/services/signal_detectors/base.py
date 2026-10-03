@@ -7,21 +7,18 @@ This makes every detector testable without a browser, a database, or a network.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
-import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from auto_apply.domain.constants import (
-    RESEARCH_SALT_ENV_VAR,
     RESEARCH_SCHEMA_VERSION,
     SEVERITY_FLAG,
     SEVERITY_CONCERN,
     SEVERITY_VIOLATION,
 )
+from auto_apply.domain.services.research_identity import compute_company_id
 
 
 @dataclass(frozen=True)
@@ -49,6 +46,10 @@ class ResearchSignal:
             noticing "no salary disclosed in CA") collapses to one row
             via INSERT OR IGNORE — and (b) joining signals back to
             job_lifecycles / salary_observations for corpus analysis.
+        page_copy_id: Fingerprint of the cleaned page copy this signal was
+            detected on (item 6), or None. Links a row to the copy kept on
+            this device; it is not part of the signed content (see
+            ResearchSignalAggregator._write_batch).
     """
     signal_id: str
     signal_type: str
@@ -62,6 +63,7 @@ class ResearchSignal:
     detected_date: date = field(default_factory=date.today)
     schema_version: int = RESEARCH_SCHEMA_VERSION
     posting_hash: str | None = None
+    page_copy_id: str | None = None
 
     @classmethod
     def create(
@@ -90,15 +92,6 @@ class ResearchSignal:
         Returns:
             A new ResearchSignal with anonymized company_id.
         """
-        company_id: str | None = None
-        if company_name:
-            salt = os.environ.get(RESEARCH_SALT_ENV_VAR, "default_dev_salt")
-            company_id = hmac.new(
-                salt.encode(),
-                company_name.lower().encode(),
-                hashlib.sha256,
-            ).hexdigest()[:16]
-
         return cls(
             signal_id=str(uuid.uuid4()),
             signal_type=signal_type,
@@ -107,9 +100,71 @@ class ResearchSignal:
             evidence_text=evidence_text[:200],
             platform=platform,
             jurisdiction=jurisdiction,
-            company_id=company_id,
+            company_id=compute_company_id(company_name),
             job_category=job_category,
         )
+
+
+# ── Detector outcome accounting (item 5) ─────────────────────────────────────
+#: The three distinguishable facts about one detector running against one
+#: context (item 5, R3). Collapsing any two of them re-creates the
+#: ``except Exception: pass`` defect in a new shape.
+DetectorOutcomeKind = Literal["clean", "fired", "raised"]
+
+OUTCOME_CLEAN: DetectorOutcomeKind = "clean"
+OUTCOME_FIRED: DetectorOutcomeKind = "fired"
+OUTCOME_RAISED: DetectorOutcomeKind = "raised"
+
+
+@dataclass(frozen=True)
+class DetectorOutcome:
+    """The recorded outcome of one detector running against one context.
+
+    Attributes:
+        signal_type: The detector's self-identification, e.g. "GJ-01".
+        outcome: OUTCOME_CLEAN / OUTCOME_FIRED / OUTCOME_RAISED.
+        signals_count: Signals produced (0 for clean and raised).
+        error_class: The exception's CLASS NAME when outcome is
+            OUTCOME_RAISED, None otherwise. str(exc) is never recorded: an
+            exception message can quote the posting under analysis — company
+            names, URLs, description text — and storing it would be a PII
+            leak with a research-data label on it (item 5, C2).
+    """
+
+    signal_type: str
+    outcome: DetectorOutcomeKind
+    signals_count: int
+    error_class: str | None = None
+
+
+@dataclass(frozen=True)
+class DetectionResult:
+    """Everything one run_all_detectors pass learned: findings and accounting.
+
+    Attributes:
+        signals: Every ResearchSignal produced, sorted confidence-descending,
+            with deterministic ids when the context carried a posting_hash.
+        detectors_run: signal_type of every detector that ran, in registry
+            order — the roster. Persisted per examination so "clean" stays
+            derivable as roster-minus-recorded even as the registry grows.
+        outcomes: Exactly one DetectorOutcome per detectors_run entry, same
+            order. len(outcomes) == len(detectors_run) is the completeness
+            invariant the accounting stands on.
+    """
+
+    signals: tuple[ResearchSignal, ...]
+    detectors_run: tuple[str, ...]
+    outcomes: tuple[DetectorOutcome, ...]
+
+    @property
+    def detectors_fired(self) -> int:
+        """How many detectors produced at least one signal."""
+        return sum(1 for o in self.outcomes if o.outcome == OUTCOME_FIRED)
+
+    @property
+    def detectors_raised(self) -> int:
+        """How many detectors raised instead of producing a verdict."""
+        return sum(1 for o in self.outcomes if o.outcome == OUTCOME_RAISED)
 
 
 @dataclass
@@ -136,6 +191,9 @@ class DetectionContext:
         form_wcag_violations: List of WCAG violation codes from form analysis.
         posting_hash: Structural hash of description for deduplication.
         times_seen_cross_platform: How many platforms have this posting hash.
+        page_copy_id: Fingerprint of the cleaned page copy kept for this
+            posting (item 6), or None. Detectors never read it; it is
+            carried onto every signal and the examination row.
     """
     job_title: str = ""
     job_description: str = ""
@@ -158,6 +216,7 @@ class DetectionContext:
     previous_posting_dates: list[date] = field(default_factory=list)
     company_has_warn_filing: bool = False
     estimated_completion_minutes: int | None = None
+    page_copy_id: str | None = None
 
     # ── Extended fields (Research Module v2.1) ──────────────────────────────
     # GJ-04: Apply-with-no-ATS

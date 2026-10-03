@@ -65,6 +65,11 @@ from auto_apply.domain.ports.repository_port import JobRepositoryPort
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
 
 from auto_apply.domain.ports.registry_port import RegistryPort
+from auto_apply.domain.ports.research_port import (
+    NullResearchObserver,
+    ResearchAccounting,
+    ResearchSessionPort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +159,7 @@ class AgentOrchestrator:
         progress: Any | None = None,  # ← optional SessionProgressDisplay (CLI adapter)
         workflows: dict[str, Any] | None = None,
         behavior_parameters: BehaviorParameters | None = None,
+        research_session: ResearchSessionPort | None = None,
     ) -> None:
         """Initializes all orchestrator components.
 
@@ -176,6 +182,10 @@ class AgentOrchestrator:
                 access will fail until a driver is available.
             captcha_resolver: Optional CAPTCHA resolution service. Injected by
                 composition_root. If None, CAPTCHAs escalate to manual solving.
+            research_session: The session's research collector, as its
+                session-lifetime port (item 3). Teardown stops it — flushing
+                what is queued — and writes its accounting into the session
+                report. None means research is off (NullResearchObserver).
         """
         # ── Core dependencies ─────────────────────────────────────────────
         self.profile = profile
@@ -198,6 +208,11 @@ class AgentOrchestrator:
         self.state_machine = StateMachine(initial_state=AgentState.IDLE)
         self.running: bool = False
         self.paused: bool = False
+
+        # ── Research collection, session side (item 3) ────────────────────
+        self._research_session: ResearchSessionPort = (
+            research_session if research_session is not None else NullResearchObserver()
+        )
 
         # ── Session report (accumulates application outcomes incrementally)
         self._session_report = SessionReport(
@@ -262,6 +277,16 @@ class AgentOrchestrator:
         # to record-and-continue rather than hanging (see _handle_captcha).
         self._approval_gate: Any | None = None
 
+        # ── Shutdown latch ────────────────────────────────────────────────
+        # shutdown() is the ONE release path for the injected browser. The
+        # lock serializes concurrent callers (the agent thread at run()'s
+        # end vs. a UI thread releasing after stop()'s join expired); the
+        # flag makes every call after the first a no-op, so teardown —
+        # final checkpoint, session report, driver close — happens exactly
+        # once.
+        self._shutdown_lock: threading.Lock = threading.Lock()
+        self._shutdown_complete: bool = False
+
         # ── Redirect dedupe for the REDIRECT_TO_LIST_DETECTED handler ─────
         self._seen_redirect_urls: set = set()
 
@@ -307,6 +332,12 @@ class AgentOrchestrator:
         Raises:
             Nothing. All exceptions are caught, logged, and handled per-task.
             The loop itself never propagates an exception to the caller.
+
+        Exit:
+            However the loop ends — queue drained, stop() called, or an
+            exception that escaped the per-task handling — the finally block
+            routes through shutdown(), so the browser acquired at build time
+            is released exactly once.
         """
         logger.info("AgentOrchestrator starting | session=%s", self.context.session_id)
         self.running = True
@@ -449,9 +480,13 @@ class AgentOrchestrator:
             # ── Stop progress display ────────────────────────────────────
             if self._progress is not None:
                 self._progress.stop()
+            # ── Release all owned resources, browser included ────────────
+            # Routes the loop's exit through the ONE release path. If a
+            # controller-level shutdown() already ran (stop()'s join expired
+            # with a task mid-flight and the caller's thread released the
+            # browser out from under this one), this is a no-op.
+            self.shutdown()
 
-        # ── Cleanup on graceful exit ──────────────────────────────────────
-        self._teardown()
         logger.info(
             "AgentOrchestrator stopped gracefully | session=%s",
             self.context.session_id,
@@ -467,12 +502,54 @@ class AgentOrchestrator:
         Does not kill the loop mid-task. The loop checks self.running at the
         top of each iteration and exits cleanly.
 
+        What this does NOT do: release the browser or any other resource.
+        Release happens only in shutdown() — reached from run()'s own exit,
+        or from SessionController.shutdown() when the caller needs the
+        session torn down whether or not the loop has finished.
+
         Example:
-            >>> orchestrator.stop()  # Triggers graceful shutdown
+            >>> orchestrator.stop()  # Ask the loop to exit; browser stays open
         """
         logger.info("Stop signal received")
         self.running = False
         self.state_machine.transition_to(AgentState.STOPPING)
+
+    def shutdown(self) -> None:
+        """Releases every resource this orchestrator owns, browser included.
+
+        This is the ONE release path for the driver injected at build time.
+        It is reachable from every exit:
+
+            - run()'s exit — queue drained, stop() called, or an exception
+              that escaped the per-task handling — routes here from a
+              finally;
+            - SessionController.shutdown() calls here after stop() returns,
+              including when stop()'s thread join timed out with a task
+              still mid-flight. In that case this runs on the caller's
+              thread and closes the browser out from under the stuck task;
+              the stuck task then fails against the dead driver and the loop
+              exits — the daemon thread is no longer relied on to reach
+              teardown itself;
+            - it works whether or not run() was ever called.
+
+        Idempotent and thread-safe: concurrent callers serialize on a lock
+        and every call after the first returns immediately, so the final
+        checkpoint and the session report are written exactly once.
+
+        What this CANNOT cover: a killed process (SIGKILL, Task Manager,
+        power loss). No in-process cleanup runs there.
+        """
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                logger.debug("shutdown() after teardown — no-op")
+                return
+            self._shutdown_complete = True
+            try:
+                self._teardown()
+            except Exception as exc:  # noqa: BLE001 — release must never raise
+                logger.warning(
+                    "shutdown(): teardown raised (non-fatal) | error=%s", exc
+                )
 
     def pause(self) -> None:
         """Suspends task dispatching without destroying browser state.
@@ -1899,13 +1976,30 @@ class AgentOrchestrator:
     # TEARDOWN
     # =========================================================================
 
+    def research_accounting(self) -> ResearchAccounting:
+        """What research collection recorded, lost and degraded this session.
+
+        Public so the controller's results view reads it without reaching
+        into the private session report. Final once teardown has stopped the
+        collector; before that it says it is not complete.
+        """
+        try:
+            return self._research_session.accounting()
+        except Exception as exc:  # noqa: BLE001 — a results view must not fail
+            logger.warning("Research accounting unavailable | %s", exc)
+            return ResearchAccounting(active=True, complete=False)
+
     def _teardown(self) -> None:
         """Cleans up all resources after the event loop exits.
 
-        Called exactly once at the end of ``run()``, whether the loop exited
-        cleanly (``stop()`` called or the queue drained) or due to an
-        unhandled exception. Ordering matters:
+        Called exactly once, from :meth:`shutdown` — whether run() exited
+        (queue drained, stop() called, or an exception that escaped the
+        loop), whether run() never ran, or whether stop()'s thread join
+        expired with a task mid-flight and the caller's thread is doing the
+        releasing. Ordering matters:
             0. Shutdown workflows that may still hold background threads.
+            0b. Stop research collection, flushing what is queued, so the
+               accounting written into the report is final (item 3).
             1. Transition to STOPPED state (signals all observers that the
                session has ended). Routes through STOPPING first in case an
                engine state is current.
@@ -1927,6 +2021,18 @@ class AgentOrchestrator:
                     wf.shutdown()
                 except Exception as exc:
                     logger.warning("Workflow %s shutdown error: %s", wf_name, exc)
+
+        # ── 0b. Finish research collection (item 3) ──────────────────────
+        # After the workflows (the observers' producers) have stopped and
+        # before the report is written: stop() flushes everything queued, so
+        # the accounting written into the report at step 5 is final. On the
+        # queue-drained path this is the ONLY stop before the report — the
+        # controller's stop_collection() runs later and is then a no-op
+        # (stop is idempotent).
+        try:
+            self._research_session.stop()
+        except Exception as exc:
+            logger.warning("Research collection stop error: %s", exc)
 
         # Attempt STOPPING first (no-op if already there or invalid), then
         # STOPPED. Both return False on invalid transitions rather than raising.
@@ -1971,6 +2077,7 @@ class AgentOrchestrator:
             self._driver = None
 
         # ── 5. Finalize and save session report ───────────────────────────
+        self._session_report.research = self.research_accounting()
         try:
             self._session_report.finalize(
                 duration_seconds=self.context.elapsed_seconds()

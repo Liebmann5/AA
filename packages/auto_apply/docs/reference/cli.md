@@ -26,7 +26,12 @@ auto-apply                # console script, available after install
 | `--portable` | — | Store all data in `./data/` relative to the working directory |
 | `--seed` | `N` | Deterministic mode. Identical configuration produces identical execution traces |
 | `--export-research` | — | Export collected research signals and exit, without running a session |
-| `--export-format` | `csv` \| `json` \| `parquet` | Output format for `--export-research`. Default `csv` |
+| `--export-format` | `csv` \| `ndjson` \| `parquet` | Output format for `--export-research`. Default `csv` |
+| `--research-summary` | — | Print what the discovery research tables hold, then exit. Read-only; starts no session |
+| `--replay` | folder | Re-run text extraction and the research detectors over a folder of kept page copies (`*.warc.gz`) — no browser, network or research key — and write `replay.jsonl`, `manifest.json` and `environment.json`. Same folder + same AA version = same bytes on any machine. See [Reproducibility](../REPRODUCIBILITY.md#replay-the-reproducible-step). Exits 0, or 2 when the folder does not exist |
+| `--replay-out` | folder | Where `--replay` writes. Default: `reports/replay_<corpus digest>` in AA's data folder |
+| `--research` | — | Open the interactive research screen (see whether research is on, read the consent text, agree, withdraw with optional export-then-delete, page copies, export), then exit. Needs no profile; starts no session |
+| `--label` | — | Label saved pages and log the applications you make by hand. See [Labelling](../user_guide/labelling.md) |
 | `--encrypt-profile` | — | Encrypt the current plaintext profile into a `.vault` file behind a master password |
 
 ## Flags parsed before anything else
@@ -49,8 +54,9 @@ python -m auto_apply --cli --seed 42
 
 `--seed N` derives an independent, reproducible random stream per namespace via
 `SHA-256(seed:namespace)`. Runs with the same seed and the same configuration
-produce the same execution trace, which is what makes AA's research output
-reproducible.
+make the same choices (provider order, timing). That does not make a live
+session's research output repeatable — the sites change between visits; the
+repeatable research step is `--replay`.
 
 Without `--seed`, AA uses an unseeded generator. **That is the correct default
 for real use** — a fixed seed makes your behaviour predictable to the sites you
@@ -75,7 +81,7 @@ on "no traces on the host".
 ## Exporting research data
 
 ```bash
-python -m auto_apply --export-research --export-format json
+python -m auto_apply --export-research --export-format ndjson
 ```
 
 Exits without running a session. `parquet` requires the `research` extra.
@@ -105,8 +111,9 @@ you forget the password — that is a property of the encryption, not an oversig
 
 AA is a long-running interactive agent rather than a batch tool, and **does not
 yet publish a stable exit-code contract**. `--check-config`,
-`--export-research` and `--encrypt-profile` exit after their work; the others
-run until you stop the session.
+`--export-research`, `--research-summary`, `--research`, `--replay`, `--label` and
+`--encrypt-profile` exit after their work; the others run until you stop the
+session.
 
 `[PLANNED]` — a documented exit-code table. Do not script against exit codes
 until it exists.

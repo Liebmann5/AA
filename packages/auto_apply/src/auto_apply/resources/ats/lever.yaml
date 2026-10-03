@@ -8,6 +8,14 @@ url_patterns:
   - "jobs.eu.lever.co/*/apply*"
   - "hire.lever.co/*/apply*"
 
+# The platform's own domains (a host equal to one, or a subdomain of one).
+# Research analysis groups destinations by these, so one platform counts
+# as one destination however it names its tenants (acme.myworkdayjobs.com
+# and boards.greenhouse.io/acme are each one platform). Custom domains an
+# employer points at the platform are not listed and cannot be.
+hosts:
+  - "lever.co"
+
 login_wall_signals:
   - "sign in to apply"
   - "log in to continue"

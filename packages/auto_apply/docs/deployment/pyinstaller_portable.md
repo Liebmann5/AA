@@ -205,7 +205,7 @@ E:\                              (your USB drive root)
 │   ├── logs\                    (session logs)
 │   ├── checkpoints\             (crash recovery)
 │   ├── screenshots\             (failure captures)
-│   ├── research_data\           (opt‑in research signals)
+│   ├── research\                (opt‑in research data)
 │   ├── applications.db          (SQLite job history)
 │   ├── cache\                   (all third‑party caches)
 │   │   ├── huggingface\

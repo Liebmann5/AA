@@ -10,7 +10,8 @@ Startup Sequence:
        import time.
     2. Configure structured logging.
     3. Parse command-line arguments (--cli, --debug, --check-config,
-       --seed, --profile, --portable, --export-research, --encrypt-profile).
+       --seed, --profile, --portable, --export-research, --research-summary,
+       --research, --replay, --verify-research, --label, --encrypt-profile).
     4. Initialize infrastructure (SQLite database with WAL mode).
     5. Launch the selected interface or print configuration summary.
 
@@ -36,6 +37,11 @@ Usage:
     python -m auto_apply --portable       # Force portable mode (data in ./data/)
     python -m auto_apply --export-research          # Export research signals and exit
     python -m auto_apply --export-research --export-format parquet
+    python -m auto_apply --research-summary         # Summarise discovery data, exit
+    python -m auto_apply --research                 # View/change research participation, exit
+    python -m auto_apply --replay <corpus folder>   # Re-run the detectors over kept pages, exit
+    python -m auto_apply --verify-research <bundle> # Verify a research export bundle, exit
+    python -m auto_apply --label                    # Label pages and log applications
     python -m auto_apply --encrypt-profile          # Encrypt the current profile
 """
 
@@ -48,7 +54,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from auto_apply.adapters.secondary.research.parquet_exporter import ExportFormat
+    from auto_apply.adapters.secondary.research.research_exporter import ExportFormat
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -335,54 +341,201 @@ def _parse_export_format(raw: str) -> "ExportFormat":
     """
     if raw == "csv":
         return "csv"
-    if raw == "json":
-        return "json"
+    if raw == "ndjson":
+        return "ndjson"
     if raw == "parquet":
         return "parquet"
-    print(f"Unsupported --export-format {raw!r}. Accepted values: csv, json, parquet.")
+    print(
+        f"Unsupported --export-format {raw!r}. Accepted values: csv, ndjson, parquet."
+    )
     sys.exit(2)
 
 
 def _handle_export_research(args) -> None:
-    """Export all collected research signals and exit.
+    """Export the research database as one verifiable bundle and exit.
 
-    Does not start a job search session.
+    The bundle is a single directory containing every research table, the
+    provenance public key (when one is on record), and an index. Any read
+    failure aborts the export and leaves no artifact behind. A missing
+    optional dependency degrades the requested format to CSV; it never
+    kills the export. Does not start a job search session.
     """
-    from auto_apply.adapters.secondary.research.parquet_exporter import (
-        ExportFormat,
-        ParquetExporter,
+    from auto_apply.adapters.secondary.research.research_exporter import (
+        ExportError,
+        ResearchExporter,
     )
-    from auto_apply.domain.config import REPORTS_DIR, RESEARCH_DIR
-
-    exporter = ParquetExporter(
-        db_path=RESEARCH_DIR / "research_signals.db",
-        export_dir=REPORTS_DIR,
+    from auto_apply.domain.config import (
+        PROVENANCE_KEY_PATH,
+        REPORTS_DIR,
+        RESEARCH_DB_PATH,
     )
 
     fmt: ExportFormat = _parse_export_format(args.export_format or "csv")
-    print(f"Exporting research signals as {fmt.upper()}...")
+    print(f"Exporting research data as {fmt.upper()}...")
 
+    exporter = ResearchExporter(
+        db_path=RESEARCH_DB_PATH,
+        export_root=REPORTS_DIR,
+        provenance_key_path=PROVENANCE_KEY_PATH,
+    )
     try:
-        signals_path = exporter.export_signals(fmt=fmt)
-        print(f"  ✓ Signals exported:        {signals_path}")
-
-        salary_path = exporter.export_salary_corpus(fmt=fmt)
-        print(f"  ✓ Salary corpus exported:  {salary_path}")
-
-        forms_path = exporter.export_form_observations(fmt=fmt)
-        print(f"  ✓ Form observations:       {forms_path}")
-
-        print(f"\n  All files written to: {REPORTS_DIR}")
-
-    except ImportError as exc:
-        print(f"  ✗ Missing dependency: {exc}")
-        print("    Install with: pip install pyarrow")
-        sys.exit(1)
-    except Exception as exc:
+        result = exporter.export(fmt)
+    except ExportError as exc:
         print(f"  ✗ Export failed: {exc}")
         sys.exit(1)
 
+    if result.degraded:
+        print(
+            f"  ! {result.requested_format.upper()} unavailable — wrote "
+            f"{result.format.upper()} instead (optional dependency not installed)"
+        )
+    for table in result.tables:
+        print(f"  ✓ {table.table:<24} {table.rows:>6} rows")
+    if result.verification_status == "ok":
+        print("  ✓ verification.json       (provenance public key included)")
+    else:
+        print("  - verification.json       not written (no provenance key on record)")
+
+    print(f"\n  Export directory: {result.directory}")
+    print(f"  Bundle digest:    {result.bundle_digest}")
     sys.exit(0)
+
+
+def _handle_replay(args) -> None:
+    """Replay a corpus of kept page copies, then exit (item 7).
+
+    Composition only: composition_root.run_replay reads the corpus, runs the
+    pure replay and writes the artifact byte for byte; the CLI adapter
+    renders the report. Exit code 0 on success, 2 when the corpus folder
+    does not exist, 1 for any other failure.
+    """
+    from pathlib import Path
+
+    from auto_apply.adapters.primary.cli.replay_report import (
+        print_replay_error,
+        print_replay_report,
+    )
+    from auto_apply.infrastructure.composition_root import run_replay
+
+    corpus = Path(args.replay).expanduser()
+    out = Path(args.replay_out).expanduser() if args.replay_out else None
+    try:
+        report = run_replay(corpus, out)
+    except FileNotFoundError as exc:
+        print_replay_error(str(exc))
+        sys.exit(2)
+    except Exception as exc:  # noqa: BLE001 — the message is the user-facing contract
+        print_replay_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+    print_replay_report(report)
+    sys.exit(0)
+
+
+def _handle_research_summary() -> None:
+    """Print what the discovery research tables hold, then exit.
+
+    Composition only: reads the research database read-only (never creates,
+    migrates or writes it), classifies destinations by hiring platform
+    through the ATS descriptors' ``hosts`` lists so a platform counts once
+    however it names its tenants (the ATS-host confound), and hands the
+    summary to the CLI adapter to render. Does not start a session.
+    """
+    from auto_apply.adapters.primary.cli.research_summary import (
+        print_discovery_summary,
+        print_no_research_data,
+        print_research_read_error,
+    )
+    from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
+    from auto_apply.adapters.secondary.research.discovery_reader import (
+        read_discovery_rows,
+    )
+    from auto_apply.domain.config import RESEARCH_DB_PATH
+    from auto_apply.domain.services.discovery_taxonomy import summarize_discovery
+
+    try:
+        rows = read_discovery_rows(RESEARCH_DB_PATH)
+    except FileNotFoundError:
+        print_no_research_data()
+        sys.exit(0)
+    except Exception as exc:
+        print_research_read_error(exc)
+        sys.exit(1)
+
+    registry = ATSRegistry()
+    classifier = "; ".join(
+        f"{d.name}={','.join(d.hosts)}" for d in registry.all_descriptors() if d.hosts
+    ) or "none (no ATS descriptors loaded)"
+    print_discovery_summary(
+        summarize_discovery(
+            rows.pages,
+            rows.cards,
+            rows.candidates,
+            platform_for_host=registry.platform_for_host,
+            classifier=classifier,
+        )
+    )
+    sys.exit(0)
+
+
+def _handle_research() -> None:
+    """Run the interactive research-consent screen and exit.
+
+    Composition only, mirroring --label and --research-summary: every print
+    and every input lives in the CLI adapter, so this file's pinned
+    print-site count does not move. The screen works with no profile and no
+    session — consent is device-scoped and pre-profile by design.
+    """
+    from auto_apply.adapters.primary.cli.research_consent_screen import (  # noqa: PLC0415
+        run,
+    )
+
+    sys.exit(run())
+
+
+def _handle_verify_research(args) -> None:
+    """Verify a research export bundle offline and exit (item 10, P6).
+
+    Composition only, mirroring --label: every print lives in the CLI
+    adapter, so this file's pinned print-site count does not move.
+    """
+    from auto_apply.adapters.primary.cli.research_verify import (  # noqa: PLC0415
+        run_verify_research,
+    )
+
+    sys.exit(run_verify_research(Path(args.verify_research).expanduser()))
+
+
+def _handle_label() -> None:
+    """Run the labelling tool (item 5), then exit.
+
+    Composition only: labels live in USER_DATA_DIR/annotations as
+    append-only JSON Lines; the block-pages study reads the pages AA saved
+    in USER_DATA_DIR/detector_samples. Starts no session, opens no browser
+    automation — only the person's own browser, on a safe copy.
+    """
+    from auto_apply.adapters.primary.cli.labeller import CliLabeller
+    from auto_apply.adapters.secondary.annotation.detector_sample_source import (
+        DetectorSampleSource,
+    )
+    from auto_apply.adapters.secondary.annotation.jsonl_store import (
+        JsonlAnnotationStore,
+    )
+    from auto_apply.application.services.labelling import LabellingService
+    from auto_apply.domain.config import USER_DATA_DIR
+    from auto_apply.domain.services.annotation_studies import STUDIES
+
+    annotations_dir = USER_DATA_DIR / "annotations"
+    service = LabellingService(
+        studies=STUDIES,
+        store=JsonlAnnotationStore(annotations_dir),
+        sources=(
+            DetectorSampleSource(
+                samples_dir=USER_DATA_DIR / "detector_samples",
+                view_dir=annotations_dir / "_view",
+            ),
+        ),
+    )
+    sys.exit(CliLabeller(service).run())
 
 
 def _handle_encrypt_profile(profile_repo) -> None:
@@ -516,9 +669,72 @@ def main() -> None:
     )
     parser.add_argument(
         "--export-format",
-        choices=["csv", "json", "parquet"],
+        choices=["csv", "ndjson", "parquet"],
         default="csv",
-        help="Output format for --export-research (default: csv).",
+        help=(
+            "Output format for --export-research: csv (default), ndjson, or "
+            "parquet (requires the optional pyarrow dependency; degrades to "
+            "csv without it)."
+        ),
+    )
+    parser.add_argument(
+        "--research-summary",
+        action="store_true",
+        help=(
+            "Print what the discovery research tables hold (pages, cards, "
+            "candidates, destinations by hiring platform) and exit. Reads "
+            "the research database read-only; does not start a session."
+        ),
+    )
+    parser.add_argument(
+        "--research",
+        action="store_true",
+        help=(
+            "Open the interactive research screen: see whether research is "
+            "on, read the consent text, agree, withdraw (optionally "
+            "deleting collected data), turn page copies on or off, and "
+            "export research data. Exits when you leave the screen; starts "
+            "no session and needs no profile."
+        ),
+    )
+    parser.add_argument(
+        "--replay",
+        metavar="CORPUS",
+        default=None,
+        help=(
+            "Re-run text extraction and the research detectors over a folder "
+            "of kept page copies (*.warc.gz) — no browser, no network, no "
+            "research key — and write replay.jsonl and manifest.json. The "
+            "same folder and AA version give the same bytes on any machine. "
+            "Exits when done; starts no session."
+        ),
+    )
+    parser.add_argument(
+        "--replay-out",
+        metavar="DIR",
+        default=None,
+        help="Where --replay writes (default: reports/replay_<corpus digest> in AA's data folder).",
+    )
+    parser.add_argument(
+        "--verify-research",
+        metavar="BUNDLE",
+        default=None,
+        help=(
+            "Verify a research export bundle folder offline — every file "
+            "hash, the bundle digest, the bundle signature and every signed "
+            "row — and exit. Needs no database, no key and no session. "
+            "Exit code 0 when the bundle is intact, 1 when it is not, 2 "
+            "when the folder is not a bundle."
+        ),
+    )
+    parser.add_argument(
+        "--label",
+        action="store_true",
+        help=(
+            "Label the pages AA saved and log the applications you make by "
+            "hand (item 5 of the research plan). Labels are saved as you go "
+            "in the annotations folder of AA's data directory."
+        ),
     )
     parser.add_argument(
         "--encrypt-profile",
@@ -569,6 +785,26 @@ def main() -> None:
     # 4. Research export mode (exits after export — no session started)
     if args.export_research:
         _handle_export_research(args)
+
+    # 4b. Research summary mode (exits after printing — no session started)
+    if args.research_summary:
+        _handle_research_summary()
+
+    # 4c. Labelling mode (exits when the person quits — no session started)
+    if args.label:
+        _handle_label()
+
+    # 4d. Research consent screen (interactive; exits when the user quits)
+    if args.research:
+        _handle_research()
+
+    # 4e. Replay (exits when done — no session started)
+    if args.replay:
+        _handle_replay(args)
+
+    # 4f. Research bundle verification (exits when done — no session started)
+    if args.verify_research:
+        _handle_verify_research(args)
 
     # 5. Profile encryption mode (exits after encryption)
     if args.encrypt_profile:

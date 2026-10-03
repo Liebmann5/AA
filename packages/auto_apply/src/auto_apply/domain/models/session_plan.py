@@ -86,7 +86,10 @@ class SessionPlan(BaseModel):
         date_range: How old results to accept ('day'/'week'/'month'/None).
         active_providers: Which discovery providers to use.
         linear_mode_platforms: Platforms forcing one-at-a-time processing.
-        research_enabled: Whether research data collection is active.
+        research_enabled: Whether research is OFFERED on this device (the
+            enable_research_collection flag, post-merge). Collection itself
+            is consent-gated; the consent service is authoritative for that,
+            and a frozen plan built before consent is read cannot carry it.
         consent_version: Version of research consent user agreed to (if any).
         behavior: All timing and behavioral parameters for this session.
         nlp_tier: Which NLP tier is available (basic/spacy/transformer).
@@ -177,6 +180,9 @@ class SessionPlan(BaseModel):
             max_results_per_query=settings.max_discovery_results_per_query,
             max_applications_per_session=settings.max_applications_per_session,
             max_applications_per_company=settings.max_applications_per_company,
+            # The offered flag, not a collection decision — see the field
+            # docstring above. Consent is answered by the consent service,
+            # which is built after this plan and cannot be folded into it.
             research_enabled=settings.enable_research_collection,
             # Preserved from prior behaviour: no config source exists, so this
             # stayed empty. The field default diverges ({'indeed','linkedin'});

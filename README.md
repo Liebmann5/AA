@@ -138,7 +138,7 @@ refuses to submit ([ADR-012](packages/auto_apply/docs/adr/012_fail_closed_submis
 AA doubles as a research instrument. With explicit opt-in consent it records
 anonymised signals about hiring-system behaviour — ghost postings, salary
 disclosure, qualification inflation, accessibility barriers — and exports them
-as NDJSON, CSV and JSON-LD suitable for Zenodo or OSF deposit.
+as signed CSV, NDJSON or Parquet bundles suitable for Zenodo or OSF deposit.
 
 Collection is off by default, consent is versioned, personal data is salted and
 hashed, and the consent dialogue is reproduced verbatim in

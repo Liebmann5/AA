@@ -10,6 +10,16 @@ url_patterns:
   - "*.oraclecloud.com/hcmUI/CandidateExperience/*/apply*"
   - "*.oraclecloud.com/hcmUI/CandidateExperience/*/job/*"
 
+# The platform's own domains (a host equal to one, or a subdomain of one).
+# Research analysis groups destinations by these, so one platform counts
+# as one destination however it names its tenants (acme.myworkdayjobs.com
+# and boards.greenhouse.io/acme are each one platform). Custom domains an
+# employer points at the platform are not listed and cannot be.
+# oraclecloud.com is deliberately NOT listed: Oracle hosts far more than
+# recruiting there, and a wrong label is invisible where a split host is not.
+hosts:
+  - "taleo.net"
+
 login_wall_signals:
   - "please sign in"
   - "log in to continue"

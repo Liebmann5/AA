@@ -29,6 +29,7 @@ hours of head‑scratching.
 | [Running Tests](running_tests.md) | How to run the test suite, what the different markers mean, and how to write new tests with the provided fixtures. |
 | [Architecture Overview](architecture_overview.md) | The hexagonal layer map, the dependency rule, the composition root, and the key design decisions that shape the codebase. |
 | [Adding an ATS Platform](adding_an_ats_platform.md) | A step‑by‑step recipe for adding a new Applicant Tracking System to the registry — a single YAML file is all you need. |
+| [Releasing](releasing.md) | The one-person release runbook: version bump, tag, attestation, Zenodo DOI. |
 
 ---
 

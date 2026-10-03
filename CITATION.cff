@@ -24,14 +24,21 @@ authors:
     given-names: Nicholas
     alias: "Liebmann5"
     email: "liebmann.nicholas1@gmail.com"
-    orcid: ""  # TODO: register at https://orcid.org/ and add it here
+    # TODO: register at https://orcid.org/ and add `orcid:` here. An empty
+    # string is INVALID CFF 1.2.0 (it fails the ORCID pattern), so the key
+    # stays absent until it has a value. Measured with cffconvert 2026-10-02.
 version: "0.1.0"
-date-released: "2026-09-19"
+# date-released is set in the version-bump commit at release time — see
+# docs/developer_guide/releasing.md. The 2026-09-19 date named a release
+# that does not exist and was removed.
 license: MIT
 repository-code: "https://github.com/Liebmann5/AA"
 url: "https://github.com/Liebmann5/AA"
 repository: "https://codeberg.org/Liebmann5/AutoApply"  # mirror
-doi: ""  # TODO: add after Zenodo deposit
+# The all-versions (concept) DOI goes here as doi: "10.5281/zenodo.<n>" once
+# the first Zenodo deposit exists. An empty string fails CFF 1.2.0's DOI
+# pattern, so the key stays absent until then — see
+# docs/developer_guide/releasing.md.
 keywords:
   - job application automation
   - web interface comprehension
@@ -56,7 +63,8 @@ abstract: >
   identify regions, and structural hashing deliberately ignores CSS class names.
   AA implements a hexagonal (ports and adapters) architecture with seeded,
   reproducible execution, and exports consent-gated, anonymised observations as
-  NDJSON, CSV and JSON-LD for archival deposit. AA is pre-alpha software; at the
+  signed, verifiable CSV and NDJSON bundles, with Apache Parquet available as
+  an optional dependency, for archival deposit. AA is pre-alpha software; at the
   date of this record it has not yet completed an end-to-end application
   submission, and that result is published rather than withheld.
 preferred-citation:

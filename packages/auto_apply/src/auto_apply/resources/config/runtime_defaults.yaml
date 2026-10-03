@@ -69,8 +69,11 @@ settle_max_s: 0.8                  # ↓ 1.5 → 0.8
 # ─────────────────────────────────────────────────────────────────────────────
 # Features
 # ─────────────────────────────────────────────────────────────────────────────
-# [IRB] Research data collection is opt-in only; must never be true by default.
-enable_research_collection: false
+# [IRB] Research COLLECTION is opt-in only and stays off until the user grants
+# consent through the consent dialog (recorded in research_consent.db). This
+# flag only controls whether research is OFFERED on this device at all; an
+# admin policy can force it off (PolicyEnforcement flips it to false).
+enable_research_collection: true
 enable_company_batching: true
 company_batch_threshold: 3
 # "live_browser" | "static_fetch" | "auto"
@@ -83,6 +86,11 @@ perception_strategy: math
 # ─────────────────────────────────────────────────────────────────────────────
 store_session_logs: true
 log_retention_days: 30
+# Cleaned job-page copies (research, separate opt-in; see
+# docs/RESEARCH_CONSENT_DIALOG.md) are deleted this many days after capture,
+# and the oldest go first once all copies together pass page_copy_max_mb.
+page_copy_keep_days: 90
+page_copy_max_mb: 200
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Vetting workflow tuning

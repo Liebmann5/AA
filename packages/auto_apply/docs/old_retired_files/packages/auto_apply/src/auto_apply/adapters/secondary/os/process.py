@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/os/process.py
 """Provides a fail-safe registry for managing child processes.
 
 This module tracks processes created by the application (Browsers, Subprocesses).

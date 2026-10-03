@@ -60,3 +60,17 @@ class PerceptionPort(ABC):
             The page's visible text, or an empty string when no page has been
             loaded or text cannot be extracted. Never raises.
         """
+
+    def get_page_html(self) -> str:
+        """Returns the current page's rendered HTML (the browser's page source).
+
+        Used only to keep a cleaned page copy (item 6, research page copies),
+        which happens only when the user has turned page copies on. Not
+        abstract: a perception mode that has no page source returns "" and
+        simply produces no copy.
+
+        Returns:
+            The page source as the browser holds it after load, or an empty
+            string when it cannot be read. Never raises.
+        """
+        return ""

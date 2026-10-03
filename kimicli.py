@@ -1,24 +1,39 @@
 #!/usr/bin/env python3
 r"""
-kimicli.py - Kimi K3 workbench (v2)
+kimicli.py - Kimi K3 workbench (v3)
 
 Design rules, in priority order:
 
   1. YOUR CODEBASE IS NEVER TOUCHED BY THE MODEL.
-     Kimi has no tools and no filesystem access. Every file it proposes is
-     written to .kimi_out/<session>/proposed/ ONLY. Nothing reaches the repo
-     until you run --apply-fixes yourself, and that applier is two-pass
-     all-or-nothing with backups and a working --undo.
+     Kimi has no tools and no filesystem access. Every change it proposes is
+     staged under .kimi_out/<session>/proposed/ ONLY. Nothing reaches the repo
+     until you run --apply-fixes yourself.
 
-  2. NOTHING IS LOST TO THE TERMINAL.
-     Every token is appended to transcript.md as it arrives. Ctrl+C, a crash,
-     or a 10,000-line answer scrolling past your VSCode buffer costs you
-     nothing. The file is the record; the terminal is just a preview.
+  2. SMALL, EXACT EDITS - NOT WHOLE FILES.
+     Kimi sends '### EDIT:' search/replace blocks for existing files (the same
+     old/new string-replacement semantics as Kimi's own StrReplaceFile tool),
+     and '### FILE:' only for new files. An edit applies only where its SEARCH
+     text occurs EXACTLY ONCE in the file as it is on disk NOW; anything else
+     rejects the whole batch. Line endings, BOM and every untouched byte are
+     preserved exactly.
 
-  3. NO SURPRISE BILLS.
-     Streaming (so no 900s gateway timeout), no SDK auto-retries (a retried
-     600k-token prompt is a second 600k-token prompt), a preflight that prints
-     the cost before sending, a spend cap, and a running ledger.
+  3. ALL OR NOTHING, VERIFIED, UNDOABLE.
+     Pass 1 resolves every block against the live tree and runs the checks
+     (syntax, undefined names, cross-file imports, paths). Pass 2 backs up and
+     VERIFIES every original, writes the manifest BEFORE touching the repo,
+     writes each file atomically and verifies it, and rolls everything back
+     automatically if any write fails. --undo restores byte-for-byte, is
+     all-or-nothing, can be re-run safely, and never destroys anything.
+
+  4. NOTHING IS DROPPED SILENTLY.
+     Every block-shaped thing in a reply is either parsed or reported, with its
+     reply line number. A cut-off reply is detected. A failure produces a
+     ready-made repair prompt for a cheap cached --resume.
+
+  5. NOTHING IS LOST TO THE TERMINAL; NO SURPRISE BILLS.
+     Every token is appended to transcript.md as it arrives; each turn's reply
+     is also saved on its own. Streaming, no SDK auto-retries, a preflight that
+     prints the cost before sending, a spend cap, and a running ledger.
 
 Verified against the Kimi platform docs on 2026-08-05:
   - context caching is automatic; prefix must be byte-identical  -> codebase first
@@ -31,30 +46,40 @@ Verified against the Kimi platform docs on 2026-08-05:
   - K3 uses Preserved Thinking -> keep reasoning_content in history
 
 Quick start:
-    python kimicli.py --balance
-    python kimicli.py --playbook P0 --chat
-    python kimicli.py --prompt prompt_kimi.txt --request-code
+    python kimicli.py --selftest                      # prove apply/undo on THIS machine
+    python kimicli.py --prompt task.md --request-code
     python kimicli.py --apply-fixes last --dry-run
     python kimicli.py --apply-fixes last
     python kimicli.py --undo last
+    python kimicli.py --history
 """
 
 from __future__ import annotations
 
 import argparse
-import base64  # noqa: F401  (reserved: manifest payload encoding)
+import ast
+import bisect
+import contextlib
+import difflib
+import fnmatch
 import hashlib
+import io
 import json
 import logging
 import os
 import re
 import shutil
+import subprocess
+import symtable
 import sys
+import tempfile
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
 
 # --------------------------------------------------------------------------
 # Console: make Windows cp1252 consoles stop killing the run on a stray glyph.
@@ -89,6 +114,14 @@ MODEL = os.getenv("KIMI_MODEL", "kimi-k3")
 
 DEFAULT_CODEBASE = Path(os.getenv("KIMI_CODEBASE", r"D:\Downloads\AA-kimi.txt"))
 
+# AA's engineering philosophy rides along with EVERY call (Nick's standing rule,
+# 2026-10-01): every design and every change is judged against it, so the model
+# must always have it - not only when someone remembers to --attach it.
+DEFAULT_PHILOSOPHY = Path(os.getenv(
+    "KIMI_PHILOSOPHY",
+    PROJECT_ROOT / "packages" / "auto_apply" / "docs" / "ENGINEERING_PHILOSOPHY.md"))
+PHILOSOPHY_NAME = "ENGINEERING_PHILOSOPHY.md"
+
 OUT_DIR = PROJECT_ROOT / ".kimi_out"          # sessions, transcripts, staged files
 BACKUP_DIR = PROJECT_ROOT / ".kimi_backups"   # backups + manifests
 LEDGER = OUT_DIR / "ledger.jsonl"
@@ -119,6 +152,9 @@ PROTECTED = (
     "dev_data",
 )
 
+MANIFEST_VERSION = 3                  # .kimi_backups/manifest_<id>.json format
+
+
 logger = logging.getLogger("kimi")
 
 
@@ -143,10 +179,42 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+#: Chars per token, measured against the tokenizer on this repository:
+#:     item 2      est 55,533 (@3.6)   exact  40,521   ->  4.93
+#:     item 4a     est 69,665 (@3.6)   exact  51,621   ->  4.86
+#:     item 5 #1   est 44,684 (@4.9)   exact  48,771   ->  4.49
+#:     full dump   est 850,840 (@4.9)  exact 914,512   ->  4.56
+#:     item 5 #2   est 46,782 (@4.9)   exact  51,412   ->  4.46
+#: The original 3.6 erred high by about a third. 4.9, chosen from the first
+#: two samples, then erred LOW by 7-9% on the next three. Five samples in,
+#: the ratio is not drifting — it is content-dependent, clustering near 4.9
+#: for one attachment mix and near 4.5 for another, so no single constant is
+#: better than roughly +/-5% on both.
+#:
+#: The constant therefore does not chase the mean. est = chars / K, so a
+#: LARGER K under-counts tokens, and under-counting is the dangerous reading:
+#: EST_WINDOW_SAFETY below exists because the window guard fails only after
+#: the dump has been built and sent. 4.45 sits just below the lowest ratio
+#: measured, so the estimate is >= the exact count on every sample so far and
+#: the safety margin compounds on top of that rather than rescuing it.
+#: The preflight prints estimate-vs-exact on every call; add samples here.
+EST_CHARS_PER_TOKEN = 4.45
+
+#: The estimate also backs the context-window guard when --no-count is set,
+#: and a LOW reading is the dangerous one there: the request fails after the
+#: dump has been built and sent. A calibrated estimator is as likely to sit
+#: under the truth as over it, so the guard applies this margin explicitly
+#: rather than depending on the estimator being quietly pessimistic.
+EST_WINDOW_SAFETY = 1.35
+
+
 def est_tokens(text: str) -> int:
-    """Local estimate. Code packs denser than prose; 3.6 chars/token is a
-    closer fit for a repo dump than the usual 4.0 and errs on the high side."""
-    return int(len(text) / 3.6) if text else 0
+    """Local estimate, calibrated (see EST_CHARS_PER_TOKEN).
+
+    Used for the cost table and the spend guard. The context-window check
+    scales this by EST_WINDOW_SAFETY when no exact count is available.
+    """
+    return int(len(text) / EST_CHARS_PER_TOKEN) if text else 0
 
 
 def money(x: float) -> str:
@@ -158,18 +226,38 @@ def cost_of(prompt: int, cached: int, completion: int) -> float:
     return (cached * PRICE_IN_CACHED + fresh * PRICE_IN_FRESH + completion * PRICE_OUT) / 1e6
 
 
+def _attach_label(p: Path) -> str:
+    """The name an attachment is announced under: its repo-relative path.
+
+    The attachment name is the ONLY place the model learns where a file lives.
+    Announcing the bare basename means a model asked to emit
+    ``### EDIT: <full path>`` blocks has to guess each directory. On item 4a it
+    guessed ``tests/pins/`` for a file in ``tests/architecture/`` and the whole
+    batch was correctly rejected — six good files thrown away over a path the
+    model was never told. Falls back to the basename for a file outside the
+    project root, where no relative path exists.
+    """
+    try:
+        return p.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except (ValueError, OSError):
+        return p.name
+
+
 def read_text(p: Path) -> str:
     return p.read_text(encoding="utf-8", errors="replace")
 
 
+
 def atomic_write(path: Path, content: str, newline: str = "\n") -> None:
-    """Write via a temp file in the same directory, then replace. A crash
-    mid-write can never leave a half-written source file."""
+    """Write via a temp file in the same directory, fsync, then replace. A crash
+    mid-write can never leave a half-written file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".kimitmp{os.getpid()}")
-    with open(tmp, "w", encoding="utf-8", newline=newline) as fh:
-        fh.write(content)
-    os.replace(tmp, path)
+    data = content.replace("\n", newline) if newline != "\n" else content
+    write_bytes_atomic(path, data.encode("utf-8"))
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def confirm(question: str, default_no: bool = True) -> bool:
@@ -243,6 +331,7 @@ def filter_dump(dump: str, excludes: Sequence[str]) -> Tuple[str, str]:
     return new_dump, report
 
 
+
 # ==========================================================================
 # Session store: transcript, message history, staged files, ledger
 # ==========================================================================
@@ -288,6 +377,8 @@ class Session:
         # --resume sends the SAME key as turn 1: a different key is a
         # different cache bucket, and the prefix you already paid for misses.
         self.cache_key: Optional[str] = None
+        self.printed_stage_summary = False
+        self.load_error: Optional[str] = None
         self._load()
 
     # -- persistence -------------------------------------------------
@@ -301,7 +392,24 @@ class Session:
                 u = blob.get("usage", {})
                 self.usage = Usage(**{k: u.get(k, 0) for k in ("prompt", "cached", "completion", "calls")})
             except Exception as exc:
+                # Recorded, not just logged: resuming a session that failed to
+                # load would send the new prompt with NO codebase and NO history.
+                self.load_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("could not reload session state: %s", exc)
+
+    @staticmethod
+    def has_turns(d: Path) -> bool:
+        """True when the directory holds a session that completed at least one
+        call. --estimate-only, a declined preflight or a call that failed
+        before streaming used to leave an empty directory that 'last' then
+        picked over the real session."""
+        p = d / "messages.json"
+        if not p.is_file():
+            return False
+        try:
+            return int(json.loads(read_text(p)).get("turn", 0)) >= 1
+        except (ValueError, TypeError, AttributeError, OSError):
+            return False
 
     def save(self) -> None:
         blob = {
@@ -314,9 +422,14 @@ class Session:
         atomic_write(self.messages_path, json.dumps(blob, indent=1, ensure_ascii=False))
 
     # -- transcript --------------------------------------------------
-    def banner(self, kind: str, extra: str = "") -> None:
+    def banner(self, kind: str, extra: str = "", also_thinking: bool = False) -> None:
+        """Turn separator in transcript.md. also_thinking=True writes the same
+        separator to thinking.md, so each call's reasoning is findable by turn
+        instead of running together with the call before it."""
         line = f"\n\n{'=' * 78}\n== TURN {self.turn} - {kind}{(' - ' + extra) if extra else ''}\n{'=' * 78}\n\n"
         self._append(self.transcript, line)
+        if also_thinking:
+            self._append(self.thinking, line)
 
     def write(self, text: str, to_thinking: bool = False) -> None:
         self._append(self.thinking if to_thinking else self.transcript, text)
@@ -327,31 +440,82 @@ class Session:
             fh.write(text)
             fh.flush()
 
-    # -- staged files ------------------------------------------------
-    def stage(self, rel_path: str, content: str) -> Path:
+    def save_reply(self, turn: int, text: str) -> Path:
+        """Each turn's answer on its own, so reply line numbers mean something
+        and --apply-fixes <file> can re-read it."""
+        p = self.dir / f"reply_turn{turn}.md"
+        atomic_write(p, text)
+        return p
+
+    # -- staged changes ------------------------------------------------
+    @staticmethod
+    def _safe_rel(rel_path: str) -> str:
         cleaned = re.sub(r"[^A-Za-z0-9._/\\-]", "_", rel_path).replace("\\", "/")
         # Drop '..' and drive letters: staging must never escape the session dir.
         parts = [seg for seg in cleaned.split("/") if seg not in ("", ".", "..") and ":" not in seg]
-        safe = "/".join(parts) or "unnamed"
-        dest = self.dir / "proposed" / safe
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        return "/".join(parts) or "unnamed"
+
+    def stage(self, rel_path: str, content: str, turn: int) -> Path:
+        dest = self.dir / "proposed" / f"turn{turn}" / self._safe_rel(rel_path)
         atomic_write(dest, content)
         return dest
 
-    def record_proposals(self, proposals: List[Tuple[str, str]]) -> None:
-        index = self.dir / "proposals.json"
-        existing = json.loads(read_text(index)) if index.exists() else []
-        for path, content in proposals:
-            existing.append({
-                "turn": self.turn,
-                "path": path,
-                "sha256": sha256(content),
-                "lines": content.count("\n") + 1,
-                "staged": str(self.stage(path, content).relative_to(self.dir)),
-            })
-        atomic_write(index, json.dumps(existing, indent=1))
+    def stage_edits(self, rel_path: str, edits: List["EditBlock"], turn: int) -> Path:
+        dest = self.dir / "proposed" / f"turn{turn}" / (self._safe_rel(rel_path) + ".edits.json")
+        atomic_write(dest, json.dumps({"path": rel_path, "edits": [e.to_json() for e in edits]},
+                                      indent=1, ensure_ascii=False))
+        return dest
 
-    def ledger_entry(self, u: Dict[str, Any], effort: str, note: str = "") -> None:
+    def rows(self) -> List[Dict[str, Any]]:
+        index = self.dir / "proposals.json"
+        if not index.exists():
+            return []
+        try:
+            return json.loads(read_text(index))
+        except ValueError:
+            logger.warning("proposals.json is damaged in %s", self.dir)
+            return []
+
+    def append_rows(self, rows: List[Dict[str, Any]]) -> None:
+        atomic_write(self.dir / "proposals.json", json.dumps(self.rows() + rows, indent=1))
+
+    def read_artifact(self, row: Dict[str, Any]) -> Any:
+        """FILE row -> text; EDIT row -> List[EditBlock]; None if missing."""
+        p = self.dir / row["staged"]
+        if not p.exists():
+            return None
+        try:
+            text = p.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if row.get("kind", "file") == "edit":
+            try:
+                return [EditBlock.from_json(d) for d in json.loads(text)["edits"]]
+            except (ValueError, KeyError, TypeError):
+                return None
+        return text
+
+    def write_parse_report(self, turn: int, report: Dict[str, Any]) -> None:
+        atomic_write(self.dir / f"parse_turn{turn}.json", json.dumps(report, indent=1))
+
+    def parse_report(self, turn: int) -> Optional[Dict[str, Any]]:
+        p = self.dir / f"parse_turn{turn}.json"
+        if not p.exists():
+            return None
+        try:
+            return json.loads(read_text(p))
+        except ValueError:
+            return None
+
+    def turns_with_reports(self) -> List[int]:
+        out = []
+        for p in self.dir.glob("parse_turn*.json"):
+            m = re.match(r"parse_turn(\d+)\.json$", p.name)
+            if m:
+                out.append(int(m.group(1)))
+        return sorted(out)
+
+    def ledger_entry(self, u: Dict[str, Any], effort: str, note: str = "", estimated: bool = False) -> None:
         cached = u.get("cached_tokens") or (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
         row = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -364,48 +528,65 @@ class Session:
             "cost_usd": round(cost_of(u.get("prompt_tokens", 0), cached, u.get("completion_tokens", 0)), 5),
             "note": note,
         }
+        if estimated:
+            row["estimated"] = True
         LEDGER.parent.mkdir(parents=True, exist_ok=True)
         with open(LEDGER, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
 
 
 def resolve_session(token: str) -> Optional[Session]:
-    """'last' -> newest session; otherwise an explicit id."""
+    """'last' -> newest session that completed a call; otherwise an explicit id."""
     if token == "last":
         if not OUT_DIR.exists():
             return None
-        dirs = sorted((d for d in OUT_DIR.iterdir() if d.is_dir()), key=lambda d: d.name)
-        return Session(dirs[-1].name) if dirs else None
-    return Session(token) if (OUT_DIR / token).exists() else None
+        # Newest first, stopping at the first real one: messages.json carries
+        # the whole dump, so reading every session's would be slow.
+        for d in sorted((d for d in OUT_DIR.iterdir() if d.is_dir()),
+                        key=lambda d: d.name, reverse=True):
+            if Session.has_turns(d):
+                return Session(d.name)
+        return None
+    if not re.match(r"^[A-Za-z0-9_.-]+$", token):
+        return None
+    return Session(token) if (OUT_DIR / token).is_dir() else None
 
 
 # ==========================================================================
-# Response parsing: '### FILE: path' blocks
+# Response parsing: '### EDIT:' search/replace blocks and '### FILE:' blocks
 # ==========================================================================
+#
+# The parser is a line-by-line state machine, not a regex over the whole
+# reply. That is what lets it (a) never lose a block silently, (b) treat a
+# ``` line INSIDE an edit as content rather than a terminator, and (c) say
+# exactly which line of the reply was malformed.
+#
+# Every block-shaped thing it sees is either parsed or reported. There is no
+# third outcome.
 
-FILE_BLOCK = re.compile(
-    r"^###[ \t]*FILE:[ \t]*(?P<path>[^\n`]+?)[ \t]*\n"      # header
-    r"```[A-Za-z0-9_+-]*[ \t]*\n"                            # opening fence
-    r"(?P<body>.*?)"
-    r"^```[ \t]*$",                                          # closing fence
-    re.DOTALL | re.MULTILINE,
-)
-
-
-def parse_file_blocks(text: str) -> List[Tuple[str, str]]:
-    out: List[Tuple[str, str]] = []
-    for m in FILE_BLOCK.finditer(text):
-        path = m.group("path").strip().strip("`").strip()
-        body = m.group("body")
-        if path:
-            out.append((path, body))
-    return out
-
-
-# ==========================================================================
-# The applier: two-pass, all-or-nothing, backed up, undoable
-# ==========================================================================
-
+HEADER_RE = re.compile(
+    r"^[ ]{0,3}#{2,4}[ \t]*(?P<kind>FILE|EDIT|PATCH)[ \t]*:[ \t]*(?P<path>.+?)[ \t]*$", re.I)
+END_RE = re.compile(r"^[ ]{0,3}#{2,4}[ \t]*END[ \t]+(?:OF[ \t]+)?CHANGES[ \t]*#*[ \t]*$", re.I)
+OTHER_HEADER_RE = re.compile(
+    r"^[ ]{0,3}#{2,4}[ \t]*(?P<kind>[A-Za-z][A-Za-z _-]{1,24}?)[ \t]*:[ \t]*(?P<rest>\S.*)$")
+FENCE_RE = re.compile(r"^(?P<indent>[ ]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+SEARCH_RE = re.compile(r"^<{4,9}[ \t]*(?:SEARCH)?[ \t]*$", re.I)
+DIVIDER_RE = re.compile(r"^={4,9}[ \t]*$")
+REPLACE_RE = re.compile(r"^>{4,9}[ \t]*(?:REPLACE)?[ \t]*$", re.I)
+# Something that is TRYING to be a marker but is not one we accept (indented,
+# 3 characters, trailing junk). Reported, never guessed at.
+NEAR_MARKER_RE = re.compile(r"^[ \t]*(?:<{4,}|>{4,}|<{3}[ \t]*SEARCH\b|>{3}[ \t]*REPLACE\b)", re.I)
+UDIFF_RE = re.compile(r"^(?:diff --git |--- a/|\+\+\+ b/|@@ -\d+(?:,\d+)? \+\d+)")
+PATHLIKE_RE = re.compile(r"^(?:[\w.@+-]+[/\\])*[\w.@+-]+\.[A-Za-z0-9_]{1,10}$")
+# Block types a model might invent that mean "change the repo". Seeing one is
+# an error, because silently ignoring it is how half a change gets applied.
+CHANGE_INTENT_WORDS = {
+    "create", "update", "modify", "replace", "diff", "delete", "remove", "rename",
+    "move", "new file", "newfile", "append", "insert", "write",
+}
+# Placeholder text that stands in for code. Inside a FILE body or a REPLACE
+# side it means "the model summarised instead of writing", and applying it
+# would delete real code.
 ELISION = [
     re.compile(r"(?im)^\s*(?:#|//|/\*|<!--|--)?\s*\.{3,}\s*\(?\s*(?:rest|remainder|remaining|the rest|unchanged|existing|same)\b"),
     re.compile(r"(?im)\b(?:rest|remainder) of (?:the )?(?:file|function|class|code)\s+(?:is\s+)?(?:unchanged|the same|omitted|as before)"),
@@ -413,303 +594,2571 @@ ELISION = [
     re.compile(r"(?im)\bomitted for brevity\b"),
     re.compile(r"(?im)^\s*(?:#|//)\s*\.{3,}\s*$"),
 ]
+LOOSE_HEADER_RE = re.compile(r"^[ \t>*_#`]*(?:FILE|EDIT|PATCH)[*_`]*[ \t]*:[ \t]*\S", re.I)
+# A change header with its colon missing ("### FILE pkg/x.py"). Every other
+# header regex requires the colon, so without this the header matched nothing
+# and its fenced body was skipped as prose - a new file silently dropped while
+# the dry run said "PASS 1 clean" (T-1, measured on 4a62556).
+NOCOLON_HEADER_RE = re.compile(
+    r"^[ ]{0,3}#{2,4}[ \t]*(?P<kind>FILE|EDIT|PATCH|CREATE|UPDATE|MODIFY|DELETE|REMOVE|RENAME|MOVE)"
+    r"[ \t]+(?P<rest>\S.*)$", re.I)
+# Change intents that carry no body by nature: a bare header IS the request.
+BODILESS_INTENT_WORDS = {"delete", "remove", "rename", "move"}
+MARKDOWNISH = {".md", ".markdown", ".rst", ".txt", ".mdx"}
+
+
+@dataclass
+class EditBlock:
+    search: str          # literal text, LF line endings, ends with '\n' unless empty
+    replace: str         # literal text, LF line endings, ends with '\n' unless empty
+    line: int            # 1-based line of the SEARCH marker in the reply
+
+    def to_json(self) -> Dict[str, Any]:
+        return {"search": self.search, "replace": self.replace, "line": self.line}
+
+    @staticmethod
+    def from_json(d: Dict[str, Any]) -> "EditBlock":
+        return EditBlock(search=d["search"], replace=d["replace"], line=int(d.get("line", 0)))
+
+
+@dataclass
+class ParsedBlock:
+    kind: str                         # "edit" | "file"
+    path: str                         # as the model wrote it (cleaned of wrappers)
+    line: int                         # reply line of the header (or of the block)
+    edit: Optional[EditBlock] = None
+    content: Optional[str] = None
+    style: str = "header"             # "header" | "aider"
+
+
+@dataclass
+class ParseProblem:
+    line: int
+    message: str
+    path: Optional[str] = None        # raw path the problem belongs to, when known
+    severity: str = "error"           # "error" blocks applying; "warning" does not
+
+
+@dataclass
+class ParseResult:
+    blocks: List[ParsedBlock] = field(default_factory=list)
+    problems: List[ParseProblem] = field(default_factory=list)
+    end_marker: bool = False
+    blocks_after_end: int = 0
+    announced: List[Tuple[int, str, str]] = field(default_factory=list)   # (line, path, kind)
+
+    @property
+    def errors(self) -> List[ParseProblem]:
+        return [p for p in self.problems if p.severity == "error"]
+
+    @property
+    def warnings(self) -> List[ParseProblem]:
+        return [p for p in self.problems if p.severity != "error"]
+
+
+# The up-front file list. Bullets, numbers, and markdown TABLE rows
+# ("| `pkg/x.py` | EDIT | why |") - a table used to match nothing, so an
+# announced-but-never-emitted file in a table went unreported.
+ANNOUNCE_RE = re.compile(
+    r"^[ \t]*(?:[-*+|]|\d+[.)])?[ \t]*[`*]*(?P<path>[\w.@+-]+(?:[/\\][\w.@+-]+)*\.[A-Za-z0-9_]{1,10})[`*]*"
+    r"[ \t]*(?:[-\u2013\u2014:|>(\[]|\u2192)+[ \t]*[`*]*(?P<kind>EDIT|FILE)\b", re.I)
+
+
+def _join_lines(lines: List[str]) -> str:
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
+def _clean_header_path(raw: str) -> str:
+    """'`a/b.py` (adds X)' -> 'a/b.py'. Only strips a trailing description
+    when it is unmistakably one; a path is never guessed."""
+    s = raw.strip()
+    m = re.match(r"^(`+|\*\*|\*|\"|')(.+?)\1(.*)$", s)
+    if m:
+        s = m.group(2) + m.group(3)
+    s = s.strip().rstrip(":").strip()
+    if " " in s:
+        first, rest = s.split(" ", 1)
+        if rest.lstrip()[:1] in ("(", "-", "\u2014", "\u2013", "#", "[") and PATHLIKE_RE.match(first.strip("`*")):
+            s = first
+    return s.strip("`*").strip()
+
+
+def parse_changes(text: str) -> ParseResult:
+    """Parse a model reply into change blocks. Never drops anything silently."""
+    res = ParseResult()
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    n = len(lines)
+    i = 0
+    section_path: Optional[str] = None      # set while inside an EDIT section
+    section_style = "header"
+    section_blocks = 0
+    section_line = 0
+    section_kind = "EDIT"                   # the header word the model wrote
+
+    def close_section() -> None:
+        nonlocal section_path, section_blocks
+        if section_path is not None and section_blocks == 0:
+            res.problems.append(ParseProblem(
+                section_line, f"'### {section_kind}: {section_path}' has no SEARCH/REPLACE block under it",
+                path=section_path))
+        section_path = None
+        section_blocks = 0
+
+    def after_end() -> bool:
+        return res.end_marker
+
+    def parse_edit(start: int, path: str, style: str) -> int:
+        """lines[start] is a SEARCH marker. Returns the index after the block."""
+        j = start + 1
+        search: List[str] = []
+        while j < n:
+            ln = lines[j]
+            if DIVIDER_RE.match(ln):
+                break
+            if SEARCH_RE.match(ln):
+                res.problems.append(ParseProblem(
+                    j + 1, "a second SEARCH marker appeared before the '=======' divider "
+                           "(the previous block was never finished)", path=path))
+                return j
+            if REPLACE_RE.match(ln):
+                res.problems.append(ParseProblem(
+                    j + 1, "REPLACE marker found before the '=======' divider", path=path))
+                return j + 1
+            search.append(ln)
+            j += 1
+        if j >= n:
+            res.problems.append(ParseProblem(
+                start + 1, "edit block never reached its '=======' divider - the reply was "
+                           "cut off here (truncated output)", path=path))
+            return n
+        j += 1
+        replace: List[str] = []
+        while j < n:
+            ln = lines[j]
+            if REPLACE_RE.match(ln):
+                break
+            if DIVIDER_RE.match(ln):
+                res.problems.append(ParseProblem(
+                    j + 1, "a second '=======' divider inside one block - ambiguous. This "
+                           "happens when the file itself contains a '=======' line; that region "
+                           "must be sent as a FILE block instead", path=path))
+                k = j + 1
+                while k < n and not REPLACE_RE.match(lines[k]):
+                    k += 1
+                return min(k + 1, n)
+            if SEARCH_RE.match(ln):
+                res.problems.append(ParseProblem(
+                    j + 1, "a new SEARCH marker appeared before '>>>>>>> REPLACE' closed the "
+                           "previous block", path=path))
+                return j
+            replace.append(ln)
+            j += 1
+        if j >= n:
+            res.problems.append(ParseProblem(
+                start + 1, "edit block never reached '>>>>>>> REPLACE' - the reply was cut off "
+                           "here (truncated output)", path=path))
+            return n
+        blk = EditBlock(search=_join_lines(search), replace=_join_lines(replace), line=start + 1)
+        if after_end():
+            res.blocks_after_end += 1
+        else:
+            res.blocks.append(ParsedBlock("edit", path, start + 1, edit=blk, style=style))
+        return j + 1
+
+    def parse_file(hdr: int, path: str) -> int:
+        j = hdr + 1
+        while j < n and not lines[j].strip() and j - hdr <= 3:
+            j += 1
+        m = FENCE_RE.match(lines[j]) if j < n else None
+        if not m:
+            # The commonest shape of this failure is a body that IS there with
+            # only its opening fence missing. When the span up to the next change
+            # header (or END) holds exactly one fence line, say so precisely: the
+            # fix is one inserted line, which is free, and a repair turn is not.
+            k, fences = hdr + 1, []
+            while k < n and not (HEADER_RE.match(lines[k]) or END_RE.match(lines[k])):
+                if FENCE_RE.match(lines[k]):
+                    fences.append(k)
+                k += 1
+            hint = ""
+            if len(fences) == 1 and fences[0] > hdr + 1:
+                hint = (f" - its body looks present but unfenced (reply lines {hdr + 2}-"
+                        f"{fences[0]}, closed by the fence on line {fences[0] + 1}): the "
+                        f"OPENING fence is missing. Free fix: in a copy of the reply, insert "
+                        f"a line like ```python directly under line {hdr + 1}, then run "
+                        f"--apply-fixes on that copy")
+            res.problems.append(ParseProblem(
+                hdr + 1, f"'### FILE: {path}' is not followed by a fenced code block" + hint,
+                path=path))
+            return hdr + 1
+        ch, width = m.group("fence")[0], len(m.group("fence"))
+        j += 1
+        body: List[str] = []
+        closed = False
+        while j < n:
+            fm = FENCE_RE.match(lines[j])
+            if (fm and fm.group("fence")[0] == ch and len(fm.group("fence")) >= width
+                    and not fm.group("info").strip()):
+                closed = True
+                break
+            body.append(lines[j])
+            j += 1
+        if not closed:
+            res.problems.append(ParseProblem(
+                hdr + 1, f"FILE block for {path} has no closing fence - the reply was cut off "
+                         f"inside it (truncated output). Nothing from it is staged.", path=path))
+            return n
+        # Early-close check: a markdown file that contains its own ``` lines,
+        # fenced with only ```, closes at the file's first inner fence. The
+        # rest of the file then trails the block as "prose" with more fences.
+        k = j + 1
+        while k < n and not (HEADER_RE.match(lines[k]) or END_RE.match(lines[k])
+                             or SEARCH_RE.match(lines[k])):
+            fm = FENCE_RE.match(lines[k])
+            if fm and fm.group("fence")[0] == ch:
+                suffix = Path(path).suffix.lower()
+                res.problems.append(ParseProblem(
+                    hdr + 1,
+                    f"FILE block for {path} may have been cut short at a ``` line inside the "
+                    f"file (more fences follow it at reply line {k + 1}). A file that contains "
+                    f"``` must be fenced with a LONGER run, e.g. ````",
+                    path=path, severity="error" if suffix in MARKDOWNISH else "warning"))
+                break
+            k += 1
+        if after_end():
+            res.blocks_after_end += 1
+        else:
+            res.blocks.append(ParsedBlock("file", path, hdr + 1, content=_join_lines(body)))
+        return j + 1
+
+    def aider_path_before(idx: int) -> Optional[str]:
+        """Aider style: the path on its own line just above the block
+        (optionally with a fence line in between). Exact path tokens only."""
+        k = idx - 1
+        while k >= 0 and not lines[k].strip():
+            k -= 1
+        if k >= 0 and FENCE_RE.match(lines[k]):
+            k -= 1
+            while k >= 0 and not lines[k].strip():
+                k -= 1
+        if k < 0:
+            return None
+        cand = lines[k].strip().strip("`*").strip()
+        return cand if PATHLIKE_RE.match(cand) else None
+
+    while i < n:
+        ln = lines[i]
+
+        hm = HEADER_RE.match(ln)
+        if hm:
+            close_section()
+            kind = hm.group("kind").lower()
+            path = _clean_header_path(hm.group("path"))
+            if kind == "file":
+                i = parse_file(i, path)
+                continue
+            section_path, section_style, section_blocks, section_line = path, "header", 0, i + 1
+            section_kind = kind.upper()
+            i += 1
+            continue
+
+        if END_RE.match(ln):
+            close_section()
+            res.end_marker = True
+            i += 1
+            continue
+
+        if SEARCH_RE.match(ln):
+            owner: Optional[str] = section_path
+            style = section_style
+            if owner is None:
+                owner = aider_path_before(i)
+                style = "aider"
+                if owner is None:
+                    res.problems.append(ParseProblem(
+                        i + 1, "SEARCH/REPLACE block with no '### EDIT: <path>' header above it - "
+                               "cannot tell which file it belongs to"))
+                    # consume it so its content is not re-scanned as top-level text
+                    j = i + 1
+                    while j < n and not REPLACE_RE.match(lines[j]):
+                        j += 1
+                    i = j + 1
+                    continue
+                section_path, section_style, section_blocks, section_line = owner, "aider", 0, i + 1
+            i = parse_edit(i, owner, style)
+            section_blocks += 1
+            continue
+
+        if section_path is not None:
+            stripped = ln.strip()
+            if (not stripped or FENCE_RE.match(ln)
+                    or stripped.strip("`*").strip() == section_path):
+                # A fence here is usually an EDIT's wrapping - but a unified diff
+                # opened right after an EDIT block also starts with one, and the
+                # top-level udiff check below never sees a fence this branch ate.
+                if (FENCE_RE.match(ln) and i + 1 < n and UDIFF_RE.match(lines[i + 1])
+                        and not after_end()):
+                    res.problems.append(ParseProblem(
+                        i + 1, "the reply contains a unified diff; kimicli does not apply diffs. "
+                               "If it was meant as a change, ask for EDIT blocks", severity="warning"))
+                i += 1
+                continue
+            if NEAR_MARKER_RE.match(ln) or DIVIDER_RE.match(stripped):
+                res.problems.append(ParseProblem(
+                    i + 1, f"malformed edit marker {stripped[:40]!r} - markers must start at "
+                           f"column 0 and be exactly '<<<<<<< SEARCH', '=======', "
+                           f"'>>>>>>> REPLACE'", path=section_path))
+                i += 1
+                continue
+            close_section()      # prose ends an EDIT section
+            continue
+
+        if NEAR_MARKER_RE.match(ln):
+            res.problems.append(ParseProblem(
+                i + 1, f"malformed edit marker {ln.strip()[:40]!r} outside any EDIT section"))
+            i += 1
+            continue
+
+        if LOOSE_HEADER_RE.match(ln) and not after_end():
+            nxt = [x for x in lines[i + 1:i + 4] if x.strip()][:1]
+            if nxt and (FENCE_RE.match(nxt[0]) or SEARCH_RE.match(nxt[0])):
+                res.problems.append(ParseProblem(
+                    i + 1, f"change header not recognised: {ln.strip()[:60]!r} - it must be "
+                           f"'### FILE: <path>' or '### EDIT: <path>' on its own line"))
+                i += 1
+                continue
+
+        nm = NOCOLON_HEADER_RE.match(ln)
+        if nm and not after_end():
+            word = nm.group("kind").lower()
+            first = nm.group("rest").split()[0].strip("`*")
+            nxt = [x for x in lines[i + 1:i + 4] if x.strip()][:1]
+            block_follows = bool(nxt) and bool(FENCE_RE.match(nxt[0]) or SEARCH_RE.match(nxt[0]))
+            if PATHLIKE_RE.match(first) and (block_follows or word in BODILESS_INTENT_WORDS):
+                res.problems.append(ParseProblem(
+                    i + 1, f"change header not recognised: {ln.strip()[:60]!r} - the colon is "
+                           f"missing; it must be '### FILE: <path>' or '### EDIT: <path>'"
+                           + (" (and kimicli never deletes, renames or moves files - do that "
+                              "by hand with retire.py)" if word in BODILESS_INTENT_WORDS else ""),
+                    path=first))
+                i += 1
+                continue
+
+        om = OTHER_HEADER_RE.match(ln)
+        if om:
+            word = om.group("kind").strip().lower()
+            nxt = [x for x in lines[i + 1:i + 4] if x.strip()][:2]
+            block_shaped = any(FENCE_RE.match(x) or SEARCH_RE.match(x) for x in nxt)
+            first_tok = (om.group("rest").split() or [""])[0].strip("`* ")
+            bodiless = (word in BODILESS_INTENT_WORDS and bool(PATHLIKE_RE.match(first_tok)))
+            if (block_shaped or bodiless) and not after_end() and (
+                    word in CHANGE_INTENT_WORDS or PATHLIKE_RE.match(om.group("rest").strip("`* "))):
+                hint = ("kimicli never deletes, renames or moves files - do that step by hand "
+                        "(retire.py), then continue" if word in ("delete", "remove", "rename", "move")
+                        else "only '### EDIT:' and '### FILE:' blocks are applied")
+                res.problems.append(ParseProblem(
+                    i + 1, f"unsupported block type '### {om.group('kind').strip()}:' - {hint}",
+                    path=om.group("rest").strip("`* ")))
+            i += 1
+            continue
+
+        fm = FENCE_RE.match(ln)
+        if fm and i + 1 < n and UDIFF_RE.match(lines[i + 1]) and not after_end():
+            res.problems.append(ParseProblem(
+                i + 1, "the reply contains a unified diff; kimicli does not apply diffs. If it "
+                       "was meant as a change, ask for EDIT blocks", severity="warning"))
+        i += 1
+
+    close_section()
+    first = min((b.line for b in res.blocks), default=n + 1)
+    for k in range(0, min(first - 1, n)):
+        am = ANNOUNCE_RE.match(lines[k])
+        if am and not HEADER_RE.match(lines[k]):
+            res.announced.append((k + 1, am.group("path"), am.group("kind").lower()))
+    if res.blocks_after_end:
+        res.problems.append(ParseProblem(
+            0, f"{res.blocks_after_end} change block(s) after '### END CHANGES' were NOT staged "
+               f"(that part of a reply is for discussion, e.g. BETTER IDEA code)", severity="warning"))
+    return res
+
+
+# ==========================================================================
+# Paths: normalisation, safety, and a one-walk index of the repo
+# ==========================================================================
+
+class PathRefused(Exception):
+    pass
+
+
+_WIN_RESERVED = re.compile(r"^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9\u00b9\u00b2\u00b3]|"
+                           r"LPT[0-9\u00b9\u00b2\u00b3])(?:\..*)?$", re.I)
+_SHORT_NAME = re.compile(r"~\d")
+_BAD_WIN_CHARS = set('<>|?*"')
+PRUNE_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules", "__pycache__",
+              ".kimi_out", ".kimi_backups", ".ds_backups", ".mypy_cache", ".pytest_cache",
+              ".ruff_cache", ".tox", ".nox", ".idea", ".vscode", ".eggs"}
+_PROTECTED_CF = {p.casefold() for p in PROTECTED}
+
+
+def normalize_rel(raw: str, root: Path) -> str:
+    """Model-written path -> clean repo-relative 'a/b/c.py', or PathRefused.
+    Deterministic: nothing here consults the filesystem except the one
+    repo-name check below."""
+    s = raw.strip().strip("`'\"*").strip()
+    if not s:
+        raise PathRefused("empty path")
+    if any(ord(c) < 32 for c in s):
+        raise PathRefused("control character in path")
+    s = s.replace("\\", "/")
+    if s.startswith("//"):
+        raise PathRefused("network (UNC) path refused - use a repo-relative path")
+    if re.match(r"^[A-Za-z]:", s):
+        raise PathRefused("drive-qualified path refused - use a repo-relative path")
+    while s.startswith("./"):
+        s = s[2:]
+    s = s.lstrip("/")
+    parts = [p for p in s.split("/") if p not in ("", ".")]
+    if not parts:
+        raise PathRefused("path has no file name")
+    for p in parts:
+        if p == "..":
+            raise PathRefused("'..' is not allowed in a path")
+        if ":" in p:
+            raise PathRefused(f"':' in {p!r} refused (would write an NTFS alternate data stream)")
+        if p != p.rstrip(" ."):
+            raise PathRefused(f"{p!r} ends with a dot or space (Windows silently aliases those)")
+        if _WIN_RESERVED.match(p):
+            raise PathRefused(f"{p!r} is a reserved Windows device name")
+        if _SHORT_NAME.search(p):
+            raise PathRefused(f"{p!r} looks like a Windows 8.3 short name (can alias another file)")
+        if any(c in _BAD_WIN_CHARS for c in p):
+            raise PathRefused(f"{p!r} contains a character Windows does not allow in file names")
+    # The repo dump labels files 'AA/packages/...' (the GitHub repo name),
+    # whatever your local folder is called. Strip a leading folder ONLY when it
+    # does not exist here AND it is either named like this folder or followed
+    # by a folder that does exist at the top of the repo. Never otherwise.
+    if (len(parts) > 2 and not (root / parts[0]).is_dir()
+            and (parts[0].casefold() == root.name.casefold() or (root / parts[1]).is_dir())):
+        parts = parts[1:]
+    elif len(parts) == 2 and parts[0].casefold() == root.name.casefold() and not (root / parts[0]).is_dir():
+        parts = parts[1:]
+    return "/".join(parts)
+
+
+def is_protected_rel(rel: str) -> bool:
+    return any(part.casefold() in _PROTECTED_CF for part in rel.split("/"))
+
+
+def safe_target(root: Path, rel: str) -> Path:
+    """Absolute target for a normalised rel path. Refuses links and escapes."""
+    root_res = root.resolve()
+    cur = root
+    for part in rel.split("/"):
+        cur = cur / part
+        if cur.is_symlink():
+            raise PathRefused(f"{cur.relative_to(root).as_posix()!r} is a symbolic link; "
+                              f"kimicli never writes through links")
+        isjunction = getattr(os.path, "isjunction", None)
+        if isjunction is not None and isjunction(cur):
+            raise PathRefused(f"{cur.relative_to(root).as_posix()!r} is a junction; refused")
+        if not cur.exists():
+            break
+    target = root.joinpath(*rel.split("/"))
+    try:
+        target.resolve().relative_to(root_res)
+    except (ValueError, OSError):
+        raise PathRefused("path resolves outside the project root")
+    return target
+
+
+def canonical_case(root: Path, rel: str) -> str:
+    """On a case-insensitive filesystem (Windows), 'PKG/A.py' opens pkg/a.py.
+    Return the on-disk spelling so a write never renames the file. On a
+    case-sensitive filesystem a wrong-case path simply does not exist, and is
+    returned unchanged - never re-routed."""
+    if not root.joinpath(*rel.split("/")).exists():
+        return rel
+    out: List[str] = []
+    cur = root
+    for part in rel.split("/"):
+        try:
+            names = [n for n in os.listdir(cur) if n.casefold() == part.casefold()]
+        except OSError:
+            names = []
+        actual = part if part in names or len(names) != 1 else names[0]
+        out.append(actual)
+        cur = cur / actual
+    return "/".join(out)
+
+
+class FileIndex:
+    """Every file under the root, walked once, skipping venvs/caches/.git."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.rel: List[str] = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in PRUNE_DIRS and not d.endswith(".egg-info")]
+            base = Path(dirpath).relative_to(root).as_posix()
+            for f in filenames:
+                rel = f if base == "." else f"{base}/{f}"
+                # Protected files (retired code, personal data, the tools
+                # themselves) are never edit targets or import sources.
+                if not is_protected_rel(rel):
+                    self.rel.append(rel)
+        self._cf = [r.casefold() for r in self.rel]
+        self._set = set(self.rel)
+
+    def suffix_matches(self, rel: str) -> List[str]:
+        """Files whose path ENDS WITH rel, component-aligned, excluding rel itself."""
+        want = "/" + rel.casefold()
+        return [r for r, c in zip(self.rel, self._cf) if c.endswith(want)]
+
+    def basename_matches(self, name: str) -> List[str]:
+        n = name.casefold()
+        return [r for r, c in zip(self.rel, self._cf) if c.rsplit("/", 1)[-1] == n]
+
+    def module_file(self, dotted: str) -> Optional[str]:
+        """'auto_apply.domain.x' -> the unique repo file for it, else None.
+        The file must sit at an import ROOT: the folder holding the first
+        package name must not itself be a package. Otherwise 'types' would
+        resolve to auto_apply/domain/types.py and shadow the stdlib."""
+        if not dotted:
+            return None
+        tail = dotted.replace(".", "/")
+        hits = self.suffix_matches(tail + ".py") + self.suffix_matches(tail + "/__init__.py")
+        hits += [c for c in (tail + ".py", tail + "/__init__.py") if c in self._set]
+        depth = dotted.count(".") + 1
+        rooted = []
+        for h in sorted(set(hits)):
+            parts = h.split("/")
+            if parts[-1] == "__init__.py":
+                parts = parts[:-1]
+            else:
+                parts[-1] = parts[-1][:-3]
+            container = "/".join(parts[:len(parts) - depth])
+            init = (container + "/__init__.py") if container else "__init__.py"
+            if init not in self._set:
+                rooted.append(h)
+        return rooted[0] if len(rooted) == 1 else None
+
+
+# ==========================================================================
+# Bytes-exact text handling
+# ==========================================================================
+
+UTF8_BOM = b"\xef\xbb\xbf"
+
+
+class NotText(Exception):
+    pass
+
+
+def decode_strict(raw: bytes) -> Tuple[str, bool]:
+    """(text, had_bom). Refuses anything that would not round-trip exactly:
+    rewriting a file decoded with errors='replace' destroys every byte that
+    was not UTF-8, anywhere in the file."""
+    bom = raw.startswith(UTF8_BOM)
+    body = raw[3:] if bom else raw
+    if b"\x00" in body:
+        raise NotText("contains NUL bytes (binary file)")
+    try:
+        return body.decode("utf-8"), bom
+    except UnicodeDecodeError as exc:
+        raise NotText(f"is not valid UTF-8 (first bad byte at offset {exc.start}); editing it "
+                      f"would corrupt it")
+
+
+def encode_text(text: str, bom: bool) -> bytes:
+    return (UTF8_BOM if bom else b"") + text.encode("utf-8")
+
+
+def dominant_eol(text: str) -> str:
+    crlf = text.count("\r\n")
+    return "\r\n" if crlf and crlf > text.count("\n") - crlf else "\n"
+
+
+def normalise_for_compare(s: str) -> str:
+    return "\n".join(ln.rstrip() for ln in s.replace("\r\n", "\n").replace("\r", "\n").split("\n")).strip("\n")
+
+
+# ==========================================================================
+# The edit engine: exact, unique, line-ending-preserving search/replace
+# ==========================================================================
+
+@dataclass
+class EditOutcome:
+    index: int                    # 1-based position within the file's blocks
+    status: str                   # "applied" | "have" | "failed"
+    how: str = ""
+    problem: str = ""
+    reply_line: int = 0
+    diag: Optional[Dict[str, Any]] = None   # closest-match info for the repair prompt
+
+
+def _find_all(hay: str, needle: str) -> List[int]:
+    out: List[int] = []
+    if not needle:
+        return out
+    start = 0
+    while True:
+        k = hay.find(needle, start)
+        if k < 0:
+            return out
+        out.append(k)
+        start = k + 1
+
+
+def _line_of(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _normalise_with_map(text: str) -> Tuple[str, List[int]]:
+    """Drop the '\\r' of every '\\r\\n'. Returns (normalised, crs) where crs is
+    the sorted list of NORMALISED offsets of each '\\n' that lost its '\\r'."""
+    crs: List[int] = []
+    out: List[str] = []
+    k = 0
+    pos = 0
+    L = len(text)
+    while k < L:
+        nxt = text.find("\r\n", k)
+        if nxt < 0:
+            out.append(text[k:])
+            break
+        out.append(text[k:nxt])
+        pos += nxt - k
+        crs.append(pos)            # the '\n' lands at normalised offset `pos`
+        out.append("\n")
+        pos += 1
+        k = nxt + 2
+    return "".join(out), crs
+
+
+def _to_original(offset: int, crs: List[int]) -> int:
+    return offset + bisect.bisect_left(crs, offset)
+
+
+# Characters a model types in place of the file's own (or the reverse): typographic
+# quotes and apostrophes, dashes, and unusual spaces. Each maps to its plain form.
+# Used ONLY to explain a near miss - never to decide a match: a SEARCH that differs
+# from the file by one of these is still refused, because the bytes differ.
+_CONFUSABLE = {
+    **{c: "'" for c in "\u2018\u2019\u201a\u201b\u2032\u00b4\u0060"},
+    **{c: '"' for c in "\u201c\u201d\u201e\u201f\u2033"},
+    **{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+    **{c: " " for c in "\u00a0\u2007\u2009\u202f\u2002\u2003"},
+}
+_INVISIBLE = set("\u200b\u200c\u200d\u2060\ufeff")
+
+
+def _char_name(c: str) -> str:
+    try:
+        name = unicodedata.name(c)
+    except ValueError:
+        name = "UNNAMED"
+    shown = c if c.isprintable() and not c.isspace() else " "
+    return f"{shown!r} (U+{ord(c):04X} {name})"
+
+
+def confusable_diffs(window: str, target: str) -> Optional[List[Tuple[int, str, str]]]:
+    """If `target` (the SEARCH text) differs from `window` (the file's closest
+    region) ONLY by look-alike characters, return each difference as
+    (0-based SEARCH line, SEARCH char, file char); '' stands for an invisible
+    character present on one side only. Return None when any difference is a
+    real one, or when there is no difference at all."""
+    out: List[Tuple[int, str, str]] = []
+    sm = difflib.SequenceMatcher(None, window, target, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        fw, st = window[i1:i2], target[j1:j2]
+        line = target.count("\n", 0, j1)
+        if tag == "replace" and len(fw) == len(st):
+            for a, b in zip(fw, st):
+                if a == b:
+                    continue
+                if _CONFUSABLE.get(a, a) != _CONFUSABLE.get(b, b):
+                    return None
+                out.append((line, b, a))
+        elif tag in ("delete", "insert", "replace") and all(c in _INVISIBLE for c in fw + st):
+            for c in fw:
+                out.append((line, "", c))
+            for c in st:
+                out.append((line, c, ""))
+        else:
+            return None
+    return out or None
+
+
+def _similar_pct(ratio: float) -> int:
+    """A failed match is never reported as 100% similar: 0.997 rounds to 1.00."""
+    return min(99, int(ratio * 100))
+
+
+def closest_region(norm: str, search: str) -> Dict[str, Any]:
+    """Where in the file the SEARCH text most nearly appears. For the repair
+    prompt only - never used to decide where to write."""
+    flines = norm.split("\n")
+    slines = search.rstrip("\n").split("\n") if search else [""]
+    k = max(1, len(slines))
+    target = "\n".join(slines)
+    anchors = {s.strip() for s in slines if len(s.strip()) >= 8}
+    candidates: List[int] = []
+    if anchors:
+        for idx, fl in enumerate(flines):
+            if fl.strip() in anchors:
+                for off in range(k):
+                    if 0 <= idx - off <= max(0, len(flines) - k):
+                        candidates.append(idx - off)
+    if not candidates:
+        candidates = list(range(0, max(1, len(flines) - k + 1)))
+    candidates = sorted(set(candidates))[:6000]
+    best_i, best_r = 0, -1.0
+    for idx in candidates:
+        window = "\n".join(flines[idx:idx + k])
+        sm = difflib.SequenceMatcher(None, window, target, autojunk=False)
+        if sm.real_quick_ratio() <= best_r or sm.quick_ratio() <= best_r:
+            continue
+        r = sm.ratio()
+        if r > best_r:
+            best_i, best_r = idx, r
+    lo = max(0, best_i - 3)
+    hi = min(len(flines), best_i + k + 3)
+    excerpt = "\n".join(f"{n + 1:>6}| {flines[n]}" for n in range(lo, hi))
+    best_window = "\n".join(flines[best_i:best_i + k])
+    return {"line": best_i + 1, "ratio": round(max(best_r, 0.0), 2), "excerpt": excerpt,
+            "confusables": confusable_diffs(best_window, target)}
+
+
+def describe_confusables(diag: Dict[str, Any], search_marker_line: int) -> str:
+    """One sentence naming each look-alike character, with the reply line it is
+    on when the SEARCH marker's line is known (0 = unknown)."""
+    parts = []
+    for idx, s_char, f_char in diag["confusables"][:6]:
+        where = f"reply line {search_marker_line + 1 + idx}" if search_marker_line else f"SEARCH line {idx + 1}"
+        if not s_char:
+            parts.append(f"{where} lacks the invisible {_char_name(f_char)} the file has")
+        elif not f_char:
+            parts.append(f"{where} has an invisible {_char_name(s_char)} the file lacks")
+        else:
+            parts.append(f"{where} has {_char_name(s_char)} where the file has {_char_name(f_char)}")
+    more = len(diag["confusables"]) - 6
+    return "; ".join(parts) + (f"; and {more} more" if more > 0 else "")
+
+
+def apply_edits(original: str, edits: List[EditBlock]) -> Tuple[str, List[EditOutcome]]:
+    """Apply edits in order to `original` (decoded text, ORIGINAL line
+    endings). Untouched bytes are preserved exactly, including mixed line
+    endings. Returns (new_text, outcomes); new_text is meaningful only when no
+    outcome failed."""
+    cur = original
+    outcomes: List[EditOutcome] = []
+    for idx, ed in enumerate(edits, 1):
+        oc = EditOutcome(index=idx, status="failed", reply_line=ed.line)
+        outcomes.append(oc)
+        S = ed.search.replace("\r\n", "\n")
+        R = ed.replace.replace("\r\n", "\n")
+        norm, crs = _normalise_with_map(cur)
+        virtual = bool(norm) and not norm.endswith("\n")
+        hay = norm + "\n" if virtual else norm
+
+        if not S.strip():
+            oc.problem = ("SEARCH is empty. To insert, SEARCH an adjacent existing line and "
+                          "REPLACE it with that line plus the new ones; to create a file, use FILE")
+            continue
+        if S == R:
+            oc.status, oc.how = "have", "SEARCH and REPLACE are identical (no-op)"
+            continue
+
+        # Matches must start at the beginning of a line. A SEARCH is whole
+        # lines; letting 'x = 1' match the tail of 'max = 1' would edit the
+        # wrong line silently.
+        s_sites = [p for p in _find_all(hay, S) if p == 0 or hay[p - 1] == "\n"]
+        r_sites = ([p for p in _find_all(hay, R) if p == 0 or hay[p - 1] == "\n"]
+                   if R.strip() else [])
+        additive = bool(R) and S in R
+        if additive and r_sites:
+            s_sites = [p for p in s_sites
+                       if not any(r <= p and p + len(S) <= r + len(R) for r in r_sites)]
+
+        start = end = -1
+        if len(s_sites) == 1 and not (additive and r_sites):
+            start, end = s_sites[0], s_sites[0] + len(S)
+            oc.how = "exact"
+        elif len(s_sites) > 1:
+            where = ", ".join(str(_line_of(hay, p)) for p in s_sites[:6])
+            oc.problem = (f"SEARCH matches {len(s_sites)} places (lines {where}); add unchanged "
+                          f"neighbouring lines until it is unique")
+            continue
+        elif additive and s_sites and r_sites:
+            oc.problem = ("conflict: the text this block adds is already present, AND its SEARCH "
+                          "anchor appears elsewhere un-applied - refusing to guess which is meant")
+            continue
+        elif not s_sites and len(r_sites) == 1 and (R.strip().count("\n") >= 1 or len(R.strip()) >= 30):
+            oc.status, oc.how = "have", f"already applied (REPLACE text present at line {_line_of(hay, r_sites[0])})"
+            continue
+        else:
+            # One tolerated difference: trailing whitespace. Whole lines only.
+            flines = hay.split("\n")
+            slines = S.rstrip("\n").split("\n")
+            kk = len(slines)
+            want = [x.rstrip() for x in slines]
+            stripped = [x.rstrip() for x in flines]
+            hits = [a for a in range(0, len(flines) - kk + 1) if stripped[a:a + kk] == want]
+            if additive and r_sites:
+                starts = {a: sum(len(x) + 1 for x in flines[:a]) for a in hits}
+                hits = [a for a in hits
+                        if not any(r <= starts[a] < r + len(R) for r in r_sites)]
+            if len(hits) == 1:
+                a = hits[0]
+                start = sum(len(x) + 1 for x in flines[:a])
+                end = start + sum(len(x) + 1 for x in flines[a:a + kk])
+                oc.how = "matched ignoring trailing whitespace"
+            elif len(hits) > 1:
+                oc.problem = (f"SEARCH matches {len(hits)} places when trailing whitespace is ignored "
+                              f"(lines {', '.join(str(h + 1) for h in hits[:6])}); make it unique")
+                continue
+            else:
+                diag = closest_region(norm, S)
+                elided = any(p.search(S) for p in ELISION)
+                if elided:
+                    detail = (" - it contains a placeholder like '...', but SEARCH must be literal "
+                              "text copied from the file")
+                elif diag.get("confusables"):
+                    detail = (f" - it differs from line {diag['line']} ONLY by look-alike characters: "
+                              f"{describe_confusables(diag, ed.line)}. Free fix: in a copy of the reply, make "
+                              f"those characters match the file's, then run --apply-fixes on that copy")
+                else:
+                    detail = f" (closest region: line {diag['line']}, {_similar_pct(diag['ratio'])}% similar)"
+                oc.problem = "SEARCH text not found in the file" + detail
+                oc.diag = diag
+                continue
+
+        repl = R
+        if virtual and end > len(norm):
+            end = len(norm)
+            if repl.endswith("\n"):
+                repl = repl[:-1]
+        o_start, o_end = _to_original(start, crs), _to_original(end, crs)
+        if dominant_eol(cur) == "\r\n":
+            repl = repl.replace("\n", "\r\n")
+        cur = cur[:o_start] + repl + cur[o_end:]
+        oc.status = "applied"
+    return cur, outcomes
+
+
+# ==========================================================================
+# Code checks: catch the change that parses but cannot run
+# ==========================================================================
+#
+# All of these compare BEFORE and AFTER, and report only what the change
+# introduces - a pre-existing problem is not this batch's fault and must not
+# block it. Each is conservative: when a check cannot be sure, it stays quiet.
+
+_IMPLICIT_GLOBALS = {"__file__", "__name__", "__doc__", "__builtins__", "__spec__", "__loader__",
+                     "__package__", "__path__", "__annotations__", "__cached__", "__dict__",
+                     "__module__", "__qualname__", "__class__", "__debug__", "WindowsError"}
+
+
+def undefined_names(src: str) -> Optional[set]:
+    """Names referenced at run time that nothing defines (ruff F821's core).
+    None = could not analyse (syntax error, star import)."""
+    import builtins
+    try:
+        top = symtable.symtable(src, "<kimicli>", "exec")
+    except (SyntaxError, ValueError):
+        return None
+    if re.search(r"(?m)^\s*from\s+\S+\s+import\s+\*", src):
+        return None
+    defined: set = set()
+
+    def collect(t: Any) -> None:
+        for s in t.get_symbols():
+            if t.get_type() == "module" and (s.is_assigned() or s.is_imported() or s.is_namespace()):
+                defined.add(s.get_name())
+            elif t.get_type() != "module" and s.is_declared_global() and s.is_assigned():
+                defined.add(s.get_name())
+        for c in t.get_children():
+            collect(c)
+
+    collect(top)
+    known = defined | set(dir(builtins)) | _IMPLICIT_GLOBALS
+    missing: set = set()
+
+    def walk(t: Any) -> None:
+        if "annotation" in str(t.get_type()).lower():
+            return
+        for s in t.get_symbols():
+            if not s.is_referenced():
+                continue
+            free_global = s.is_global() or (
+                t.get_type() == "module" and not (s.is_assigned() or s.is_imported()))
+            if free_global and s.get_name() not in known:
+                missing.add(s.get_name())
+        for c in t.get_children():
+            walk(c)
+
+    walk(top)
+    return missing
+
+
+def module_top_names(tree: "ast.Module") -> Tuple[set, bool]:
+    """(names a module defines at top level, dynamic). dynamic=True means the
+    module can produce names this analysis cannot see (star import or a
+    module-level __getattr__), so importers must not be judged against it."""
+    names: set = set()
+    dynamic = False
+
+    def targets(node: Any) -> None:
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            for e in node.elts:
+                targets(e)
+        elif isinstance(node, ast.Starred):
+            targets(node.value)
+
+    def visit(body: List[Any]) -> None:
+        nonlocal dynamic
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+                if node.name == "__getattr__" and not isinstance(node, ast.ClassDef):
+                    dynamic = True
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Global):
+                        names.update(sub.names)
+            elif isinstance(node, ast.Assign):
+                for t in node.targets:
+                    targets(t)
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                targets(node.target)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for a in node.names:
+                    if a.name == "*":
+                        dynamic = True
+                    else:
+                        names.add(a.asname or a.name.split(".")[0])
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                targets(node.target)
+                visit(node.body)
+                visit(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for it in node.items:
+                    if it.optional_vars is not None:
+                        targets(it.optional_vars)
+                visit(node.body)
+            elif isinstance(node, (ast.If, ast.While)):
+                visit(node.body)
+                visit(node.orelse)
+            elif isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
+                visit(node.body)
+                for h in node.handlers:
+                    if h.name:
+                        names.add(h.name)
+                    visit(h.body)
+                visit(node.orelse)
+                visit(node.finalbody)
+            elif type(node).__name__ == "Match":
+                for case in node.cases:
+                    visit(case.body)
+            elif type(node).__name__ == "TypeAlias":
+                targets(node.name)
+            for sub in ast.walk(node) if not isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)) else []:
+                if isinstance(sub, ast.NamedExpr):
+                    targets(sub.target)
+
+    visit(tree.body)
+    return names, dynamic
+
+
+def _resolve_from_import(node: "ast.ImportFrom", importer_rel: str, index: "FileIndex") -> Optional[str]:
+    """Repo file the `from X import ...` refers to, or None when external/unsure."""
+    if node.level == 0:
+        return index.module_file(node.module or "") if node.module else None
+    base = importer_rel.split("/")[:-1]
+    up = node.level - 1
+    if up > len(base):
+        return None
+    base = base[:len(base) - up] if up else base
+    mod_parts = (node.module or "").split(".") if node.module else []
+    cand = "/".join(base + mod_parts)
+    have = index._set
+    if cand + ".py" in have:
+        return cand + ".py"
+    if cand + "/__init__.py" in have:
+        return cand + "/__init__.py"
+    return None
+
+
+def cross_file_problems(changed: Dict[str, Tuple[Optional[str], str]], index: "FileIndex",
+                        read_current: Any) -> Dict[str, List[str]]:
+    """changed: rel -> (old_text or None, new_text), .py files only.
+    Finds (1) new `from X import n` in a changed file where X (after this
+    batch) does not define n, and (2) names a changed module REMOVES that an
+    unchanged file still imports. Returns rel -> problems."""
+    out: Dict[str, List[str]] = {}
+    cache: Dict[str, Optional[Tuple[set, bool]]] = {}
+
+    def names_after(rel: str) -> Optional[Tuple[set, bool]]:
+        if rel in cache:
+            return cache[rel]
+        text = changed[rel][1] if rel in changed else read_current(rel)
+        try:
+            val = module_top_names(ast.parse(text)) if text is not None else None
+        except SyntaxError:
+            val = None
+        cache[rel] = val
+        return val
+
+    def is_submodule(mod_rel: str, name: str) -> bool:
+        if not mod_rel.endswith("__init__.py"):
+            return False
+        pkg = mod_rel[: -len("__init__.py")]
+        have = index._set | set(changed)
+        return (pkg + name + ".py") in have or (pkg + name + "/__init__.py") in have
+
+    def imports_of(text: str, rel: str) -> List[Tuple[str, str, int]]:
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return []
+        # An import inside `try: ... except ImportError:` is optional by
+        # design; never judge it.
+        guarded: set = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
+                names = set()
+                for h in node.handlers:  # type: ignore[attr-defined]
+                    if h.type is None:
+                        names.add("*")
+                    for t in (h.type.elts if isinstance(h.type, ast.Tuple) else [h.type]) if h.type else []:
+                        if isinstance(t, ast.Name):
+                            names.add(t.id)
+                        elif isinstance(t, ast.Attribute):
+                            names.add(t.attr)
+                if names & {"*", "ImportError", "ModuleNotFoundError", "Exception", "BaseException"}:
+                    for stmt in node.body:  # type: ignore[attr-defined]
+                        for sub in ast.walk(stmt):
+                            guarded.add(id(sub))
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and id(node) not in guarded:
+                target = _resolve_from_import(node, rel, index)
+                if target:
+                    for a in node.names:
+                        if a.name != "*":
+                            found.append((target, a.name, node.lineno))
+        return found
+
+    # (1) imports a changed file makes
+    for rel, (old_text, new_text) in changed.items():
+        before = {(t, nm) for t, nm, _ in imports_of(old_text, rel)} if old_text else set()
+        for target, name, lineno in imports_of(new_text, rel):
+            if (target, name) in before and target not in changed:
+                continue          # untouched import of an untouched module: not ours
+            info = names_after(target)
+            if info is None or info[1]:
+                continue
+            if name not in info[0] and not is_submodule(target, name):
+                out.setdefault(rel, []).append(
+                    f"line {lineno}: imports {name!r} from {target}, which does not define it "
+                    f"after this change (ImportError at import time)")
+
+    # (2) names a changed module drops that the rest of the repo still imports
+    for rel, (old_text, _new) in changed.items():
+        if not old_text:
+            continue
+        try:
+            before_names, dyn_b = module_top_names(ast.parse(old_text))
+        except SyntaxError:
+            continue
+        after = names_after(rel)
+        if after is None or after[1] or dyn_b:
+            continue
+        removed = before_names - after[0]
+        if not removed:
+            continue
+        stem = rel.rsplit("/", 1)[-1][:-3]
+        if stem == "__init__":
+            stem = rel.rsplit("/", 2)[-2]
+        pattern = re.compile(r"\b(" + "|".join(re.escape(x) for x in sorted(removed)) + r")\b")
+        for other in index.rel:
+            if not other.endswith(".py") or other in changed:
+                continue
+            text = read_current(other)
+            if not text or stem not in text or not pattern.search(text):
+                continue
+            for target, name, lineno in imports_of(text, other):
+                if target == rel and name in removed:
+                    out.setdefault(rel, []).append(
+                        f"removes {name!r}, but {other}:{lineno} still imports it "
+                        f"(that file would fail to import)")
+    return out
+
+
+def validate_syntax(rel: str, text: str) -> Optional[str]:
+    suffix = Path(rel).suffix.lower()
+    if suffix == ".py":
+        try:
+            compile(text, rel, "exec", dont_inherit=True)
+        except SyntaxError as exc:
+            return f"Python syntax error at line {exc.lineno}: {exc.msg}"
+        except ValueError as exc:
+            return f"Python source rejected: {exc}"
+    elif suffix == ".json":
+        try:
+            json.loads(text)
+        except Exception as exc:
+            return f"invalid JSON: {exc}"
+    elif suffix == ".toml":
+        try:
+            import tomllib  # Python 3.11+
+            tomllib.loads(text)
+        except ImportError:
+            return None
+        except Exception as exc:
+            return f"invalid TOML: {exc}"
+    return None
+
+
+def gitattributes_eol(root: Path, rel: str) -> str:
+    """Line ending for a NEW file: the repo's .gitattributes decides
+    (AA: `* text=auto eol=lf`, `*.bat ... eol=crlf`). Default LF."""
+    ga = root / ".gitattributes"
+    eol = "\n"
+    if not ga.exists():
+        return eol
+    try:
+        lines = ga.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return eol
+    name = rel.rsplit("/", 1)[-1]
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        bits = ln.split()
+        pat, attrs = bits[0], bits[1:]
+        hit = fnmatch.fnmatch(rel, pat.lstrip("/")) if "/" in pat else fnmatch.fnmatch(name, pat)
+        if not hit:
+            continue
+        for a in attrs:
+            if a == "eol=crlf":
+                eol = "\r\n"
+            elif a == "eol=lf":
+                eol = "\n"
+    return eol
+
+
+# ==========================================================================
+# The applier: resolve against the LIVE tree, validate everything, then write
+# transactionally - or write nothing
+# ==========================================================================
+
+@dataclass
+class Proposal:
+    """One file's change, as selected for applying."""
+    raw_path: str
+    kind: str                                   # "file" | "edit"
+    content: Optional[str] = None               # kind == file (LF text)
+    edits: List[EditBlock] = field(default_factory=list)
+    source: str = ""                            # "turn 3" / "reply.md"
+    base_sha: Optional[str] = None              # disk sha when staged ("" = absent); None unknown
+    after_sha: Optional[str] = None             # sha of the result computed when staged
+    known_bases: List[str] = field(default_factory=list)   # texts Kimi may have based a FILE on
+    notes: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ApplyOptions:
+    allow_new_files: bool = False
+    allow_new_dirs: bool = False
+    allow_shrink: bool = False
+    allow_stale: bool = False
+    skip_checks: bool = False
+    shrink_ratio: float = 0.6
 
 
 @dataclass
 class Plan:
-    path: str
-    target: Optional[Path]
-    content: str
-    action: str = "update"           # update | create
+    proposal: Proposal
+    rel: Optional[str] = None
+    target: Optional[Path] = None
+    action: str = "update"                      # update | create | identical
+    old_bytes: Optional[bytes] = None
+    new_bytes: Optional[bytes] = None
+    old_text: Optional[str] = None
+    new_text: Optional[str] = None
     problems: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
-    old_lines: int = 0
-    new_lines: int = 0
+    outcomes: List[EditOutcome] = field(default_factory=list)
+    dirs_to_create: List[str] = field(default_factory=list)
+
+    @property
+    def changes(self) -> bool:
+        return not self.problems and self.action in ("update", "create")
+
+
+class ApplyAborted(Exception):
+    pass
+
+
+def _replace_with_retry(src: str, dst: str, attempts: int = 12) -> None:
+    """os.replace, retried: on Windows, OneDrive, antivirus and editors hold
+    brief locks that make a single attempt fail with PermissionError."""
+    delay = 0.05
+    for n in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if n == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 1.0)
+
+
+def write_bytes_atomic(path: Path, data: bytes, keep_mode_of: Optional[Path] = None) -> None:
+    """temp file in the same directory -> fsync -> atomic replace. The target
+    is either the old bytes or the new bytes; never half of each."""
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".kimitmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if keep_mode_of is not None and keep_mode_of.exists():
+            try:
+                shutil.copymode(str(keep_mode_of), tmp)
+            except OSError:
+                pass
+        _replace_with_retry(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _unlink_with_retry(path: Path, attempts: int = 12) -> None:
+    delay = 0.05
+    for n in range(attempts):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if n == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 1.0)
+
+
+def read_bytes_or_none(path: Path) -> Optional[bytes]:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def git_snapshot(root: Path, manifest_id: str) -> Dict[str, Any]:
+    """Second, independent safety net: a git commit object of the working
+    tree taken BEFORE any write, pinned under refs/kimicli/<id> so it is never
+    garbage-collected. `git stash create` touches neither files nor index
+    contents. Best effort: no git, no snapshot, no error."""
+    if not (root / ".git").exists():
+        return {}
+
+    def git(*a: str) -> str:
+        r = subprocess.run(["git", *a], cwd=str(root), capture_output=True, text=True, timeout=60)
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    try:
+        head = git("rev-parse", "HEAD")
+        snap = git("stash", "create", f"kimicli pre-apply {manifest_id}") or head
+        ref = ""
+        if snap:
+            ref = f"refs/kimicli/{manifest_id}"
+            if not subprocess.run(["git", "update-ref", ref, snap], cwd=str(root),
+                                  capture_output=True, timeout=60).returncode == 0:
+                ref = ""
+        return {"head": head, "snapshot": snap, "ref": ref}
+    except Exception:
+        return {}
 
 
 class Applier:
-    def __init__(self, root: Path, allow_new: bool = False, shrink_ratio: float = 0.6,
-                 allow_shrink: bool = False):
+    def __init__(self, root: Path, backup_dir: Path, options: Optional[ApplyOptions] = None):
         self.root = root.resolve()
-        self.allow_new = allow_new
-        self.shrink_ratio = shrink_ratio
-        self.allow_shrink = allow_shrink
+        self.backup_dir = backup_dir
+        self.opt = options or ApplyOptions()
+        self._index: Optional[FileIndex] = None
 
-    # -- path safety -------------------------------------------------
-    def _is_protected(self, target: Path) -> bool:
+    @property
+    def index(self) -> FileIndex:
+        if self._index is None:
+            self._index = FileIndex(self.root)
+        return self._index
+
+    def _read_current_text(self, rel: str) -> Optional[str]:
+        raw = read_bytes_or_none(self.root.joinpath(*rel.split("/")))
+        if raw is None:
+            return None
         try:
-            rel = target.relative_to(self.root)
-        except ValueError:
-            return True
-        parts = set(rel.parts) | {rel.name}
-        return any(p in parts for p in PROTECTED)
-
-    def secure_resolve(self, raw: str) -> Optional[Path]:
-        raw = raw.strip().strip('"').strip("'")
-        if not raw or raw in (".", ".."):
+            return decode_strict(raw)[0]
+        except NotText:
             return None
-        normalised = raw.replace("\\", "/")
-        # An absolute, UNC or drive-qualified path from the model is always
-        # refused. Check BEFORE stripping leading slashes, or '//server/share'
-        # silently becomes the relative path 'server/share'.
-        if normalised.startswith("//") or re.match(r"^[A-Za-z]:", normalised):
-            return None
-        cleaned = normalised.lstrip("/")
-        candidate = (self.root / cleaned)
-        try:
-            resolved = candidate.resolve()
-            resolved.relative_to(self.root)
-        except (ValueError, OSError):
-            return None
-        # Refuse if any existing parent is a symlink escaping the root.
-        probe = resolved
-        while probe != self.root and probe.parent != probe:
-            if probe.is_symlink():
-                try:
-                    probe.resolve().relative_to(self.root)
-                except ValueError:
-                    return None
-            probe = probe.parent
-        return resolved
 
-    def locate(self, raw: str) -> Tuple[Optional[Path], str]:
-        """Exact match wins. Otherwise a unique tail-match. Never guess."""
-        direct = self.secure_resolve(raw)
-        if direct and direct.exists():
-            return direct, "exact"
-        wanted = Path(raw.replace("\\", "/"))
-        name = wanted.name
-        if not name:
-            return None, "no filename"
-        candidates = [
-            p for p in self.root.rglob(name)
-            if p.is_file() and not any(part.startswith(".") or part in PROTECTED for part in p.parts)
-        ]
-        if len(wanted.parts) > 1 and len(candidates) > 1:
-            tail = "/".join(wanted.parts[-2:]).lower()
-            narrowed = [p for p in candidates if str(p).replace("\\", "/").lower().endswith(tail)]
-            if narrowed:
-                candidates = narrowed
-        if len(candidates) == 1:
-            return candidates[0], f"matched {candidates[0].relative_to(self.root)}"
-        if len(candidates) > 1:
-            names = ", ".join(str(c.relative_to(self.root)) for c in candidates[:4])
-            return None, f"ambiguous ({len(candidates)} matches: {names})"
-        return direct, "new file"
+    # -- pass 1 -------------------------------------------------------
+    def validate(self, proposals: List[Proposal]) -> List[Plan]:
+        plans = [self._plan_one(p) for p in proposals]
 
-    # -- pass 1: validate, write nothing ------------------------------
-    def validate(self, proposals: Iterable[Tuple[str, str]]) -> List[Plan]:
-        plans: List[Plan] = []
-        seen: Dict[str, int] = {}
-        for raw, content in proposals:
-            target, how = self.locate(raw)
-            plan = Plan(path=raw, target=target, content=content)
-            plan.new_lines = content.count("\n") + 1
-
-            if target is None:
-                plan.problems.append(f"cannot resolve path ({how})")
-                plans.append(plan)
+        seen: Dict[str, Plan] = {}
+        for pl in plans:
+            if pl.rel is None:
                 continue
-            if self._is_protected(target):
-                plan.problems.append("refused: protected path (git/venv/env/tooling)")
-                plans.append(plan)
-                continue
-            if how.startswith("matched"):
-                plan.notes.append(how)
-
-            key = str(target).lower()
-            seen[key] = seen.get(key, 0) + 1
-            if seen[key] > 1:
-                plan.problems.append("the same file is proposed twice in one response")
-
-            if target.exists():
-                if not target.is_file():
-                    plan.problems.append("target exists and is not a regular file")
-                else:
-                    old = read_text(target)
-                    plan.old_lines = old.count("\n") + 1
-                    if old.strip() == content.strip():
-                        plan.action = "identical"
-                    if (not self.allow_shrink and plan.old_lines > 40
-                            and plan.new_lines < plan.old_lines * self.shrink_ratio):
-                        plan.problems.append(
-                            f"content shrank {plan.old_lines} -> {plan.new_lines} lines "
-                            f"(< {int(self.shrink_ratio * 100)}%); looks truncated. "
-                            f"--allow-shrink to override")
+            key = pl.rel.casefold()
+            if key in seen:
+                msg = (f"the same file is changed twice in one batch ({seen[key].proposal.raw_path!r} "
+                       f"and {pl.proposal.raw_path!r})")
+                pl.problems.append(msg)
+                if msg not in seen[key].problems:
+                    seen[key].problems.append(msg)
             else:
-                plan.action = "create"
-                if not self.allow_new:
-                    plan.problems.append("new file; --allow-new-files to permit")
+                seen[key] = pl
 
-            if not content.strip():
-                plan.problems.append("empty content")
-
-            for pat in ELISION:
-                m = pat.search(content)
-                if m:
-                    line = content[:m.start()].count("\n") + 1
-                    plan.problems.append(
-                        f"elision marker at line {line}: {m.group(0).strip()[:60]!r} "
-                        f"- this file is a summary, not a whole file")
-                    break
-
-            if target.suffix == ".py":
-                try:
-                    compile(content, str(target), "exec")
-                except SyntaxError as exc:
-                    plan.problems.append(f"python syntax error at line {exc.lineno}: {exc.msg}")
-            elif target.suffix == ".json":
-                try:
-                    json.loads(content)
-                except Exception as exc:
-                    plan.problems.append(f"invalid JSON: {exc}")
-
-            plans.append(plan)
+        if not self.opt.skip_checks:
+            py = {pl.rel: pl for pl in plans
+                  if pl.rel and pl.rel.endswith(".py") and pl.changes and pl.new_text is not None}
+            for pl in py.values():
+                new_u = undefined_names(pl.new_text or "")
+                old_u = undefined_names(pl.old_text) if pl.old_text is not None else set()
+                if new_u is not None and old_u is not None:
+                    added = sorted(new_u - old_u)
+                    if added:
+                        pl.problems.append(
+                            f"uses name(s) nothing defines: {', '.join(added[:8])} (NameError at run "
+                            f"time - usually a missing import). --skip-checks to override")
+            if py:
+                changed = {rel: (pl.old_text, pl.new_text or "") for rel, pl in py.items()}
+                for rel, probs in cross_file_problems(changed, self.index, self._read_current_text).items():
+                    for pr in probs:
+                        py[rel].problems.append(pr + ". --skip-checks to override")
         return plans
 
-    # -- pass 2: write --------------------------------------------------
-    def apply(self, plans: List[Plan], dry_run: bool) -> Dict[str, Any]:
-        manifest_id = uuid.uuid4().hex[:8]
-        manifest: Dict[str, Any] = {
-            "id": manifest_id,
-            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "root": str(self.root),
-            "dry_run": dry_run,
-            "files": [],
-        }
-        backup_root = BACKUP_DIR / manifest_id
-        for plan in plans:
-            assert plan.target is not None
-            rel = plan.target.relative_to(self.root)
-            entry: Dict[str, Any] = {
-                "path": str(rel).replace("\\", "/"),
-                "action": plan.action,
-                "backup": None,
-                "sha256_before": None,
-                "sha256_after": sha256(plan.content),
-                "lines_before": plan.old_lines,
-                "lines_after": plan.new_lines,
-            }
-            if plan.action == "identical":
-                entry["action"] = "identical"
-                manifest["files"].append(entry)
-                print(f"  [have] {rel}  (already identical)")
-                continue
+    def _plan_one(self, prop: Proposal) -> Plan:
+        pl = Plan(proposal=prop)
+        pl.notes.extend(prop.notes)
+        try:
+            rel = normalize_rel(prop.raw_path, self.root)
+        except PathRefused as exc:
+            pl.problems.append(f"path refused: {exc}")
+            return pl
+        raw_parts = [x for x in prop.raw_path.strip().strip("`'\"*").replace("\\", "/").split("/")
+                     if x not in ("", ".")]
+        if len(raw_parts) > rel.count("/") + 1:
+            pl.notes.append(f"leading '{raw_parts[0]}/' removed (the repo name, as the dump labels paths)")
+        if is_protected_rel(rel):
+            pl.problems.append("refused: protected path (.git / venv / .env / tooling / retired files / dev_data)")
+            return pl
+        rel = canonical_case(self.root, rel)
+        try:
+            target = safe_target(self.root, rel)
+        except PathRefused as exc:
+            pl.problems.append(f"path refused: {exc}")
+            return pl
 
-            newline = "\n"
-            if plan.target.exists():
-                raw = plan.target.read_bytes()
-                entry["sha256_before"] = hashlib.sha256(raw).hexdigest()
-                if b"\r\n" in raw:
-                    newline = "\r\n"
-                backup = backup_root / rel
-                entry["backup"] = str(backup.relative_to(BACKUP_DIR)).replace("\\", "/")
-                if not dry_run:
-                    backup.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(plan.target, backup)
+        exists = target.exists()
+        if exists and not target.is_file():
+            pl.problems.append("target exists and is not a regular file")
+            return pl
 
-            if dry_run:
-                print(f"  [dry ] {plan.action:8} {rel}  ({plan.old_lines} -> {plan.new_lines} lines)")
+        # An EDIT for a path that does not exist may carry a dropped prefix
+        # ('src/auto_apply/x.py'). Accept ONLY a unique, component-aligned
+        # suffix match - and even then every anchor must still match there.
+        if prop.kind == "edit" and not exists:
+            hits = self.index.suffix_matches(rel) if "/" in rel else []
+            how = "unique path-suffix match"
+            if len(hits) != 1:
+                # The suffix rule recovers a DROPPED PREFIX only. A model that
+                # guessed a wrong MIDDLE directory - tests/pins/x.py for a file
+                # in tests/architecture/ - matches no suffix, and that threw
+                # away a whole good batch once. Fall back to a unique basename.
+                # Safe for the same reason: a repathed edit still goes through
+                # _plan_edit, so every SEARCH must resolve in the candidate or
+                # the batch is rejected. The content is the proof, not the name.
+                # basename_matches is a superset of suffix_matches, so an
+                # ambiguous suffix can never become a unique basename here.
+                hits = self.index.basename_matches(rel.rsplit("/", 1)[-1])
+                how = "unique basename match"
+            if len(hits) == 1:
+                pl.notes.append(f"path corrected: {rel} -> {hits[0]} ({how}; every SEARCH "
+                                f"must still match there)")
+                rel = hits[0]
+                target = safe_target(self.root, rel)
+                exists = target.exists()
             else:
-                atomic_write(plan.target, plan.content, newline=newline)
-                print(f"  [ok  ] {plan.action:8} {rel}  ({plan.old_lines} -> {plan.new_lines} lines)")
-            manifest["files"].append(entry)
+                others = self.index.basename_matches(rel.rsplit("/", 1)[-1])
+                tip = f" Files with that name: {', '.join(others[:4])}" if others else ""
+                pl.problems.append(f"EDIT target does not exist: {rel}.{tip} (if this file was "
+                                   f"created earlier in the conversation and not applied yet, send "
+                                   f"it again as one complete FILE)")
+                pl.rel, pl.target = rel, target
+                return pl
 
-        manifest_path = BACKUP_DIR / f"manifest_{manifest_id}.json"
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        atomic_write(manifest_path, json.dumps(manifest, indent=2))
+        pl.rel, pl.target = rel, target
+        if exists:
+            pl.old_bytes = target.read_bytes()
+            if not os.access(str(target), os.W_OK):
+                pl.problems.append("file is read-only on disk")
+        if prop.kind == "edit":
+            self._plan_edit(pl)
+        else:
+            self._plan_file(pl)
+        if pl.new_text is not None and not pl.problems and pl.action != "identical":
+            err = validate_syntax(rel, pl.new_text)
+            if err:
+                pl.problems.append(err)
+        return pl
+
+    def _plan_edit(self, pl: Plan) -> None:
+        prop = pl.proposal
+        assert pl.old_bytes is not None
+        try:
+            text, bom = decode_strict(pl.old_bytes)
+        except NotText as exc:
+            pl.problems.append(f"cannot edit: file {exc}")
+            return
+        pl.old_text = text
+        cur_sha = sha256_bytes(pl.old_bytes)
+        if prop.after_sha and cur_sha == prop.after_sha:
+            pl.action, pl.new_bytes, pl.new_text = "identical", pl.old_bytes, text
+            pl.notes.append("already applied (file matches the staged result exactly)")
+            return
+        if prop.base_sha and cur_sha != prop.base_sha:
+            pl.notes.append("file changed since this reply was staged - every edit re-anchored "
+                            "against the file as it is now")
+        for ed in prop.edits:
+            for pat in ELISION:
+                m = pat.search(ed.replace)
+                if m and not pat.search(ed.search):
+                    pl.problems.append(
+                        f"edit #{prop.edits.index(ed) + 1}: REPLACE contains a placeholder "
+                        f"{m.group(0).strip()[:50]!r} - it would replace real code with a comment")
+                    break
+        new_text, outcomes = apply_edits(text, prop.edits)
+        pl.outcomes = outcomes
+        failed = [o for o in outcomes if o.status == "failed"]
+        for o in failed:
+            pl.problems.append(f"edit #{o.index} (reply line {o.reply_line}): {o.problem}")
+        if failed:
+            return
+        have = [o for o in outcomes if o.status == "have"]
+        for o in outcomes:
+            if o.how and o.how != "exact":
+                pl.notes.append(f"edit #{o.index}: {o.how}")
+        if have and len(have) < len(outcomes):
+            pl.notes.append(f"HALF-APPLIED before this run: {len(have)} of {len(outcomes)} edits "
+                            f"were already present; applying the rest")
+        pl.new_text = new_text
+        pl.new_bytes = encode_text(new_text, bom)
+        pl.action = "identical" if pl.new_bytes == pl.old_bytes else "update"
+
+    def _plan_file(self, pl: Plan) -> None:
+        prop = pl.proposal
+        content = (prop.content or "").replace("\r\n", "\n")
+        if not content.strip():
+            pl.problems.append("empty content")
+            return
+        rel = pl.rel or ""
+        if pl.old_bytes is not None:
+            try:
+                old_text, bom = decode_strict(pl.old_bytes)
+            except NotText as exc:
+                pl.problems.append(f"refusing to overwrite: existing file {exc}")
+                return
+            pl.old_text = old_text
+            eol = dominant_eol(old_text)
+            new_text = content.replace("\n", eol) if eol == "\r\n" else content
+            pl.new_text = new_text
+            pl.new_bytes = encode_text(new_text, bom)
+            if normalise_for_compare(old_text) == normalise_for_compare(content):
+                pl.action = "identical"
+                pl.new_bytes, pl.new_text = pl.old_bytes, old_text
+                return
+            pl.action = "update"
+            cur_sha = sha256_bytes(pl.old_bytes)
+            if prop.base_sha == "":
+                msg = ("this file did NOT exist when the reply was staged, but exists now - "
+                       "writing would overwrite a file Kimi never saw")
+                (pl.notes if self.opt.allow_stale else pl.problems).append(
+                    msg + ("" if self.opt.allow_stale else ". --allow-stale to override"))
+            if prop.base_sha is not None and prop.base_sha and cur_sha != prop.base_sha:
+                msg = ("file changed on disk AFTER this reply was staged; writing the whole file "
+                       "would silently revert that change")
+                (pl.notes if self.opt.allow_stale else pl.problems).append(
+                    msg + ("" if self.opt.allow_stale else ". Ask for EDIT blocks, or --allow-stale"))
+            if prop.known_bases:
+                cmp_old = normalise_for_compare(old_text)
+                if not any(normalise_for_compare(b) == cmp_old for b in prop.known_bases):
+                    base = prop.known_bases[0]
+                    nchg = sum(1 for ln in difflib.unified_diff(
+                        normalise_for_compare(base).split("\n"), cmp_old.split("\n"), n=0)
+                        if ln[:1] in "+-" and not ln.startswith(("+++", "---")))
+                    msg = (f"STALE BASE: your file differs from the version Kimi was shown "
+                           f"(~{nchg} changed lines). A whole-file write would revert them")
+                    (pl.notes if self.opt.allow_stale else pl.problems).append(
+                        msg + ("" if self.opt.allow_stale else " - ask for EDIT blocks, or --allow-stale"))
+            old_lines = old_text.count("\n") + 1
+            new_lines = content.count("\n") + 1
+            if (not self.opt.allow_shrink and old_lines > 40
+                    and new_lines < old_lines * self.opt.shrink_ratio):
+                pl.problems.append(
+                    f"content shrank {old_lines} -> {new_lines} lines (< {int(self.opt.shrink_ratio * 100)}%); "
+                    f"looks truncated. --allow-shrink to override")
+            for pat in ELISION:
+                m = pat.search(content)
+                if m and not pat.search(old_text):
+                    line = content[:m.start()].count("\n") + 1
+                    pl.problems.append(f"placeholder at line {line}: {m.group(0).strip()[:60]!r} - "
+                                       f"this is a summary, not a whole file")
+                    break
+            return
+
+        # ---- create ----
+        pl.action = "create"
+        if not self.opt.allow_new_files:
+            pl.problems.append("new file; --allow-new-files to permit")
+        mis = self.index.suffix_matches(rel) if "/" in rel else self.index.basename_matches(rel)
+        mis = [m for m in mis if m.casefold() != rel.casefold()]
+        if mis and ("/" in rel or len(mis) == 1):
+            pl.problems.append(
+                f"looks mis-pathed: {mis[0]} already exists and ends with this path. Creating "
+                f"{rel} would add a DUPLICATE. Re-emit with the exact path")
+        else:
+            same_name = [m for m in self.index.basename_matches(rel.rsplit("/", 1)[-1])
+                         if m.casefold() != rel.casefold()]
+            if same_name:
+                pl.notes.append(f"a file with this name also exists at {', '.join(same_name[:3])}")
+        parent_parts = rel.split("/")[:-1]
+        missing: List[str] = []
+        for k in range(1, len(parent_parts) + 1):
+            d = "/".join(parent_parts[:k])
+            if not (self.root / d).is_dir():
+                if (self.root / d).exists():
+                    pl.problems.append(f"{d} exists but is not a directory")
+                    return
+                missing.append(d)
+        if missing:
+            pl.dirs_to_create = missing
+            if not self.opt.allow_new_dirs:
+                pl.problems.append(f"would create new director{'y' if len(missing) == 1 else 'ies'} "
+                                   f"{missing[-1]}/ - often a mis-pathed file. --allow-new-dirs to permit")
+            else:
+                pl.notes.append(f"creates director{'y' if len(missing) == 1 else 'ies'}: {', '.join(missing)}")
+        for pat in ELISION:
+            m = pat.search(content)
+            if m:
+                line = content[:m.start()].count("\n") + 1
+                pl.problems.append(f"placeholder at line {line}: {m.group(0).strip()[:60]!r}")
+                break
+        if not missing:
+            parent = self.root.joinpath(*parent_parts) if parent_parts else self.root
+            try:
+                siblings = [s for s in parent.iterdir() if s.is_file() and s.suffix == Path(rel).suffix]
+            except OSError:
+                siblings = []
+            for s in siblings[:60]:
+                try:
+                    other = s.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                if len(other) > 400 and difflib.SequenceMatcher(None, other, content, autojunk=False).quick_ratio() > 0.9:
+                    if difflib.SequenceMatcher(None, other, content, autojunk=False).ratio() > 0.85:
+                        pl.notes.append(f"content is >85% the same as existing {s.name} - a copy "
+                                        f"under a new name?")
+                        break
+        eol = gitattributes_eol(self.root, rel)
+        pl.new_text = content.replace("\n", eol) if eol == "\r\n" else content
+        pl.new_bytes = encode_text(pl.new_text, False)
+
+    # -- previews -----------------------------------------------------
+    def write_preview(self, plans: List[Plan], dest: Path) -> int:
+        chunks: List[str] = []
+        for pl in plans:
+            if not pl.changes:
+                continue
+            old = (pl.old_text or "").replace("\r\n", "\n").splitlines(keepends=True)
+            new = (pl.new_text or "").replace("\r\n", "\n").splitlines(keepends=True)
+            a = f"a/{pl.rel}" if pl.action != "create" else "/dev/null"
+            chunks.extend(difflib.unified_diff(old, new, a, f"b/{pl.rel}", n=3))
+            if chunks and not chunks[-1].endswith("\n"):
+                chunks.append("\n")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("".join(chunks) or "(no changes)\n", encoding="utf-8", newline="\n")
+        return sum(1 for c in chunks if c.startswith(("+", "-")) and not c.startswith(("+++", "---")))
+
+    # -- pass 2 -------------------------------------------------------
+    def apply(self, plans: List[Plan], meta: Dict[str, Any],
+              _write: Any = None) -> Dict[str, Any]:
+        """Write every changed plan, or none. Order of operations is the
+        whole guarantee:
+          1. re-read each target; abort if it moved since pass 1
+          2. back up every original, then re-read the backup and verify it
+          3. write the manifest (status=writing) BEFORE touching the repo
+          4. write each file atomically, then re-read and verify it
+          5. any failure -> restore everything already written, verified
+        """
+        write = _write or write_bytes_atomic
+        todo = [p for p in plans if p.changes]
+        if any(p.problems for p in plans):
+            raise ApplyAborted("refusing to write: pass 1 reported problems")
+        seq = time.time_ns()
+        mid = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        backup_root = self.backup_dir / mid
+        manifest_path = self.backup_dir / f"manifest_{mid}.json"
+
+        for p in todo:                                       # 1
+            assert p.target is not None
+            now = read_bytes_or_none(p.target)
+            if now != p.old_bytes:
+                raise ApplyAborted(f"{p.rel} changed while kimicli was running - nothing written; "
+                                   f"run the command again")
+
+        entries: List[Dict[str, Any]] = []
+        for p in todo:                                       # 2
+            assert p.rel is not None and p.new_bytes is not None
+            entry: Dict[str, Any] = {
+                "path": p.rel, "action": p.action,
+                "before_sha": sha256_bytes(p.old_bytes) if p.old_bytes is not None else None,
+                "after_sha": sha256_bytes(p.new_bytes),
+                "backup": None, "created_dirs": list(p.dirs_to_create),
+                "source": p.proposal.source,
+            }
+            if p.old_bytes is not None:
+                dest = backup_root / "files" / p.rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                write_bytes_atomic(dest, p.old_bytes)
+                if sha256_bytes(dest.read_bytes()) != entry["before_sha"]:
+                    raise ApplyAborted(f"backup of {p.rel} did not verify - nothing written")
+                entry["backup"] = (Path(mid) / "files" / p.rel).as_posix()
+            entries.append(entry)
+
+        manifest: Dict[str, Any] = {                         # 3
+            "version": MANIFEST_VERSION, "id": mid, "seq": seq,
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "root": str(self.root), "status": "writing", **meta,
+            "git": git_snapshot(self.root, mid),
+            "entries": entries,
+        }
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        write_bytes_atomic(manifest_path, json.dumps(manifest, indent=2).encode("utf-8"))
+
+        done: List[Tuple[Plan, Dict[str, Any]]] = []
+        try:                                                 # 4
+            for p, entry in zip(todo, entries):
+                assert p.target is not None and p.new_bytes is not None
+                for d in p.dirs_to_create:
+                    (self.root / d).mkdir(exist_ok=True)
+                done.append((p, entry))
+                write(p.target, p.new_bytes, p.target if p.action == "update" else None)
+                if sha256_bytes(p.target.read_bytes()) != entry["after_sha"]:
+                    raise ApplyAborted(f"{p.rel} did not read back as written")
+        except BaseException as exc:                         # 5
+            report = self._rollback(done, backup_root)
+            manifest["status"] = "rolled_back" if not report else "rollback_incomplete"
+            manifest["error"] = f"{type(exc).__name__}: {exc}"
+            manifest["rollback_problems"] = report
+            write_bytes_atomic(manifest_path, json.dumps(manifest, indent=2).encode("utf-8"))
+            if report:
+                raise ApplyAborted(
+                    f"write failed ({exc}) and the automatic rollback could not restore: "
+                    f"{'; '.join(report)}. Backups are in {backup_root}"
+                    + (f"; git snapshot {manifest['git'].get('snapshot')}" if manifest.get("git") else ""))
+            raise ApplyAborted(f"write failed ({type(exc).__name__}: {exc}); every file was restored "
+                               f"to its original bytes and verified. Nothing changed.") from exc
+
+        manifest["status"] = "complete"
+        manifest["completed"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        write_bytes_atomic(manifest_path, json.dumps(manifest, indent=2).encode("utf-8"))
         return manifest
 
-    # -- undo -------------------------------------------------------
-    def undo(self, manifest_id: str) -> None:
-        path = (BACKUP_DIR / f"manifest_{manifest_id}.json")
-        if not path.exists():
-            candidates = sorted(BACKUP_DIR.glob("manifest_*.json"))
-            if manifest_id == "last" and candidates:
-                path = max(candidates, key=lambda p: p.stat().st_mtime)
-            else:
-                print(f"No manifest '{manifest_id}'. Available: "
-                      f"{', '.join(c.stem.replace('manifest_', '') for c in candidates) or '(none)'}")
-                return
-        manifest = json.loads(read_text(path))
-        if manifest.get("dry_run"):
-            print("That manifest was a dry run; nothing was written, nothing to undo.")
-            return
-
-        restore, remove, refuse = [], [], []
-        for entry in manifest["files"]:
-            target = self.root / entry["path"]
-            if entry["action"] == "identical":
-                continue
-            if target.exists():
-                current = hashlib.sha256(target.read_bytes()).hexdigest()
-                if current != entry["sha256_after"]:
-                    refuse.append(entry["path"])
-                    continue
-            (restore if entry["backup"] else remove).append(entry)
-
-        print(f"\nUndo {manifest['id']} ({manifest['created']}):")
-        for e in restore:
-            print(f"  restore  {e['path']}")
-        for e in remove:
-            print(f"  delete   {e['path']}  (was created by this apply)")
-        for p in refuse:
-            print(f"  SKIP     {p}  - changed since the apply; refusing to overwrite your edits")
-        if not restore and not remove:
-            print("  nothing to do.")
-            return
-        if not confirm("Proceed?"):
-            print("Cancelled.")
-            return
-        for e in restore:
-            shutil.copy2(BACKUP_DIR / e["backup"], self.root / e["path"])
-        for e in remove:
-            tgt = self.root / e["path"]
-            if tgt.exists():
-                tgt.unlink()
-        print("Undo complete.")
+    def _rollback(self, done: List[Tuple[Plan, Dict[str, Any]]], backup_root: Path) -> List[str]:
+        problems: List[str] = []
+        for p, entry in reversed(done):
+            assert p.target is not None
+            try:
+                cur = read_bytes_or_none(p.target)
+                cur_sha = sha256_bytes(cur) if cur is not None else None
+                if entry["action"] == "create":
+                    if cur is not None and cur_sha == entry["after_sha"]:
+                        _unlink_with_retry(p.target)
+                    elif cur is not None:
+                        problems.append(f"{p.rel}: unexpected content, left in place")
+                    for d in reversed(entry["created_dirs"]):
+                        try:
+                            (self.root / d).rmdir()
+                        except OSError:
+                            pass
+                else:
+                    if cur_sha != entry["before_sha"]:
+                        write_bytes_atomic(p.target, p.old_bytes or b"", p.target)
+                    if sha256_bytes(p.target.read_bytes()) != entry["before_sha"]:
+                        problems.append(f"{p.rel}: restore did not verify")
+            except Exception as exc:
+                problems.append(f"{p.rel}: {exc}")
+        return problems
 
 
-def run_apply(proposals: List[Tuple[str, str]], args: argparse.Namespace) -> int:
-    """The whole point: pass 1 decides, pass 2 executes, or nothing happens."""
-    applier = Applier(PROJECT_ROOT, allow_new=args.allow_new_files,
-                      allow_shrink=args.allow_shrink)
-    if not proposals:
-        print("No '### FILE:' blocks found in that response.")
-        return 1
+# ==========================================================================
+# Manifests: history and a verified, all-or-nothing, idempotent undo
+# ==========================================================================
 
-    print(f"\nPASS 1 - validating {len(proposals)} proposed file(s). Nothing is written.\n")
-    plans = applier.validate(proposals)
-    bad = [p for p in plans if p.problems]
-    for p in plans:
-        mark = "FAIL" if p.problems else ("same" if p.action == "identical" else p.action.upper())
-        print(f"  [{mark:^6}] {p.path}")
-        for n in p.notes:
-            print(f"            note: {n}")
-        for prob in p.problems:
-            print(f"            !! {prob}")
+def _load_manifest(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        m = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if "entries" not in m:                    # v2 manifest from the old kimicli
+        if m.get("dry_run"):
+            return None
+        m["legacy"] = True
+        m.setdefault("status", "complete")
+        m["entries"] = [{
+            "path": f["path"], "action": f.get("action", "update"),
+            "before_sha": f.get("sha256_before"), "after_sha": f.get("sha256_after"),
+            "backup": f.get("backup"), "created_dirs": [],
+        } for f in m.get("files", []) if f.get("action") != "identical"]
+    m["_path"] = str(path)
+    return m
 
-    if bad:
-        print(f"\nVALIDATION FAILED - {len(bad)} of {len(plans)} file(s) rejected. "
-              f"No files were modified.")
-        return 1
 
-    print(f"\nPASS 1 clean: {len(plans)} file(s) OK.")
-    if args.dry_run:
-        print("\nPASS 2 - DRY RUN, still writing nothing:\n")
-        applier.apply(plans, dry_run=True)
-        print("\nDry run complete. Re-run without --dry-run to apply.")
+def list_manifests(backup_dir: Path) -> List[Dict[str, Any]]:
+    out = []
+    if backup_dir.exists():
+        for p in backup_dir.glob("manifest_*.json"):
+            m = _load_manifest(p)
+            if m:
+                out.append(m)
+    out.sort(key=_manifest_order)
+    return out
+
+
+def _manifest_order(m: Dict[str, Any]) -> Tuple[int, str]:
+    """Newest-last. 'seq' (nanoseconds) orders two applies made in the same
+    second; the old v2 manifests only have a to-the-second 'created'."""
+    if isinstance(m.get("seq"), int):
+        return (m["seq"], str(m.get("id", "")))
+    try:
+        ts = int(time.mktime(time.strptime(str(m.get("created")), "%Y-%m-%d %H:%M:%S")) * 1_000_000_000)
+    except (ValueError, OverflowError):
+        ts = 0
+    return (ts, str(m.get("id", "")))
+
+
+def _state(cur: Optional[bytes], sha: Optional[str], legacy: bool) -> bool:
+    if cur is None or not sha:
+        return False
+    if sha256_bytes(cur) == sha:
+        return True
+    # the v2 kimicli hashed LF text but wrote CRLF files, so its after-hash
+    # never matched a CRLF file's bytes; accept that one known variant
+    return legacy and sha256_bytes(cur.replace(b"\r\n", b"\n")) == sha
+
+
+def undo(root: Path, backup_dir: Path, token: str, force: bool = False, assume_yes: bool = False) -> int:
+    manifests = list_manifests(backup_dir)
+    if token == "last":
+        live = [m for m in manifests if m.get("status") in ("complete", "writing", "rollback_incomplete")]
+        if not live:
+            print("Nothing to undo: no applied change set that has not already been undone.")
+            return 1
+        m = live[-1]
+    else:
+        match = [m for m in manifests if m.get("id") == token]
+        if not match:
+            ids = ", ".join(str(x.get("id")) for x in manifests[-8:]) or "(none)"
+            print(f"No manifest '{token}'. Recent: {ids}")
+            return 1
+        m = match[0]
+    if m.get("status") == "undone":
+        print(f"{m['id']} was already undone at {m.get('undone_at')}.")
+        return 0
+    if m.get("status") == "rolled_back":
+        print(f"{m['id']} was rolled back automatically when it failed; nothing to undo.")
         return 0
 
-    changed = [p for p in plans if p.action != "identical"]
-    if changed and not args.yes:
+    try:
+        same_root = Path(str(m.get("root", root))).resolve() == root.resolve()
+    except OSError:
+        same_root = False
+    if not same_root and not force:
+        print(f"Manifest {m['id']} was written for {m.get('root')}, not {root}. Refusing "
+              f"(--force to override).")
+        return 1
+
+    legacy = bool(m.get("legacy"))
+    plan: List[Tuple[str, Dict[str, Any], Optional[bytes], Optional[bytes]]] = []
+    blocked: List[str] = []
+    for e in m["entries"]:
+        target = root.joinpath(*e["path"].split("/"))
+        cur = read_bytes_or_none(target)
+        if e["action"] == "create":
+            if cur is None:
+                plan.append(("have", e, cur, None))
+            elif _state(cur, e["after_sha"], legacy):
+                plan.append(("delete", e, cur, None))
+            else:
+                (plan.append(("delete-forced", e, cur, None)) if force
+                 else blocked.append(f"{e['path']}: edited since kimicli created it"))
+            continue
+        bk = backup_dir.joinpath(*e["backup"].split("/")) if e.get("backup") else None
+        orig = read_bytes_or_none(bk) if bk else None
+        if orig is None or (e.get("before_sha") and sha256_bytes(orig) != e["before_sha"]):
+            blocked.append(f"{e['path']}: backup missing or damaged - use the git snapshot "
+                           f"{(m.get('git') or {}).get('snapshot', '(none)')}")
+            continue
+        if cur is not None and sha256_bytes(cur) == sha256_bytes(orig):
+            plan.append(("have", e, cur, orig))
+        elif _state(cur, e["after_sha"], legacy):
+            plan.append(("restore", e, cur, orig))
+        elif force:
+            plan.append(("restore-forced", e, cur, orig))
+        else:
+            blocked.append(f"{e['path']}: changed since the apply (your edits, or a later apply)")
+
+    print(f"\nUndo {m['id']}  (applied {m.get('created')}, status {m.get('status')})")
+    for kind, e, _, _ in plan:
+        label = {"have": "[have]  ", "restore": "restore ", "delete": "delete  ",
+                 "restore-forced": "RESTORE!", "delete-forced": "DELETE! "}[kind]
+        print(f"  {label} {e['path']}")
+    if blocked:
+        print("\nREFUSED - undo is all-or-nothing, and these files cannot be restored safely:")
+        for b in blocked:
+            print(f"  !! {b}")
+        print("\nNothing was changed. If the changes listed are ones you are happy to lose, "
+              "run again with --force:\nevery file it overwrites or removes is saved first, "
+              "so even --force loses nothing.")
+        return 1
+    work = [x for x in plan if x[0] != "have"]
+    if not work:
+        _mark_undone(m, backup_dir)
+        print("  already fully undone - nothing to do.")
+        return 0
+    if not assume_yes and not confirm("Proceed?"):
+        print("Cancelled. Nothing was changed.")
+        return 1
+
+    # Save what is there NOW before replacing it - undo can itself be undone
+    # by hand, and --force never destroys anything.
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    saved = backup_dir / m["id"] / f"undo_{stamp}"
+    for _kind, e, cur, _ in work:
+        if cur is not None:
+            dest = saved / e["path"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            write_bytes_atomic(dest, cur)
+    failures: List[str] = []
+    for kind, e, _cur, orig in work:
+        target = root.joinpath(*e["path"].split("/"))
+        try:
+            if kind.startswith("delete"):
+                _unlink_with_retry(target)
+                for d in reversed(e.get("created_dirs") or []):
+                    try:
+                        (root / d).rmdir()
+                    except OSError:
+                        pass
+                if target.exists():
+                    failures.append(f"{e['path']}: still present")
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                write_bytes_atomic(target, orig or b"", target if target.exists() else None)
+                if sha256_bytes(target.read_bytes()) != sha256_bytes(orig or b""):
+                    failures.append(f"{e['path']}: restore did not verify")
+        except Exception as exc:
+            failures.append(f"{e['path']}: {exc}")
+    if failures:
+        print("\n!! Undo hit problems (run the same --undo again; finished files are skipped):")
+        for f in failures:
+            print(f"  !! {f}")
+        return 1
+    _mark_undone(m, backup_dir, str(saved))
+    print(f"\nUndo complete - every file verified byte-for-byte against its backup."
+          f"\n(What was there before the undo is saved in {saved})")
+    return 0
+
+
+def _mark_undone(m: Dict[str, Any], backup_dir: Path, saved: str = "") -> None:
+    path = Path(m["_path"])
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    raw["status"] = "undone"
+    raw["undone_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    if saved:
+        raw["undo_saved"] = saved
+    write_bytes_atomic(path, json.dumps(raw, indent=2).encode("utf-8"))
+
+
+def print_history(backup_dir: Path, limit: int = 15) -> None:
+    ms = list_manifests(backup_dir)
+    if not ms:
+        print("No applies recorded yet.")
+        return
+    print(f"\n  {'id':<24} {'applied':<20} {'status':<20} files  source")
+    for m in ms[-limit:]:
+        n = len(m.get("entries", []))
+        src = m.get("source", "legacy v2" if m.get("legacy") else "")
+        print(f"  {str(m.get('id')):<24} {str(m.get('created')):<20} {str(m.get('status')):<20} "
+              f"{n:>5}  {src}")
+    print("\n  Undo the newest live one:  python kimicli.py --undo last\n")
+
+
+# ==========================================================================
+# Repair prompts: turn every failure into a cheap, exact follow-up turn
+# ==========================================================================
+
+def build_repair_prompt(plans: List[Plan], parse_problems: List[ParseProblem], turn: Optional[int]) -> str:
+    lines = [
+        "REPAIR REQUEST - your last change set could not be applied, so NOTHING was written.",
+        "",
+        "Re-emit the change blocks for the files listed below and ONLY those files. For each one,",
+        "re-emit ALL of its blocks (not just the failed one): the latest emission for a file",
+        "replaces every earlier one. Files not listed here are fine - do not re-emit them.",
+        "Copy every SEARCH character-for-character from the CURRENT text shown here, not from",
+        "the codebase dump (the file may have changed since the dump was made).",
+        "Finish with the line ### END CHANGES.",
+        "",
+    ]
+    n = 0
+    for pp in parse_problems:
+        if pp.severity != "error":
+            continue
+        n += 1
+        where = f" ({pp.path})" if pp.path else ""
+        lines.append(f"{n}. Reply line {pp.line}{where}: {pp.message}")
+    for pl in plans:
+        if not pl.problems:
+            continue
+        n += 1
+        lines.append(f"{n}. {pl.rel or pl.proposal.raw_path}:")
+        for pr in pl.problems:
+            lines.append(f"   - {pr}")
+        for o in pl.outcomes:
+            if o.status == "failed" and o.diag:
+                lines.append(f"   Current text of the closest region to edit #{o.index}'s SEARCH "
+                             f"({_similar_pct(o.diag['ratio'])}% similar) - line numbers are for "
+                             f"reference only, do not copy them:")
+                lines.append("   ```")
+                lines.extend("   " + x for x in o.diag["excerpt"].split("\n"))
+                lines.append("   ```")
+        lines.append("")
+    if n == 0:
+        return ""
+    return "\n".join(lines).rstrip() + "\n"
+
+
+# ==========================================================================
+# Staging a reply: parse -> group per file -> trial-resolve against the live
+# tree -> record -> preview diff -> repair prompt when anything is wrong
+# ==========================================================================
+
+REPAIR_TAG_RE = re.compile(r"\[kimicli-repair-of-turn:\s*(\d+)\]")
+
+
+@dataclass
+class Group:
+    key: str                      # casefolded normalised path (or raw, if unnormalisable)
+    raw_path: str
+    kind: str                     # "file" | "edit"
+    line: int
+    edits: List[EditBlock] = field(default_factory=list)
+    content: Optional[str] = None
+    style: str = "header"
+
+
+def group_blocks(pr: ParseResult, root: Path) -> Tuple[List[Group], List[ParseProblem]]:
+    """One Group per file, in first-seen order. Several EDIT blocks for one
+    file merge in emission order; a FILE twice, or FILE and EDIT mixed for the
+    same file, is an error rather than a guess."""
+    groups: Dict[str, Group] = {}
+    order: List[str] = []
+    problems: List[ParseProblem] = []
+    for b in pr.blocks:
+        try:
+            key = normalize_rel(b.path, root).casefold()
+        except PathRefused as exc:
+            problems.append(ParseProblem(b.line, f"path refused: {exc}", path=b.path))
+            key = b.path.strip().casefold()
+        g = groups.get(key)
+        if g is None:
+            g = Group(key=key, raw_path=b.path, kind=b.kind, line=b.line, style=b.style)
+            groups[key] = g
+            order.append(key)
+        elif g.kind != b.kind:
+            problems.append(ParseProblem(b.line, f"{b.path} is sent both as FILE and as EDIT in one "
+                                                 f"reply - send one or the other", path=b.path))
+            continue
+        elif b.kind == "file":
+            problems.append(ParseProblem(b.line, f"{b.path} is sent as a whole FILE twice in one "
+                                                 f"reply", path=b.path))
+            continue
+        if b.kind == "edit" and b.edit is not None:
+            g.edits.append(b.edit)
+        else:
+            g.content = b.content
+    return [groups[k] for k in order], problems
+
+
+def announcement_problems(pr: ParseResult, groups: List[Group], root: Path) -> List[ParseProblem]:
+    """The contract makes Kimi list every file before the first block. A file
+    announced but never emitted is the signature of an omission or a cut-off
+    reply - the half-applied change this tool exists to prevent."""
+    out: List[ParseProblem] = []
+    emitted = [g.key for g in groups]
+    for line, path, kind in pr.announced:
+        try:
+            key = normalize_rel(path, root).casefold()
+        except PathRefused:
+            continue
+        if not any(e == key or e.endswith("/" + key) or key.endswith("/" + e) for e in emitted):
+            out.append(ParseProblem(line, f"{path} was announced as {kind.upper()} but no block for "
+                                          f"it appears in the reply", path=path))
+    return out
+
+
+def codebase_versions(messages: List[Dict[str, Any]], root: Path) -> Dict[str, str]:
+    """casefolded rel path -> that file's text as the model was shown it in
+    the codebase dump. Empty if the dump format is not recognised."""
+    for m in messages:
+        c = m.get("content")
+        if m.get("role") == "system" and isinstance(c, str) and c.startswith("<codebase"):
+            body = c.split("\n", 1)[1] if "\n" in c else ""
+            if body.endswith("</codebase>"):
+                body = body[: -len("</codebase>")]
+            hits = list(SECTION_PATTERNS[0].finditer(body))
+            out: Dict[str, str] = {}
+            for i, h in enumerate(hits):
+                end = hits[i + 1].start() if i + 1 < len(hits) else len(body)
+                text = body[h.end():end]
+                if text.startswith("\n"):
+                    text = text[1:]
+                try:
+                    out[normalize_rel(h.group("path"), root).casefold()] = text
+                except PathRefused:
+                    continue
+            return out
+    return {}
+
+
+def attachment_versions(messages: List[Dict[str, Any]], root: Optional[Path] = None) -> Dict[str, List[str]]:
+    """Normalised, casefolded repo path -> texts of attachments announced
+    under it. Attachments are announced by repo-relative path (_attach_label);
+    one from outside the root, or from a session made before that change, is
+    announced by bare basename and is keyed by that basename."""
+    out: Dict[str, List[str]] = {}
+    for m in messages:
+        c = m.get("content")
+        if m.get("role") != "user" or not isinstance(c, str) or "<attachment" not in c:
+            continue
+        for a in re.finditer(r'<attachment name="([^"]+)">\n(.*?)\n</attachment>', c, re.S):
+            try:
+                key = normalize_rel(a.group(1), root or PROJECT_ROOT).casefold()
+            except PathRefused:
+                key = a.group(1).strip().casefold()
+            out.setdefault(key, []).append(a.group(2))
+    return out
+
+
+def attached_bases(attach: Dict[str, List[str]], key: str) -> List[str]:
+    """Texts the model was shown for the file at `key`: attachments announced
+    under its full path, plus any announced under its bare basename. Keying
+    the lookup by basename alone (as before) never matched a path-labelled
+    attachment, so the STALE BASE guard never saw what Kimi was shown."""
+    out = list(attach.get(key, []))
+    base = key.rsplit("/", 1)[-1]
+    if base != key:
+        out += attach.get(base, [])
+    return out
+
+
+def _proposal_from_group(g: Group, source: str, root: Path) -> Proposal:
+    return Proposal(raw_path=g.raw_path, kind=g.kind, content=g.content,
+                    edits=list(g.edits), source=source)
+
+
+@dataclass
+class StageSummary:
+    turn: int
+    parse: ParseResult
+    group_problems: List[ParseProblem]
+    plans: List[Plan]
+    repair_path: Optional[Path] = None
+    preview_path: Optional[Path] = None
+    changed_lines: int = 0
+    philosophy_check: bool = True
+
+
+PHILOSOPHY_CHECK_RE = re.compile(r"^[#>*\s_\d.)]*PHILOSOPHY CHECK\b", re.I | re.M)
+
+
+def has_philosophy_check(reply: str) -> bool:
+    """True when the reply carries the PHILOSOPHY CHECK section the method rules
+    require - as a heading, bold text or a numbered item at the start of a line."""
+    return bool(PHILOSOPHY_CHECK_RE.search(reply or ""))
+
+
+def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optional[str]) -> StageSummary:
+    session.save_reply(turn, reply)
+    pr = parse_changes(reply)
+    if pr.blocks and not pr.end_marker:
+        cut = finish_reason in ("length", "error", "interrupted")
+        pr.problems.append(ParseProblem(
+            0, ("the reply ENDED EARLY (finish_reason=" + str(finish_reason) + ") and never "
+                "reached '### END CHANGES' - blocks after the cut are missing") if cut else
+               "no '### END CHANGES' line after the last block - if the reply was cut short, a "
+               "file may be missing", severity="error" if cut else "warning"))
+    groups, gprobs = group_blocks(pr, PROJECT_ROOT)
+    gprobs += announcement_problems(pr, groups, PROJECT_ROOT)
+
+    last_user = next((m for m in reversed(session.messages) if m.get("role") == "user"), None)
+    repairs = None
+    if last_user and isinstance(last_user.get("content"), str):
+        mt = REPAIR_TAG_RE.search(last_user["content"])
+        repairs = int(mt.group(1)) if mt else None
+
+    dump = codebase_versions(session.messages, PROJECT_ROOT)
+    attach = attachment_versions(session.messages, PROJECT_ROOT)
+    earlier: Dict[str, List[str]] = {}             # key -> earlier FILE texts in this session
+    for row in session.rows():
+        if row.get("kind", "file") == "file" and row.get("turn", 0) < turn:
+            k = row.get("key") or row["path"].casefold()
+            txt = session.read_artifact(row)
+            if isinstance(txt, str):
+                earlier.setdefault(k, []).append(txt)
+
+    proposals: List[Proposal] = []
+    for g in groups:
+        prop = _proposal_from_group(g, f"turn {turn}", PROJECT_ROOT)
+        try:
+            rel = normalize_rel(g.raw_path, PROJECT_ROOT)
+            disk = read_bytes_or_none(PROJECT_ROOT.joinpath(*rel.split("/")))
+            prop.base_sha = sha256_bytes(disk) if disk is not None else ""
+            if g.kind == "file" and disk is not None:
+                bases = []
+                if g.key in dump:
+                    bases.append(dump[g.key])
+                bases += attached_bases(attach, g.key)
+                bases += earlier.get(g.key, [])
+                prop.known_bases = bases
+        except PathRefused:
+            pass
+        proposals.append(prop)
+
+    trial = Applier(PROJECT_ROOT, BACKUP_DIR,
+                    ApplyOptions(allow_new_files=True, allow_new_dirs=True))
+    plans = trial.validate(proposals) if proposals else []
+
+    # A row is keyed by the file the block RESOLVED to, not the path the model
+    # wrote. Otherwise an EDIT sent to a wrong directory (re-pointed by unique
+    # basename) and its re-emission at the right path in a later turn are two
+    # different "files": both survive "latest emission per file", and the
+    # apply is refused as the same file changed twice in one batch.
+    resolved: Dict[str, str] = {}
+    for g, pl in zip(groups, plans):
+        resolved[g.key] = pl.rel.casefold() if pl.rel else g.key
+
+    rows = []
+    for g, prop, pl in zip(groups, proposals, plans):
+        staged = (session.stage_edits(g.raw_path, g.edits, turn) if g.kind == "edit"
+                  else session.stage(g.raw_path, g.content or "", turn))
+        rows.append({
+            "turn": turn, "kind": g.kind, "path": g.raw_path, "key": resolved[g.key],
+            "blocks": len(g.edits) if g.kind == "edit" else 1,
+            "staged": staged.relative_to(session.dir).as_posix(),
+            "sha256": sha256_bytes(staged.read_bytes()),
+            "base_sha": prop.base_sha,
+            "after_sha": sha256_bytes(pl.new_bytes) if (pl.new_bytes is not None and not pl.problems) else None,
+            "known_bases": len(prop.known_bases),
+            "trial": "ok" if not pl.problems else "problem",
+        })
+    if rows:
+        session.append_rows(rows)
+
+    all_parse = pr.problems + gprobs
+    session.write_parse_report(turn, {
+        "turn": turn, "finish_reason": finish_reason, "repairs": repairs,
+        "end_marker": pr.end_marker, "blocks": len(pr.blocks), "files": len(groups),
+        "blocks_after_end": pr.blocks_after_end,
+        "problems": [{"line": p.line, "message": p.message, "severity": p.severity,
+                      "key": _resolved_key(p.path, resolved)} for p in all_parse],
+    })
+
+    summary = StageSummary(turn=turn, parse=pr, group_problems=gprobs, plans=plans,
+                           philosophy_check=has_philosophy_check(reply))
+    if plans:
+        summary.preview_path = session.dir / f"preview_turn{turn}.diff"
+        summary.changed_lines = trial.write_preview(plans, summary.preview_path)
+    errors = [p for p in all_parse if p.severity == "error"]
+    if errors or any(pl.problems for pl in plans):
+        body = build_repair_prompt([pl for pl in plans if pl.problems], errors, turn)
+        if body:
+            summary.repair_path = session.dir / f"repair_turn{turn}.md"
+            atomic_write(summary.repair_path, body + f"\n[kimicli-repair-of-turn: {turn}]\n")
+    return summary
+
+
+def _key_or_none(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    try:
+        return normalize_rel(path, PROJECT_ROOT).casefold()
+    except PathRefused:
+        return path.strip().casefold()
+
+
+def _resolved_key(path: Optional[str], resolved: Dict[str, str]) -> Optional[str]:
+    k = _key_or_none(path)
+    return resolved.get(k, k) if k else None
+
+
+def _rel_display(p: Path) -> str:
+    """Relative when you are standing in the project root (the usual case),
+    absolute otherwise - a --prompt path that does not resolve is sent as
+    literal text, which once cost a full call."""
+    try:
+        if Path.cwd().resolve() == PROJECT_ROOT.resolve():
+            return str(p.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except (ValueError, OSError):
+        pass
+    return str(p.resolve())
+
+
+def print_stage_summary(s: StageSummary, session: "Session") -> None:
+    """Printed LAST, after the usage summary, so it is the final thing on screen."""
+    pr = s.parse
+    n_edit = sum(1 for b in pr.blocks if b.kind == "edit")
+    n_file = sum(1 for b in pr.blocks if b.kind == "file")
+    files = len(s.plans)
+    errors = [p for p in pr.problems + s.group_problems if p.severity == "error"]
+    warnings = [p for p in pr.problems + s.group_problems if p.severity != "error"]
+    if not pr.blocks and not errors and not warnings:
+        return
+    print("\n" + "=" * 70)
+    print(f"CHANGES IN TURN {s.turn}: {n_edit} EDIT block(s) + {n_file} FILE block(s) across "
+          f"{files} file(s)   END marker: {'yes' if pr.end_marker else 'NO'}")
+    if pr.blocks and not s.philosophy_check:
+        print("  ! no PHILOSOPHY CHECK section in this reply - the method rules require one. "
+              "Nothing is blocked; review the change against ENGINEERING_PHILOSOPHY.md yourself.")
+    for pl in s.plans:
+        kind = pl.proposal.kind.upper()
+        if pl.problems:
+            state = "FAIL"
+        elif pl.action == "identical":
+            state = "same"
+        else:
+            state = "NEW " if pl.action == "create" else "ok  "
+        detail = ""
+        if pl.proposal.kind == "edit" and pl.outcomes:
+            ok = sum(1 for o in pl.outcomes if o.status == "applied")
+            detail = f"{ok}/{len(pl.outcomes)} edits resolve"
+        elif pl.new_text is not None:
+            detail = f"{pl.new_text.count(chr(10)) + 1} lines"
+        print(f"  [{state}] {kind:<4} {pl.rel or pl.proposal.raw_path}   {detail}")
+        for note in pl.notes:
+            print(f"           note: {note}")
+        for prob in pl.problems:
+            print(f"           !! {prob}")
+    for p in warnings:
+        print(f"  warning (reply line {p.line}): {p.message}")
+    for p in errors:
+        print(f"  !! (reply line {p.line}): {p.message}")
+    if s.preview_path:
+        print(f"\n  preview diff: {_rel_display(s.preview_path)}   ({s.changed_lines} changed lines)")
+    news = [pl for pl in s.plans if pl.action == "create" and not pl.problems]
+    if s.repair_path:
+        print("\n  NOT APPLICABLE AS-IS. Nothing will be written until this is fixed.")
+        print("  Send the ready-made repair NOW, while the cache is warm (a resume within minutes")
+        print("  is ~95% cached):")
+        print(f"\n    python kimicli.py --resume {session.id} --prompt "
+              f"{_rel_display(s.repair_path)} --request-code")
+    elif s.plans and any(pl.changes for pl in s.plans):
+        flag = " --allow-new-files" if news else ""
+        if any(pl.dirs_to_create for pl in news):
+            flag += " --allow-new-dirs"
+        print("\n  Every block resolves against your tree right now. Next:")
+        print(f"\n    python kimicli.py --apply-fixes {session.id} --dry-run{flag}")
+    elif s.plans:
+        print("\n  Every file already matches these blocks - nothing to apply.")
+    print("=" * 70)
+    session.printed_stage_summary = True
+
+
+# ==========================================================================
+# Loading what to apply from a session (or a saved reply file)
+# ==========================================================================
+
+def load_session_proposals(session: "Session", turns: Optional[Sequence[int]] = None,
+                           skips: Optional[Sequence[str]] = None
+                           ) -> Tuple[List[Proposal], List[str], List[str]]:
+    """Latest emission per file across the chosen turns.
+    Returns (proposals, blocking problems, info lines)."""
+    rows = session.rows()
+    info: List[str] = []
+    blocking: List[str] = []
+    if turns:
+        rows = [r for r in rows if int(r.get("turn", 0)) in set(turns)]
+    skip_keys = set()
+    for sp in skips or []:
+        k = _key_or_none(sp)
+        if k:
+            skip_keys.add(k)
+    chosen: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for r in rows:
+        k = r.get("key") or _key_or_none(r["path"]) or r["path"]
+        r["key"] = k
+        # --skip names either the real file or the path the model wrote.
+        if k in skip_keys or _key_or_none(r["path"]) in skip_keys:
+            continue
+        if k not in chosen:
+            order.append(k)
+        prev = chosen.get(k)
+        if prev is None or int(r.get("turn", 0)) >= int(prev.get("turn", 0)):
+            chosen[k] = r
+
+    # Parse problems block unless a later chosen emission supersedes them.
+    # Without --turn, EVERY turn is examined - including a turn that staged
+    # nothing because its only file was cut off mid-block.
+    all_reports = {t: session.parse_report(t) for t in session.turns_with_reports()}
+    sel_turns = sorted(set(turns)) if turns else sorted(all_reports)
+    reports = {t: all_reports.get(t) or session.parse_report(t) for t in sel_turns}
+    for t, rep in reports.items():
+        if not rep:
+            continue
+        for p in rep.get("problems", []):
+            if p.get("severity") != "error":
+                continue
+            k = p.get("key")
+            if k and k in skip_keys:
+                continue
+            # A later emission supersedes this problem when it is the same file -
+            # matched the way announcement_problems() matches, so a bare name a
+            # design-only turn announced ("orchestrator.py") is cleared by the
+            # full path the next turn emitted.
+            if k and any((ck == k or ck.endswith("/" + k) or k.endswith("/" + ck))
+                         and int(chosen[ck].get("turn", 0)) > t for ck in chosen):
+                continue
+            if not k and any((r or {}).get("repairs") == t for tt, r in all_reports.items() if tt > t):
+                continue
+            blocking.append(f"turn {t}, reply line {p.get('line')}: {p.get('message')}")
+
+    dump: Optional[Dict[str, str]] = None
+    attach: Optional[Dict[str, List[str]]] = None
+    out: List[Proposal] = []
+    for k in order:
+        r = chosen[k]
+        art = session.read_artifact(r)
+        if art is None:
+            blocking.append(f"staged artifact missing for {r['path']} (turn {r.get('turn')})")
+            continue
+        staged = session.dir / r["staged"]
+        if r.get("sha256") and staged.exists() and sha256_bytes(staged.read_bytes()) != r["sha256"]:
+            if not r["staged"].endswith(".edits.json") and "kind" in r:
+                info.append(f"{r['path']}: staged file was edited by hand after staging - using your edited version")
+        kind = r.get("kind", "file")
+        prop = Proposal(raw_path=r["path"], kind=kind, source=f"turn {r.get('turn')}",
+                        base_sha=r.get("base_sha") if "base_sha" in r else None,
+                        after_sha=r.get("after_sha"))
+        if kind == "edit":
+            prop.edits = art                       # type: ignore[assignment]
+        else:
+            prop.content = art                     # type: ignore[assignment]
+            if dump is None:
+                dump = codebase_versions(session.messages, PROJECT_ROOT)
+                attach = attachment_versions(session.messages, PROJECT_ROOT)
+            bases = []
+            if k in dump:
+                bases.append(dump[k])
+            bases += attached_bases(attach or {}, k)
+            for er in session.rows():
+                ek = er.get("key") or _key_or_none(er["path"])
+                if ek == k and er.get("kind", "file") == "file" and int(er.get("turn", 0)) < int(r.get("turn", 0)):
+                    t = session.read_artifact(er)
+                    if isinstance(t, str):
+                        bases.append(t)
+            prop.known_bases = bases
+        if "kind" not in r:
+            prop.notes.append("staged by the older kimicli (whole-file, no staging hash)")
+        out.append(prop)
+    return out, blocking, info
+
+
+#: kimicli's own transcript banner (Session.banner): "== TURN 3 - KIMI - effort=max".
+TRANSCRIPT_TURN_RE = re.compile(r"^== TURN (\d+) - (YOU|KIMI)\b[^\n]*$", re.M)
+
+
+def split_transcript_turns(text: str) -> Optional[Dict[int, str]]:
+    """Kimi's reply for each turn, when *text* is a kimicli transcript.md; else None.
+
+    A transcript holds every turn of a session and each reply ends with its own
+    ### END CHANGES. Parsed as ONE reply, every block after turn 1's END is
+    treated as discussion and never staged - so a multi-turn transcript applied
+    nothing. Each reply is returned on its own, banner rules stripped."""
+    marks = list(TRANSCRIPT_TURN_RE.finditer(text))
+    if not any(m.group(2) == "KIMI" for m in marks):
+        return None
+
+    def _rule(line: str) -> bool:
+        s = line.strip()
+        return not s or (len(s) >= 20 and set(s) == {"="})
+
+    out: Dict[int, str] = {}
+    for i, m in enumerate(marks):
+        if m.group(2) != "KIMI":
+            continue
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        lines = text[m.end():end].split("\n")
+        while lines and _rule(lines[0]):
+            lines.pop(0)
+        while lines and _rule(lines[-1]):
+            lines.pop()
+        out[int(m.group(1))] = "\n".join(lines) + "\n"
+    return out
+
+
+def proposals_from_text(text: str, source: str) -> Tuple[List[Proposal], List[str], ParseResult]:
+    pr = parse_changes(text)
+    groups, gprobs = group_blocks(pr, PROJECT_ROOT)
+    gprobs += announcement_problems(pr, groups, PROJECT_ROOT)
+    blocking = [f"reply line {p.line}: {p.message}" for p in pr.problems + gprobs if p.severity == "error"]
+    return [_proposal_from_group(g, source, PROJECT_ROOT) for g in groups], blocking, pr
+
+
+# ==========================================================================
+# --apply-fixes: pass 1 decides, pass 2 executes, or nothing happens
+# ==========================================================================
+
+def options_from_args(args: argparse.Namespace) -> ApplyOptions:
+    return ApplyOptions(
+        allow_new_files=bool(getattr(args, "allow_new_files", False)),
+        allow_new_dirs=bool(getattr(args, "allow_new_dirs", False)),
+        allow_shrink=bool(getattr(args, "allow_shrink", False)),
+        allow_stale=bool(getattr(args, "allow_stale", False)),
+        skip_checks=bool(getattr(args, "skip_checks", False)),
+    )
+
+
+def _preview_path(session, source: Optional[Path]) -> Path:
+    """Where this apply's diff is written.
+
+    A session keeps its own directory, so the diff lives beside the reply it
+    came from. A FILE-based apply used to write OUT_DIR/preview_apply.diff
+    unconditionally, which meant the next FILE-based apply silently destroyed
+    the record of the previous one. Keyed to the source file's stem instead,
+    and kept next to that file when it already sits under .kimi_out.
+    """
+    if session is not None:
+        return session.dir / "preview_apply.diff"
+    if source is None:
+        return OUT_DIR / "preview_apply.diff"
+    name = f"preview_apply_{source.stem}.diff"
+    try:
+        inside = str(source.resolve().parent).startswith(str(OUT_DIR.resolve()))
+    except OSError:
+        inside = False
+    return (source.resolve().parent if inside else OUT_DIR) / name
+
+
+def run_apply(proposals: List[Proposal], args: argparse.Namespace, *,
+             preview_source: Optional[Path] = None,
+              blocking: Optional[List[str]] = None, session: Optional["Session"] = None,
+              meta: Optional[Dict[str, Any]] = None) -> int:
+    blocking = blocking or []
+    if not proposals and not blocking:
+        print("No '### EDIT:' or '### FILE:' blocks to apply.")
+        return 1
+    applier = Applier(PROJECT_ROOT, BACKUP_DIR, options_from_args(args))
+    print(f"\nPASS 1 - resolving {len(proposals)} file change(s) against your tree. Nothing is written.\n")
+    plans = applier.validate(proposals)
+    for pl in plans:
+        if pl.problems:
+            mark = "FAIL"
+        elif pl.action == "identical":
+            mark = "same"
+        else:
+            mark = pl.action.upper()
+        extra = ""
+        if pl.proposal.kind == "edit" and pl.outcomes:
+            a = sum(1 for o in pl.outcomes if o.status == "applied")
+            h = sum(1 for o in pl.outcomes if o.status == "have")
+            extra = f"  ({a} edit(s) apply" + (f", {h} already present" if h else "") + ")"
+        elif pl.proposal.kind == "file" and pl.new_text is not None and pl.action != "identical":
+            old_n = (pl.old_text or "").count("\n") + (1 if pl.old_text else 0)
+            extra = f"  (whole file, {old_n} -> {pl.new_text.count(chr(10)) + 1} lines)"
+        print(f"  [{mark:^6}] {pl.rel or pl.proposal.raw_path}{extra}   <- {pl.proposal.source}")
+        for n in pl.notes:
+            print(f"            note: {n}")
+        for prob in pl.problems:
+            print(f"            !! {prob}")
+
+    bad = [p for p in plans if p.problems]
+    if blocking and not getattr(args, "accept_parse_errors", False):
+        print("\nThe reply itself had problems that no later turn fixed:")
+        for b in blocking:
+            print(f"  !! {b}")
+    preview = _preview_path(session, preview_source)
+    changed_lines = applier.write_preview(plans, preview)
+
+    if bad or (blocking and not getattr(args, "accept_parse_errors", False)):
+        print(f"\nVALIDATION FAILED - {len(bad)} of {len(plans)} file(s) rejected"
+              + (f", {len(blocking)} reply problem(s)" if blocking else "")
+              + ". NO FILES WERE MODIFIED.")
+        if session is not None:
+            last_turn = max((int(r.get("turn", 0)) for r in session.rows()), default=0)
+            body = build_repair_prompt(bad, [ParseProblem(0, b) for b in blocking], last_turn)
+            if body:
+                rp = session.dir / "repair_apply.md"
+                atomic_write(rp, body + f"\n[kimicli-repair-of-turn: {last_turn}]\n")
+                print("\nReady-made repair prompt (cheapest while the cache is warm):")
+                print(f"\n  python kimicli.py --resume {session.id} --prompt {_rel_display(rp)} --request-code")
+        return 1
+
+    todo = [p for p in plans if p.changes]
+    print(f"\nPASS 1 clean: {len(plans)} file(s) OK, {len(todo)} to write, "
+          f"{len(plans) - len(todo)} already identical.")
+    print(f"Preview of every change ({changed_lines} lines): {_rel_display(preview)}")
+    if not todo:
+        print("Nothing to write - the tree already matches.")
+        return 0
+    if args.dry_run:
+        print("\nDRY RUN - nothing was written. Re-run without --dry-run to apply.")
+        return 0
+    if not args.yes:
         print()
-        if not confirm(f"Write {len(changed)} file(s) to {PROJECT_ROOT}? (backups are taken)"):
+        if not confirm(f"Write {len(todo)} file(s) to {PROJECT_ROOT}? (verified backups are taken first)"):
             print("Cancelled. Nothing was modified.")
             return 1
-    print("\nPASS 2 - writing:\n")
-    manifest = applier.apply(plans, dry_run=False)
-    print(f"\nDone. Manifest {manifest['id']}. To revert:  python kimicli.py --undo {manifest['id']}")
+    print("\nPASS 2 - writing (backup -> verify -> write -> verify, rollback on any failure):\n")
+    try:
+        manifest = applier.apply(plans, meta or {})
+    except ApplyAborted as exc:
+        print(f"\n!! {exc}")
+        return 1
+    for e in manifest["entries"]:
+        print(f"  [ok  ] {e['action']:<7} {e['path']}")
+    git = manifest.get("git") or {}
+    print(f"\nDone. {len(manifest['entries'])} file(s) written and verified. Manifest {manifest['id']}.")
+    if git.get("ref"):
+        print(f"Independent git snapshot of the tree before this apply: {git['ref']} ({git['snapshot'][:10]})")
+    print(f"To revert exactly:  python kimicli.py --undo {manifest['id']}")
     return 0
 
 
@@ -735,43 +3184,96 @@ state the cheapest test that would prove you wrong.
 - OWN MISTAKES PLAINLY. If a number or claim you gave earlier was wrong, lead with that.
 - SAY WHAT YOU CANNOT PROMISE. End substantial answers with what the proposed change \
 does not cover.
+- PHILOSOPHY FIRST. AA's ENGINEERING_PHILOSOPHY.md is in this conversation. Read it \
+before designing anything. Any reply that proposes or changes design or code OPENS \
+with a section titled "PHILOSOPHY CHECK", before everything else: name the specific \
+principles the change touches, using the document's own section names; for each, say \
+concretely how the design satisfies it, citing the code; and name any principle the \
+change strains or trades away, with the reason that trade was chosen. A generic \
+restatement of the document is a failure, not a check. Judge any alternative you \
+offer (a BETTER IDEA section included) against the same principles.
 
 Be concrete and specific. Prefer file:line citations over description. Do not pad, do \
 not restate the request, and do not produce a summary of what you are about to do."""
 
 APPLIER_CONTRACT = """\
-Your files are applied by a two-pass all-or-nothing script. It imposes hard limits:
+Your code changes are applied by a script, not a person. It is strict and all-or-nothing:
 
-- It CANNOT create a file whose basename already exists elsewhere in the repo
-  (__init__.py, base.py, conftest.py). If a stage needs one, say so as a manual
-  step - "create the empty file first" - and do not emit it as a FILE block.
-- It CANNOT delete files. Propose deletions as a `git rm` line for the human to run.
-- It REJECTS a file that shrinks below 60% of its current line count. If a change
-  removes that much, say so explicitly before the block so the human passes --allow-shrink.
-- One rejected file rejects the ENTIRE batch. Prefer fewer, smaller, surer files.
+- It writes EXACTLY the paths you write. Use full repo-relative paths as they appear in the
+  codebase headers (packages/auto_apply/src/...). A path that does not exist is never re-routed
+  to a similarly named file, and a new file that would duplicate an existing one is refused.
+- EDIT blocks: every SEARCH must match the current file text exactly once. Zero matches, or two
+  or more, reject the whole batch.
+- It cannot delete, rename or move files. State those as manual steps in prose (this project
+  retires files with retire.py rather than deleting them).
+- New files need the human's --allow-new-files; new directories need --allow-new-dirs.
+- A whole-file FILE block that drops a file below 60% of its lines is rejected as truncated.
+- A batch that fails to import (a name used but never imported, an import of a name another
+  file no longer defines) is rejected before anything is written.
+- One rejected block rejects the ENTIRE batch. Nothing is ever half-applied.
 """
 
 CODE_CONTRACT = """\
-OUTPUT CONTRACT FOR CODE - this is parsed by a script, so it is strict:
+OUTPUT CONTRACT FOR CODE (kimicli v3) - parsed by a script, so it is strict. It replaces any
+earlier output-format rule in this conversation (including "complete files only"), except
+where my request above names a block type for a specific file.
 
-For every file you want changed, emit exactly:
+TWO BLOCK TYPES
 
-### FILE: relative/path/from/repo/root.py
+1) EDIT - the default for EVERY file that already exists. Send only what changes:
+
+### EDIT: packages/auto_apply/src/auto_apply/example.py
+<<<<<<< SEARCH
+    def total(self) -> int:
+        return self.a + self.b
+=======
+    def total(self) -> int:
+        \"\"\"Sum of both parts.\"\"\"
+        return self.a + self.b
+>>>>>>> REPLACE
+
+2) FILE - for a NEW file, or an existing file under ~300 lines that you are rewriting almost
+entirely:
+
+### FILE: packages/auto_apply/tests/test_example.py
 ```python
 <the complete file, first line to last>
 ```
 
-Rules that are not negotiable:
-1. COMPLETE FILES ONLY. Never write "... rest unchanged", "existing code here", \
-"omitted for brevity", or any ellipsis standing in for code. A validator rejects the \
-entire batch when it sees one, and nothing gets applied.
-2. If a file is too large to reproduce in full, DO NOT ELIDE. Say so, and propose a \
-smaller change to a smaller file instead.
-3. Relative paths from the repo root only. No absolute paths, no C:\\ paths, no ../.
-4. Put explanation OUTSIDE the file blocks - before or after, never inside as commentary.
-5. List every file you are about to emit, before the first block, with one line each \
-saying what changes and why.
-6. Prefer the smallest set of files that does the job."""
+EDIT RULES
+- SEARCH is literal text copied character-for-character from the file as it is NOW: the
+  codebase dump's version, updated by any change from this conversation the human has said
+  was applied. Same indentation, same comments, same blank lines, whole lines.
+- Each SEARCH must occur EXACTLY ONCE in that file. Add 2-3 unchanged neighbouring lines when
+  needed to make it unique - but keep it short; never copy a whole function to change one line.
+- Insert: SEARCH an adjacent existing line; REPLACE with that line plus the new lines.
+  Delete: leave the REPLACE side empty.
+- Several blocks for one file apply top to bottom, each to the result of the previous one.
+  They must not overlap. Emit them in file order.
+- Put the `### EDIT: <path>` line directly above EVERY block, even consecutive ones.
+- The three markers go at column 0 on their own lines, exactly as shown. No code fence around
+  an EDIT block.
+- Never put "...", "# existing code", "rest unchanged" or any other placeholder in SEARCH or
+  REPLACE. Both sides are literal text.
+
+FILE RULES
+- The complete file; no placeholders. Fence it with a run of backticks LONGER than any run
+  inside the file (a markdown file containing ``` needs ```` or more).
+
+BOTH
+- Full repo-relative paths exactly as in the codebase headers. No absolute paths, no ../, no
+  leading repo-name folder.
+- Before the first block, list every file you will change, one line each:
+  path - EDIT or FILE - what changes and why.
+- The whole change goes in ONE reply. If you emit a file again later in this conversation,
+  re-emit ALL of its blocks (or the whole FILE): the latest emission for a file replaces
+  every earlier one.
+- After the LAST block, write this line on its own:
+### END CHANGES
+  Nothing after that line is ever applied, so alternative or illustrative code (e.g. a
+  BETTER IDEA section) belongs after it.
+- Explanations go outside blocks. Deletions, renames and moves are manual steps in prose.
+"""
 
 
 def load_playbook(playbook_file: Path, tag: str) -> Optional[str]:
@@ -810,10 +3312,150 @@ class Context:
     messages: List[Dict[str, Any]]
     parts: List[Tuple[str, int]]
     cache_key: str
+    errors: List[str] = field(default_factory=list)   # any entry means: do not send
 
     @property
     def total_tokens(self) -> int:
         return sum(t for _, t in self.parts)
+
+
+def est_messages(messages: List[Dict[str, Any]]) -> int:
+    """Local estimate for a whole conversation, INCLUDING reasoning_content:
+    K3 uses Preserved Thinking, so every earlier turn's reasoning is sent back
+    on a resume and counts against the window."""
+    return sum(est_tokens(str(m.get("content") or "")) + est_tokens(str(m.get("reasoning_content") or ""))
+               for m in messages)
+
+
+def resolve_prompt_arg(raw: str) -> Tuple[str, Optional[Path], Optional[str]]:
+    """--prompt is text OR a path. Returns (text, file_it_came_from, error).
+
+    A path that does not resolve used to be sent as the literal prompt - Kimi
+    received a file name and no task ($2.48, 2026-09-15). Anything that is a
+    single token shaped like a path is refused instead: a real prompt has
+    spaces in it, and a one-word one ("continue") is not path-shaped."""
+    p = Path(raw).expanduser()
+    try:
+        is_file = p.is_file()
+    except (OSError, ValueError):          # a long literal prompt is not a valid path on Windows
+        is_file = False
+    if is_file:
+        return read_text(p), p, None
+    s = raw.strip()
+    if s and not re.search(r"\s", s) and ("/" in s or "\\" in s or PATHLIKE_RE.match(s)):
+        return "", None, (f"--prompt '{raw}' looks like a file path, but no such file exists "
+                          f"(looked in {Path.cwd()}). It would be sent as the literal prompt text. "
+                          f"Run from the folder it is in, or give its full path.")
+    return raw, None, None
+
+
+def compose_user_message(args: argparse.Namespace) -> Tuple[str, List[Tuple[str, int]], List[str]]:
+    """The new user message: attachments, then playbook + prompt + contract.
+    Used by fresh calls AND --resume, so a flag can never work on one and be
+    silently ignored on the other (--attach on --resume once never reached
+    the model). Returns (text, preflight parts, errors). Any error means the
+    request must not be sent: every one of these used to proceed to a billed
+    call with part of the request missing."""
+    errors: List[str] = []
+    parts: List[Tuple[str, int]] = []
+    chunks: List[str] = []
+    seen_attach: set = set()
+    for spec in (getattr(args, "attach", None) or []):
+        p = Path(spec).expanduser()
+        if not p.exists():
+            errors.append(f"--attach {spec}: not found (looked in {Path.cwd()})")
+            continue
+        if not p.is_file():
+            errors.append(f"--attach {spec}: is a folder, not a file - attach the files one by one")
+            continue
+        body = read_text(p)
+        digest = sha256(body)
+        if digest in seen_attach:
+            logger.warning("skipping duplicate attachment: %s", p.name)
+            continue
+        seen_attach.add(digest)
+        chunks.append(f"<attachment name=\"{_attach_label(p)}\">\n{body}\n</attachment>")
+        parts.append((f"attach {p.name}", est_tokens(body)))
+
+    prompt_text = ""
+    if getattr(args, "playbook", None):
+        pb = load_playbook(Path(args.playbook_file), args.playbook)
+        if pb:
+            prompt_text = pb
+            unfilled = re.findall(r"<[a-z][^>]{2,40}>", pb)
+            if unfilled:
+                logger.warning("playbook %s still has placeholders: %s",
+                               args.playbook, ", ".join(sorted(set(unfilled))[:5]))
+        else:
+            errors.append(f"--playbook {args.playbook}: section not found in {args.playbook_file}")
+
+    if getattr(args, "prompt", None):
+        extra, src, err = resolve_prompt_arg(args.prompt)
+        if err:
+            errors.append(err)
+        elif src is not None:
+            logger.info("prompt loaded from %s", src.name)
+        prompt_text = (prompt_text + "\n\n" + extra).strip() if prompt_text else extra
+
+    if prompt_text and getattr(args, "request_code", False):
+        prompt_text = (prompt_text + "\n\n" + CODE_CONTRACT).strip()
+
+    if prompt_text:
+        chunks.append(prompt_text)
+        parts.append(("prompt", est_tokens(prompt_text)))
+    return "\n\n".join(chunks), parts, errors
+
+
+def _age(path: Path) -> str:
+    try:
+        s = max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return "age unknown"
+    if s < 3600:
+        return f"made {int(s // 60)} min ago"
+    if s < 86400:
+        return f"made {s / 3600:.0f} h ago"
+    return f"made {s / 86400:.0f} days ago"
+
+
+def philosophy_context(
+    args: argparse.Namespace, dump_text: str = "",
+) -> Tuple[Optional[str], Optional[Tuple[str, int]], Optional[str]]:
+    """The engineering philosophy as a system message, unless it is already
+    in the call. Returns (message, preflight part, error).
+
+    Already in the call means: the codebase dump carries a section for it, or
+    an --attach names the same file or the same content - one copy is enough.
+    A missing file is an ERROR, not a warning: the method rules require a
+    PHILOSOPHY CHECK, and a call that cannot carry the document would be billed
+    for a check the model cannot make. --no-philosophy is the explicit way out.
+    """
+    if getattr(args, "no_philosophy", False):
+        return None, ("philosophy: OFF (--no-philosophy)", 0), None
+    named = getattr(args, "philosophy", None)
+    path = Path(named).expanduser() if named else DEFAULT_PHILOSOPHY
+    if not path.is_file():
+        return None, None, (
+            f"engineering philosophy not found at {path}. Every call carries it. Pass "
+            f"--philosophy <path> to point at it, or --no-philosophy to send without it.")
+    body = read_text(path)
+    if dump_text:
+        sections, _ = split_dump(dump_text)
+        if any(sec_path.replace("\\", "/").endswith(PHILOSOPHY_NAME) for sec_path, _b in sections):
+            return None, ("philosophy: in the codebase dump", 0), None
+    digest = sha256(body)
+    for spec in (getattr(args, "attach", None) or []):
+        a = Path(spec).expanduser()
+        try:
+            same = a.is_file() and (a.resolve() == path.resolve() or sha256(read_text(a)) == digest)
+        except OSError:
+            same = False
+        if same:
+            return None, ("philosophy: sent as an --attach", 0), None
+    msg = (f"<engineering_philosophy file=\"{path.name}\">\n{body}\n</engineering_philosophy>\n"
+           f"Every design and every change is judged against this document; see the "
+           f"PHILOSOPHY FIRST method rule.")
+    return msg, (f"philosophy ({path.name})", est_tokens(body)), None
 
 
 def build_context(args: argparse.Namespace) -> Context:
@@ -821,9 +3463,12 @@ def build_context(args: argparse.Namespace) -> Context:
 
         [0] codebase        huge, stable  -> the cached prefix
         [1] method rules    stable
-        [2] master TODO     semi-stable
-        [3] memory          volatile
-        [4] attachments + prompt (user)   volatile
+        [2] applier contract stable
+        [3] philosophy      stable (ENGINEERING_PHILOSOPHY.md, unless the dump or
+                            an --attach already carries it)
+        [4] master TODO     semi-stable
+        [5] memory          volatile
+        [6] attachments + prompt (user)   volatile
 
     Anything that changes must sit as late as possible: a cache hit covers the
     identical leading tokens only, so one edited byte near the front costs you
@@ -831,28 +3476,48 @@ def build_context(args: argparse.Namespace) -> Context:
     """
     parts: List[Tuple[str, int]] = []
     messages: List[Dict[str, Any]] = []
+    errors: List[str] = []
     cache_seed = "no-codebase"
+    dump_text = ""
 
     if not args.no_codebase:
         cb = Path(args.codebase).expanduser()
-        if cb.exists():
+        if cb.is_file():
             dump = read_text(cb)
             if args.exclude:
                 dump, report = filter_dump(dump, args.exclude)
                 if report:
                     print(report)
+            dump_text = dump
             messages.append({"role": "system", "content":
                              f"<codebase name=\"{cb.name}\">\n{dump}\n</codebase>"})
-            parts.append((f"codebase ({cb.name})", est_tokens(dump)))
+            # The dump's age is on screen because a stale dump is paid for in
+            # full and silently disagrees with the tree the edits must match.
+            parts.append((f"codebase ({cb.name}, {_age(cb)})", est_tokens(dump)))
             cache_seed = sha256(dump)[:32]
+        elif str(args.codebase) != str(DEFAULT_CODEBASE):
+            # You named this dump: sending without it is not what you asked for.
+            errors.append(f"--codebase {args.codebase}: not found. Fix the path, or pass "
+                          f"--no-codebase to send without a dump.")
         else:
             logger.warning("codebase not found at %s - continuing without it", cb)
+            parts.append(("codebase NOT FOUND - not sent", 0))
 
     messages.append({"role": "system", "content": METHOD_RULES})
     parts.append(("method rules", est_tokens(METHOD_RULES)))
 
     messages.append({"role": "system", "content": APPLIER_CONTRACT})
     parts.append(("applier contract", est_tokens(APPLIER_CONTRACT)))
+
+    # The philosophy is stable, so it sits with the other stable system parts,
+    # ahead of the TODO and the volatile user message.
+    phil_msg, phil_part, phil_err = philosophy_context(args, dump_text)
+    if phil_err:
+        errors.append(phil_err)
+    if phil_msg:
+        messages.append({"role": "system", "content": phil_msg})
+    if phil_part:
+        parts.append(phil_part)
 
     todo = Path(args.todo) if args.todo else (PROJECT_ROOT / "AA_MASTER_TODO.md")
     if not args.no_todo and todo.exists():
@@ -869,52 +3534,14 @@ def build_context(args: argparse.Namespace) -> Context:
         messages.append({"role": "system", "content": f"<notes_from_earlier_sessions>\n{body}\n</notes_from_earlier_sessions>"})
         parts.append(("memory", est_tokens(body)))
 
-    user_chunks: List[str] = []
-    seen_attach: set = set()
-    for spec in (args.attach or []):
-        p = Path(spec).expanduser()
-        if not p.exists():
-            logger.warning("attachment not found: %s", spec)
-            continue
-        body = read_text(p)
-        digest = sha256(body)
-        if digest in seen_attach:
-            logger.warning("skipping duplicate attachment: %s", p.name)
-            continue
-        seen_attach.add(digest)
-        user_chunks.append(f"<attachment name=\"{p.name}\">\n{body}\n</attachment>")
-        parts.append((f"attach {p.name}", est_tokens(body)))
+    text, uparts, uerrors = compose_user_message(args)
+    parts += uparts
+    errors += uerrors
+    if text:
+        messages.append({"role": "user", "content": text})
 
-    prompt_text = ""
-    if args.playbook:
-        pb = load_playbook(Path(args.playbook_file), args.playbook)
-        if pb:
-            prompt_text = pb
-            unfilled = re.findall(r"<[a-z][^>]{2,40}>", pb)
-            if unfilled:
-                logger.warning("playbook %s still has placeholders: %s",
-                               args.playbook, ", ".join(sorted(set(unfilled))[:5]))
-        else:
-            logger.warning("playbook section %s not found", args.playbook)
-
-    if args.prompt:
-        p = Path(args.prompt)
-        extra = read_text(p) if (p.exists() and p.is_file()) else args.prompt
-        if p.exists() and p.is_file():
-            logger.info("prompt loaded from %s", p.name)
-        prompt_text = (prompt_text + "\n\n" + extra).strip() if prompt_text else extra
-
-    if args.request_code:
-        prompt_text = (prompt_text + "\n\n" + CODE_CONTRACT).strip()
-
-    if prompt_text:
-        user_chunks.append(prompt_text)
-        parts.append(("prompt", est_tokens(prompt_text)))
-
-    if user_chunks:
-        messages.append({"role": "user", "content": "\n\n".join(user_chunks)})
-
-    return Context(messages=messages, parts=parts, cache_key=args.cache_key or f"aa-{cache_seed}")
+    return Context(messages=messages, parts=parts, cache_key=args.cache_key or f"aa-{cache_seed}",
+                   errors=errors)
 
 
 # ==========================================================================
@@ -1151,17 +3778,35 @@ def preflight(ctx: Context, kimi: Kimi, args: argparse.Namespace) -> bool:
         if exact:
             print(f"  {'input (exact)':<{width}}  {exact:>10,} tok"
                   f"   [tokenizer; local estimate was off by {abs(exact - est) / max(exact, 1):.0%}]")
-    n_in = exact or est
+    # An exact count is authoritative. Without one, guard the window on a
+    # pessimistic reading: est_tokens is calibrated, not conservative.
+    n_in = exact if exact else int(est * EST_WINDOW_SAFETY)
+    if not exact:
+        print(f"  {'window guard uses':<{width}}  {n_in:>10,} tok"
+              f"   [estimate x{EST_WINDOW_SAFETY}; no tokenizer count this call]")
 
-    if n_in > CONTEXT_WINDOW:
-        print(f"\n  STOP: {n_in:,} tokens exceeds the {CONTEXT_WINDOW:,} context window.")
-        print("  Use --exclude docs --exclude tests, or --no-codebase.")
+    # What a died stream is billed for, if usage never arrives (see do_turn).
+    args.input_tokens_hint = exact if exact else est
+
+    # Below this there is no room for a useful answer: send nothing rather
+    # than pay for the input and get an answer cut off in its first lines.
+    MIN_OUTPUT = 8192
+    if n_in > CONTEXT_WINDOW - MIN_OUTPUT:
+        print(f"\n  STOP: {n_in:,} input tokens leaves no room for an answer in the "
+              f"{CONTEXT_WINDOW:,} context window.")
+        print("  Fresh call: --exclude docs, fewer --attach, or --no-codebase. On a --resume "
+              "chain: start a fresh session instead of adding another turn.")
         return False
     if n_in + args.max_completion > CONTEXT_WINDOW:
-        room = CONTEXT_WINDOW - n_in
-        print(f"\n  NOTE: input + max_completion_tokens exceeds the window; "
-              f"capping output at {room:,}.")
-        args.max_completion = max(room - 1024, 4096)
+        asked = args.max_completion
+        # Never cap to a figure that still overflows: the old floor of 4096
+        # could put input + output past the window.
+        args.max_completion = CONTEXT_WINDOW - n_in - 1024
+        print(f"\n  ! OUTPUT CAPPED at {args.max_completion:,} tokens (asked {asked:,}): the input "
+              f"fills the rest of the window.")
+        if args.max_completion < 65_536:
+            print("    A multi-file code reply this size is likely to be CUT OFF. On a --resume "
+                  "chain, a fresh\n    session (not another resume) gets the full output budget back.")
 
     miss = cost_of(n_in, 0, 0)
     hit = cost_of(n_in, n_in, 0)
@@ -1209,15 +3854,23 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
     if last_user:
         text = last_user["content"]
         session.write(text if len(text) < 8000 else text[:8000] + "\n[... prompt truncated in transcript ...]\n")
-    session.banner("KIMI", f"effort={args.effort}")
+    session.banner("KIMI", f"effort={args.effort}", also_thinking=True)
 
     print()
-    result = kimi.stream(
-        session.messages, session,
-        model=args.model, effort=args.effort, max_completion=args.max_completion,
-        cache_key=args.cache_key_resolved, show_thinking=args.show_thinking,
-        prediction=args.prediction_text,
-    )
+    # The input this request carries: preflight's exact count for the first
+    # call, a local estimate for chat turns (which have no preflight).
+    input_hint = getattr(args, "input_tokens_hint", None) or est_messages(session.messages)
+    args.input_tokens_hint = None
+    try:
+        result = kimi.stream(
+            session.messages, session,
+            model=args.model, effort=args.effort, max_completion=args.max_completion,
+            cache_key=args.cache_key_resolved, show_thinking=args.show_thinking,
+            prediction=args.prediction_text,
+        )
+    except BaseException:
+        session.turn -= 1          # nothing was answered; keep turn numbers contiguous
+        raise
 
     assistant: Dict[str, Any] = {"role": "assistant", "content": result["content"] or ""}
     # K3 uses Preserved Thinking: keep reasoning_content in history or the model
@@ -1230,17 +3883,35 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
     if usage:
         session.usage.add(usage)
         session.ledger_entry(usage, args.effort, note=label)
+    elif result.get("ttft") is not None:
+        # The stream died after tokens arrived, so usage never came - but
+        # Moonshot still bills it (measured 2026-09-15: ~$7 across two died
+        # streams that recorded nothing). Ledger it as an estimate, assuming
+        # 0% cached, so lifetime spend is an upper bound rather than a gap.
+        est_out = est_tokens(result["content"] or "") + est_tokens(result["reasoning"] or "")
+        result["estimated_cost"] = cost_of(input_hint, 0, est_out)
+        session.ledger_entry({"prompt_tokens": input_hint, "completion_tokens": est_out,
+                              "cached_tokens": 0}, args.effort,
+                             note=(label + " " if label else "") + "ESTIMATE: usage not reported "
+                                  f"(finish_reason={result['finish_reason']})",
+                             estimated=True)
     session.save()
 
-    proposals = parse_file_blocks(result["content"])
-    if proposals:
-        session.record_proposals(proposals)
-        print(f"\n\n[{len(proposals)} file block(s) staged in {session.dir / 'proposed'}]")
-        for path, body in proposals:
-            print(f"   - {path}  ({body.count(chr(10)) + 1} lines)")
-        print(f"\n   Review, then:  python kimicli.py --apply-fixes {session.id} --dry-run")
+    summary: Optional[StageSummary] = None
+    try:
+        summary = stage_turn(session, session.turn, result["content"] or "", result["finish_reason"])
+    except Exception as exc:                       # the reply is already saved; never lose it
+        logger.exception("staging failed")
+        print(f"\n!! kimicli could not stage this reply's changes: {exc}\n"
+              f"   The reply is saved: {session.dir / f'reply_turn{session.turn}.md'}\n"
+              f"   Try:  python kimicli.py --apply-fixes {session.dir / f'reply_turn{session.turn}.md'} --dry-run")
 
     print_turn_summary(result, session)
+    if summary is not None:
+        print_stage_summary(summary, session)
+        if getattr(args, "request_code", False) and not summary.parse.blocks:
+            print("\n  ! Code was requested, but the reply contains no '### EDIT:' / '### FILE:' "
+                  "blocks. Nothing was staged.")
     return result
 
 
@@ -1258,6 +3929,10 @@ def print_turn_summary(result: Dict[str, Any], session: Session) -> None:
         print(f"  input {p:,} tok ({c:,} cached = {pct:.0f}%)   output {o:,} tok"
               f"   this turn {money(cost_of(p, c, o))}")
         print(f"  session total {money(session.usage.cost)} over {session.usage.calls} call(s)")
+    elif result.get("estimated_cost") is not None:
+        print("  usage not reported (stream ended early) - this call is STILL BILLED.")
+        print(f"  estimated at up to {money(result['estimated_cost'])} (assumes 0% cached); "
+              f"recorded in the ledger as an estimate")
     else:
         print("  usage not reported (stream ended early) - see the ledger for prior calls")
     if result["ttft"]:
@@ -1274,8 +3949,8 @@ CHAT_HELP = """
   /exit            end the session (everything is already saved)
   /cost            spend for this session and lifetime
   /effort low|high|max     change reasoning effort for the next turn
-  /files           list the file blocks staged this session
-  /apply           run the dry-run applier on this session
+  /files           list the change blocks staged this session
+  /apply           dry-run the applier on this session (writes nothing)
   /remember <text> append a line to .kimi_out/memory.md for future sessions
   /attach <path>   add a file to the next message
   /paste           multi-line input; finish with a single '.' on its own line
@@ -1320,18 +3995,26 @@ def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
                     print("  usage: /effort low|high|max")
                 continue
             if cmd == "/files":
-                idx = session.dir / "proposals.json"
-                if idx.exists():
-                    for row in json.loads(read_text(idx)):
-                        print(f"  turn {row['turn']}: {row['path']} ({row['lines']} lines)")
+                rows = session.rows()
+                if rows:
+                    for row in rows:
+                        print(f"  turn {row.get('turn')}: {str(row.get('kind', 'file')).upper():<4} "
+                              f"{row['path']}  ({row.get('blocks', 1)} block(s), "
+                              f"trial {row.get('trial', '?')})")
                 else:
-                    print("  no file blocks staged yet")
+                    print("  no change blocks staged yet")
                 continue
             if cmd == "/apply":
-                props = load_session_proposals(session)
-                ns = argparse.Namespace(dry_run=True, allow_new_files=args.allow_new_files,
-                                        allow_shrink=args.allow_shrink, yes=False)
-                run_apply(props, ns)
+                props, blocking, _info = load_session_proposals(session)
+                ns = argparse.Namespace(
+                    dry_run=True, yes=False,
+                    allow_new_files=getattr(args, "allow_new_files", False),
+                    allow_new_dirs=getattr(args, "allow_new_dirs", False),
+                    allow_shrink=getattr(args, "allow_shrink", False),
+                    allow_stale=getattr(args, "allow_stale", False),
+                    skip_checks=getattr(args, "skip_checks", False),
+                    accept_parse_errors=False)
+                run_apply(props, ns, blocking=blocking, session=session)
                 continue
             if cmd == "/remember":
                 if rest.strip():
@@ -1341,10 +4024,12 @@ def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
                     print("  noted for future sessions (takes effect next run with --memory)")
                 continue
             if cmd == "/attach":
-                p = Path(rest.strip().strip('"'))
-                if p.exists():
+                p = Path(rest.strip().strip('"')).expanduser()
+                if p.is_file():
                     pending_attachments.append(str(p))
                     print(f"  will attach {p.name} ({est_tokens(read_text(p)):,} tok) to the next message")
+                elif p.exists():
+                    print(f"  {p} is a folder, not a file - attach files one by one")
                 else:
                     print(f"  not found: {p}")
                 continue
@@ -1367,9 +4052,17 @@ def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
                 continue
 
         chunks: List[str] = []
+        gone = [s for s in pending_attachments if not Path(s).is_file()]
+        if gone:
+            print(f"  not sent: attachment(s) no longer there: {', '.join(gone)}. "
+                  f"/attach them again, then resend.")
+            pending_attachments = [s for s in pending_attachments if s not in gone]
+            continue
         for spec in pending_attachments:
             p = Path(spec)
-            chunks.append(f"<attachment name=\"{p.name}\">\n{read_text(p)}\n</attachment>")
+            chunks.append(
+                f"<attachment name=\"{_attach_label(p)}\">\n{read_text(p)}\n</attachment>"
+            )
         pending_attachments.clear()
         chunks.append(line)
         session.messages.append({"role": "user", "content": "\n\n".join(chunks)})
@@ -1382,25 +4075,6 @@ def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
 
     print(f"\nSession {session.id} saved.  {money(session.usage.cost)} this session.")
     print(f"Resume it any time with:  python kimicli.py --resume {session.id}")
-
-
-def load_session_proposals(session: Session) -> List[Tuple[str, str]]:
-    """Latest staged version of each proposed file, in first-seen order."""
-    idx = session.dir / "proposals.json"
-    if not idx.exists():
-        return []
-    latest: Dict[str, Dict[str, Any]] = {}
-    order: List[str] = []
-    for row in json.loads(read_text(idx)):
-        if row["path"] not in latest:
-            order.append(row["path"])
-        latest[row["path"]] = row
-    out: List[Tuple[str, str]] = []
-    for path in order:
-        staged = session.dir / latest[path]["staged"]
-        if staged.exists():
-            out.append((path, read_text(staged)))
-    return out
 
 
 def lifetime_spend() -> float:
@@ -1433,6 +4107,10 @@ def print_stats() -> None:
     print(f"  input tokens   : {prompt:,}  ({cached:,} cached = {cached / max(prompt, 1) * 100:.0f}%)")
     print(f"  output tokens  : {out:,}")
     print(f"  total spend    : {money(total)}")
+    est_rows = [r for r in rows if r.get("estimated")]
+    if est_rows:
+        print(f"    of which     : {money(sum(r.get('cost_usd', 0) for r in est_rows))} estimated "
+              f"for {len(est_rows)} died stream(s) (upper bound, 0% cached assumed)")
     if prompt:
         saved = (cached * (PRICE_IN_FRESH - PRICE_IN_CACHED)) / 1e6
         print(f"  saved by cache : {money(saved)}")
@@ -1442,6 +4120,420 @@ def print_stats() -> None:
               f"in {r.get('prompt', 0):>9,} ({r.get('cached', 0):>9,} cached) "
               f"out {r.get('completion', 0):>7,}  {money(r.get('cost_usd', 0))}")
     print()
+
+
+# ==========================================================================
+# Self-test: proves the parser, applier, rollback and undo on THIS machine
+# (Windows file locking, OneDrive, CRLF) in a throwaway folder. Never touches
+# your repo. Run it after installing a new kimicli.py.
+# ==========================================================================
+
+def run_selftest() -> int:
+    results: List[Tuple[str, bool, str]] = []
+
+    def check(name: str, ok: bool, detail: str = "") -> None:
+        results.append((name, bool(ok), detail))
+
+    tmp = Path(tempfile.mkdtemp(prefix="kimicli_selftest_"))
+    root = tmp / "AA"
+    root.mkdir()
+    bdir = root / ".kimi_backups"
+    quiet = io.StringIO()
+    try:
+        # ---- fixtures -----------------------------------------------------
+        (root / "pkg").mkdir()
+        (root / "pkg" / "__init__.py").write_bytes(b"")
+        (root / "pkg" / "crlf.py").write_bytes(
+            b"\xef\xbb\xbfimport os\r\n\r\ndef a():\r\n    return 1\r\n\r\ndef b():\r\n    return 2")
+        (root / "pkg" / "mixed.py").write_bytes(b"x = 1\r\ny = 2\nz = 3\r\n")
+        (root / "pkg" / "lib.py").write_bytes(b"def helper():\n    return 42\n")
+        (root / "pkg" / "other").mkdir()
+        (root / "pkg" / "other" / "utils.py").write_bytes(b"# unrelated module\n" * 50)
+        (root / "notes.md").write_bytes(b"# Notes\n\nOld line\n")
+        originals = {p.relative_to(root).as_posix(): p.read_bytes()
+                     for p in root.rglob("*") if p.is_file()}
+
+        def fresh_applier(**kw: Any) -> Applier:
+            return Applier(root, bdir, ApplyOptions(**kw))
+
+        def props_from(reply: str) -> Tuple[List[Proposal], ParseResult, List[ParseProblem]]:
+            pr = parse_changes(reply)
+            groups, gp = group_blocks(pr, root)
+            return [_proposal_from_group(g, "selftest", root) for g in groups], pr, gp
+
+        # ---- 1. parser -----------------------------------------------------
+        reply = (
+            "Plan: two edits, one new file.\n\n"
+            "### EDIT: AA/pkg/crlf.py\n<<<<<<< SEARCH\ndef a():\n    return 1\n=======\n"
+            "def a():\n    return 10\n>>>>>>> REPLACE\n\n"
+            "### EDIT: pkg/crlf.py\n<<<<<<< SEARCH\ndef b():\n    return 2\n=======\n"
+            "def b():\n    return 20\n>>>>>>> REPLACE\n\n"
+            "### EDIT: pkg/mixed.py\n<<<<<<< SEARCH\ny = 2\n=======\ny = 22\nw = 4\n>>>>>>> REPLACE\n\n"
+            "### FILE: pkg/newdir/guide.md\n````markdown\n# Guide\n\n```python\nprint(1)\n```\n\nEnd\n````\n\n"
+            "### END CHANGES\n\nBETTER IDEA? Maybe:\n\n"
+            "### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n    return 0\n>>>>>>> REPLACE\n"
+        )
+        props, pr, gp = props_from(reply)
+        check("parser: 4 blocks in 3 files, END seen, the after-END block NOT staged",
+              len(pr.blocks) == 4 and len(props) == 3 and pr.end_marker and pr.blocks_after_end == 1
+              and not pr.errors and not gp)
+        md = [p for p in props if p.raw_path.endswith("guide.md")]
+        check("parser: a markdown FILE containing ``` survives whole (```` fence)",
+              bool(md) and md[0].content is not None and md[0].content.endswith("End\n")
+              and "```python" in (md[0].content or ""))
+        cut = parse_changes("### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n    return")
+        check("parser: a reply cut off mid-block is an ERROR, not a silent drop",
+              len(cut.errors) == 1 and not cut.blocks)
+        stray = parse_changes("### PATCH: pkg/lib.py\n```python\n<<<<\n    return 42\n====\n    return 1\n>>>>\n```\n"
+                              "### DELETE: pkg/lib.py\n```\nx\n```\n")
+        check("parser: legacy PATCH markers accepted; a DELETE block is refused loudly",
+              len(stray.blocks) == 1 and len(stray.errors) == 1)
+
+        # ---- 2. apply: bytes-exact edits, CRLF + BOM + no final newline + mixed endings
+        ap = fresh_applier(allow_new_files=True, allow_new_dirs=True)
+        plans = ap.validate(props)
+        check("pass 1 clean", all(not p.problems for p in plans),
+              "; ".join(f"{p.rel}: {p.problems}" for p in plans if p.problems))
+        with contextlib.redirect_stdout(quiet):
+            man = ap.apply(plans, {"source": "selftest"})
+        crlf = (root / "pkg" / "crlf.py").read_bytes()
+        check("edits keep BOM, CRLF and the missing final newline byte-exact",
+              crlf == b"\xef\xbb\xbfimport os\r\n\r\ndef a():\r\n    return 10\r\n\r\ndef b():\r\n    return 20",
+              repr(crlf))
+        check("mixed-ending file: untouched lines byte-identical, new lines use its dominant ending",
+              (root / "pkg" / "mixed.py").read_bytes() == b"x = 1\r\ny = 22\r\nw = 4\r\nz = 3\r\n",
+              repr((root / "pkg" / "mixed.py").read_bytes()))
+        check("new file created in a new directory; manifest complete",
+              (root / "pkg" / "newdir" / "guide.md").exists() and man["status"] == "complete")
+
+        # ---- 3. idempotent: the same batch again writes nothing
+        plans2 = fresh_applier(allow_new_files=True, allow_new_dirs=True).validate(props)
+        check("re-applying an applied batch: every file 'identical', nothing to write",
+              all(p.action == "identical" and not p.problems for p in plans2),
+              "; ".join(f"{p.rel}:{p.action}:{p.problems}" for p in plans2))
+
+        # ---- 4. undo: exact bytes, created file and directory removed, second undo is a no-op
+        with contextlib.redirect_stdout(quiet):
+            rc = undo(root, bdir, "last", assume_yes=True)
+        now = {p.relative_to(root).as_posix(): p.read_bytes()
+               for p in root.rglob("*") if p.is_file() and ".kimi_backups" not in p.parts}
+        check("undo restores every original byte-for-byte (CRLF included)",
+              rc == 0 and now == originals,
+              f"rc={rc} diff={sorted(set(now) ^ set(originals))}")
+        check("undo removed the directory it had created", not (root / "pkg" / "newdir").exists())
+        with contextlib.redirect_stdout(quiet):
+            rc2 = undo(root, bdir, "last", assume_yes=True)
+        check("undo 'last' after undoing is a safe no-op", rc2 == 1 and now == {
+            p.relative_to(root).as_posix(): p.read_bytes()
+            for p in root.rglob("*") if p.is_file() and ".kimi_backups" not in p.parts})
+
+        # ---- 5. failure on the 3rd write -> automatic, verified rollback
+        calls = {"n": 0}
+
+        def flaky(path: Path, data: bytes, keep: Optional[Path] = None) -> None:
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise PermissionError("simulated OneDrive lock")
+            write_bytes_atomic(path, data, keep)
+
+        ap = fresh_applier(allow_new_files=True, allow_new_dirs=True)
+        plans = ap.validate(props)
+        err = ""
+        try:
+            with contextlib.redirect_stdout(quiet):
+                ap.apply(plans, {"source": "selftest"}, _write=flaky)
+        except ApplyAborted as exc:
+            err = str(exc)
+        now = {p.relative_to(root).as_posix(): p.read_bytes()
+               for p in root.rglob("*") if p.is_file() and ".kimi_backups" not in p.parts}
+        mans = list_manifests(bdir)
+        check("a failed write rolls EVERY file back to its original bytes",
+              "restored" in err and now == originals and bool(mans) and mans[-1]["status"] == "rolled_back",
+              err[:120])
+
+        # ---- 6. a SEARCH that does not match, or matches twice, writes nothing
+        (root / "pkg" / "dup.py").write_bytes(b"x = 1\nx = 1\n")
+        bad, _, _ = props_from("### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 41\n=======\n    return 0\n>>>>>>> REPLACE\n"
+                               "### EDIT: pkg/dup.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n")
+        plans = fresh_applier().validate(bad)
+        check("not-found and ambiguous SEARCH both rejected",
+              all(p.problems for p in plans) and "not found" in plans[0].problems[0]
+              and "2 places" in plans[1].problems[0])
+        (root / "pkg" / "dup.py").unlink()
+
+        # ---- 7. additive edit already present -> 'have', never a duplicate
+        add, _, _ = props_from("### EDIT: pkg/lib.py\n<<<<<<< SEARCH\ndef helper():\n=======\n"
+                               "import math\n\n\ndef helper():\n>>>>>>> REPLACE\n")
+        a1 = fresh_applier().validate(add)
+        with contextlib.redirect_stdout(quiet):
+            fresh_applier().apply(a1, {"source": "selftest"})
+        a2 = fresh_applier().validate(add)
+        lib = (root / "pkg" / "lib.py").read_text(encoding="utf-8")
+        check("an insertion that is already there is recognised, not inserted twice",
+              lib.count("import math") == 1 and a2[0].action == "identical", a2[0].action)
+        with contextlib.redirect_stdout(quiet):
+            undo(root, bdir, "last", assume_yes=True)
+
+        # ---- 8. paths
+        refused = ["../x.py", "C:/Windows/x.py", "//srv/share/x.py", "pkg/a.py:hidden", "pkg/CON.py",
+                   "pkg/x.py.", "kimicli.py", ".git/config", "pkg/KIMICL~1.PY", ".env"]
+        pl = fresh_applier(allow_new_files=True).validate(
+            [Proposal(raw_path=r, kind="file", content="x = 1\n") for r in refused])
+        leaks = [r for r, p in zip(refused, pl) if not p.problems]
+        check("dangerous / protected paths all refused", not leaks, f"accepted: {leaks}")
+        cap = fresh_applier(allow_new_files=True, allow_new_dirs=True).validate(
+            [Proposal(raw_path="pkg/newmod/utils.py", kind="file", content="# brand new\n" * 50)])
+        check("a new pkg/newmod/utils.py is a CREATE - it can never overwrite pkg/other/utils.py",
+              cap[0].action == "create" and cap[0].rel == "pkg/newmod/utils.py")
+        mis = fresh_applier(allow_new_files=True, allow_new_dirs=True).validate(
+            [Proposal(raw_path="other/utils.py", kind="file", content="# dup\n")])
+        check("a mis-pathed new file that duplicates an existing one is refused",
+              any("mis-pathed" in x for x in mis[0].problems))
+
+        # ---- 8b. an EDIT naming a wrong MIDDLE directory: recovered by
+        # basename, but ONLY because its anchors still match there. This is
+        # the failure that threw away a 23-block batch before the fallback
+        # existed: tests/pins/x.py for a file in tests/architecture/ matches
+        # no path suffix, so the suffix rule alone never fired.
+        WRONGDIR_REPLY = '''### EDIT: pkg/WRONG/lib.py
+<<<<<<< SEARCH
+def helper():
+    return 42
+=======
+def helper():
+    return 43
+>>>>>>> REPLACE
+'''
+        NOANCHOR_REPLY = '''### EDIT: pkg/WRONG/lib.py
+<<<<<<< SEARCH
+def absent_function():
+    pass
+=======
+def absent_function():
+    return None
+>>>>>>> REPLACE
+'''
+        wrongdir, _, _ = props_from(WRONGDIR_REPLY)
+        wd = fresh_applier().validate(wrongdir)
+        check("an EDIT naming a wrong directory is re-pointed by unique basename",
+              not wd[0].problems and wd[0].rel == "pkg/lib.py"
+              and any("unique basename match" in n for n in wd[0].notes),
+              f"{wd[0].rel} problems={wd[0].problems}")
+
+        noanchor, _, _ = props_from(NOANCHOR_REPLY)
+        na = fresh_applier().validate(noanchor)
+        check("a re-pointed file is proved by its anchors, never by its name",
+              bool(na[0].problems), f"accepted, problems={na[0].problems}")
+
+        (root / "pkg" / "other" / "lib.py").write_bytes(b"def helper():\n    return 99\n")
+        amb = fresh_applier().validate(wrongdir)
+        check("two files sharing the basename -> refused, candidates named",
+              bool(amb[0].problems) and "does not exist" in amb[0].problems[0],
+              f"problems={amb[0].problems}")
+        (root / "pkg" / "other" / "lib.py").unlink()
+
+        # ---- 9. checks that catch a change that parses but cannot run
+        br, _, _ = props_from("### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n"
+                              "    return compute_answer()\n>>>>>>> REPLACE\n")
+        pl = fresh_applier().validate(br)
+        check("a name used but never defined/imported is caught",
+              any("compute_answer" in x for x in pl[0].problems))
+        (root / "pkg" / "user.py").write_bytes(b"from pkg.lib import helper\n\nprint(helper())\n")
+        rn, _, _ = props_from("### EDIT: pkg/lib.py\n<<<<<<< SEARCH\ndef helper():\n=======\n"
+                              "def helper_v2():\n>>>>>>> REPLACE\n")
+        pl = fresh_applier().validate(rn)
+        check("renaming a function another file imports is caught",
+              any("pkg/user.py" in x for x in pl[0].problems))
+        (root / "pkg" / "user.py").unlink()
+
+        # ---- 10. Windows: a transiently locked file is retried, not failed
+        real = os.replace
+        state = {"n": 0}
+
+        def locked_twice(a: str, b: str) -> None:
+            state["n"] += 1
+            if state["n"] <= 2:
+                raise PermissionError("locked")
+            real(a, b)
+
+        os.replace = locked_twice  # type: ignore[assignment]
+        try:
+            write_bytes_atomic(root / "notes.md", b"# Notes\n\nNew line\n")
+        finally:
+            os.replace = real      # type: ignore[assignment]
+        check("a file locked for a moment (OneDrive/antivirus) is written after a retry",
+              (root / "notes.md").read_bytes() == b"# Notes\n\nNew line\n" and state["n"] == 3)
+        (root / "notes.md").write_bytes(originals["notes.md"])
+
+        # ---- 11. undo refuses to clobber your later edits; --force keeps them safe
+        e1, _, _ = props_from("### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n"
+                              "    return 43\n>>>>>>> REPLACE\n")
+        with contextlib.redirect_stdout(quiet):
+            fresh_applier().apply(fresh_applier().validate(e1), {"source": "selftest"})
+        (root / "pkg" / "lib.py").write_bytes(b"def helper():\n    return 99  # my own edit\n")
+        with contextlib.redirect_stdout(quiet):
+            rc = undo(root, bdir, "last", assume_yes=True)
+        refused_ok = rc == 1 and b"my own edit" in (root / "pkg" / "lib.py").read_bytes()
+        with contextlib.redirect_stdout(quiet):
+            rcf = undo(root, bdir, "last", force=True, assume_yes=True)
+        saved = list((bdir).rglob("undo_*/pkg/lib.py"))
+        check("undo refuses when you edited the file since; --force saves your edit first",
+              refused_ok and rcf == 0 and (root / "pkg" / "lib.py").read_bytes() == originals["pkg/lib.py"]
+              and any(b"my own edit" in x.read_bytes() for x in saved))
+
+        # ---- 12. case-insensitive filesystems (Windows): a wrong-case path
+        # edits the real file and never renames it
+        (root / "pkg" / "Model.py").write_bytes(b"a = 1\n")
+        if (root / "pkg" / "model.py").exists():
+            wc, _, _ = props_from("### EDIT: pkg/model.py\n<<<<<<< SEARCH\na = 1\n=======\na = 2\n>>>>>>> REPLACE\n")
+            with contextlib.redirect_stdout(quiet):
+                fresh_applier().apply(fresh_applier().validate(wc), {"source": "selftest"})
+            check("wrong-case path edits the real file and keeps its on-disk name",
+                  "Model.py" in os.listdir(root / "pkg")
+                  and (root / "pkg" / "Model.py").read_bytes() == b"a = 2\n")
+        (root / "pkg" / "Model.py").unlink()
+
+        # ---- 13. sessions: staging, 'last', and the request guards. These
+        # use the module's own paths, pointed at the temp folder for the
+        # duration and restored in `finally`.
+        g = globals()
+        saved_paths = {k: g[k] for k in ("PROJECT_ROOT", "OUT_DIR", "BACKUP_DIR", "LEDGER")}
+        g["PROJECT_ROOT"], g["OUT_DIR"], g["BACKUP_DIR"] = root, root / ".kimi_out", bdir
+        g["LEDGER"] = g["OUT_DIR"] / "ledger.jsonl"
+        try:
+            sys_msgs = [{"role": "system", "content": "rules"}]
+            # a) an EDIT sent to a wrong directory, then re-sent at the right
+            # path next turn, is ONE file - not "changed twice"
+            s = Session("selftest_a")
+            s.messages, s.turn = sys_msgs + [{"role": "user", "content": "q"}], 2
+            s.save()
+            with contextlib.redirect_stdout(quiet):
+                stage_turn(s, 1, WRONGDIR_REPLY + "\n### END CHANGES\n", "stop")
+                stage_turn(s, 2, WRONGDIR_REPLY.replace("pkg/WRONG/lib.py", "pkg/lib.py")
+                           + "\n### END CHANGES\n", "stop")
+            sp, sb, _ = load_session_proposals(s)
+            sv = fresh_applier().validate(sp)
+            check("a file re-sent at its corrected path next turn replaces the wrong-path emission",
+                  len(sp) == 1 and not sb and not any(p.problems for p in sv),
+                  f"{len(sp)} proposals, {[p.problems for p in sv]}")
+
+            # b) a whole FILE over an ATTACHED file you changed since is STALE
+            lib_now = (root / "pkg" / "lib.py").read_text(encoding="utf-8")
+            s = Session("selftest_b")
+            s.messages = sys_msgs + [{"role": "user", "content":
+                                      f'<attachment name="pkg/lib.py">\n{lib_now}\n</attachment>\n\nq'}]
+            s.turn = 1
+            s.save()
+            (root / "pkg" / "lib.py").write_text(lib_now + "\nMINE = 1\n", encoding="utf-8")
+            with contextlib.redirect_stdout(quiet):
+                sm = stage_turn(s, 1, "### FILE: pkg/lib.py\n```python\n" + lib_now.replace("42", "7")
+                                + "```\n\n### END CHANGES\n", "stop")
+            check("a FILE over an attached file that changed since is refused as STALE BASE",
+                  any("STALE" in x for pl in sm.plans for x in pl.problems))
+            (root / "pkg" / "lib.py").write_bytes(originals["pkg/lib.py"])
+
+            # c) 'last' never picks an empty session (estimate-only, declined call)
+            Session("zzzz_never_called")           # sorts newest, never completed a call
+            lst = resolve_session("last")
+            check("'last' skips a session that never completed a call",
+                  lst is not None and lst.id == "selftest_b", lst.id if lst else "None")
+
+            # e) a file ANNOUNCED by bare name in a design-only turn and emitted
+            # at its full path the next turn is superseded, not a blocking problem
+            s = Session("selftest_c")
+            s.messages, s.turn = sys_msgs + [{"role": "user", "content": "q"}], 2
+            s.save()
+            with contextlib.redirect_stdout(quiet):
+                stage_turn(s, 1, "Files:\n- lib.py - EDIT - next turn\n\n### END CHANGES\n", "stop")
+                stage_turn(s, 2, "### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n"
+                           "    return 43\n>>>>>>> REPLACE\n\n### END CHANGES\n", "stop")
+            _sp_c, sb_c, _ = load_session_proposals(s)
+            check("a file announced by bare name, emitted at its full path next turn, does not block",
+                  len(_sp_c) == 1 and not sb_c, str(sb_c))
+
+            # f) thinking.md separates calls exactly as transcript.md does
+            s = Session("selftest_d")
+            for t in (1, 2):
+                s.turn = t
+                s.banner("YOU")
+                s.banner("KIMI", "effort=max", also_thinking=True)
+                s.write(f"reasoning {t}", to_thinking=True)
+            th = s.thinking.read_text(encoding="utf-8")
+            tr_marks = [m.group(1) for m in TRANSCRIPT_TURN_RE.finditer(th)]
+            check("thinking.md carries one TURN separator per call, matching transcript.md",
+                  tr_marks == ["1", "2"] and "- YOU" not in th
+                  and th.index("reasoning 1") < th.index("== TURN 2"), str(tr_marks))
+        finally:
+            g.update(saved_paths)
+
+        # d) the request guards that used to let a billed call go out incomplete
+        _t, _s, perr = resolve_prompt_arg("e1_autonomy.md")
+        _t2, _s2, perr2 = resolve_prompt_arg("Build it.")
+        check("--prompt naming a missing file is refused; a real sentence is not",
+              bool(perr) and perr2 is None and _t2 == "Build it.")
+        ns_a = argparse.Namespace(attach=[str(root / "nope.py"), str(root / "pkg")], playbook=None,
+                                  prompt="Build it.", request_code=False)
+        _txt, _parts, aerr = compose_user_message(ns_a)
+        check("a missing or folder --attach stops the request", len(aerr) == 2, str(aerr))
+        phil = root / "ENGINEERING_PHILOSOPHY.md"
+        phil.write_text("# AA Engineering Philosophy\n\nWorst-case user first.\n", encoding="utf-8")
+        pm, _pp, pe = philosophy_context(argparse.Namespace(philosophy=str(phil), attach=[]))
+        pm_miss, _pp2, pe_miss = philosophy_context(
+            argparse.Namespace(philosophy=str(root / "missing.md"), attach=[]))
+        pm_off, _pp3, pe_off = philosophy_context(
+            argparse.Namespace(philosophy=str(root / "missing.md"), no_philosophy=True, attach=[]))
+        pm_dup, _pp4, pe_dup = philosophy_context(
+            argparse.Namespace(philosophy=str(phil), attach=[str(phil)]))
+        check("every call carries the engineering philosophy; a missing one stops the request",
+              bool(pm) and "Worst-case user first." in (pm or "") and pe is None
+              and pm_miss is None and bool(pe_miss) and pm_off is None and pe_off is None
+              and pm_dup is None and pe_dup is None,
+              f"{pe!r} {pe_miss!r} {pe_off!r} {pe_dup!r}")
+        check("a reply without a PHILOSOPHY CHECK section is noticed",
+              has_philosophy_check("## 0. PHILOSOPHY CHECK\n- Worst-case user ...")
+              and has_philosophy_check("**PHILOSOPHY CHECK**: ...")
+              and not has_philosophy_check("## 1. Rulings on THE FORKS\n"))
+        tbl = parse_changes("| File | Kind |\n|---|---|\n| `pkg/x.py` | EDIT |\n\n"
+                            "### EDIT: pkg/y.py\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n")
+        check("a file list written as a markdown table is checked against the blocks",
+              [a[1] for a in tbl.announced] == ["pkg/x.py"])
+        tr = "".join(f"\n\n{'=' * 78}\n== TURN {n} - {k}\n{'=' * 78}\n\n{b}" for n, k, b in (
+            (1, "YOU", "q"), (1, "KIMI - effort=max", "Files:\n- a.py - EDIT - later\n\n### END CHANGES\n"),
+            (2, "YOU", "go"), (2, "KIMI - effort=max",
+                               "### EDIT: a.py\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n\n### END CHANGES\n")))
+        tt = split_transcript_turns(tr) or {}
+        t2 = parse_changes(tt.get(2, ""))
+        check("a multi-turn transcript.md is split per Kimi turn - turn 2's block is not 'after END'",
+              sorted(tt) == [1, 2] and len(t2.blocks) == 1 and not t2.blocks_after_end, str(sorted(tt)))
+
+        class _NoNet:
+            def count_tokens(self, *_a: Any) -> None:
+                return None
+
+            def balance(self) -> None:
+                return None
+
+        full = Context(messages=[], parts=[("conversation", int((CONTEXT_WINDOW - 2000) / EST_WINDOW_SAFETY))],
+                       cache_key="k")
+        ns_p = argparse.Namespace(no_count=True, model="m", max_completion=DEFAULT_MAX_COMPLETION,
+                                  effort="max", max_spend=999.0, yes=True)
+        with contextlib.redirect_stdout(quiet):
+            sent = preflight(full, _NoNet(), ns_p)          # type: ignore[arg-type]
+        check("a window with no room left for an answer stops the call", sent is False)
+        check("a resume's size includes the reasoning it sends back",
+              est_messages([{"role": "assistant", "content": "", "reasoning_content": "r" * 4450}]) == 1000)
+    except Exception as exc:
+        check("self-test ran to completion", False, f"{type(exc).__name__}: {exc}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print(f"\nkimicli self-test  (python {sys.version.split()[0]}, {sys.platform})\n")
+    for name, ok, detail in results:
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"\n         {detail}" if detail and not ok else ""))
+    failed = [r for r in results if not r[1]]
+    print(f"\n{len(results) - len(failed)} of {len(results)} passed."
+          + ("" if not failed else "  DO NOT use --apply-fixes until every check passes."))
+    return 1 if failed else 0
 
 
 # ==========================================================================
@@ -1455,12 +4547,14 @@ def build_parser() -> argparse.ArgumentParser:
                     "write to your repo.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
+  python kimicli.py --selftest
   python kimicli.py --balance
-  python kimicli.py --playbook P0 --chat
-  python kimicli.py --prompt prompt_kimi.txt --request-code --exclude docs
-  python kimicli.py --resume last --chat
+  python kimicli.py --prompt task.md --request-code
+  python kimicli.py --resume last --prompt followup.md --request-code
   python kimicli.py --apply-fixes last --dry-run
-  python kimicli.py --apply-fixes last
+  python kimicli.py --apply-fixes last --allow-new-files
+  python kimicli.py --apply-fixes 20260921_101500_ab12cd --turn 2
+  python kimicli.py --history
   python kimicli.py --undo last
 """)
 
@@ -1472,7 +4566,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--chat", action="store_true", help="stay interactive after the first answer")
     g.add_argument("--resume", metavar="ID", help="continue a saved session ('last' for newest)")
     g.add_argument("--request-code", action="store_true",
-                   help="append the strict '### FILE:' output contract")
+                   help="append the strict EDIT/FILE output contract")
 
     g = p.add_argument_group("context")
     g.add_argument("--codebase", default=str(DEFAULT_CODEBASE), help=f"repo dump (default: {DEFAULT_CODEBASE})")
@@ -1482,6 +4576,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--attach", action="append", default=[], metavar="PATH", help="repeatable")
     g.add_argument("--todo", help="path to AA_MASTER_TODO.md (auto-detected in the project root)")
     g.add_argument("--no-todo", action="store_true")
+    g.add_argument("--philosophy", metavar="PATH",
+                   help="engineering philosophy sent with every call "
+                        "(default: packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md)")
+    g.add_argument("--no-philosophy", action="store_true",
+                   help="send without the engineering philosophy (it is required otherwise)")
     g.add_argument("--memory", action="store_true", help="include .kimi_out/memory.md")
     g.add_argument("--predict", metavar="PATH",
                    help="Predicted Output: pass this file's current content as the expected "
@@ -1509,13 +4608,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = p.add_argument_group("applying code (nothing here talks to the API)")
     g.add_argument("--apply-fixes", metavar="SESSION|FILE",
-                   help="apply staged files from a session ('last'), or parse a response .md/.txt")
-    g.add_argument("--dry-run", action="store_true", help="validate and report; write nothing")
+                   help="apply staged changes from a session ('last'), or parse a saved reply .md/.txt")
+    g.add_argument("--dry-run", action="store_true", help="resolve, check and preview; write nothing")
+    g.add_argument("--turn", type=int, action="append", metavar="N",
+                   help="apply only these turns of the session (repeatable; default: every turn, "
+                        "latest emission per file)")
+    g.add_argument("--skip", action="append", default=[], metavar="PATH",
+                   help="leave this file out of the apply (repeatable)")
     g.add_argument("--allow-new-files", action="store_true",
                    help="permit creating files that do not exist yet (off by default)")
+    g.add_argument("--allow-new-dirs", action="store_true",
+                   help="permit creating new directories for new files (off by default)")
     g.add_argument("--allow-shrink", action="store_true",
-                   help="permit a rewrite that is much shorter than the original")
-    g.add_argument("--undo", metavar="MANIFEST", help="revert an apply ('last' for the most recent)")
+                   help="permit a whole-FILE rewrite that is much shorter than the original")
+    g.add_argument("--allow-stale", action="store_true",
+                   help="permit a whole-FILE write over a file that changed since Kimi saw it")
+    g.add_argument("--skip-checks", action="store_true",
+                   help="skip the undefined-name and cross-file import checks")
+    g.add_argument("--accept-parse-errors", action="store_true",
+                   help="apply even though part of the reply could not be parsed (not recommended)")
+    g.add_argument("--undo", metavar="MANIFEST", help="revert an apply ('last' = newest not yet undone)")
+    g.add_argument("--force", action="store_true",
+                   help="with --undo: restore even over later edits (they are saved first)")
+    g.add_argument("--history", action="store_true", help="list applies and their status")
+    g.add_argument("--selftest", action="store_true",
+                   help="prove parse/apply/rollback/undo on this machine in a temp folder, then exit")
 
     p.add_argument("--verbose", action="store_true")
     return p
@@ -1526,32 +4643,67 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     setup_logging(OUT_DIR / "kimicli.log", args.verbose)
 
+    if args.selftest:
+        return run_selftest()
     if args.playbook_list:
         list_playbook(Path(args.playbook_file))
         return 0
     if args.stats:
         print_stats()
         return 0
+    if args.history:
+        print_history(BACKUP_DIR)
+        return 0
 
     # ---- offline modes -------------------------------------------------
     if args.undo:
-        Applier(PROJECT_ROOT).undo(args.undo)
-        return 0
+        return undo(PROJECT_ROOT, BACKUP_DIR, args.undo, force=args.force, assume_yes=args.yes)
 
     if args.apply_fixes:
         token = args.apply_fixes
         session = resolve_session(token)
         if session:
-            proposals = load_session_proposals(session)
-            print(f"Session {session.id}: {len(proposals)} staged file(s).")
-        else:
-            f = Path(token)
-            if not f.exists():
-                print(f"No session or file named '{token}'.")
+            props, blocking, info = load_session_proposals(session, args.turn, args.skip)
+            which = f"turn(s) {', '.join(map(str, args.turn))}" if args.turn else "all turns, latest emission per file"
+            print(f"Session {session.id}: {len(props)} file change(s) selected ({which}).")
+            for line in info:
+                print(f"  note: {line}")
+            return run_apply(props, args, blocking=blocking, session=session,
+                             meta={"source": f"session {session.id}",
+                                   "turns": args.turn or "all"})
+        f = Path(token)
+        if not f.is_file():
+            print(f"No session or file named '{token}'.")
+            return 1
+        text, label = read_text(f), f.name
+        turn_texts = split_transcript_turns(text)
+        if turn_texts is not None:
+            with_blocks = [n for n in sorted(turn_texts) if parse_changes(turn_texts[n]).blocks]
+            if args.turn:
+                if len(args.turn) != 1 or args.turn[0] not in turn_texts:
+                    print(f"{f.name} is a kimicli transcript with replies for turn(s) "
+                          f"{', '.join(map(str, sorted(turn_texts)))}; --turn must name exactly one of them.")
+                    return 1
+                pick = args.turn[0]
+            elif len(with_blocks) > 1:
+                print(f"{f.name} is a kimicli transcript with change blocks in turns "
+                      f"{', '.join(map(str, with_blocks))}. A file is applied one reply at a time: "
+                      f"name one with --turn N, or apply the session by id, which merges turns "
+                      f"(latest emission per file).")
                 return 1
-            proposals = parse_file_blocks(read_text(f))
-            print(f"{f.name}: {len(proposals)} file block(s) found.")
-        return run_apply(proposals, args)
+            else:
+                pick = with_blocks[0] if with_blocks else max(turn_texts)
+            text, label = turn_texts[pick], f"{f.name} turn {pick}"
+            print(f"{f.name} is a kimicli transcript: using Kimi's reply in turn {pick} "
+                  f"(reply line numbers below count from the start of that reply).")
+        props, blocking, pr = proposals_from_text(text, label)
+        skip_keys = {k for k in (_key_or_none(s) for s in args.skip) if k}
+        props = [p for p in props if _key_or_none(p.raw_path) not in skip_keys]
+        print(f"{f.name}: {len(pr.blocks)} block(s) in {len(props)} file(s).")
+        for w in pr.warnings:
+            print(f"  warning (line {w.line}): {w.message}")
+        return run_apply(props, args, blocking=blocking, preview_source=f,
+                         meta={"source": f"file {f.name}"})
 
     # ---- API modes -----------------------------------------------------
     if not API_KEY:
@@ -1577,10 +4729,17 @@ def main() -> int:
             logger.info("predicted output seeded from %s", pp.name)
 
     # Resume keeps the exact prefix, which is what makes turn 2 cheap.
+    session = None
     if args.resume:
         session = resolve_session(args.resume)
         if not session:
-            print(f"No session '{args.resume}'.")
+            print(f"No session '{args.resume}'" + (" with a completed call." if args.resume == "last" else "."))
+            return 1
+        if session.load_error or not session.messages:
+            why = (f"its messages.json did not load ({session.load_error})" if session.load_error
+                   else "it has no saved conversation")
+            print(f"Session {session.id} cannot be resumed: {why}. Resuming would send your prompt "
+                  f"with no codebase and no history. Not sent.")
             return 1
         print(f"Resumed {session.id}: {len(session.messages)} messages, "
               f"{money(session.usage.cost)} spent so far.")
@@ -1595,46 +4754,82 @@ def main() -> int:
         elif not args.cache_key:
             print(f"  cache key: {args.cache_key_resolved} (reused from turn 1)")
         session.cache_key = args.cache_key_resolved
-        if args.prompt:
-            p = Path(args.prompt)
-            text = read_text(p) if (p.exists() and p.is_file()) else args.prompt
-            if args.request_code:
-                text = text + "\n\n" + CODE_CONTRACT
+        # The prefix (dump, rules, TODO, memory) was fixed by turn 1; these
+        # flags cannot change it now. Say so rather than ignore them silently.
+        ignored = [flag for flag, on in (
+            ("--codebase", str(args.codebase) != str(DEFAULT_CODEBASE)), ("--no-codebase", args.no_codebase),
+            ("--exclude", bool(args.exclude)), ("--todo", bool(args.todo)),
+            ("--no-todo", args.no_todo), ("--memory", args.memory),
+            ("--philosophy", bool(getattr(args, "philosophy", None))),
+            ("--no-philosophy", getattr(args, "no_philosophy", False))) if on]
+        if ignored:
+            print(f"  note: {', '.join(ignored)} ignored on --resume - the conversation's prefix was "
+                  f"fixed by its first turn (and changing it would lose the cache).")
+        text, uparts, uerrors = compose_user_message(args)
+        if uerrors:
+            for e in uerrors:
+                print(f"  !! {e}")
+            print("Not sent.")
+            return 1
+        parts = [("conversation so far", est_messages(session.messages))]
+        if text:
             session.messages.append({"role": "user", "content": text})
+            parts += uparts
         elif not args.chat:
             print("Nothing to send. Add --prompt or --chat.")
             return 1
-        ctx = Context(messages=session.messages, parts=[("conversation so far",
-                      est_tokens("".join(str(m.get("content", "")) for m in session.messages)))],
-                      cache_key=args.cache_key_resolved)
+        ctx = Context(messages=session.messages, parts=parts, cache_key=args.cache_key_resolved)
     else:
         ctx = build_context(args)
+        if ctx.errors:
+            for e in ctx.errors:
+                print(f"  !! {e}")
+            print("Not sent.")
+            return 1
         if not any(m["role"] == "user" for m in ctx.messages) and not args.chat:
             print("No prompt given. Use --prompt, --playbook, or --chat.")
             return 1
-        session = Session()
-        session.messages = ctx.messages
         args.cache_key_resolved = ctx.cache_key
-        session.cache_key = ctx.cache_key
+
+    # Something new to send = the conversation ends with a user message. A
+    # --resume --chat with no --prompt has nothing new: re-sending the history
+    # as it stands was a billed call for an "I'm waiting" reply ($2.30).
+    has_new = bool(ctx.messages) and ctx.messages[-1].get("role") == "user"
 
     if args.estimate_only:
         args.yes = True          # a cost check should never prompt to send
         preflight(ctx, kimi, args)
         return 0
-    if not preflight(ctx, kimi, args):
+    if session is not None and not has_new:
+        print("  Nothing new to send - opening the chat. Your first message there is the next "
+              "billed call.")
+    elif not preflight(ctx, kimi, args):
         print("Not sent.")
         return 1
 
-    if any(m["role"] == "user" for m in session.messages):
+    if session is None:
+        # Created only now that a call is really going out: a session made for
+        # --estimate-only or a declined preflight used to become 'last'.
+        session = Session()
+        session.messages = ctx.messages
+        session.cache_key = ctx.cache_key
+
+    if has_new:
         try:
             do_turn(kimi, session, args, label=args.playbook or "")
         except Exception:
+            # The request was never answered. Leave the conversation as it was,
+            # or the next chat message follows an orphaned prompt and both
+            # are sent as consecutive user turns.
+            if session.messages and session.messages[-1].get("role") == "user":
+                session.messages.pop()
+            print("  The request was not answered and was not added to the conversation.")
             if not args.chat:
                 return 1
 
     if args.chat:
         chat_loop(kimi, session, args)
-    else:
+    elif not session.printed_stage_summary:
         print(f"\nSession {session.id}.  Continue it with: "
               f"python kimicli.py --resume {session.id} --chat")
     return 0

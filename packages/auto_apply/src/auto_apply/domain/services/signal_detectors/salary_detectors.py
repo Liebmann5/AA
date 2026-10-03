@@ -10,10 +10,11 @@ Academic grounding:
 from __future__ import annotations
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 import yaml
 from auto_apply.domain.constants import (
-    SEVERITY_CONCERN, SEVERITY_VIOLATION,
+    SEVERITY_CONCERN, SEVERITY_FLAG, SEVERITY_VIOLATION,
     SIG_ST_01, SIG_ST_02, SIG_ST_03, SIG_ST_04,
 )
 from auto_apply.domain.services.signal_detectors.base import (
@@ -75,12 +76,51 @@ _NO_SALARY_INDICATORS: list[re.Pattern] = [
 
 
 def _has_disclosed_salary(ctx: DetectionContext) -> bool:
-    """True if a salary range appears to be genuinely disclosed."""
+    """True if any US-dollar pay figure was found on the posting."""
     return ctx.salary_min is not None or ctx.salary_max is not None
 
 
+def _law_in_effect(law: PayTransparencyLaw, on: date) -> bool:
+    """Whether the law was in effect on the posting's own date.
+
+    ``on`` is DetectionContext.current_date — the capture date in a replay,
+    the run date live — never the wall clock. Law data that cannot be
+    parsed suppresses the finding: bad data must not fabricate a violation.
+    """
+    try:
+        return on >= date.fromisoformat(law.effective_date)
+    except ValueError:
+        return False
+
+
+def _is_single_figure(ctx: DetectionContext) -> bool:
+    """Exactly one pay figure was disclosed (one-sided, or min == max)."""
+    if ctx.salary_min is None and ctx.salary_max is None:
+        return False
+    if ctx.salary_min is None or ctx.salary_max is None:
+        return True
+    return ctx.salary_min == ctx.salary_max
+
+
 class SalaryTransparencyLegalViolationDetector:
-    """ST-01: Detects salary non-disclosure in legally-required jurisdictions."""
+    """ST-01: records pay non-disclosure where a transparency law may require it.
+
+    What AA can know about a posting: whether a US-dollar pay figure
+    appeared in its text, which jurisdiction it names, and whether that
+    jurisdiction's law was in effect on the capture date. What AA cannot
+    know: the employer's size (most laws exempt small employers), and pay
+    shown only in an image or a non-USD currency.
+
+    So severity is "violation" only where the law covers every employer
+    (threshold_employees <= 1 — employer size is not in question there);
+    otherwise "concern", and the evidence text says plainly what was seen
+    and what could not be known. A posting captured before its law took
+    effect produces nothing. A jurisdiction whose law requires disclosure
+    only on request (requires_range is false, e.g. RI) produces nothing:
+    non-disclosure is not a finding there. A single pay figure where the
+    law requires a range is a separate, weaker finding at severity "flag" —
+    whether one figure complies is a legal question AA does not decide.
+    """
     signal_type = SIG_ST_01
 
     def detect(self, ctx: DetectionContext) -> list[ResearchSignal]:
@@ -89,26 +129,56 @@ class SalaryTransparencyLegalViolationDetector:
 
         laws = _load_transparency_laws()
         law = laws.get(ctx.jurisdiction)
-        if law is None:
+        if law is None or not law.requires_range:
+            return []
+        if not _law_in_effect(law, ctx.current_date):
             return []
 
+        code = ctx.jurisdiction
         if _has_disclosed_salary(ctx):
+            if _is_single_figure(ctx):
+                figure = ctx.salary_max if ctx.salary_min is None else ctx.salary_min
+                evidence = (
+                    f"One pay figure shown (${figure:,}); {code}'s pay-transparency "
+                    f"law requires covered employers to disclose a RANGE. Whether one "
+                    f"figure complies is a legal question AA does not decide."
+                )
+                return [ResearchSignal.create(
+                    signal_type=self.signal_type, severity=SEVERITY_FLAG,
+                    confidence=0.6, evidence_text=evidence,
+                    platform=ctx.platform, jurisdiction=code,
+                    company_name=ctx.company_name,
+                )]
             return []
 
         # Check if at least one "no salary" indicator is present (confirms omission)
         has_deflection = any(p.search(ctx.job_description) for p in _NO_SALARY_INDICATORS)
         confidence = 0.92 if has_deflection else 0.78
 
-        penalty_str = f" (max penalty: ${law.penalty_max_usd:,})" if law.penalty_max_usd else ""
-        evidence = (
-            f"No salary disclosed in {law.jurisdiction_name} "
-            f"(requires disclosure since {law.effective_date}){penalty_str}. "
-            f"{'Replaced with vague language.' if has_deflection else ''}"
-        )
+        if law.threshold_employees <= 1:
+            evidence = (
+                f"Observation: no US-dollar pay figure found in {code}. {code}'s "
+                f"pay-transparency law (since {law.effective_date}) covers every "
+                f"employer; AA reads text only, so image-only or non-USD pay would "
+                f"not be seen."
+            )
+            severity = SEVERITY_VIOLATION
+        else:
+            evidence = (
+                f"Observation, not a legal finding: no US-dollar pay figure found "
+                f"in {code}. {code}'s law (since {law.effective_date}) covers "
+                f"employers with {law.threshold_employees}+ employees; AA cannot "
+                f"know employer size"
+            ) + (
+                ". Vague pay wording used instead." if has_deflection
+                else " or image-only pay."
+            )
+            severity = SEVERITY_CONCERN
+
         return [ResearchSignal.create(
-            signal_type=self.signal_type, severity=SEVERITY_VIOLATION,
+            signal_type=self.signal_type, severity=severity,
             confidence=confidence, evidence_text=evidence,
-            platform=ctx.platform, jurisdiction=ctx.jurisdiction,
+            platform=ctx.platform, jurisdiction=code,
             company_name=ctx.company_name,
         )]
 
@@ -140,7 +210,7 @@ class SalaryRangeWashingDetector:
             f"Salary range ${ctx.salary_min:,}–${ctx.salary_max:,} "
             f"(spread ratio: {ratio:.1f}x — "
             f"{'egregious range washing' if ratio >= self._VIOLATION_RATIO else 'range washing'}). "
-            f"Colorado good-faith standard requires meaningful ranges."
+            f"Good-faith pay-range laws (e.g. Colorado's) require meaningful ranges."
         )
         return [ResearchSignal.create(
             signal_type=self.signal_type, severity=severity,
