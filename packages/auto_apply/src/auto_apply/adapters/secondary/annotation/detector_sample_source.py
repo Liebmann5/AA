@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from auto_apply.domain.models.annotation import Item
 
-__all__ = ["DetectorSampleSource", "safe_view_html"]
+__all__ = ["DetectorSampleSource", "safe_view_html", "write_detector_sample"]
 
 _HEADER = re.compile(
     r"<!--\s*detector-sample\s*\|\s*url:\s*(?P<url>\S*)\s*"
@@ -60,6 +61,38 @@ def safe_view_html(raw: bytes) -> bytes:
     for pattern in _STRIP:
         text = pattern.sub("", text)
     return (_GUARD + text).encode("utf-8")
+
+
+def write_detector_sample(
+    samples_dir: Path, url: str, html: str, context: str
+) -> Path:
+    """The ONE writer of the detector-sample format.
+
+    The reader in this module and this writer share the header shape by
+    construction — they cannot drift. The format's previous producer was a
+    temporary ApplicationsWorkflow diagnostic, deleted with it, which left
+    item 5's tests building fixtures through a method that no longer
+    existed. Tests use this to build fixtures; if a future diagnostic saves
+    disputed pages again, it must write through here.
+
+    The header is the exact shape the ``_HEADER`` regex above reads; the
+    filename keeps the original ``<utc-stamp>_<url-hash>.html`` pattern.
+    """
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    url_hash = hashlib.sha256(
+        (url or "unknown").encode("utf-8", errors="replace")
+    ).hexdigest()[:12]
+    sample_path = samples_dir / f"{stamp}_{url_hash}.html"
+    header = (
+        f"<!-- detector-sample | url: {url}\n"
+        f"     context: {context} | substring/heuristic: blocked | "
+        f"weighted: not-blocked\n"
+        f"     captured: {stamp} | detector sample\n"
+        f"-->\n"
+    )
+    sample_path.write_text(header + html, encoding="utf-8", errors="replace")
+    return sample_path
 
 
 class DetectorSampleSource:

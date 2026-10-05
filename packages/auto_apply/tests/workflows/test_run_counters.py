@@ -208,6 +208,8 @@ def test_the_statistics_helper_reports_the_live_counters():
         "fields_classified": 12,
         "required_fields_filled": 7,
         "used_gpt4all": True,
+        "captcha_encountered": False,
+        "challenge_signals": [],
     }
 
 

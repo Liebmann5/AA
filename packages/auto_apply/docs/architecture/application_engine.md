@@ -347,6 +347,45 @@ as multi‑step wizards. AA handles these automatically:
 
 ---
 
+## Reaching the Form: the Apply Route
+
+Discovery hands the engine job‑board postings far more often than employer
+URLs — in the measured live runs, every vetted job. `_navigate_to_application`
+therefore runs a bounded route rather than assuming `job.url` is a form:
+
+1.  If vetting recorded an off‑host apply target in `metadata["apply_url"]`
+    (learned while vetting was already reading the posting), navigation
+    starts there — the posting is never reloaded.
+2.  Otherwise the posting is loaded and its apply controls are searched
+    across every actionable element shape (`<a>`, `<button>`,
+    `input[type=submit|button]`, `[role=button]`), read by accessible name
+    (rendered text, then `value`, `aria-label`, `title`). An off‑host `<a>`
+    href is followed **by navigation** — deterministic, and the hop is
+    recorded. A target‑less button is **clicked**, after which a new tab is
+    followed via the wired `ContextManager`, a JS navigation is honoured,
+    and an authentication dialog ends the route.
+3.  Every landing page is checked by the two challenge verdicts in
+    `domain/services/challenge_assessment.py`: a presented challenge pauses
+    in place (a human solve continues the route); a whole‑page login wall
+    before any form ends the route.
+
+**Outcomes.** A route that demands an account records `ACCOUNT_REQUIRED`
+(an authentication dialog, or a login wall before any form) and fills
+nothing. A route that loops or exceeds the hop bound
+(`applications.max_apply_hops`, default 3) records `FAILED_NAVIGATION` with
+the reason — never a hang. A page with no route at all is attempted as‑is,
+preserving the previous behaviour for direct form URLs.
+
+**Evidence.** Every attempt records `posting_host`, `apply_target_host`,
+`landed_host`, `apply_route_hops`, and `ats_platform` matched on the
+**landed** URL — the hiring‑friction record of how many hops, through whom,
+stand between a job seeker and the employer's form.
+
+There are no site‑specific host lists or selectors anywhere in this path;
+`tests/architecture/test_apply_route_wiring.py` asserts it structurally.
+
+---
+
 ## File Uploads
 
 AA handles resume and cover letter uploads intelligently:
@@ -385,7 +424,7 @@ The Application Engine is designed to work in every tier:
 
 | If … | AA will … |
 | ---- | --------- |
-| No browser is available (static mode) | Classify pages and extract form structure via `BS4PerceptionAdapter` — but cannot submit. |
+| No browser is available | AA refuses to build the session (`BrowserSetupError`) — static mode was removed (ADR‑013); a pretend session is worse than an honest refusal. |
 | No `InteractionPort` is available | Classify and plan, but skip execution. Useful for dry‑run analysis. |
 | No `ReasoningPort` (rare) | Log an error and abort — the engine requires a planner. |
 | GPT4All not installed | Use SpaCy similarity for custom answers (Tier 2). |

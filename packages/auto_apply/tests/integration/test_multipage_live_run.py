@@ -218,11 +218,18 @@ def test_navigation_finds_the_next_button_with_a_real_matcher():
     interaction.click.assert_called_once_with(nxt)
 
 
-def test_a_mock_matcher_cannot_navigate_and_fails_silently():
-    """Documents the trap, so nobody re-introduces it thinking it is harmless.
+def test_a_mock_matcher_no_longer_decides_navigation():
+    """The trap this test documented is gone — pinned so it stays gone.
 
-    A MagicMock matcher makes navigation return False with no error surfaced —
-    the failure mode that produced a green-looking run measuring one page.
+    Before deterministic label matching (item 12B), the Next/Submit/Apply
+    searches consulted text_matcher.find_best_match, and an injected
+    MagicMock made the tuple-unpack raise into the navigation method's broad
+    except: the wizard silently never advanced, with a green-looking run
+    measuring one page. Label matching is now a substring rule
+    (_label_matches), so a MagicMock matcher cannot break navigation. The
+    injected matcher is still used where free text is genuinely compared:
+    _classify_all_fields label disambiguation, _generate_custom_answers
+    experience ranking, and the strategic pass through reasoning_port.
     """
     from auto_apply.application.workflows.applications_workflow import (
         ApplicationsWorkflow,
@@ -254,8 +261,8 @@ def test_a_mock_matcher_cannot_navigate_and_fails_silently():
     button.text = "Next"
     workflow._get_clickable_elements = lambda: [button]
 
-    assert workflow._navigate_multi_page_flow() is False
-    assert workflow._pages_navigated == 0
+    assert workflow._navigate_multi_page_flow() is True
+    assert workflow._pages_navigated == 1
 
 
 def _live_registry():

@@ -972,6 +972,13 @@ class AgentOrchestrator:
     def _handle_captcha(self, task: WorkUnit) -> None:
         """Handles a CAPTCHA interruption with a resolvable outcome.
 
+        DORMANT PATH (item 12A, 2026-09-10): nothing enqueues HANDLE_CAPTCHA
+        any more. Challenges are paused on in place by ApplicationsWorkflow,
+        on the challenging page, before any outcome is recorded. This handler
+        remains as the consumer for rows enqueued by older versions — and
+        startup recovery marks those SKIPPED, because the pages they
+        referenced no longer exist.
+
         If a captcha_resolver was injected at construction, attempts automatic
         resolution first. On failure — or when no resolver is configured — the
         challenge is escalated to the human through the shared HITL approval

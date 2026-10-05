@@ -605,6 +605,12 @@ def _make_workflow(observer: _RecordingObserver) -> ApplicationsWorkflow:
     wf._pages_navigated = 0
     wf._fields_filled = 0
     wf._gpt4all_invoked = False
+    # The part-A/B counters _run_statistics now stamps. This file's contract
+    # is "every attribute the method touches is set explicitly" — strict
+    # reads in production are what make a half-constructed workflow fail
+    # loudly there instead of here.
+    wf._captcha_encountered = False
+    wf._challenge_signals = []
     return wf
 
 

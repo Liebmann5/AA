@@ -1167,6 +1167,26 @@ def build_orchestrator(  # noqa: PLR0914
         ),
     )
 
+    # ── Context manager — tab/window switching for offsite apply clicks ────
+    # Measured 2026-09-10: this class existed (and was constructed inside
+    # other adapters) but was NEVER passed to ApplicationsWorkflow, so an
+    # Apply control that opened a new tab stranded AA on the posting. Built
+    # here for the same reason as the lease: the composition root is the
+    # only layer that may construct adapters.
+    _context_manager = None
+    if driver is not None:
+        try:
+            from auto_apply.adapters.secondary.browser.context_manager import (  # noqa: PLC0415
+                ContextManager,
+            )
+            _context_manager = ContextManager(driver)
+        except Exception as _exc:
+            logger.warning(
+                "build_orchestrator: ContextManager unavailable — apply "
+                "clicks that open a new tab cannot be followed: %s",
+                _exc,
+            )
+
     # ApplicationsWorkflow — try to construct each optional component.
     _field_classifier = None
     _semantic_filler = None
@@ -1245,6 +1265,7 @@ def build_orchestrator(  # noqa: PLR0914
         config=_effective_config,
         research_observer=research_observer,
         browser_lease=browser_lease,       # enforce concurrency safety
+        context_manager=_context_manager,  # follow new tabs after apply clicks
         rng=apps_workflow_rng,
         page_analysis_router=page_analysis_router,  # <<< NEW
         plan=plan,

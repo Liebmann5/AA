@@ -562,7 +562,6 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     # logging the same posting twice revises one item. Local to the labels;
     # never joined to research rows, so it is not a posting identity.
     "application/services/labelling.py": ["hashlib.sha256"],
-    "application/workflows/applications_workflow.py": ["hashlib.sha256"],
     "domain/models/math_dom.py": ["hashlib.md5"],
     # Page copies (item 6): the plain digest of a cleaned copy's bytes (local
     # file name and WARC payload digest, never in a row), the nonce

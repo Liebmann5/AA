@@ -22,6 +22,19 @@ from its first tag onward.
 
 ### Added
 
+- **The challenge verdict and the apply route (item 12).** Whether a page is
+  a human-verification challenge or a login wall is now decided by one
+  structural predicate (`domain/services/challenge_assessment.py`) — never by
+  substrings in the page source, the title or the URL. A presented challenge
+  pauses the session in place, on the challenging page, before any outcome is
+  recorded; a human solve continues the same application attempt. AA now
+  routes from a job-board posting to the employer's form: vetting learns
+  off-host apply targets into `metadata["apply_url"]`, and applications
+  follows a bounded, recorded route (off-host links navigated, target-less
+  buttons clicked, new tabs followed via the now-wired ContextManager). New
+  outcome `ACCOUNT_REQUIRED` for account-gated apply flows. Every attempt
+  records posting/apply-target/landed hosts, hop count, the landed page's
+  ATS, and the signals behind any challenge verdict.
 - **Replay (`--replay`).** Re-runs text extraction and every per-posting
   research detector over a folder of kept page copies, with no browser,
   network, research database, research key or clock, and writes
@@ -192,6 +205,36 @@ from its first tag onward.
 
 ### Fixed
 
+- **The CAPTCHA verdict was wrong on most of the pages it flagged.** A
+  substring search recorded any page containing the text `recaptcha` —
+  including inside an HTML comment — as a CAPTCHA: 12 of 20 hand-triaged
+  pages were false positives, and the "access, not comprehension"
+  conclusion in STATUS.md has been withdrawn. The verdict is now
+  structural: on the 20 measured pages it scores 20 of 20 (12 postings
+  clear, 7 interstitials gated, 1 embedded widget), including the
+  interstitial population whose ~5k characters of boilerplate defeated the
+  first text-length threshold.
+- **The login-wall check fired on a posting titled "Registered Nurse"** —
+  first via a title substring, then via "/register" as a URL substring.
+  Titles are never read and URL markers match whole path segments only.
+- **The Apply search was skipped on every job-board posting** (they all
+  contain a `<form>`), and it could only see `<button>` elements — offsite
+  apply links, submit inputs and `[role=button]` were invisible. Apply,
+  Next and Submit now share one control source read by accessible name
+  (text, then `value`, `aria-label`, `title`).
+- **An off-host apply link lost to any on-page form with 3+ inputs**, so
+  the one measured off-host route was filled in place (an alert form on
+  the posting). The posting's own apply link now outranks form detection.
+- **A hidden sign-in modal in a page's markup counted as an account
+  requirement.** The verdict now asks the browser whether a
+  password-bearing dialog is actually visible after the apply click, and
+  only falls back to markup when the browser cannot answer.
+- **ContextManager was never passed to the application engine** — an apply
+  click that opened a new tab stranded AA on the posting. It is now built
+  and injected by the composition root, with a wiring pin.
+- **Item 5's labelling suite** broke when the temporary detector-sample
+  producer was deleted; the dump format now has one writer living beside
+  its reader, so the two cannot drift.
 - **Research salt storage moved out of the domain, and both research
   secrets are created atomically.** Salt file I/O now lives beside the
   provenance key in the security adapter; the domain resolves through one

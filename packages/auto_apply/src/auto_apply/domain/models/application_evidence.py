@@ -116,7 +116,16 @@ class ApplicationEvidence(BaseModel):
     attempt_id: str = ""   # joins this outcome to its per-page research rows
     pre_submit_url: str = ""
     page_title_before: str = ""
-    ats_platform: str | None = None  # matched ATS name (e.g. "greenhouse")
+    ats_platform: str | None = None  # matched ATS name, of the LANDED page
+
+    # ── Apply-route evidence (item 12B) ──────────────────────────────────
+    # How AA got from the posting to the form — the hiring-friction record:
+    # how many hops, through whom, before a job seeker reaches the
+    # employer's application.
+    posting_host: str = ""        # host of job.url (in live runs, a job board)
+    apply_target_host: str = ""   # host of the learned/followed apply target
+    landed_host: str = ""         # host of the page AA ended on
+    apply_route_hops: int = 0     # navigations after the initial load
 
     # ── Form interaction evidence ────────────────────────────────────────
     fields_classified: int = 0
@@ -143,6 +152,11 @@ class ApplicationEvidence(BaseModel):
     captcha_encountered: bool = False
     login_wall_encountered: bool = False
     unknown_required_field: str | None = None  # label of blocking field
+    #: Signal vocabulary of the challenge verdict that shaped this attempt
+    #: (domain/services/challenge_assessment.py). Empty when no challenge
+    #: evidence was seen. Recorded so a disputed verdict says WHY, not just
+    #: WHAT — the substring scan it replaces could never say why.
+    challenge_signals: list[str] = Field(default_factory=list)
 
     # ── Final outcome classification ─────────────────────────────────────
     outcome: Literal[
@@ -155,6 +169,7 @@ class ApplicationEvidence(BaseModel):
         "FAILED_FILE_UPLOAD",       # Required file upload failed
         "CAPTCHA_BLOCKED",          # Stopped by CAPTCHA challenge
         "LOGIN_WALL_BLOCKED",       # Stopped by login/sign-up requirement
+        "ACCOUNT_REQUIRED",         # The apply route demands an account on the site
         "USER_SKIPPED",             # User declined at HITL checkpoint
         "SUBMISSION_GATE_BLOCKED",  # Submission gate unsatisfied — never clicked
         "POLICY_BLOCKED",           # Admin policy or cooldown blocked
@@ -177,6 +192,7 @@ class ApplicationEvidence(BaseModel):
         return self.outcome in (
             "CAPTCHA_BLOCKED",
             "LOGIN_WALL_BLOCKED",
+            "ACCOUNT_REQUIRED",
             "FAILED_REQUIRED_FIELD",
             "FAILED_FILE_UPLOAD",
         )
