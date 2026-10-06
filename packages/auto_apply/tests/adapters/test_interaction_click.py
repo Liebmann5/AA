@@ -162,6 +162,33 @@ def test_execute_plan_paces_through_the_tool_not_a_hardcoded_sleep():
     tool.click.assert_called_once()
 
 
+def test_hover_delegates_to_the_tool():
+    """The HOVER plan action travels the tool's planned pointer path, not a
+    raw browser move (routed in call 2)."""
+    from auto_apply.domain.models.ui import (
+        InteractionPlan,
+        InteractionType,
+        PlannedAction,
+        UIElement,
+        UIElementType,
+    )
+
+    element = UIElement(id="e9", element_type=UIElementType.BUTTON)
+    element.set_reference(MagicMock())
+    action = PlannedAction(
+        target_element_id="e9",
+        action_type=InteractionType.HOVER,
+        reasoning="pin",
+        ui_element=element,
+    )
+    plan = InteractionPlan(goal_description="pin", actions=[action])
+
+    tool = _tool()
+    tool.hover.return_value = _FakeActionResult(True)
+    assert _executor(tool).execute_plan(plan) is True
+    tool.hover.assert_called_once()
+
+
 def test_no_hardcoded_pacing_constant_survives_between_plan_steps():
     """Structural: the inter-step pause is a delegation, not a literal.
 
@@ -182,13 +209,9 @@ def test_no_hardcoded_pacing_constant_survives_between_plan_steps():
 def test_the_set_of_click_implementations_is_the_known_ledger():
     """Ceiling pin: no NEW click implementation may appear in this package.
 
-    Two dead ones already exist — StealthHumanStrategy and
-    InstantHeadlessStrategy in execution_strategies.py, each defining
-    click/type_text/hover/inter_action_delay, neither ever constructed
-    (``InteractionExecutor.strategy`` is assigned and never read). They are the
-    right shape for the tool's two injected timing profiles and are Stage 2/3
-    business, so this stage pins the set rather than shrinking it: the
-    delegating executor joins the ledger, and nothing else may.
+    The two dead strategy implementations were retired in call 2
+    (execution_strategies.py moved to docs/old_retired_files/); the
+    delegating executor is now the ONLY click definition in this package.
     """
     pkg = (
         pathlib.Path(__file__).resolve().parent.parent.parent
@@ -203,8 +226,7 @@ def test_the_set_of_click_implementations_is_the_known_ledger():
         for path in sorted(pkg.rglob("*.py"))
         if "def click(" in path.read_text(encoding="utf-8", errors="ignore")
     ]
-    assert definers == ["execution_strategies.py", "human_like_adapter.py"], (
+    assert definers == ["human_like_adapter.py"], (
         f"The set of click() definitions in the interaction package changed. "
-        f"Expected the known ledger (two dead strategy implementations + the "
-        f"delegating executor); found: {definers}"
+        f"Expected exactly the delegating executor; found: {definers}"
     )

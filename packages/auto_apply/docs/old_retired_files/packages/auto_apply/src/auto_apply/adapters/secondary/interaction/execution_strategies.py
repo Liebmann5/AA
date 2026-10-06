@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/interaction/execution_strategies.py
 """Concrete execution strategies for browser interaction.
 
 Two implementations of the ExecutionStrategy protocol:

@@ -527,6 +527,9 @@ def build_orchestrator(  # noqa: PLR0914
                 browser=raw._pw_browser,
                 playwright=raw._pw_playwright,
                 rng=behavior_params.make_rng("playwright.adapter"),
+                handle_timeout_ms=_positive_int_setting(
+                    registry, "js_handle_timeout_ms"
+                ),
             ),
         }
 
@@ -720,6 +723,30 @@ def build_orchestrator(  # noqa: PLR0914
         # every scan_page call).
         perception_port = None
 
+    # ── DOM readiness ─────────────────────────────────────────────────────
+    # Built BEFORE the interaction tool so the tool's feed settles are
+    # MEASURED (DomReadinessPort) rather than slept: one observer instance is
+    # shared by the tool, the Applications engine and every form handler.
+    # Budgets come from config, never from literals.
+    dom_readiness = None
+    if driver is not None:
+        try:
+            from auto_apply.adapters.secondary.interaction.dom_observer import (  # noqa: PLC0415
+                DOMObserver,
+            )
+            _readiness_cfg = registry.get_all_effective_config()
+            dom_readiness = DOMObserver(
+                browser=driver,
+                stability_timeout_s=_readiness_cfg.get(
+                    "dom_stabilization_timeout_s", 3.0
+                ),
+                poll_interval_s=_readiness_cfg.get(
+                    "dom_stabilization_poll_interval_s", 0.25
+                ),
+            )
+        except Exception as _exc:
+            logger.debug("build_orchestrator: DOMObserver unavailable: %s", _exc)
+
     # ── The shared element-interaction tool ───────────────────────────────────
     # PageActionService owns every click, all pacing, and the seeded RNG; the
     # InteractionExecutor injected into the engines delegates to it. The RNG
@@ -740,33 +767,11 @@ def build_orchestrator(  # noqa: PLR0914
             rng=interaction_pacing_rng,
             pointer_rng=motion_pointer_rng,
             wheel_rng=motion_wheel_rng,
+            readiness=dom_readiness,
         )
         if driver is not None
         else None
     )
-
-    # ── DOM readiness ─────────────────────────────────────────────────────
-    # Built here rather than beside the workflow so the handlers can have it
-    # too: ONE observer instance is shared by the Applications engine and
-    # every form handler. Budgets come from config, never from literals.
-    dom_readiness = None
-    if driver is not None:
-        try:
-            from auto_apply.adapters.secondary.interaction.dom_observer import (  # noqa: PLC0415
-                DOMObserver,
-            )
-            _readiness_cfg = registry.get_all_effective_config()
-            dom_readiness = DOMObserver(
-                browser=driver,
-                stability_timeout_s=_readiness_cfg.get(
-                    "dom_stabilization_timeout_s", 3.0
-                ),
-                poll_interval_s=_readiness_cfg.get(
-                    "dom_stabilization_poll_interval_s", 0.25
-                ),
-            )
-        except Exception as _exc:
-            logger.debug("build_orchestrator: DOMObserver unavailable: %s", _exc)
 
     interaction_port = (
         InteractionExecutor(
@@ -989,7 +994,6 @@ def build_orchestrator(  # noqa: PLR0914
         _page_scroller = InfiniteScrollStrategy(
             driver,
             scroller=page_action_tool,
-            settle_s=_nav_cfg.get("infinite_scroll_settle_s", 2.0),
         )
         _paginator = (
             PaginationHandler(driver, interaction_port)
@@ -1043,6 +1047,7 @@ def build_orchestrator(  # noqa: PLR0914
                 degradation_detector=_degradation_detector,
                 research_observer=research_observer,
                 readiness=dom_readiness,
+                page_action=page_action_tool,
             ),
             BingProvider(
                 browser=driver,
@@ -1056,6 +1061,7 @@ def build_orchestrator(  # noqa: PLR0914
                 degradation_detector=_degradation_detector,
                 research_observer=research_observer,
                 readiness=dom_readiness,
+                page_action=page_action_tool,
             ),
             IndeedProvider(
                 browser=driver,
@@ -1089,6 +1095,7 @@ def build_orchestrator(  # noqa: PLR0914
             observer=_extraction_observer,
             reporter=_audit_reporter,
             forced_tier=_forced_tier,
+            page_action=page_action_tool,
         ).execute()
 
     # Single-URL careers-page scraper for DISCOVER_COMPANY tasks: navigate the
@@ -1348,10 +1355,20 @@ def build_orchestrator(  # noqa: PLR0914
     from auto_apply.application.services.job_posting_resolver import (  # noqa: PLC0415
         JobPostingResolver,
     )
-    from auto_apply.adapters.secondary.evasion.components.behavior import (  # noqa: PLC0415
-        simulate_idle_time,
+
+    # The resolver's post-navigation idle pause is the tool's seeded macro
+    # pause (the evasion behaviour module's simulate_idle_time is superseded).
+    # None without a tool (no driver) degrades to no pause, which the
+    # resolver already tolerates.
+    job_posting_resolver = JobPostingResolver(
+        idle_simulator=(
+            lambda _driver, min_seconds, max_seconds: page_action_tool.macro_pause(
+                min_seconds, max_seconds
+            )
+        )
+        if page_action_tool is not None
+        else None
     )
-    job_posting_resolver = JobPostingResolver(idle_simulator=simulate_idle_time)
 
     # ── Optional CLI progress display (Wave M — Session Observability) ────────
     # Constructed here, not by the orchestrator itself, since composition_root

@@ -106,12 +106,9 @@ class CheckableInputHandler(BaseInputHandler):
         return bool(value)
 
     def _click_safely(self, element: ElementInterface) -> None:
-        """Attempts a human-like click, falling back to JavaScript if intercepted."""
+        """Clicks through the tool. The tool's ladder owns the JS fallback
+        rung now (config-gated), so there is no second fallback here."""
         try:
             self._click(element)
         except Exception as e:
-            logger.debug("Human-like click failed on checkable: %s. Attempting JS fallback.", e)  # noqa: E501
-            try:
-                self.browser.execute_script("arguments[0].click();", element)
-            except Exception as js_e:
-                logger.error("Failed to toggle checkable element: %s", js_e)
+            logger.error("Failed to toggle checkable element: %s", e)

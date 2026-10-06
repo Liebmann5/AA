@@ -72,8 +72,16 @@ class SemanticMiner:
 
             return False
 
-        # Execute Deep Scan
-        self.ctx_mgr.find_context_with_content(_scan_context)
+        # Execute Deep Scan. The scan leaves the driver INSIDE the frame
+        # where content was found, by contract ("Call reset() when done") —
+        # and this caller never did, so every later scroll, probe and click
+        # ran in that frame's context (the feed scroll read the frame's
+        # scroller, not the main document's). Restore the top-level context
+        # once extraction is complete.
+        try:
+            self.ctx_mgr.find_context_with_content(_scan_context)
+        finally:
+            self.ctx_mgr.reset()
 
         # Phase timing for the fallback route (Stage 3, R-C): the slow
         # fallback harvests measured live (47.9s / 80.5s) were SemanticMiner

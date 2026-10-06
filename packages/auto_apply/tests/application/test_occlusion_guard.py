@@ -178,6 +178,7 @@ def test_persistent_occlusion_is_refused_after_the_retry():
         ("ok", True),
         ("hidden", False),
         ("occluded:div", False),
+        ("pane-clip", False),
         ("offscreen", None),
         (None, None),
         ("", None),
@@ -200,6 +201,8 @@ def test_the_script_treats_descendants_and_ancestors_as_the_target():
     assert "for (var e = top; e; e = up(e))" in script
     assert "for (var a = elem; a; a = up(a))" in script
     assert "elementFromPoint" in script
+    # D12: clipped-by-own-pane is a distinct verdict — scroll the pane, not refuse.
+    assert "pane-clip" in script
 
 
 def test_the_guard_can_be_switched_off_entirely():

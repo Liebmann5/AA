@@ -582,6 +582,18 @@ class SeleniumAdapter(BrowserInterface):
             self._cursor_x,
             self._cursor_y,
         )
+        if plan.wheel_ticks:
+            # G3 (measured live): W3C dispatches all input sources tick by
+            # tick in lockstep, so an unpadded wheel source fires its first
+            # scroll while the pointer is still travelling to the origin —
+            # a wheel no hand ever produces. Pad the wheel source with a
+            # pause matching the approach (pre-delay + pointer moves) so the
+            # order on the wire is: arrive, then scroll.
+            approach_ms = plan.pre_delay_ms + sum(
+                t.dt_ms for t in plan.pointer_ticks
+            )
+            if approach_ms:
+                wheel.create_pause(approach_ms / 1000.0)
         for wtick in plan.wheel_ticks:
             wheel.create_scroll(
                 int(origin_x),

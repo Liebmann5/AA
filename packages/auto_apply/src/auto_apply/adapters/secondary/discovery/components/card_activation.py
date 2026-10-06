@@ -61,10 +61,21 @@ class CardActivator:
         settle_seconds: Fixed wait when no readiness port is available.
     """
 
-    def __init__(self, browser, readiness=None, settle_seconds: float = 2.0) -> None:
+    def __init__(
+        self,
+        browser,
+        readiness=None,
+        settle_seconds: float = 2.0,
+        page_action=None,
+    ) -> None:
         self._browser = browser
         self._readiness = readiness
         self._settle_seconds = float(settle_seconds)
+        # Optional interaction tool. When wired, activation clicks travel
+        # the ladder and carry an observed effect; when absent (the
+        # extractor that builds this class is not yet wired — call 3), the
+        # raw click fallback below preserves today's behaviour.
+        self._page_action = page_action
 
     def activate(
         self,
@@ -81,12 +92,26 @@ class CardActivator:
             return ActivationOutcome(error=error)
 
         before = self._anchor_snapshot()
-        try:
-            element.click()
-        except Exception as exc:
-            return ActivationOutcome(error=f"click failed: {exc}")
+        effect = ""
+        if self._page_action is not None:
+            # Through the tool: trusted pointer, occlusion/challenge guard,
+            # and an observed effect. RULING: the effect is ADVISORY
+            # telemetry only — the measured URL diff and anchor diff below
+            # remain the verdict, because effect is a floor, not a verdict
+            # (a silent XHR leaves no trace on any of its channels).
+            result = self._page_action.click(element)
+            if not result:
+                return ActivationOutcome(error=f"click failed: {result.reason}")
+            effect = result.effect
+        else:
+            try:
+                element.click()
+            except Exception as exc:
+                return ActivationOutcome(error=f"click failed: {exc}")
 
         self._wait_for_settle()
+        if effect:
+            logger.debug("Card activation effect (advisory): %s", effect)
         after = self._anchor_snapshot()
 
         current_url = self._current_url()

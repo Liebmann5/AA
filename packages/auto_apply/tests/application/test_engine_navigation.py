@@ -84,7 +84,7 @@ def test_navigation_did_not_leak_into_the_handler_seam():
         if not name.startswith("_")
         and callable(getattr(PageActionPrimitives, name, None))
     }
-    assert methods == {"click", "type_text", "settle"}
+    assert methods == {"click", "type_text", "settle", "select_option"}
 
 
 def test_the_tool_satisfies_the_navigation_port():
@@ -112,7 +112,7 @@ def test_warmup_fires_once_across_many_navigations():
     tool.navigate("https://example.com/three")
 
     assert tool.warmup_pause.call_count == 3, "navigate must always consult warmup"
-    assert tool._warmed_up is True
+    assert tool._state.warmed_up is True
     assert browser.get.call_count == 3
 
 

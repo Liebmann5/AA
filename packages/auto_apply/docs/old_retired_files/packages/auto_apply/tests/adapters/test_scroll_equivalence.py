@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/tests/adapters/test_scroll_equivalence.py
 
 """Multi-scroll equivalence: the native path and the tool path harvest identically.
 

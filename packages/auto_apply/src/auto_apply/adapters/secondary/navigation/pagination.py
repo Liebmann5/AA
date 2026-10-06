@@ -28,7 +28,6 @@ Arrow Buttons) and integrates with InteractionPort to click naturally.
 
 import logging
 from typing import Any
-import time
 from abc import ABC, abstractmethod
 
 from auto_apply.domain.ports.browser_port import BrowserInterface
@@ -45,7 +44,6 @@ class PaginationStrategy(ABC):
         browser: BrowserInterface,
         interactor: InteractionPort | None = None,
         scroller=None,
-        settle_s: float = 2.0,
     ):
         """Initializes the pagination strategy.
 
@@ -54,13 +52,15 @@ class PaginationStrategy(ABC):
             interactor: Port for human-like interaction and pacing. Optional for
                         scroll-based strategies that operate entirely via JavaScript
                         and do not click DOM elements.
+            scroller: The interaction tool's feed-scroll primitive. All settle
+                        timing lives there (infinite_scroll_settle_s); this
+                        strategy carries no timing of its own.
         """
         self.browser = browser
         # Annotated Any: every use is inside a try/except that already treats
         # a missing interactor as "this strategy cannot advance the page".
         self._interactor: Any = interactor
         self._scroller = scroller
-        self._settle_s = float(settle_s)
 
     @property
     def name(self) -> str:
@@ -190,23 +190,24 @@ class InfiniteScrollStrategy(PaginationStrategy):
         Scrolls down and waits to see if new content loads.
         Returns:
             True if the page grew (new content loaded).
-            False if we hit the bottom and nothing happened.
+            False if we hit the bottom, nothing happened, or no scroller is
+            wired.
+
+        The raw ``window.scrollTo`` fallback is retired (call 2): the
+        composition root always injects the interaction tool as the
+        scroller, and a second scroll implementation is exactly the
+        duplication the tool removed. No scroller is an honest False, not
+        a teleport.
         """
         if self._scroller is not None:
             # One implementation of 'scroll and see if the page grew'.
             return self._scroller.scroll_to_bottom()
 
-        prev_height = self.browser.execute_script("return document.body.scrollHeight")
-
-        self.browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-
-        # Was a hardcoded 2.0. The default IS 2.0, so the unconfigured
-        # path is byte-for-byte what it was.
-        time.sleep(self._settle_s)
-
-        new_height = self.browser.execute_script("return document.body.scrollHeight")
-
-        return new_height > prev_height
+        logger.debug(
+            "%s: no scroller injected — cannot scroll; reporting end of feed",
+            self.name,
+        )
+        return False
 
 class PaginationHandler:
     """Orchestrates multiple pagination strategies for robust page navigation."""

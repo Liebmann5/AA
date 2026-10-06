@@ -95,16 +95,17 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "selector+fallback locator (AD-9); wired only via set_locator, which "
         "has no caller",
     ),
+    "auto_apply.adapters.secondary.evasion": (
+        "WIRE-LATER",
+        "empty package __init__; its only inbound edge was the retired "
+        "components/behavior.py, and every module in it is the unwired "
+        "evasion layer exempted below",
+    ),
     "auto_apply.adapters.secondary.evasion.captcha_handler": (
         "WIRE-LATER",
         "AudioCaptchaSolver scaffold whose solve() returns False; the "
         "orchestrator uses CaptchaResolutionService "
         "(resolution/captcha_adapter.py) instead",
-    ),
-    "auto_apply.adapters.secondary.evasion.components.session": (
-        "WIRE-LATER",
-        "SessionManager persona persistence + warmup (Bible 16.1); the "
-        "cascade/orchestrator do not construct it yet",
     ),
     "auto_apply.adapters.secondary.evasion.fingerprint_chrome": (
         "WIRE-LATER",
@@ -125,11 +126,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "PLANNED",
         "empty stub for the headless APIDirectAdapter interaction path "
         "(Bible 7.4)",
-    ),
-    "auto_apply.adapters.secondary.interaction.execution_strategies": (
-        "WIRE-LATER",
-        "Stealth/Instant strategies for InteractionExecutor; the composition "
-        "root builds the executor without a strategy",
     ),
     "auto_apply.adapters.secondary.network.network": (
         "RETIRE-CANDIDATE",
@@ -305,6 +301,8 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
 # pin fails loudly naming ui_handler.py if the move has not happened yet.
 # Dropped to 47 with the page-verdict consolidation: evasion/auditor,
 # domain/browser_state and domain/ports/page_classification_port retired.
+# Dropped to 45 with the call-2 retirements: interaction/execution_strategies
+# and evasion/components/session moved to docs/old_retired_files/.
 MAX_EXEMPTIONS = 50
 
 

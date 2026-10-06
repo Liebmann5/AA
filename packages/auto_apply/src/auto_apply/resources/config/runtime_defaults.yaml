@@ -13,6 +13,9 @@
 headless_mode: false
 browser_timeout_seconds: 30
 page_load_timeout_seconds: 20
+#! Bound on resolving a Playwright element handle for a JS call (was a 30s
+#! driver default; one stale element cost 30s per call down the click ladder).
+js_handle_timeout_ms: 2000
 # Max navigation attempts before giving up on a URL (bounded-retry).
 navigation_retries: 3
 occlusion_guard: true   #! refuse clicks that would land on an overlay
@@ -158,6 +161,9 @@ discovery:
 applications:
   # Maximum form pages to navigate before aborting.
   max_pages: 10
+  #! Bounded wheel-scan of a form page BEFORE analysis so lazy sections
+  #! render; the tool then wheels back to the top. Each step is measured.
+  form_reveal_max_scrolls: 8
   # Maximum interaction steps per page before aborting.
   max_steps_per_page: 15
   # Seconds to wait for DOM to stabilize after each navigation.

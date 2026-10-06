@@ -105,6 +105,7 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "headless_mode": False,
     "browser_timeout_seconds": 30,
     "page_load_timeout_seconds": 20,
+    "js_handle_timeout_ms": 2000,
     "navigation_retries": 3,
     "occlusion_guard": True,
     "force_analysis_tier": "",
@@ -172,6 +173,7 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     },
     "applications": {
         "max_pages": 10,
+        "form_reveal_max_scrolls": 8,
         "max_steps_per_page": 15,
         "dom_stabilization_timeout_s": 3.0,
         "dom_stabilization_poll_interval_s": 0.25,

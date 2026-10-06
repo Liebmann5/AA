@@ -2280,7 +2280,7 @@ class ApplicationsWorkflow:
         })
 
         try:
-            self._interaction_port.click(submit_button)
+            self._interaction_port.click(submit_button, irreversible=True)
             evidence = evidence.model_copy(update={
                 "submit_clicked": True,
             })
@@ -2524,25 +2524,26 @@ class ApplicationsWorkflow:
                 )
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Lazy scroll-up — simulate a person reviewing the form before filling
+    # Form reveal — render lazy sections before analysis (tool cadence)
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _lazy_scroll_to_top(self) -> None:
-        """Scroll smoothly to the top of the page.
+    def _reveal_form_content(self) -> None:
+        """Wheel-scan the page with the tool's cadence, then return to the top.
 
-        Simulates a person who has scrolled down to read the job description,
-        then lazily scrolls back up before starting to fill out the form.
-        Called once per form page, after analysis and before filling.
+        The raw smooth scroll-to-top this replaces could not render
+        lazy sections below the fold, so the analysis never saw them. The
+        reveal runs in the tool (seeded, measured, bounded by
+        ``applications.form_reveal_max_scrolls``); a failure here must never
+        abort an application, so it degrades to a debug log.
         """
+        if self._navigation is None:
+            return
         try:
-            if self._browser is not None:
-                self._browser.execute_script(
-                    "window.scrollTo({top: 0, behavior: 'smooth'})"
-                )
-            # Brief pause to simulate the person orienting at the top of the form.
-            time.sleep(self._rng.uniform(0.8, 1.5))
-        except Exception:
-            pass  # Degrade gracefully — scroll is cosmetic, not critical.
+            self._navigation.reveal_page(
+                max_steps=self._cfg("applications.form_reveal_max_scrolls", 8)
+            )
+        except Exception as exc:
+            logger.debug("ApplicationsWorkflow: form reveal failed: %s", exc)
 
     def run(
         self, job: Job, session_id: str | None = None
@@ -2645,6 +2646,8 @@ class ApplicationsWorkflow:
 
         try:
             while True:
+                # ── Reveal lazy content before analysis (tool cadence) ──
+                self._reveal_form_content()
                 # ── iFrame + Shadow DOM fallback (Wave K1) ──────────────
                 structure = self._get_form_structure_with_iframe_fallback(job)
                 # One research record per wizard step, page-indexed.
@@ -2653,9 +2656,6 @@ class ApplicationsWorkflow:
                 )
                 classifications = self._classify_all_fields(structure)
                 self._fields_classified += len(classifications)
-
-                # ── Lazy scroll to top before filling ────────────────────
-                self._lazy_scroll_to_top()
 
                 self._fields_filled += self._fill_standard_fields(
                     classifications

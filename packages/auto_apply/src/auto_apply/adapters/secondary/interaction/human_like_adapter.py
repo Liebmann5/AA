@@ -352,7 +352,16 @@ class InteractionExecutor(InteractionPort):
                 self.interactor.fill_input(element_ref, action.value)
 
             elif action.action_type == InteractionType.HOVER:
-                self.browser.move_mouse_to_element(element_ref)
+                # Routed to the tool (call 2): hover is a planned pointer
+                # path with the tool's pacing, not a raw port move.
+                if self._page_action is None:
+                    logger.error(
+                        "HOVER action requires the PageActionService tool; "
+                        "none was injected."
+                    )
+                    return False
+                if not self._page_action.hover(element_ref):
+                    return False
 
             elif action.action_type == InteractionType.WAIT_FOR:
                 # 'value' here represents seconds to wait

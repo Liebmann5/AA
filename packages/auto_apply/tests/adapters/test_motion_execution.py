@@ -112,6 +112,30 @@ class TestSeleniumMotion:
             trusted_pointer=True, wheel=True, timed_ticks=True
         )
 
+    def test_the_wheel_source_is_padded_until_the_pointer_arrives(self):
+        """G3: W3C dispatches input sources tick by tick in lockstep, so an
+        unpadded wheel fires while the pointer is still travelling. The wheel
+        source's first action must be a pause of pre_delay + pointer dts."""
+        adapter = self._adapter()
+        plan = MotionPlan(
+            kind=MotionKind.WHEEL,
+            pointer_ticks=(
+                PointerTick(x=100, y=100, dt_ms=20),
+                PointerTick(x=200, y=200, dt_ms=30),
+            ),
+            wheel_ticks=(WheelTick(dx=0, dy=120, dt_ms=8),),
+            wheel_origin=(200, 200),
+            pre_delay_ms=10,
+        )
+        adapter.execute_motion(plan)
+
+        wheel_actions = _device_actions(adapter._driver)["wheel"]
+        assert wheel_actions[0] == {"type": "pause", "duration": 60}, (
+            "the wheel must wait out the 10ms pre-delay plus the 20+30ms "
+            "approach before its first scroll"
+        )
+        assert [a["type"] for a in wheel_actions] == ["pause", "scroll"]
+
 
 # ── Playwright ──────────────────────────────────────────────────────────────
 
@@ -125,6 +149,9 @@ class TestPlaywrightMotion:
         adapter._cursor_x = 0
         adapter._cursor_y = 0
         adapter._rng = random.Random(1)
+        # Instance attribute set by __init__ from the js_handle_timeout_ms
+        # config value; __new__ bypasses __init__, so the test supplies it.
+        adapter._handle_timeout_ms = 2000
         return mod, adapter
 
     def test_move_mouse_by_offset_is_no_longer_a_no_op(self):

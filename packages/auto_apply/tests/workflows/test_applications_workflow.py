@@ -464,7 +464,7 @@ def test_submit_input_element_is_found_as_submit_control(
 
     assert result.submit_button_found is True
     assert result.submit_button_text == "Submit application"
-    mock_interaction_port.click.assert_called_once_with(submit_input)
+    mock_interaction_port.click.assert_called_once_with(submit_input, irreversible=True)
 
 
 def test_next_anchor_is_found_by_multi_page_walk(

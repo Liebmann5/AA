@@ -240,6 +240,7 @@ class PlaywrightAdapter(BrowserInterface):
         browser: Browser,
         playwright: Playwright,
         rng: random.Random | None = None,
+        handle_timeout_ms: int = 2000,
     ):
         """Initializes the adapter with Playwright objects.
 
@@ -248,12 +249,17 @@ class PlaywrightAdapter(BrowserInterface):
             browser (Browser): The Browser instance.
             playwright (Playwright): The root Playwright object (for cleanup).
             rng: Optional seeded random.Random for deterministic behaviour.
+            handle_timeout_ms: Bounded wait for a locator to attach when
+                unwrapping elements for JS, from the js_handle_timeout_ms
+                config value (was a class constant; the 30s driver default
+                was the D6 stall).
         """
         _ensure_playwright()
         self._page = page
         self._browser = browser
         self._playwright = playwright
         self._rng = rng if rng is not None else random.Random()
+        self._handle_timeout_ms: int = int(handle_timeout_ms)
         # Tracked pointer position — Playwright exposes no cursor getter.
         # The browser session's initial pointer position is (0, 0).
         self._cursor_x: int = 0
@@ -398,8 +404,9 @@ class PlaywrightAdapter(BrowserInterface):
                 # Bounded: locator.element_handle() defaults to a 30s wait,
                 # so one stale element used to cost 30s PER CALL (D6,
                 # measured live) — on the worst-case machine, three times
-                # per click down the ladder.
-                handle = arg._locator.element_handle(timeout=self._HANDLE_TIMEOUT_MS)
+                # per click down the ladder. The bound is configured
+                # (js_handle_timeout_ms), not a literal.
+                handle = arg._locator.element_handle(timeout=self._handle_timeout_ms)
                 handles.append(handle)
                 raw_args.append(handle)
             else:
@@ -509,10 +516,6 @@ class PlaywrightAdapter(BrowserInterface):
     #: at most this many contiguous sub-moves (Playwright's mouse.move takes
     #: steps but no per-step timing).
     _MOTION_MAX_SEGMENTS: int = 6
-
-    #: Bounded wait for a locator to attach when unwrapping elements for JS.
-    #: 2s is the fail-fast bound; the 30s default was the D6 stall.
-    _HANDLE_TIMEOUT_MS: int = 2000
 
     def execute_motion(self, plan: MotionPlan) -> None:
         """Executes a motion plan with per-chunk timing.

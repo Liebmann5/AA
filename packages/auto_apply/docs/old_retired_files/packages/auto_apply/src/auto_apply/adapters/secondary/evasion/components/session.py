@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/evasion/components/session.py
 """
 Manages the persistent state of a browser "persona" in a framework-agnostic way.
 For deterministic injection, rng is accepted via the constructor's optional

@@ -115,11 +115,6 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
         "ApplicationsWorkflow receives interrupt_policy untyped; only "
         "duck-typed should_pause calls exist",
     ),
-    "PageActionPrimitives": (
-        "WIRE-LATER",
-        "handlers receive page_action untyped; the port is the three-verb "
-        "contract docstring only",
-    ),
     "PageAuditReporterPort": (
         "WIRE-LATER",
         "injected as untyped reporter= params; sibling of ExtractionObserverPort",
@@ -177,7 +172,9 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
 # adapters/primary/cli/research_consent_screen.py consumes the port (a
 # runtime isinstance guard on the injected service — an executable use, so
 # the pin's R-B-2 rules count it).
-MAX_EXEMPTIONS = 23
+# Lowered 23 → 22 by the mouse tool's call 2: PageActionPrimitives is now
+# consumed through typed engine and handler signatures.
+MAX_EXEMPTIONS = 22
 
 
 # ─────────────────────────────────────────────────────────────────────────────

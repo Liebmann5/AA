@@ -119,13 +119,11 @@ def _tool(browser, settle=0.0):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_default_config_reproduces_the_previous_scroll_behaviour_exactly():
-    """No scroller injected: same JS, same order, same 2.0s wait, same result.
-
-    This is the pin that lets the hardcoded 2.0 become a config value without
-    anyone having to trust that the default matches. If the default ever drifts
-    from 2.0, or the JS sequence changes, this fails.
-    """
+def test_a_strategy_without_a_scroller_reports_no_scroll_and_uses_no_raw_js():
+    """The raw ``window.scrollTo`` fallback is retired (call 2): a strategy
+    with no scroller injected cannot scroll, says so honestly, and touches
+    no raw JS. The composition root always injects the interaction tool as
+    the scroller, so this path is test-only."""
     from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
@@ -133,42 +131,26 @@ def test_default_config_reproduces_the_previous_scroll_behaviour_exactly():
     browser = _heights(1000, 2000)
     strategy = InfiniteScrollStrategy(browser)
 
-    with patch(
-        "auto_apply.adapters.secondary.navigation.pagination.time.sleep"
-    ) as slept:
-        assert strategy.next_page() is True
-
-    slept.assert_called_once_with(2.0)
-    assert browser.recorded == [
-        "return document.body.scrollHeight",
-        "window.scrollTo(0, document.body.scrollHeight);",
-        "return document.body.scrollHeight",
-    ]
+    assert strategy.next_page() is False
+    browser.execute_script.assert_not_called()
 
 
-def test_the_settle_default_is_the_old_literal():
-    """The extracted magic number's default IS the number it replaced."""
+def test_the_strategy_carries_no_settle_config_of_its_own():
+    """The settle wait lives in the tool (infinite_scroll_settle_s), not in
+    the strategy — the strategy only delegates to the injected scroller."""
     from auto_apply.adapters.secondary.navigation.pagination import (
         InfiniteScrollStrategy,
     )
 
-    assert InfiniteScrollStrategy(MagicMock())._settle_s == 2.0
+    assert not hasattr(InfiniteScrollStrategy(MagicMock()), "_settle_s")
 
 
 def test_no_hardcoded_scroll_wait_survives_in_the_pagination_module():
     source = PAGINATION_SRC.read_text(encoding="utf-8", errors="ignore")
-    assert "time.sleep(2.0)" not in source
-    assert "self._settle_s" in source
+    assert "time.sleep" not in source
+    assert "self._settle_s" not in source
 
 
-def test_reaching_the_bottom_still_reports_no_growth():
-    """Unchanged semantics: same height means the feed has ended."""
-    from auto_apply.adapters.secondary.navigation.pagination import (
-        InfiniteScrollStrategy,
-    )
-
-    with patch("auto_apply.adapters.secondary.navigation.pagination.time.sleep"):
-        assert InfiniteScrollStrategy(_heights(4200, 4200)).next_page() is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -255,7 +237,7 @@ def test_scroll_to_bottom_falls_back_to_the_recorded_teleport_without_wheel():
 def test_the_settle_comes_from_config_not_a_literal():
     browser = _root_reads((1000, 0), (2000, 0))
     with patch(
-        "auto_apply.application.services.page_action.service.time.sleep"
+        "auto_apply.application.services.page_action.scrolling.time.sleep"
     ) as slept:
         _tool(browser, settle=0.75).scroll_to_bottom()
 
@@ -331,3 +313,56 @@ def test_the_discovery_loop_still_owns_the_dry_scroll_guard_and_cap():
     assert "_scroll_and_mine" in serp
     assert "dry_scroll_limit" in serp
     assert "next_page()" in serp
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The form reveal (call 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_reveal_page_scans_down_then_wheels_back_to_the_top():
+    browser = _root_reads(
+        (1000, 0), (2000, 0),   # step 1: grew -> progress
+        (2000, 0), (2000, 0),   # step 2: measured end -> stop
+        (2000, 700),            # return-to-top read: 700px from the top
+        (2000, 0),              # return-to-top read: back at the top
+    )
+    tool = _tool(browser)
+
+    steps = tool.reveal_page(max_steps=4)
+
+    assert steps == 1
+    plans = [c.args[0] for c in browser.execute_motion.call_args_list]
+    deltas = [t.dy for plan in plans for t in plan.wheel_ticks]
+    assert any(dy > 0 for dy in deltas), "the reveal never scanned down"
+    assert any(dy < 0 for dy in deltas), "the reveal never returned to the top"
+
+
+def test_reveal_page_honours_its_step_bound_on_an_endlessly_growing_feed():
+    browser = _root_reads(
+        (1000, 0), (2000, 0),   # step 1 grows
+        (2000, 0), (3000, 0),   # step 2 grows
+        (3000, 0), (4000, 0),   # step 3 grows
+        (4000, 500),            # return-to-top read
+        (4000, 0),              # return-to-top read: done
+    )
+    tool = _tool(browser)
+
+    steps = tool.reveal_page(max_steps=3)
+
+    assert steps == 3, "the bound is a ceiling, not a quota"
+    down_plans = [
+        c.args[0]
+        for c in browser.execute_motion.call_args_list
+        if any(t.dy > 0 for t in c.args[0].wheel_ticks)
+    ]
+    assert len(down_plans) == 3
+
+
+def test_reveal_page_never_raises_on_a_dead_browser():
+    """A reveal must not be able to abort a form fill — 0, not an exception."""
+    browser = MagicMock()
+    browser.execute_script.side_effect = RuntimeError("driver gone")
+    browser.motion_capabilities = MotionCapabilities()
+
+    assert _tool(browser).reveal_page(max_steps=4) == 0

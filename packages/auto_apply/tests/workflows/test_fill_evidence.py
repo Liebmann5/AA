@@ -329,3 +329,63 @@ def test_all_success_page_is_behaviour_preserving():
     assert events.count(Event.FORM_FIELD_FILLED) == 2
     assert Event.FORM_FIELD_FAILED not in events
     assert wf._required_fields_filled == 1
+
+
+# ----------------------------------------------------------------------
+# Pin 8 (TEETH, structural): the submit click is irreversible; no other is
+# ----------------------------------------------------------------------
+
+
+def test_submit_click_is_irreversible_and_every_other_click_is_not__structural():
+    """Nick's rule: final submit, account creation and account login clicks
+    are irreversible (the fail-closed ladder: no retry-after-raise, no JS
+    rung). The workflow clicks no login/account-creation controls — login
+    walls abort the route — so the submit click is the ONLY irreversible
+    call site; the Apply CTA and the wizard Next are reversible by
+    navigation and must stay on the ordinary ladder."""
+    tree = ast.parse(WORKFLOW_SRC.read_text(encoding="utf-8", errors="ignore"))
+
+    def _clicks(fn_node) -> list:
+        found = []
+        for node in ast.walk(fn_node):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "click"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "_interaction_port"
+            ):
+                irreversible = any(
+                    kw.arg == "irreversible"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in node.keywords
+                )
+                found.append((node.lineno, irreversible))
+        return found
+
+    per_function = {
+        node.name: _clicks(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    irreversible_sites = [
+        (name, lineno)
+        for name, calls in per_function.items()
+        for lineno, irrev in calls
+        if irrev
+    ]
+    assert irreversible_sites, (
+        "no irreversible click call site found — the submit lost its "
+        "fail-closed teeth"
+    )
+    for name, lineno in irreversible_sites:
+        assert name == "_submit_application", (
+            f"irreversible=True passed outside _submit_application (in "
+            f"{name}, line {lineno}) — only the final submit is fail-closed"
+        )
+    submit_calls = per_function.get("_submit_application", [])
+    assert any(irrev for _ln, irrev in submit_calls), (
+        "_submit_application clicks the submit button WITHOUT "
+        "irreversible=True"
+    )

@@ -179,7 +179,13 @@ class DOMObserver:
         # Execute Deep Scan
         # This will switch the browser context to the frame where state was found.
         # It returns True if the predicate returned True.
-        found = self.ctx_mgr.find_context_with_content(_analyze_context)
+        # The scan's contract is "Call reset() when done"; honour it in
+        # finally so later probes and clicks run on the top-level document,
+        # not in a leaked frame context.
+        try:
+            found = self.ctx_mgr.find_context_with_content(_analyze_context)
+        finally:
+            self.ctx_mgr.reset()
 
         if not found:
             # If nothing specific is found after scanning all frames, return Unknown.

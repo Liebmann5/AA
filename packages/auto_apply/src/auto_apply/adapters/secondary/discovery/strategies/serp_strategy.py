@@ -124,6 +124,7 @@ class GenericSERPStrategy:
         fast_extractor=None,
         degradation_detector=None,
         research_observer=None,
+        page_action=None,
     ):
         """Initializes the strategy with specific parsing tools.
 
@@ -154,7 +155,9 @@ class GenericSERPStrategy:
         # Ceiling, not a quota. Default 1 = today's single-page behaviour.
         self._max_pages = max(1, int(max_pages))
 
-        self.interruption_handler = InterruptionHandler(browser)
+        self.interruption_handler = InterruptionHandler(
+            browser, page_action=page_action
+        )
         # Auditing is observation. Nulls by default, so an unwired audit
         # trail can never change or break what discovery extracts.
         self._observer = observer or NullExtractionObserver()
@@ -164,6 +167,7 @@ class GenericSERPStrategy:
         # None (unwired) leaves discovery byte-identical to before S8k.
         self._degradation_detector = degradation_detector
         self._research_observer = research_observer or NullResearchObserver()
+        self._page_action = page_action
 
         self.title_parser = title_parser or SmartTextExtractor()
         self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])
