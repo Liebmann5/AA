@@ -558,6 +558,9 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     "adapters/secondary/research/signal_aggregator.py": ["hashlib.sha256", "hmac.new"],
     "adapters/secondary/security/data_protection.py": ["hashlib.sha256"],
     "application/services/data_processing/deduplication_manager.py": ["hashlib.md5"],
+    # The uv archive checksum for the installer — a FILE integrity digest,
+    # never an identity (declared deliberately, D11).
+    "application/services/install/bootstrap_pins.py": ["hashlib.sha256"],
     # Labelling item ids (item 5): the digest of the link a person logged, so
     # logging the same posting twice revises one item. Local to the labels;
     # never joined to research rows, so it is not a posting identity.

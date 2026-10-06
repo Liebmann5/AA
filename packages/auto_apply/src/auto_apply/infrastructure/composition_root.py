@@ -24,6 +24,8 @@ from auto_apply.application.services.i18n import configure_locale
 from auto_apply.application.services.mathematical_web_analyzer import MathematicalWebAnalyzer
 from auto_apply.domain.config import (
     DB_PATH,
+    FOOTPRINT_LEDGER_PATH,
+    INSTANCES_DIR,
     IS_FROZEN,
     PAGE_COPIES_DIR,
     PROVENANCE_KEY_PATH,
@@ -31,6 +33,9 @@ from auto_apply.domain.config import (
     RESEARCH_DB_PATH,
     RESEARCH_SALT_PATH,
     USER_DATA_DIR,
+    ensure_data_dirs,
+    get_install_root,
+    get_run_mode,
 )
 from auto_apply.domain.exceptions import BrowserSetupError
 from auto_apply.domain.models.timing import BehaviorParameters
@@ -46,6 +51,28 @@ from auto_apply.infrastructure.browser_lease_manager import BrowserLeaseManager
 from auto_apply.adapters.secondary.browser.selenium_provider import SeleniumProvider
 from auto_apply.adapters.secondary.browser.playwright_provider import PlaywrightProvider
 
+# ── Lifecycle re-exports (the primary adapters' sanctioned route) ─────────
+# The research-consent precedent: primary adapters never import application
+# services directly; they take these names from the wiring layer (the reach
+# pin in tests/architecture/test_safety_pins.py holds that inventory).
+from auto_apply.application.services import lifecycle_wording
+from auto_apply.application.services.install.bootstrap_pins import load_pins
+from auto_apply.application.services.install.engine import (
+    InstallEngine,
+    InstallEnvironment,
+    InstallError,
+)
+from auto_apply.application.services.uninstall.engine import (
+    UninstallEngine,
+    UninstallEnvironment,
+    UninstallRefused,
+)
+from auto_apply.application.services.uninstall.model import (
+    ResearchDecision,
+    UninstallDecision,
+    UninstallReport,
+)
+
 if TYPE_CHECKING:
     from auto_apply.application.agent.orchestrator import AgentOrchestrator
     #from auto_apply.application.agent.task_kernel import TaskKernel
@@ -54,6 +81,7 @@ if TYPE_CHECKING:
     from auto_apply.domain.ports.page_copy_port import PageCopierPort
     from auto_apply.application.services.session_controller import SessionController
     from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
+    from auto_apply.application.services.instance_registry import InstanceRegistry
     from auto_apply.adapters.secondary.research.research_exporter import (
         ExportResult,
     )
@@ -65,12 +93,23 @@ if TYPE_CHECKING:
 # Re-export so existing callers don't break.
 __all__ = [
     "CapabilitiesRegistry",
+    "InstallEngine",
+    "InstallEnvironment",
+    "InstallError",
+    "ResearchDecision",
+    "UninstallDecision",
+    "UninstallEngine",
+    "UninstallEnvironment",
+    "UninstallRefused",
+    "UninstallReport",
     "build_orchestrator",
     "build_page_copier",
     "build_research_consent",
     "build_session",
     "build_session_controller",
     "export_research_bundle",
+    "lifecycle_wording",
+    "load_pins",
     "research_public_key_fingerprint",
     "run_replay",
     "verify_research_bundle",
@@ -267,7 +306,7 @@ def build_page_copier(
     )
 
 
-def export_research_bundle(fmt: str = "csv") -> "ExportResult":
+def export_research_bundle(fmt: str = "csv", export_root: Path | None = None) -> "ExportResult":
     """Export the research database as one verifiable bundle — the consent
     screens' route to the exporter (FORK 5).
 
@@ -285,6 +324,10 @@ def export_research_bundle(fmt: str = "csv") -> "ExportResult":
         fmt: 'csv', 'ndjson', or 'parquet'. A plain str, validated here,
             because the ExportFormat Literal lives in the secondary adapter
             the screens may not import.
+        export_root: Where the bundle directory is written. Defaults to
+            REPORTS_DIR (inside the data home). The uninstaller passes the
+            user's chosen folder — a bundle written inside the data home
+            would be deleted moments later.
 
     Raises:
         ValueError: For an unknown format.
@@ -306,7 +349,7 @@ def export_research_bundle(fmt: str = "csv") -> "ExportResult":
         )
     exporter = ResearchExporter(
         db_path=RESEARCH_DB_PATH,
-        export_root=REPORTS_DIR,
+        export_root=export_root or REPORTS_DIR,
         provenance_key_path=PROVENANCE_KEY_PATH,
     )
     return exporter.export(formats[fmt])
@@ -1441,7 +1484,10 @@ def _refuse_no_browser(registry: CapabilitiesRegistry, cascade: BrowserCascade) 
     raise BrowserSetupError(message)
 
 
-def _register_exit_shutdown(controller: "SessionController") -> None:
+def _register_exit_shutdown(
+    controller: "SessionController",
+    instances: "InstanceRegistry | None" = None,
+) -> None:
     """Registers a WEAK atexit hook that shuts *controller* down at interpreter exit.
 
     This is the last-resort release net for exits nobody named: a sys.exit
@@ -1466,12 +1512,21 @@ def _register_exit_shutdown(controller: "SessionController") -> None:
 
     def _shutdown_if_alive() -> None:
         instance = controller_ref()
-        if instance is None:
-            return
         try:
-            instance.shutdown()
-        except Exception:  # noqa: BLE001 — an atexit hook must never raise
-            pass
+            if instance is not None:
+                try:
+                    instance.shutdown()
+                except Exception:  # noqa: BLE001 — an atexit hook must never raise
+                    pass
+        finally:
+            # The instance record must go even when the controller was
+            # already collected — otherwise the registry reports a dead
+            # process as live until the next liveness sweep.
+            if instances is not None:
+                try:
+                    instances.unregister()
+                except Exception:  # noqa: BLE001 — an atexit hook must never raise
+                    pass
 
     atexit.register(_shutdown_if_alive)
 
@@ -1538,12 +1593,21 @@ def build_session_controller(
     controller._perform_startup_recovery()   # reset stuck IN_PROGRESS tasks
     controller._wire_approval_gate()         # bind HITL gate to workflow
 
-    # 5. Last-resort release net — see _register_exit_shutdown. Covers exits
+    # 5. Instance registry — how a future uninstall tells this process is
+    # alive. A DIRECTORY of per-process records, not a lock: a lock goes
+    # stale on SIGKILL and forbids legitimate concurrent instances; liveness
+    # is re-checked on read, PID-reuse included.
+    from auto_apply.application.services.instance_registry import InstanceRegistry  # noqa: PLC0415
+
+    instances = InstanceRegistry(INSTANCES_DIR)
+    instances.register()
+
+    # 6. Last-resort release net — see _register_exit_shutdown. Covers exits
     # no caller names (a stray sys.exit, an unhandled exception) by shutting
     # the controller down at interpreter exit IF it is still alive. Cannot
     # cover a killed process (SIGKILL, Task Manager, power loss); nothing
     # in-process can.
-    _register_exit_shutdown(controller)
+    _register_exit_shutdown(controller, instances=instances)
 
     return controller
 
@@ -1569,5 +1633,20 @@ def build_session(master_password: str | None = None):
         ProfileRepository,
     )
 
+    # Bootstrap creates the hierarchy explicitly; the import-time creation
+    # in domain.config is suppressed on the uninstall path
+    # (AA_NO_CREATE_DIRS), which never reaches this function.
+    ensure_data_dirs()
     DatabaseManager()  # Initializes DB / creates tables if absent.
+    # Record how this AA arrived — the uninstaller reads the ledger instead
+    # of guessing the install route (last roots record wins).
+    from auto_apply.application.services.footprint_ledger import (  # noqa: PLC0415
+        FootprintLedger,
+    )
+
+    FootprintLedger(FOOTPRINT_LEDGER_PATH).record_roots(
+        run_mode=get_run_mode(),
+        data_root=USER_DATA_DIR,
+        install_root=get_install_root(),
+    )
     return ProfileRepository(master_password=master_password)

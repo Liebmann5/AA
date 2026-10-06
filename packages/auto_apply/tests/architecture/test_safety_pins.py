@@ -210,6 +210,16 @@ EXPECTED_REACHES: dict[str, set[str]] = {
         # import the secondary verifier itself.
         "auto_apply.infrastructure.composition_root",
     },
+    "cli/lifecycle_screen.py": {
+        # The install/uninstall screen reaches the wiring layer for the
+        # lifecycle engines and wording (composition_root) — the same
+        # precedent as research_consent_screen above.
+        "auto_apply.infrastructure.composition_root",
+    },
+    "gui/lifecycle_window.py": {
+        # The GUI twin of cli/lifecycle_screen.py; same precedent.
+        "auto_apply.infrastructure.composition_root",
+    },
     "gui/research_window.py": {
         # The research window reaches the wiring layer for the export
         # helper (composition_root) — the same precedent as the CLI

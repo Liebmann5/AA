@@ -23,7 +23,8 @@ checklist for data science and software projects involving data collection.
   Research…), or `python -m auto_apply --research` on the command line — by
   choosing withdraw with deletion. Deletion is immediate: every research
   table, the database files, and the installation's research signing key are
-  removed.
+  removed. Uninstalling AutoApply also withdraws participation; see Data
+  retention.
 - [x] **Data minimization**: Only the minimum data needed for each research signal is
   collected. Full job descriptions are never stored in research data; only anonymized
   excerpts ≤200 chars. A separate, optional choice (page copies, off unless turned on
@@ -50,7 +51,14 @@ checklist for data science and software projects involving data collection.
   built for rows.) Page copies, the separate opt-in above, do expire: after 90 days by
   default (`page_copy_keep_days`), oldest first past 200 MB (`page_copy_max_mb`), and
   on any withdrawal from research. They are not encrypted; the consent text says to
-  leave them off on a shared computer.
+  leave them off on a shared computer. When AutoApply itself is uninstalled,
+  research records are kept by default — moved or exported to a location the
+  user confirms — and deleted only by an explicit, separately confirmed choice
+  during uninstall. A researcher working under an IRB-approved protocol (for
+  example the three-year minimum of 45 CFR 46.115(b)) can place a retention
+  hold on the device: while a hold is active, uninstall refuses to destroy
+  research records — page copies included — names the hold, and offers export
+  instead.
 - [x] **Breach response**: In the event of a discovered vulnerability affecting
   research data, users will be notified via the project's issue tracker within 72 hours.
 

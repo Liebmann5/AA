@@ -89,7 +89,26 @@ def _pre_import_parse() -> None:
         metavar="N",
         help="Deterministic mode with random seed N.",
     )
+    pre_parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        default=False,
+        help="Remove everything AA created and exit (see the main parser).",
+    )
+    pre_parser.add_argument(
+        "--finisher-payload",
+        metavar="PATH",
+        default=None,
+        help=argparse.SUPPRESS,  # the detached finisher's private entry point
+    )
     pre_args, _ = pre_parser.parse_known_args()
+
+    if pre_args.uninstall or pre_args.finisher_payload:
+        # The path that REMOVES the data home must not let config.py's
+        # import-time directory creation recreate it on the way in — nor let
+        # a verify-after-delete find it again. This is the only suppression
+        # point that runs before any auto_apply import.
+        os.environ["AA_NO_CREATE_DIRS"] = "1"
 
     if pre_args.portable:
         portable_data = Path.cwd() / "data"
@@ -595,6 +614,124 @@ def _handle_encrypt_profile(profile_repo) -> None:
     sys.exit(0)
 
 
+def _expand(raw: str) -> Path:
+    """Expand a user-supplied CLI path (the one expanduser site added here)."""
+    return Path(raw).expanduser()
+
+
+def _handle_uninstall(args) -> None:
+    """Uninstall AA: stop, protect research data, remove, verify. Exits.
+
+    Dispatched BEFORE setup_logging() and build_session() — this path must
+    create nothing on its way in (AA_NO_CREATE_DIRS was set by
+    _pre_import_parse before any auto_apply import), so it logs to the
+    console only and never opens a database except an EXISTING consent db
+    read through the consent manager.
+
+    Composition only: every interactive line lives in the primary adapter
+    (adapters/primary/cli/lifecycle_screen.py), which writes the
+    conversation to STDERR so it survives `> log.txt` — measured defect:
+    prompts printed to stdout (and input()'s own prompt) were invisible
+    under redirection. Wording is single-source with the GUI
+    (application/services/lifecycle_wording.py).
+
+    Exit codes: 0 — AA is gone except what the user or a hold chose to
+    keep; 1 — unexpected failures or leftovers; 2 — refused.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    from auto_apply.adapters.primary.cli.lifecycle_screen import (  # noqa: PLC0415
+        run_uninstall,
+    )
+    from auto_apply.infrastructure.composition_root import (  # noqa: PLC0415
+        UninstallEnvironment,
+        build_research_consent,
+        export_research_bundle,
+        verify_research_bundle,
+    )
+
+    def _export_bundle(dest: Path, fmt: str = "csv") -> object:
+        return export_research_bundle(fmt, dest)
+
+    env = UninstallEnvironment.from_config(
+        consent_factory=build_research_consent,
+        export_bundle=_export_bundle,
+        verify_bundle=verify_research_bundle,
+    )
+    action: str | None = None
+    dest = None
+    if args.research_keep:
+        action, dest = "keep", _expand(args.research_keep)
+    elif args.research_export:
+        action, dest = "export", _expand(args.research_export)
+    elif args.research_delete:
+        action = "delete"
+    code = run_uninstall(
+        env,
+        dry_run=args.dry_run,
+        assume_yes=args.yes,
+        report_path=_expand(args.uninstall_report) if args.uninstall_report else None,
+        research_action=action,
+        research_dest=dest,
+    )
+    sys.exit(code)
+
+
+def _handle_install(args) -> None:
+    """Install or repair a managed AA, then report capabilities. Exits.
+
+    Dispatched BEFORE build_session(). Composition only: the plan, consent
+    prompt and report live in the primary adapter
+    (adapters/primary/cli/lifecycle_screen.py — the conversation goes to
+    STDERR; the report to stdout). The capability report at the end reuses
+    _print_check_config (the same registry build --check-config uses) rather
+    than guessing at detector APIs. Wording is single-source with the GUI
+    (application/services/lifecycle_wording.py).
+
+    Exit codes: 0 success, 1 install error.
+    """
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    from auto_apply.adapters.primary.cli.lifecycle_screen import (  # noqa: PLC0415
+        run_install,
+    )
+    from auto_apply.infrastructure.composition_root import (  # noqa: PLC0415
+        InstallEnvironment,
+        load_pins,
+    )
+    from auto_apply.domain.config import IS_FROZEN  # noqa: PLC0415
+
+    def _prepare() -> InstallEnvironment:
+        pins = load_pins()
+        source = _expand(args.source) if args.source else None
+        return InstallEnvironment(
+            root=_expand(args.root) if args.root else InstallEnvironment.default_root(),
+            pins=pins,
+            source=source,
+            project_origin="preexisting" if source else "aa",
+            offline=args.offline,
+            shortcut=args.shortcut,
+            extras=tuple(args.extra or ()),
+        )
+
+    def _no_profile(_name: str) -> None:
+        return None
+
+    def _capability_report() -> None:
+        _print_check_config(SimpleNamespace(load_profile=_no_profile))
+
+    # Frozen handling, pins errors, the plan, consent and the capability
+    # block all print from inside the screen (the CLI adapter): main.py's
+    # pinned print-site count does not move.
+    code = run_install(
+        _prepare,
+        frozen=IS_FROZEN,
+        assume_yes=args.yes,
+        capability_report=_capability_report,
+    )
+    sys.exit(code)
+
+
 def main() -> None:
     """Parses arguments and executes the selected run mode."""
     def _sigint_handler(sig, frame):
@@ -746,7 +883,125 @@ def main() -> None:
             "Example: python -m auto_apply --encrypt-profile"
         ),
     )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help=(
+            "Uninstall AutoApply: stop every AA process, protect research "
+            "data (kept by default; a retention hold is always honoured), "
+            "remove everything AA created, verify, and exit. See --dry-run, "
+            "--yes, --uninstall-report and the --research-* flags."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --uninstall: print the plan; stop and delete nothing.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "With --uninstall or --install: skip interactive confirmation "
+            "(scripted use). Uninstall still keeps research data by default "
+            "and honours a retention hold."
+        ),
+    )
+    parser.add_argument(
+        "--uninstall-report",
+        metavar="PATH",
+        default=None,
+        help="With --uninstall: write a machine-readable JSON report to PATH.",
+    )
+    parser.add_argument(
+        "--finisher-payload",
+        metavar="PATH",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    research_group = parser.add_mutually_exclusive_group()
+    research_group.add_argument(
+        "--research-keep",
+        metavar="DIR",
+        default=None,
+        help="With --uninstall: move the research data home to DIR (the IRB-retention choice).",
+    )
+    research_group.add_argument(
+        "--research-export",
+        metavar="DIR",
+        default=None,
+        help="With --uninstall: export a verified research bundle to DIR; originals are removed with the data home.",
+    )
+    research_group.add_argument(
+        "--research-delete",
+        action="store_true",
+        help="With --uninstall: securely purge all research data via the consent-withdrawal path. Refused while a retention hold is active.",
+    )
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help=(
+            "Install or repair a managed AutoApply: uv, a uv-managed Python "
+            "and all dependencies inside one AA root (default ~/.auto_apply), "
+            "plus the launcher. Nothing system-wide; no admin rights needed. "
+            "Idempotent — re-running repairs."
+        ),
+    )
+    parser.add_argument(
+        "--root",
+        metavar="DIR",
+        default=None,
+        help="With --install/--uninstall-aware flows: the AA root (default ~/.auto_apply).",
+    )
+    parser.add_argument(
+        "--source",
+        metavar="DIR",
+        default=None,
+        help=(
+            "With --install: use an existing AA source checkout instead of "
+            "<root>/app. Recorded as pre-existing — never deleted by uninstall."
+        ),
+    )
+    parser.add_argument(
+        "--extra",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "With --install: also install an optional extra (nlp, semantic, "
+            "browser, ai, captcha, stealth, research, all). Repeatable. Extras "
+            "that cannot install on this machine are named and skipped."
+        ),
+    )
+    parser.add_argument(
+        "--shortcut",
+        action="store_true",
+        help="With --install: create a desktop/start-menu shortcut (recorded in the footprint ledger).",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="With --install: no network — install from a pre-populated root only.",
+    )
     args = parser.parse_args()
+
+    # ── Finisher and uninstall dispatch BEFORE logging setup and
+    # build_session: the path that removes the data home must create nothing
+    # on its way in — no log file, no database, no directories.
+    # _pre_import_parse has already suppressed config.py's import-time
+    # directory creation on both paths.
+    if args.finisher_payload:
+        from auto_apply.application.services.uninstall.finisher import (  # noqa: PLC0415
+            run_and_report,
+        )
+
+        sys.exit(run_and_report(Path(args.finisher_payload)))
+
+    if args.uninstall:
+        _handle_uninstall(args)
+
+    if args.install:
+        _handle_install(args)
 
     # 2. Configure Logging — with the parsed flag.
     setup_logging(

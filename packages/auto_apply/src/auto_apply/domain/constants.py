@@ -118,9 +118,17 @@ EVENT_RESEARCH_SIGNAL_DETECTED: str = "RESEARCH_SIGNAL_DETECTED"
 # ── Research Consent ───────────────────────────────────────────────────────────
 # Current consent dialog version. Increment whenever the data collection
 # practices documented in docs/ETHICS.md change. Stored with every signal.
-CURRENT_CONSENT_VERSION: str = "2.5"
+# 2.6: the dialog now states what uninstalling AA does to collected data
+# (kept by default; deletion only by explicit choice; retention holds).
+CURRENT_CONSENT_VERSION: str = "2.6"
 
 # The page-copies consent (item 6) is a separate, specific consent with its
 # own text and version: domain/services/research_consent_text.py
 # PAGE_COPIES_BODY. Bump it whenever that text changes what is kept or how.
-CURRENT_PAGE_COPIES_VERSION: str = "1.0"
+# 1.1: the page-copies text now states the uninstall / retention-hold rule.
+CURRENT_PAGE_COPIES_VERSION: str = "1.1"
+
+# Filename of the non-identifying withdrawal notice the uninstaller writes
+# into retained or exported research data (OHRP 2010 withdrawal guidance:
+# document the withdrawal — never into a place the uninstall claims is gone).
+WITHDRAWAL_NOTICE_FILENAME: str = "aa_withdrawal_notice.json"

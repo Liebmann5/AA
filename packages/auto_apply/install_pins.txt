@@ -1,0 +1,29 @@
+# install_pins.txt — the ONE source of truth for the bootstrap pins.
+#
+# Read by install.sh, install.ps1 and
+# src/auto_apply/application/services/install/bootstrap_pins.py. A parity pin
+# (tests/architecture/test_install_pins_parity.py) asserts all three read
+# this file and that no version literal lives anywhere else.
+#
+# Release process:
+#   1. Bump UV_VERSION / PYTHON_VERSION deliberately (CI must prove the
+#      Python — CI currently tests 3.10 and 3.12, hence 3.12.x below).
+#   2. Fill the six UV_SHA256_* values from the published .sha256 assets at
+#      https://github.com/astral-sh/uv/releases/tag/<UV_VERSION>.
+# A placeholder value makes the bootstrap REFUSE to install uv — by design:
+# an unverifiable executable is never run.
+UV_VERSION=0.12.23
+PYTHON_VERSION=3.12.15
+AA_RELEASE_REPO=Liebmann5/AA
+AA_ARCHIVE_ASSET=AA-src.tar.gz
+AA_SUMS_ASSET=SHA256SUMS.txt
+SIZE_UV_MB=20
+SIZE_PYTHON_MB=45
+SIZE_ARCHIVE_MB=5
+SIZE_DEPS_CORE_MB=60
+UV_SHA256_X86_64_APPLE_DARWIN=960da44cb4b73685206ddd250b19e0a117fa41095710c1038f081f5cb613efb4
+UV_SHA256_AARCH64_APPLE_DARWIN=50487ae565ccd96e499056b4674d438f4c53170202617b4c759defe0c6a1b544
+UV_SHA256_X86_64_UNKNOWN_LINUX_GNU=9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6
+UV_SHA256_AARCH64_UNKNOWN_LINUX_GNU=6524bd338177ed50d035d39354e12545e993bbeba2ecbddf0480c5b3a81d313f
+UV_SHA256_X86_64_PC_WINDOWS_MSVC=75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90
+UV_SHA256_AARCH64_PC_WINDOWS_MSVC=13294e232ececbe709c06b74e6ced06f2a225ea5591476685362f22be56a50d5

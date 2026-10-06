@@ -74,6 +74,8 @@ nav:
 
   - User Guide:
       - Overview: user_guide/index.md
+      - Installing AutoApply: user_guide/installing.md
+      - Uninstalling AutoApply: user_guide/uninstalling.md
       - Running a Job Hunt: user_guide/running_a_job_hunt.md
       - Understanding the Output: user_guide/understanding_output.md
       - Labelling: user_guide/labelling.md
@@ -136,6 +138,7 @@ nav:
       - Data Format: research_module/data_format.md
       - Signals Taxonomy: research_module/signals_taxonomy.md
       - Consent Dialogue: RESEARCH_CONSENT_DIALOG.md
+      - Retention Holds: research_module/retention_holds.md
       - Reproducibility: REPRODUCIBILITY.md
       - Ethics: ETHICS.md
 
