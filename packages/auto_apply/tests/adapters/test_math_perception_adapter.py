@@ -211,7 +211,13 @@ def test_scan_page_classifies_button_correctly():
 
 def test_get_current_state_success():
     browser = MagicMock()
-    browser.execute_script.return_value = "Thank you for applying! Your application was submitted."
+    browser.current_url = "https://ats.example.com/application/confirm"
+    browser.title = "Application submitted"
+    browser.page_source = (
+        "<html><body><p>Thank you for applying! "
+        "Your application has been submitted.</p></body></html>"
+    )
+    browser.execute_script.return_value = ""
     browser.find_elements.return_value = []
     adapter = MathPerceptionAdapter(browser)
     state = adapter.get_current_state()
@@ -220,7 +226,14 @@ def test_get_current_state_success():
 
 def test_get_current_state_login_wall():
     browser = MagicMock()
-    browser.execute_script.return_value = "Please sign in to continue your application."
+    browser.current_url = "https://ats.example.com/apply/1"
+    browser.title = "Sign in"
+    browser.page_source = (
+        "<html><body><form method='post'>"
+        "<input name='u'/><input type='password' name='p'/>"
+        "</form><p>Sign in to continue your application.</p></body></html>"
+    )
+    browser.execute_script.return_value = ""
     browser.find_elements.return_value = []
     adapter = MathPerceptionAdapter(browser)
     state = adapter.get_current_state()

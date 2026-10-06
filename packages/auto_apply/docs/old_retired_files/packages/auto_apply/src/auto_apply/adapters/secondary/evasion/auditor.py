@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/evasion/auditor.py
 import logging
 
 import requests

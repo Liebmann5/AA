@@ -22,6 +22,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # All references to Selenium classes are replaced by globally cached
 # variables that are populated the first time an adapter is instantiated.
 
+from auto_apply.domain.models.motion import (
+    MotionCapabilities,
+    MotionKind,
+    MotionPlan,
+)
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 from auto_apply.domain.types import Keys as GenericKeys
 from auto_apply.domain.types import Locator
@@ -50,6 +55,10 @@ _WebDriverWait: Any = None
 _EC: Any = None
 _TimeoutException: Any = None
 _WebDriverException: Any = None
+_ActionBuilder: Any = None
+_PointerInput: Any = None
+_WheelInput: Any = None
+_interaction: Any = None
 _LOCATOR_MAP: dict[str, Any] = {}
 
 
@@ -57,7 +66,7 @@ def _ensure_selenium() -> None:
     """Import all required Selenium components and cache them in globals."""
     global _SeleniumBy, _SeleniumKeys, _WebDriver, _WebElement
     global _ActionChains, _WebDriverWait, _EC, _TimeoutException, _WebDriverException
-    global _LOCATOR_MAP
+    global _ActionBuilder, _PointerInput, _WheelInput, _interaction, _LOCATOR_MAP
 
     # Already initialised
     if _SeleniumBy is not None:
@@ -66,6 +75,10 @@ def _ensure_selenium() -> None:
     try:
         from selenium.common.exceptions import TimeoutException, WebDriverException  # noqa: E402
         from selenium.webdriver.common.action_chains import ActionChains  # noqa: E402
+        from selenium.webdriver.common.actions import interaction  # noqa: E402
+        from selenium.webdriver.common.actions.action_builder import ActionBuilder  # noqa: E402
+        from selenium.webdriver.common.actions.pointer_input import PointerInput  # noqa: E402
+        from selenium.webdriver.common.actions.wheel_input import WheelInput  # noqa: E402
         from selenium.webdriver.common.by import By  # noqa: E402
         from selenium.webdriver.common.keys import Keys  # noqa: E402
         from selenium.webdriver.remote.webdriver import WebDriver  # noqa: E402
@@ -76,6 +89,10 @@ def _ensure_selenium() -> None:
         _TimeoutException = TimeoutException
         _WebDriverException = WebDriverException
         _ActionChains = ActionChains
+        _ActionBuilder = ActionBuilder
+        _PointerInput = PointerInput
+        _WheelInput = WheelInput
+        _interaction = interaction
         _SeleniumBy = By
         _SeleniumKeys = Keys
         _WebDriver = WebDriver
@@ -257,6 +274,12 @@ class SeleniumAdapter(BrowserInterface):
         _ensure_selenium()
         self._driver = driver
         self._rng = rng if rng is not None else random.Random()
+        # Last position this adapter explicitly moved the pointer to, in
+        # viewport CSS pixels. (0, 0) is the W3C initial pointer position;
+        # legacy moves that do not report coordinates leave it stale, which
+        # is harmless because the tool always sets wheel_origin explicitly.
+        self._cursor_x: int = 0
+        self._cursor_y: int = 0
 
     @property
     def framework_name(self) -> str:
@@ -497,6 +520,8 @@ class SeleniumAdapter(BrowserInterface):
             y (int): Vertical pixels.
         """
         _ActionChains(self._driver).move_by_offset(x, y).perform()
+        self._cursor_x += x
+        self._cursor_y += y
 
     def move_mouse_to_element(self, element: ElementInterface, offset_x: int = 0, offset_y: int = 0) -> None:  # noqa: E501
         """Moves the mouse cursor to the center of a specific element.
@@ -519,6 +544,63 @@ class SeleniumAdapter(BrowserInterface):
             _ActionChains(self._driver).move_by_offset(-x_move, -y_move).perform()
         except Exception:
             pass  # Ignore movement errors (e.g., if mouse is out of bounds)
+
+    def execute_motion(self, plan: MotionPlan) -> None:
+        """Executes a full motion plan as ONE W3C action sequence.
+
+        Every tick, its timing, the press/hold/release and the wheel deltas
+        are queued into a single ActionBuilder, so the whole plan costs one
+        driver round trip and the browser replays the timing itself instead
+        of Python sleeping between round trips.
+        """
+        _ensure_selenium()
+        # The create_* methods live on the INPUT DEVICES, not on
+        # builder.pointer_action / builder.wheel_action (those are the
+        # PointerActions / WheelActions wrappers — calling create_* on them
+        # raised AttributeError on every plan, D2). Units, measured against
+        # Selenium 4.48: create_pointer_move takes MILLISECONDS (its default
+        # is 250); create_pause takes seconds; create_scroll's duration is ms.
+        pointer = _PointerInput(_interaction.POINTER_MOUSE, "aa-pointer")
+        wheel = _WheelInput("aa-wheel")
+        builder = _ActionBuilder(self._driver, mouse=pointer, wheel=wheel)
+        if plan.pre_delay_ms:
+            pointer.create_pause(plan.pre_delay_ms / 1000.0)
+        for tick in plan.pointer_ticks:
+            pointer.create_pointer_move(
+                duration=int(tick.dt_ms),
+                x=tick.x,
+                y=tick.y,
+                origin="viewport",
+            )
+            self._cursor_x, self._cursor_y = tick.x, tick.y
+        if plan.kind is MotionKind.CLICK:
+            pointer.create_pointer_down(button=0)
+            if plan.hold_ms:
+                pointer.create_pause(plan.hold_ms / 1000.0)
+            pointer.create_pointer_up(0)
+        origin_x, origin_y = plan.wheel_origin or (
+            self._cursor_x,
+            self._cursor_y,
+        )
+        for wtick in plan.wheel_ticks:
+            wheel.create_scroll(
+                int(origin_x),
+                int(origin_y),
+                wtick.dx,
+                wtick.dy,
+                int(wtick.dt_ms),
+                "viewport",
+            )
+        builder.perform()
+
+    @property
+    def motion_capabilities(self) -> MotionCapabilities:
+        """Selenium executes the full plan, timing included, in one perform()."""
+        return MotionCapabilities(
+            trusted_pointer=True,
+            wheel=True,
+            timed_ticks=True,
+        )
 
     def save_screenshot(self, filepath: str) -> None:
         """Saves a screenshot of the current viewport to a file.

@@ -79,7 +79,6 @@ from auto_apply.application.services.company_batch_scheduler import (
 )
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.application_evidence import (
-    ATS_CONFIRMATION_PATTERNS,
     ApplicationEvidence,
 )
 from auto_apply.domain.models.job import Job
@@ -106,11 +105,11 @@ from auto_apply.domain.ports.research_port import (
     ResearchObserverPort,
 )
 from auto_apply.domain.services.posting_observation import infer_jurisdiction
-from auto_apply.domain.services.challenge_assessment import (
-    ChallengeAssessment,
-    assess_challenge,
-    assess_login_wall,
+from auto_apply.domain.services.page_assessment import (
+    PageAssessment,
+    assess_page,
 )
+from auto_apply.domain.types import PageType
 from auto_apply.domain.services.apply_target import (
     auth_dialog_present,
     find_apply_controls,
@@ -355,8 +354,9 @@ class ApplicationsWorkflow:
     def _detect_login_wall(self, job: Job) -> bool:
         """Returns True if the current page is a login/authentication wall.
 
-        Structural verdict, computed by the one predicate
-        (domain/services/challenge_assessment.py): a login URL, or a
+        Structural verdict, computed by the ONE page verdict
+        (domain/services/page_assessment.py, which delegates to
+        challenge_assessment.py for the login answer): a login URL, or a
         password field on a page too small to carry a posting. The page
         title is never read — the old title-substring check made a posting
         titled "Registered Nurse" a login wall.
@@ -365,8 +365,11 @@ class ApplicationsWorkflow:
         trying to fill a login form with the applicant's profile data.
         """
         try:
-            url, _title, html = self._page_snapshot(fallback_url=job.url)
-            walled = assess_login_wall(url=url, html=html)
+            url, title, html = self._page_snapshot(fallback_url=job.url)
+            walled = (
+                assess_page(url=url, title=title, html=html).kind
+                is PageType.LOGIN_REQUIRED
+            )
         except Exception as exc:
             logger.debug("Login wall detection error: %s", exc)
             return False
@@ -726,15 +729,15 @@ class ApplicationsWorkflow:
         ends the route as ACCOUNT_REQUIRED — the site demands an account
         before it will even show a form.
         """
-        assessment = assess_challenge(url=url, title=title, html=html)
-        if assessment.verdict == "gated":
+        page = assess_page(url=url, title=title, html=html)
+        if page.challenge == "gated":
             self._captcha_encountered = True
-            self._challenge_signals = list(assessment.signals)
+            self._challenge_signals = list(page.signals)
             logger.info(
                 "ApplicationsWorkflow: challenge presented on apply route | "
                 "url=%s signals=%s",
                 url,
-                ",".join(assessment.signals),
+                ",".join(page.signals),
             )
             try:
                 self._event_bus.publish(
@@ -742,13 +745,13 @@ class ApplicationsWorkflow:
                     {
                         "job_url": job.url,
                         "url": url,
-                        "signals": list(assessment.signals),
-                        "detail": assessment.detail,
+                        "signals": list(page.signals),
+                        "detail": page.detail,
                     },
                 )
             except Exception:
                 pass
-            if not self._pause_for_challenge(job, url, assessment):
+            if not self._pause_for_challenge(job, url, page):
                 return evidence.model_copy(update={
                     "outcome": "CAPTCHA_BLOCKED",
                     "confidence": 0.90,
@@ -758,9 +761,9 @@ class ApplicationsWorkflow:
                     **self._run_statistics(),
                 })
             return None
-        if assessment.verdict == "embedded":
-            self._challenge_signals = list(assessment.signals)
-        if assess_login_wall(url=url, html=html):
+        if page.challenge == "embedded":
+            self._challenge_signals = list(page.signals)
+        if page.kind is PageType.LOGIN_REQUIRED:
             logger.info(
                 "ApplicationsWorkflow: apply route reached a login wall "
                 "before any form | url=%s",
@@ -1779,19 +1782,21 @@ class ApplicationsWorkflow:
                 )
 
         # ── Challenge assessment: the ONE predicate (item 12A) ──────────
-        # gated/embedded/clear comes from domain/services/challenge_assessment.py
-        # and nowhere else. On "gated" the human is asked IN PLACE — before
+        # gated/embedded/clear comes from the ONE page verdict
+        # (domain/services/page_assessment.py, delegating to
+        # challenge_assessment.py for the challenge answer). On "gated" the
+        # human is asked IN PLACE — before
         # any outcome is recorded, while the browser is still on the
         # challenge page (ruling A). A solve re-checks the page and continues
         # the SAME attempt. No hand-off task is enqueued: the late, wrong-page
         # escalation that task produced is the defect this replaces.
         current_url, page_title, page_source = job.url, "", ""
-        assessment: ChallengeAssessment | None = None
+        page: PageAssessment | None = None
         try:
             current_url, page_title, page_source = self._page_snapshot(
                 fallback_url=job.url
             )
-            assessment = assess_challenge(
+            page = assess_page(
                 url=current_url, title=page_title, html=page_source
             )
         except Exception as exc:
@@ -1799,13 +1804,13 @@ class ApplicationsWorkflow:
                 "ApplicationsWorkflow: challenge assessment failed: %s", exc
             )
 
-        if assessment is not None and assessment.verdict == "gated":
+        if page is not None and page.challenge == "gated":
             self._captcha_encountered = True
-            self._challenge_signals = list(assessment.signals)
+            self._challenge_signals = list(page.signals)
             logger.info(
                 "ApplicationsWorkflow: challenge presented | url=%s signals=%s",
                 current_url,
-                ",".join(assessment.signals),
+                ",".join(page.signals),
             )
             try:
                 self._event_bus.publish(
@@ -1813,25 +1818,25 @@ class ApplicationsWorkflow:
                     {
                         "job_url": job.url,
                         "url": current_url,
-                        "signals": list(assessment.signals),
-                        "detail": assessment.detail,
+                        "signals": list(page.signals),
+                        "detail": page.detail,
                     },
                 )
             except Exception:
                 pass
-            if not self._pause_for_challenge(job, current_url, assessment):
+            if not self._pause_for_challenge(job, current_url, page):
                 return False
-        elif assessment is not None and assessment.verdict == "embedded":
+        elif page is not None and page.challenge == "embedded":
             # A challenge element inside a usable page (a reCAPTCHA widget
             # in a sign-in modal, say): the page can be worked. Record the
             # signals and proceed; the element only matters if a later step
             # trips on it.
-            self._challenge_signals = list(assessment.signals)
+            self._challenge_signals = list(page.signals)
             logger.info(
                 "ApplicationsWorkflow: embedded challenge element on a "
                 "usable page — proceeding | url=%s signals=%s",
                 current_url,
-                ",".join(assessment.signals),
+                ",".join(page.signals),
             )
 
         try:
@@ -1883,7 +1888,7 @@ class ApplicationsWorkflow:
         self,
         job: Job,
         challenge_url: str,
-        assessment: ChallengeAssessment,
+        assessment: PageAssessment,
     ) -> bool:
         """Ask the human, in place, while the browser is still on the challenge.
 
@@ -1956,18 +1961,18 @@ class ApplicationsWorkflow:
 
         # Re-check in place: the browser never left the page, so a real
         # solve shows up as a non-gated assessment of the same URL.
-        recheck: ChallengeAssessment | None = None
+        recheck: PageAssessment | None = None
         try:
             url_now, title_now, html_now = self._page_snapshot(
                 fallback_url=challenge_url
             )
-            recheck = assess_challenge(url=url_now, title=title_now, html=html_now)
+            recheck = assess_page(url=url_now, title=title_now, html=html_now)
         except Exception as exc:
             logger.debug(
                 "ApplicationsWorkflow: post-solve re-check failed: %s", exc
             )
 
-        if recheck is None or recheck.verdict != "gated":
+        if recheck is None or recheck.challenge != "gated":
             logger.info(
                 "ApplicationsWorkflow: challenge cleared after human solve "
                 "— continuing the same attempt | url=%s",
@@ -2200,9 +2205,10 @@ class ApplicationsWorkflow:
         """Perform pre-submit HITL check, find submit button, click, and scan
         confirmation.
 
-        Uses ATS-specific confirmation patterns (ATS_CONFIRMATION_PATTERNS) to
-        detect platform-specific success pages, falling back to generic patterns
-        when the ATS platform is unknown.
+        Uses the ONE page verdict: a confirmation is SUCCESS_PAGE, decided by
+        a strong phrase in VISIBLE text or a confirmation URL marker, and the
+        verdict's signals name which one decided. The outcome ladder
+        (SUBMITTED / PROBABLY_SUBMITTED / AMBIGUOUS) is unchanged.
 
         Args:
             job: The job being applied to.
@@ -2305,38 +2311,41 @@ class ApplicationsWorkflow:
         try:
             post_url = getattr(self._browser, "current_url", "") or ""
             post_title = getattr(self._browser, "title", "") or ""
-            page_source = (
-                getattr(self._browser, "page_source", "") or ""
-            ).lower()
+            page_source = getattr(self._browser, "page_source", "") or ""
         except Exception:
             pass
+        if not isinstance(post_url, str):
+            post_url = ""
+        if not isinstance(post_title, str):
+            post_title = ""
+        if not isinstance(page_source, str):
+            page_source = ""
 
         url_changed = bool(post_url and post_url != job.url)
 
-        # ── Check for ATS-specific confirmation phrases ───────────────────
-        ats_name = (
-            job.metadata.get("ats")
-            if hasattr(job, "metadata")
-            else None
-        )
-        patterns_to_check: list[str] = list(
-            ATS_CONFIRMATION_PATTERNS.get(ats_name or "", [])
-        )
-        patterns_to_check += ATS_CONFIRMATION_PATTERNS.get("generic", [])
-
-        found_phrases: list[str] = []
-        for phrase in patterns_to_check:
-            if (
-                phrase.lower() in page_source
-                or phrase.lower() in post_url.lower()
-            ):
-                found_phrases.append(phrase)
+        # ── Confirmation via the ONE page verdict ─────────────────────────
+        # A confirmation is SUCCESS_PAGE: a strong phrase in VISIBLE text
+        # (never raw page source) or a confirmation URL marker, with the
+        # deciding phrase or marker carried in the verdict's signals. The
+        # outcome ladder is unchanged; only the source of "was a
+        # confirmation seen?" changes.
+        try:
+            post_page = assess_page(url=post_url, title=post_title, html=page_source)
+            confirmation_seen = post_page.kind is PageType.SUCCESS_PAGE
+            found_phrases = [
+                signal.split(":", 1)[1]
+                for signal in post_page.signals
+                if signal.startswith("confirmation-")
+            ]
+        except Exception:
+            confirmation_seen = False
+            found_phrases = []
 
         # ── Classify the outcome ──────────────────────────────────────────
-        if found_phrases and url_changed:
+        if confirmation_seen and url_changed:
             outcome = "SUBMITTED"
             confidence = 0.95
-        elif found_phrases:
+        elif confirmation_seen:
             outcome = "SUBMITTED"
             confidence = 0.85
         elif url_changed:

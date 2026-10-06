@@ -9,6 +9,7 @@ UI widgets without coupling to specific implementations.
 from abc import ABC, abstractmethod
 from typing import Any
 
+from auto_apply.domain.exceptions import ApplicationError
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 
 
@@ -56,11 +57,19 @@ class BaseInputHandler(ABC):
         The fallback is timing-free by design: without the tool there is no
         pacing to apply, and inventing some here would recreate the duplication
         this stage removes. In production the tool is always injected.
+
+        A refused or failed tool click RAISES. Discarding the ActionResult
+        (the old behaviour) let a widget that was never actually operated
+        pass as filled; raising here is what lets a handler with a fallback
+        (the checkable handler's JS click) actually reach it.
         """
         if self._act is None:
             element.click()
             return
-        self._act.click(element)
+        result = self._act.click(element)
+        if not result:
+            reason = getattr(result, "reason", "unknown")
+            raise ApplicationError(f"click did not complete: {reason}")
 
     def _type(self, element: ElementInterface, text: str) -> None:
         """Type through the tool, falling back to the raw element."""

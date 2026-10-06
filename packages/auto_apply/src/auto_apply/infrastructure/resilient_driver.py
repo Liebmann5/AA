@@ -4,6 +4,7 @@ import threading
 import time
 
 from auto_apply.domain.config import LOG_DIR
+from auto_apply.domain.models.motion import MotionCapabilities, MotionPlan
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 
 logger = logging.getLogger(__name__)
@@ -257,6 +258,14 @@ class ResilientDriver(BrowserInterface):
     def perform_mouse_fidget(self) -> None:
         with self._command_lock:
             self._driver.perform_mouse_fidget()
+
+    def execute_motion(self, plan: MotionPlan) -> None:
+        with self._command_lock:
+            return self._driver.execute_motion(plan)
+
+    @property
+    def motion_capabilities(self) -> MotionCapabilities:
+        return self._driver.motion_capabilities
 
     # ------------------------------------------------------------------
     # BrowserInterface abstract methods – screenshots

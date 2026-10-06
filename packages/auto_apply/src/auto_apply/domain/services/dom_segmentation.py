@@ -102,18 +102,15 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         # Step 4: Detect job listings (structural similarity based on hashes)
         job_listings = self._detect_job_listings(dom_root)
 
-        # Step 5: Detect CAPTCHA and login walls (simple heuristics)
-        is_captcha = self._detect_captcha(dom_root)
-        is_login = self._detect_login_wall(dom_root)
-
+        # No step 5: page identity (challenge / login wall) is answered by the
+        # ONE page verdict (domain/services/page_assessment.py). This service
+        # used to compute its own answer into fields nothing read.
         return WebpageStructure(
             url=url,
             title=title,
             dom_root=dom_root,
             forms=forms,
             job_listings=job_listings,
-            is_captcha_present=is_captcha,
-            is_login_wall=is_login,
         )
 
     # ======================================================================
@@ -831,34 +828,3 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         """
         return is_card_like(node)
 
-    # ======================================================================
-    # CAPTCHA / Login Detection
-    # ======================================================================
-
-    @staticmethod
-    def _detect_captcha(root: DOMNode) -> bool:
-        """Check for known CAPTCHA indicators."""
-        for node in root.iter_nodes():
-            if node.tag == "iframe":
-                src = node.get_attribute("src", "").lower()
-                if "recaptcha" in src or "hcaptcha" in src:
-                    return True
-            classes = node.get_attribute("class", "").lower()
-            if "g-recaptcha" in classes:
-                return True
-        return False
-
-    @staticmethod
-    def _detect_login_wall(root: DOMNode) -> bool:
-        """Check if page is primarily a login screen."""
-        # Count password fields and login buttons
-        password_count = 0
-        login_button = False
-        for node in root.iter_nodes():
-            if node.tag == "input" and node.get_attribute("type") == "password":
-                password_count += 1
-            if node.tag == "button":
-                text = node.text.lower()
-                if "sign in" in text or "log in" in text:
-                    login_button = True
-        return password_count >= 1 and login_button

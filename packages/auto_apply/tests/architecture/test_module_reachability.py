@@ -95,11 +95,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "selector+fallback locator (AD-9); wired only via set_locator, which "
         "has no caller",
     ),
-    "auto_apply.adapters.secondary.evasion.auditor": (
-        "WIRE-LATER",
-        "fingerprint audit display using requests; evasion audit wiring "
-        "deferred (Bible 16)",
-    ),
     "auto_apply.adapters.secondary.evasion.captcha_handler": (
         "WIRE-LATER",
         "AudioCaptchaSolver scaffold whose solve() returns False; the "
@@ -209,11 +204,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "BaseApplicationStrategy ABC; its only importer is "
         "linkedin_easy_apply.py, itself unreachable",
     ),
-    "auto_apply.domain.browser_state": (
-        "RETIRE-CANDIDATE",
-        "audit snapshot models used only by the unwired evasion/auditor.py; "
-        "0 other importers, no standing ruling",
-    ),
     "auto_apply.domain.models.execution": (
         "RETIRE-CANDIDATE",
         "SchedulingMode/ExecutionConfiguration predate SessionPlan; "
@@ -247,17 +237,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "WIRE-LATER",
         "unreachable because HealthMonitor has no consumer (orchestrator "
         "holds monitors as Any) — same fact, two pins",
-    ),
-    "auto_apply.domain.ports.interaction_primitives_port": (
-        "WIRE-LATER",
-        "unreachable because PageActionPrimitives/DomReadinessPort/"
-        "PageNavigationPort have no executable consumers — same fact, two pins",
-    ),
-    "auto_apply.domain.ports.page_classification_port": (
-        "WIRE-LATER",
-        "unreachable because PageClassifierPort has no consumer "
-        "(GenericSERPStrategy constructs PageClassifier concretely) — same "
-        "fact, two pins",
     ),
     "auto_apply.domain.ports.raw_driver_port": (
         "WIRE-LATER",
@@ -324,6 +303,8 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
 # The file moves to docs/old_retired_files/ via retire.py — a manual step the
 # maintainer runs; this entry is removed in anticipation of that move, and the
 # pin fails loudly naming ui_handler.py if the move has not happened yet.
+# Dropped to 47 with the page-verdict consolidation: evasion/auditor,
+# domain/browser_state and domain/ports/page_classification_port retired.
 MAX_EXEMPTIONS = 50
 
 

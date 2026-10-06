@@ -11,10 +11,16 @@ regressions:
     belongs.
 
 Scoped honestly: this pins the APPLICATION-ATTEMPT path, where the false
-verdicts were measured. Discovery-side consumers (DefaultDetectionStrategy,
-CloudflareDetectionStrategy, EvasionManager, PageClassifier,
-MathFormUnderstandingService._detect_captcha) still carry their own answers;
-migrating them to this predicate is a named follow-up, not asserted here.
+verdicts were measured. The discovery side has since been consolidated:
+serp_strategy and indeed ask the composed one verdict
+(domain/services/page_assessment.py), which delegates to THIS module for
+the challenge and login-wall answers, and the discovery-side copies
+(DefaultDetectionStrategy, CloudflareDetectionStrategy, EvasionManager,
+PageClassifier) are retired — test_page_verdict_single_source.py guards
+that. The math-path copies (_detect_captcha/_detect_login_wall and their
+unread fields) are removed; the application-attempt path now asks the
+composed verdict too, and this file asserts it never reaches past the
+verdict to the engine.
 """
 
 from __future__ import annotations
@@ -74,16 +80,24 @@ def test_applications_workflow_uses_only_the_one_predicate() -> None:
             "its own answer again."
         )
 
-    # The one predicate must actually be imported and used.
+    # The application path must ask the ONE page verdict — and must not
+    # reach past it to the challenge engine directly.
     tree = ast.parse(src)
-    imported: set[str] = set()
+    verdict_imports: set[str] = set()
+    engine_imports: set[str] = set()
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "auto_apply.domain.services.challenge_assessment"
-        ):
-            imported |= {alias.name for alias in node.names}
-    assert {"assess_challenge", "assess_login_wall"} <= imported, (
-        "applications_workflow.py no longer imports the one predicate from "
-        "domain/services/challenge_assessment.py."
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "auto_apply.domain.services.page_assessment":
+                verdict_imports |= {alias.name for alias in node.names}
+            elif node.module == "auto_apply.domain.services.challenge_assessment":
+                engine_imports |= {alias.name for alias in node.names}
+    assert "assess_page" in verdict_imports, (
+        "applications_workflow.py no longer imports assess_page from "
+        "domain/services/page_assessment.py — the application path must ask "
+        "the ONE page verdict."
+    )
+    assert not engine_imports, (
+        "applications_workflow.py imports the challenge engine directly "
+        f"({engine_imports}) — it must ask the composed verdict "
+        "(page_assessment), which delegates to the engine."
     )

@@ -49,6 +49,7 @@ from auto_apply.adapters.secondary.os.platform_inspector import PlatformInspecto
 from auto_apply.adapters.secondary.persistence.policy_manager import PolicyManager
 from auto_apply.domain.config import DB_PATH
 from auto_apply.domain.models.environment import EnvironmentCapabilities
+from auto_apply.domain.models.motion_profile import MotionConfig
 from auto_apply.domain.models.policy import AdminPolicy
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.effective_config import EffectiveConfig
@@ -108,6 +109,14 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "occlusion_guard": True,
     "force_analysis_tier": "",
     "infinite_scroll_settle_s": 2.0,
+    # Pointer/wheel motion: selection + override slots only. The named
+    # profiles' field values live ONCE in domain/models/motion_profile.py.
+    "motion": {
+        "profile": "human",
+        "allow_js_click": True,
+        "overrides": {},
+        "profiles": {},
+    },
     "preferred_browser_order": ["chrome", "firefox", "edge", "safari"],
     "framework_order": ["playwright", "selenium", "camoufox"],
     "max_applications_per_session": 50,
@@ -176,13 +185,6 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "thinking_pause_probability": 0.05,
         "thinking_pause_min": 0.2,
         "thinking_pause_max": 0.6,
-    },
-    "browser": {
-        "mouse_move_steps": 4,
-        "mouse_offset_min_px": 30,
-        "mouse_offset_max_px": 150,
-        "mouse_step_delay_min": 0.05,
-        "mouse_step_delay_max": 0.2,
     },
     "gpt4all": {
         "model": "Meta-Llama-3-8B-Instruct.Q4_0.gguf",
@@ -349,6 +351,11 @@ class CapabilitiesRegistry:
 
         # Construct BehaviorParameters from the merged config
         behavior_params = BehaviorParameters.from_config(effective_config)
+
+        # Validate the motion configuration NOW, not at first click: a bad
+        # profile name, unknown override key or out-of-range value is refused
+        # here with the key, the value and the allowed range in the message.
+        MotionConfig.from_mapping(effective_config)
 
         # Construct the SessionPlan using the canonical factory
         plan = SessionPlan.from_config(

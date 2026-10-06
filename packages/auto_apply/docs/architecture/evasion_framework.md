@@ -106,12 +106,17 @@ uniform rhythm. Bot‑detection ML models are trained to spot these patterns.
 browser interaction, and it applies human‑consistent timing and movement
 patterns automatically.
 
-> **Status (Stage 1).** Every **click**, and the pacing between plan steps,
-> passes through the tool. Keystrokes, scrolling and pagination still have
-> other live paths (the interaction handlers, `InfiniteScrollStrategy`,
-> `behavior.human_like_scroll`) and are scheduled to move behind the tool in
-> later stages. Treat this section as the target state, not a description of
-> today's every code path.
+> **Status (mouse-tool core).** Every click through the tool now travels a
+> planned curved pointer path to a sampled off-centre point — one W3C action
+> sequence per movement on Selenium, bounded chunked moves on Playwright —
+> behind a recorded ladder: probe → trusted pointer click → keyboard
+> activation → native click → (config-gated, never on irreversible actions)
+> synthetic JS. Scrolling is wheel-first through the same tool, with the
+> instant teleport kept only as a recorded fallback. The claim this section
+> used to make about Bezier curves is now true of the motion model; before
+> this stage nothing in AA actually curved. Keystrokes and the remaining
+> free-function call sites (`behavior.human_like_*`) are still being
+> migrated, and the per-rung outcome record feeds the evidence layer.
 
 ### MICRO Timing — Intra‑Task (milliseconds)
 - **Parabolic keystroke delays:** Each character is typed with a pause drawn

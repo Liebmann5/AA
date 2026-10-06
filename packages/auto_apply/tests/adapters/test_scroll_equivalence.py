@@ -18,16 +18,25 @@ from types import SimpleNamespace
 
 from unittest.mock import MagicMock, patch
 
+from auto_apply.domain.models.motion import MotionCapabilities
+
 
 def _scripted_browser(growth_steps: int):
     """A page that grows for `growth_steps` scrolls, then stops.
 
-    Both scroll paths issue the same JS, so one script serves both and any
-    divergence in how they read it shows up as a behavioural difference.
+    One script serves both scroll paths: the native path scrolls via the
+    scrollTo JS, the tool path via an executed wheel plan — the mock driver
+    honestly applies either, so any divergence shows up as behaviour.
     """
     state = {"scrolls": 0}
 
     def _exec(script, *args):
+        if "scrollTop" in script:
+            # The tool's measured read of the document's real scroller (D5).
+            return [
+                1000 * (1 + min(state["scrolls"], growth_steps)),
+                min(state["scrolls"], growth_steps) * 500,
+            ]
         if "scrollTo" in script:
             state["scrolls"] += 1
             return None
@@ -37,6 +46,12 @@ def _scripted_browser(growth_steps: int):
 
     browser = MagicMock()
     browser.execute_script.side_effect = _exec
+    browser.execute_motion.side_effect = (
+        lambda plan: state.__setitem__("scrolls", state["scrolls"] + 1)
+    )
+    browser.motion_capabilities = MotionCapabilities(
+        trusted_pointer=True, wheel=True, timed_ticks=True
+    )
     browser.state = state
     return browser
 

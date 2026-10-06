@@ -455,6 +455,8 @@ class TestCompositionRootNamespacing:
             ("applications_workflow",),
             ("discovery.provider_order",),
             ("interaction.pacing",),
+            ("motion.pointer",),
+            ("motion.wheel",),
         }
         missing = required - namespaces
         assert not missing, (

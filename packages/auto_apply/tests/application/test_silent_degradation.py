@@ -16,7 +16,9 @@ Pin labels (honest, per standing method):
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-from auto_apply.adapters.secondary.dom.classifier import PageType
+
+from auto_apply.domain.services.page_assessment import PageAssessment
+from auto_apply.domain.types import PageType
 
 import pytest
 
@@ -31,6 +33,17 @@ from auto_apply.application.services.auditing.degradation_detector import (
     SilentDegradationDetector,
 )
 from auto_apply.domain.models.job import Job
+
+
+def _not_blocked_verdict() -> PageAssessment:
+    """A stubbed non-blocking verdict for the strategy-level pins."""
+    return PageAssessment(
+        kind=PageType.SERP,
+        challenge="clear",
+        signals=("stubbed",),
+        detail="stub",
+        confidence=1.0,
+    )
 
 
 def _job() -> Job:
@@ -122,11 +135,9 @@ def test_baseline_store_round_trip(tmp_path):
 # Pin 5 (TEETH): benched provider returns [] and never mines
 # --------------------------------------------------------------------------
 
-@patch("auto_apply.adapters.secondary.discovery.strategies.serp_strategy.PageClassifier")
-def test_benched_provider_short_circuits_before_mining(mock_classifier_class):
-    mock_classifier = MagicMock()
-    mock_classifier.classify.return_value = PageType.SERP
-    mock_classifier_class.return_value = mock_classifier
+@patch("auto_apply.adapters.secondary.discovery.strategies.serp_strategy.assess_page")
+def test_benched_provider_short_circuits_before_mining(mock_assess_page):
+    mock_assess_page.return_value = _not_blocked_verdict()
 
     det = SilentDegradationDetector(None)
     det._benched.add("Google")
@@ -149,11 +160,9 @@ def test_benched_provider_short_circuits_before_mining(mock_classifier_class):
 # Pin 6 (BEHAVIOUR-PRESERVING): unwired strategy behaves exactly as before
 # --------------------------------------------------------------------------
 
-@patch("auto_apply.adapters.secondary.discovery.strategies.serp_strategy.PageClassifier")
-def test_unwired_strategy_mines_normally(mock_classifier_class):
-    mock_classifier = MagicMock()
-    mock_classifier.classify.return_value = PageType.SERP
-    mock_classifier_class.return_value = mock_classifier
+@patch("auto_apply.adapters.secondary.discovery.strategies.serp_strategy.assess_page")
+def test_unwired_strategy_mines_normally(mock_assess_page):
+    mock_assess_page.return_value = _not_blocked_verdict()
     
     miner = MagicMock()
     miner.mine_jobs.return_value = [_job()]

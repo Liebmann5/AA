@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/dom/classifier.py
 # RELOCATED from application/services/dom/classifier.py (2026-08-07).
 #
 # This module drives a live browser through BrowserInterface / InteractionPort

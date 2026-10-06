@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from typing import Any, Optional, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -20,6 +21,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # All references to Playwright classes are replaced by globally cached
 # variables that are populated the first time an adapter is instantiated.
 
+from auto_apply.domain.models.motion import (
+    MotionCapabilities,
+    MotionKind,
+    MotionPlan,
+)
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 from auto_apply.domain.types import Keys as GenericKeys
 from auto_apply.domain.types import Locator
@@ -248,6 +254,10 @@ class PlaywrightAdapter(BrowserInterface):
         self._browser = browser
         self._playwright = playwright
         self._rng = rng if rng is not None else random.Random()
+        # Tracked pointer position — Playwright exposes no cursor getter.
+        # The browser session's initial pointer position is (0, 0).
+        self._cursor_x: int = 0
+        self._cursor_y: int = 0
 
     @property
     def framework_name(self) -> str:
@@ -374,22 +384,43 @@ class PlaywrightAdapter(BrowserInterface):
         Returns:
             Any: The script result.
         """
-        # Playwright's evaluate needs careful argument handling if passing handles.
-        # For simplicity in this adaptation, we pass primitives.
-        # If passing elements is needed, we would pass the locator._element (JSHandle).
-        unwrapped_args = []
+        # Playwright's evaluate accepts exactly ONE argument, so the argument
+        # list travels as a single array and the script is invoked through
+        # Function.apply — which is what keeps the shared ``arguments[0]``
+        # convention working unchanged. Before this fix the adapter silently
+        # DROPPED every argument: any script reading ``arguments[0]`` (the
+        # click-target probe, clear_and_type, select_option's JS fallbacks,
+        # scrollIntoView) was a no-op on Playwright.
+        raw_args = []
+        handles: list = []
         for arg in args:
             if isinstance(arg, PlaywrightElementAdapter):
-                # NOTE: Passing the raw locator is complex in evaluate.
-                # In generic scripts, we usually pass data, not elements.
-                # If element manipulation is needed, handle it in the adapter.
-                pass
+                # Bounded: locator.element_handle() defaults to a 30s wait,
+                # so one stale element used to cost 30s PER CALL (D6,
+                # measured live) — on the worst-case machine, three times
+                # per click down the ladder.
+                handle = arg._locator.element_handle(timeout=self._HANDLE_TIMEOUT_MS)
+                handles.append(handle)
+                raw_args.append(handle)
             else:
-                unwrapped_args.append(arg)
-
-        # We wrap the script in a function that accepts the args
-        # Playwright evaluate signature: page.evaluate(expression, arg)
-        return self._page.evaluate(f"() => {{ {script} }}")
+                raw_args.append(arg)
+        try:
+            if raw_args:
+                return self._page.evaluate(
+                    "(aa_args) => { return (function(){ "
+                    + script
+                    + " }).apply(null, aa_args); }",
+                    raw_args,
+                )
+            return self._page.evaluate(f"() => {{ {script} }}")
+        finally:
+            # Handles are per-call resources; leaving them leaks JSHeap over
+            # a long session.
+            for handle in handles:
+                try:
+                    handle.dispose()
+                except Exception:
+                    pass
 
     def switch_to_iframe(self, iframe_element: ElementInterface) -> None:
         """Switches context (Not strictly needed in Playwright).
@@ -439,12 +470,11 @@ class PlaywrightAdapter(BrowserInterface):
             x (int): Horizontal pixels.
             y (int): Vertical pixels.
         """
-        # Playwright doesn't have a direct "relative move" like Selenium.
-        # We calculate current + offset.
-        # Note: This is an approximation as getting current mouse pos
-        # isn't exposed directly in the high level API.
-        # For evasion, we usually just move to elements.
-        pass
+        # Playwright exposes no cursor-position getter, so the adapter tracks
+        # the position of every move it performs.
+        self._cursor_x += x
+        self._cursor_y += y
+        self._page.mouse.move(self._cursor_x, self._cursor_y)
 
     def move_mouse_to_element(self, element: ElementInterface, offset_x: int = 0, offset_y: int = 0) -> None:  # noqa: E501
         """Moves the mouse cursor to the center of a specific element.
@@ -460,12 +490,77 @@ class PlaywrightAdapter(BrowserInterface):
                 center_x = box['x'] + box['width'] / 2
                 center_y = box['y'] + box['height'] / 2
                 self._page.mouse.move(center_x + offset_x, center_y + offset_y)
+                self._cursor_x = int(center_x + offset_x)
+                self._cursor_y = int(center_y + offset_y)
 
     def perform_mouse_fidget(self) -> None:
-        """Performs a small, random mouse movement."""
-        x = self._rng.randint(100, 500)
-        y = self._rng.randint(100, 500)
-        self._page.mouse.move(x, y)
+        """Small jitter around the CURRENT pointer position, and back.
+
+        Was: a jump to a random absolute point in 100-500px, which teleported
+        the cursor across the page several times a second during every macro
+        pause. A fidget is a tremor, not a teleport.
+        """
+        dx = self._rng.randint(-5, 5)
+        dy = self._rng.randint(-5, 5)
+        self.move_mouse_by_offset(dx, dy)
+        self.move_mouse_by_offset(-dx, -dy)
+
+    #: Bound on round trips per pointer move: the tick list is executed as
+    #: at most this many contiguous sub-moves (Playwright's mouse.move takes
+    #: steps but no per-step timing).
+    _MOTION_MAX_SEGMENTS: int = 6
+
+    #: Bounded wait for a locator to attach when unwrapping elements for JS.
+    #: 2s is the fail-fast bound; the 30s default was the D6 stall.
+    _HANDLE_TIMEOUT_MS: int = 2000
+
+    def execute_motion(self, plan: MotionPlan) -> None:
+        """Executes a motion plan with per-chunk timing.
+
+        Playwright has no per-tick timing, so the tick list is executed as a
+        bounded number of contiguous sub-moves with a Python-side pause per
+        chunk. ``timed_ticks`` is honestly False in motion_capabilities.
+        """
+        if plan.pre_delay_ms:
+            time.sleep(plan.pre_delay_ms / 1000.0)
+        ticks = list(plan.pointer_ticks)
+        if ticks:
+            per = max(1, -(-len(ticks) // self._MOTION_MAX_SEGMENTS))
+            for i in range(0, len(ticks), per):
+                chunk = ticks[i : i + per]
+                last = chunk[-1]
+                self._page.mouse.move(last.x, last.y, steps=max(1, len(chunk)))
+                self._cursor_x, self._cursor_y = last.x, last.y
+                dt = sum(t.dt_ms for t in chunk)
+                if dt > 0:
+                    time.sleep(dt / 1000.0)
+        if plan.wheel_ticks and plan.wheel_origin is not None:
+            # A real wheel scrolls whatever is under the cursor (D4, measured
+            # live: the window scroll went into an unrelated inner pane). The
+            # tool emits a planned approach path; this guard also covers
+            # hand-built plans with no pointer ticks.
+            ox, oy = plan.wheel_origin
+            if (ox, oy) != (self._cursor_x, self._cursor_y):
+                self._page.mouse.move(ox, oy)
+                self._cursor_x, self._cursor_y = ox, oy
+        for tick in plan.wheel_ticks:
+            if tick.dt_ms:
+                time.sleep(tick.dt_ms / 1000.0)
+            self._page.mouse.wheel(tick.dx, tick.dy)
+        if plan.kind is MotionKind.CLICK:
+            self._page.mouse.down()
+            if plan.hold_ms:
+                time.sleep(plan.hold_ms / 1000.0)
+            self._page.mouse.up()
+
+    @property
+    def motion_capabilities(self) -> MotionCapabilities:
+        """Trusted pointer and wheel; timing honored per chunk, not per tick."""
+        return MotionCapabilities(
+            trusted_pointer=True,
+            wheel=True,
+            timed_ticks=False,
+        )
 
     def save_screenshot(self, filepath: str) -> None:
         """Saves a screenshot of the current viewport to a file.

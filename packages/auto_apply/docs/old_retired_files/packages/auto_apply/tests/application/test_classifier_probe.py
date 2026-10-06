@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/tests/application/test_classifier_probe.py
 """The page-health classifier must not run an extraction pass.
 
 ``PageClassifier.classify`` used to end with a full

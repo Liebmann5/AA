@@ -730,9 +730,17 @@ def build_orchestrator(  # noqa: PLR0914
     )
 
     interaction_pacing_rng = behavior_params.make_rng("interaction.pacing")
+    motion_pointer_rng = behavior_params.make_rng("motion.pointer")
+    motion_wheel_rng = behavior_params.make_rng("motion.wheel")
 
     page_action_tool = (
-        PageActionService(browser=driver, registry=registry, rng=interaction_pacing_rng)
+        PageActionService(
+            browser=driver,
+            registry=registry,
+            rng=interaction_pacing_rng,
+            pointer_rng=motion_pointer_rng,
+            wheel_rng=motion_wheel_rng,
+        )
         if driver is not None
         else None
     )
@@ -962,20 +970,6 @@ def build_orchestrator(  # noqa: PLR0914
         from auto_apply.adapters.secondary.discovery.providers.indeed import (  # noqa: PLC0415
             IndeedProvider,
         )
-        from auto_apply.adapters.secondary.evasion.manager import (  # noqa: PLC0415
-            EvasionManager,
-        )
-
-        try:
-            _indeed_evasion_manager = EvasionManager(driver)
-        except Exception as _exc:
-            logger.warning(
-                "build_orchestrator: EvasionManager construction failed for "
-                "IndeedProvider — proceeding without evasion checking: %s",
-                _exc,
-            )
-            _indeed_evasion_manager = None
-
         from auto_apply.adapters.secondary.navigation.pagination import (  # noqa: PLC0415
             InfiniteScrollStrategy,
             PaginationHandler,
@@ -1065,7 +1059,6 @@ def build_orchestrator(  # noqa: PLR0914
             ),
             IndeedProvider(
                 browser=driver,
-                evasion_manager=_indeed_evasion_manager,
                 page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
                 paginator=_paginator,

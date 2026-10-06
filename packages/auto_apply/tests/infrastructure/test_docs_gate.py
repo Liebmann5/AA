@@ -244,8 +244,17 @@ def test_no_document_references_a_retired_module() -> None:
     if not RETIRED_DIR.exists():
         pytest.skip("no retirement directory in this checkout")
 
+    # A retired file is named by its file name - or, when that name is also
+    # carried by a live file (__init__.py, a second manager.py), by its
+    # parent folder plus name, so a document about the live one is not
+    # flagged for the retired one.
+    live_names = {
+        p.name for p in (_PACKAGE_DIR / "src").rglob("*")
+        if p.is_file() and "__pycache__" not in p.parts
+    }
     retired_names = {
-        p.name for p in RETIRED_DIR.rglob("*")
+        (f"{p.parent.name}/{p.name}" if p.name in live_names else p.name)
+        for p in RETIRED_DIR.rglob("*")
         if p.is_file() and p.suffix in {".py", ".sh", ".bat"} and p.name != "README.md"
     }
     if not retired_names:
@@ -268,7 +277,9 @@ def test_no_document_references_a_retired_module() -> None:
             continue
         rel = path.relative_to(_REPO_ROOT).as_posix()
         for name in sorted(retired_names):
-            if name in text:
+            # Whole names only: retiring classifier.py must not flag a
+            # document that names field_classifier.py.
+            if re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-]|\.\w)", text):
                 offenders.append(f"{rel} names '{name}' without saying it is retired")
 
     assert not offenders, (

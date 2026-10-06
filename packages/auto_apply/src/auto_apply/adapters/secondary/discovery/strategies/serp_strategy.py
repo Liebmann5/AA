@@ -21,35 +21,80 @@ from auto_apply.domain.ports.extraction_observer_port import (
 from auto_apply.domain.ports.research_port import (
     DiscoveryObservation,
     NullResearchObserver,
+    ResearchObserverPort,
 )
 from auto_apply.adapters.secondary.discovery.components.miner import SemanticMiner
 from auto_apply.adapters.secondary.discovery.components.page_understanding_extractor import (
     FallbackSerpExtractor,
 )
-from auto_apply.adapters.secondary.dom.classifier import PageClassifier
+from auto_apply.adapters.secondary.browser.page_snapshot import browser_page_snapshot
 from auto_apply.adapters.secondary.navigation.interruption import InterruptionHandler
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import JobSearchPreferences
 from auto_apply.domain.ports.browser_port import BrowserInterface
-from auto_apply.domain.types import Locator, PageType
+from auto_apply.domain.services.page_assessment import assess_page
+from auto_apply.domain.types import PageType
 
 from auto_apply.adapters.secondary.perception.dom_adapter import (
     BaseExtractor,
     SmartTextExtractor,
     SmartURLExtractor,
 )
-from auto_apply.adapters.secondary.evasion.detection import DefaultDetectionStrategy
 
 logger = logging.getLogger(__name__)
 
 # Page types that mean "we were blocked", not "there are no jobs". A blocked
 # page must never become a zero-yield measurement or a degradation-guard
-# baseline.
-_BLOCK_PAGE_TYPES = frozenset({
+# baseline. Public because two gates classify by it: this strategy's, and
+# IndeedProvider's navigation health check.
+BLOCK_PAGE_TYPES = frozenset({
     PageType.CAPTCHA_BLOCK,
     PageType.LOGIN_REQUIRED,
     PageType.ERROR_404,
 })
+
+
+def record_blocked_observation(
+    *,
+    source_tag: str,
+    browser: BrowserInterface,
+    research_observer: ResearchObserverPort | None,
+    page_type: PageType,
+) -> None:
+    """Emit a blocked-page discovery observation (consent-gated).
+
+    The observation carries the block verdict — it is an access-equity
+    datum for the research record, not an empty harvest. Shared by
+    GenericSERPStrategy (blocked mid-strategy) and IndeedProvider (blocked
+    during navigation) so one blocked page produces one observation shape,
+    whoever met it.
+    """
+    if research_observer is None or not research_observer.is_enabled:
+        return
+    try:
+        host = ""
+        try:
+            host = urllib.parse.urlsplit(
+                getattr(browser, "current_url", "") or ""
+            ).netloc.lower()
+        except Exception:
+            pass
+        research_observer.observe_discovery(
+            DiscoveryObservation(
+                provider=source_tag,
+                page_host=host,
+                page_state=page_type.name.lower(),
+                blocked=True,
+                architecture="none",
+                card_count=0,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "%s: blocked-page observation failed (non-fatal): %s",
+            source_tag,
+            exc,
+        )
 
 
 class GenericSERPStrategy:
@@ -153,13 +198,16 @@ class GenericSERPStrategy:
         and ``run()`` apply the identical check instead of one path having
         it and the other not.
         """
-        classifier = PageClassifier(
-            self.browser,
-            DefaultDetectionStrategy(self.browser),
-        )
-        page_type = classifier.classify()
-        if page_type in _BLOCK_PAGE_TYPES:
-            return page_type
+        url, title, html = browser_page_snapshot(self.browser)
+        assessment = assess_page(url=url, title=title, html=html)
+        if assessment.kind in BLOCK_PAGE_TYPES:
+            logger.info(
+                "%s: page verdict %s | signals=%s",
+                self.source_tag,
+                assessment.kind.name,
+                ",".join(assessment.signals),
+            )
+            return assessment.kind
         return None
 
     def _abort_blocked(self, page_type: PageType, context: str) -> list[Job]:
@@ -178,32 +226,12 @@ class GenericSERPStrategy:
 
     def _emit_blocked_observation(self, page_type: PageType) -> None:
         """Emit a blocked-page discovery observation (consent-gated)."""
-        if not self._research_observer.is_enabled:
-            return
-        try:
-            host = ""
-            try:
-                host = urllib.parse.urlsplit(
-                    self.browser.current_url or ""
-                ).netloc.lower()
-            except Exception:
-                pass
-            self._research_observer.observe_discovery(
-                DiscoveryObservation(
-                    provider=self.source_tag,
-                    page_host=host,
-                    page_state=page_type.name.lower(),
-                    blocked=True,
-                    architecture="none",
-                    card_count=0,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "%s: blocked-page observation failed (non-fatal): %s",
-                self.source_tag,
-                exc,
-            )
+        record_blocked_observation(
+            source_tag=self.source_tag,
+            browser=self.browser,
+            research_observer=self._research_observer,
+            page_type=page_type,
+        )
 
     def _mine_all_pages(self, scroller) -> dict:
         """Mines the current page, then advances while pages remain.

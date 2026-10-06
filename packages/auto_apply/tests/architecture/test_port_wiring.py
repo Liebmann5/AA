@@ -80,11 +80,6 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
         "implemented by HaversineCalculator but SpatialLocationFilter inlines "
         "the haversine math — same fact flags location/haversine.py unreachable",
     ),
-    "DomReadinessPort": (
-        "WIRE-LATER",
-        "handlers receive readiness as an untyped constructor param; no "
-        "signature names the port",
-    ),
     "EnvironmentCapabilitiesProvider": (
         "WIRE-LATER",
         "PolicyEnforcement is typed against the broader RegistryPort and calls "
@@ -128,11 +123,6 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
     "PageAuditReporterPort": (
         "WIRE-LATER",
         "injected as untyped reporter= params; sibling of ExtractionObserverPort",
-    ),
-    "PageClassifierPort": (
-        "WIRE-LATER",
-        "GenericSERPStrategy constructs the concrete PageClassifier instead of "
-        "receiving the port",
     ),
     "PageNavigationPort": (
         "WIRE-LATER",

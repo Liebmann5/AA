@@ -177,8 +177,11 @@ class WebpageStructure:
             contradicted those call sites.
         forms: List of detected form regions (in order of appearance).
         job_listings: Nodes that likely represent job cards (if any).
-        is_captcha_present: True if a CAPTCHA was detected.
-        is_login_wall: True if the page appears to be a login screen.
+
+    Page identity (challenge, login wall) is deliberately NOT part of this
+    structure: it is answered once by domain/services/page_assessment.py.
+    The is_captcha_present / is_login_wall fields that used to sit here
+    were written and never read.
     """
 
     url: str
@@ -186,8 +189,6 @@ class WebpageStructure:
     dom_root: DOMNode | None = None
     forms: list[FormRegion] = field(default_factory=list)
     job_listings: list[DOMNode] = field(default_factory=list)
-    is_captcha_present: bool = False
-    is_login_wall: bool = False
 
     def get_main_form(self) -> FormRegion | None:
         """Return the largest form region (by field count) or None."""

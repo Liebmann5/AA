@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/evasion/manager.py
 """The central manager for Evasion and Anti-Bot techniques.
 
 This module provides the `EvasionManager`, which acts as a high-level controller

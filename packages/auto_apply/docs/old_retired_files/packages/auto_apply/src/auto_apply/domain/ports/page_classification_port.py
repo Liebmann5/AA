@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/domain/ports/page_classification_port.py
 """Contract for deciding what kind of page the browser is currently showing.
 
 ``serp_strategy`` asks this before extracting, to tell a results page from a

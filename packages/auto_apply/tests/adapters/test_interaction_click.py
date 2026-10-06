@@ -75,7 +75,7 @@ def test_click_delegates_to_the_page_action_tool():
     element = MagicMock()
 
     assert _executor(tool).click(element) is None
-    tool.click.assert_called_once_with(element)
+    tool.click.assert_called_once_with(element, irreversible=False)
 
 
 def test_click_raises_when_the_tool_reports_failure():

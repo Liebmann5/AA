@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/adapters/secondary/evasion/detection.py
 """
 Framework-agnostic system for detecting bot challenges.
 

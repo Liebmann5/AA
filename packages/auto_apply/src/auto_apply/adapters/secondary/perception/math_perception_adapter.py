@@ -16,6 +16,8 @@ from auto_apply.domain.models.math_dom import DOMNode
 from auto_apply.domain.models.ui import UIElement, UIElementType, UIModel
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.perception_port import PerceptionPort
+from auto_apply.domain.services.page_assessment import assess_page
+from auto_apply.domain.types import PageType
 
 logger = logging.getLogger(__name__)
 
@@ -24,27 +26,12 @@ _INTERACTABLE_ROLES = frozenset({
     "button", "checkbox", "radio", "textbox", "combobox", "listbox", "link",
 })
 
-# Evaluated in order; first match wins.
+# Residual WORKFLOW-STATE heuristics (English phrases on visible text).
+# Page identity — success, closed, already-applied, login wall — moved to
+# the ONE page verdict (domain/services/page_assessment.py); do not add
+# page-kind phrases back here. What remains is application-wizard state,
+# which is not a page kind. Evaluated in order; first match wins.
 _STATE_KEYWORDS: list[tuple[frozenset[str], ApplicationState]] = [
-    (
-        frozenset({"application sent", "application submitted", "you applied",
-                   "successfully applied", "thank you for applying"}),
-        ApplicationState.SUCCESS,
-    ),
-    (
-        frozenset({"no longer accepting", "position has been filled",
-                   "job is closed", "posting expired"}),
-        ApplicationState.CLOSED,
-    ),
-    (
-        frozenset({"you already applied", "you applied on", "already submitted"}),
-        ApplicationState.ALREADY_APPLIED,
-    ),
-    (
-        frozenset({"sign in", "log in", "login required",
-                   "create an account to apply"}),
-        ApplicationState.LOGIN_WALL,
-    ),
     (
         frozenset({"upload resume", "upload cv", "attach resume",
                    "upload your resume"}),
@@ -73,6 +60,14 @@ _STATE_KEYWORDS: list[tuple[frozenset[str], ApplicationState]] = [
 
 # CSS selectors used for structural state detection (not keyword-based).
 _MODAL_SELECTOR = "[role='dialog'], [role='alertdialog'], .modal, .dialog"
+
+#: The four page kinds this adapter takes from the ONE verdict.
+_VERDICT_KIND_TO_STATE: dict[PageType, ApplicationState] = {
+    PageType.SUCCESS_PAGE: ApplicationState.SUCCESS,
+    PageType.CLOSED: ApplicationState.CLOSED,
+    PageType.ALREADY_APPLIED: ApplicationState.ALREADY_APPLIED,
+    PageType.LOGIN_REQUIRED: ApplicationState.LOGIN_WALL,
+}
 _APPLY_BUTTON_SELECTOR = (
     "button[class*='apply'], a[class*='apply'], "
     "[data-job-id], [class*='job-card'], [class*='jobcard']"
@@ -109,6 +104,25 @@ class MathPerceptionAdapter(PerceptionPort):
         )
 
     def get_current_state(self) -> ApplicationState:
+        # Page identity comes from the ONE verdict first: success, closed,
+        # already-applied and login wall are page kinds, decided once in
+        # domain/services/page_assessment.py. Only workflow-state heuristics
+        # (upload step, review step, modals, ...) remain local.
+        try:
+            url = self._browser.current_url or ""
+            title = self._browser.title or ""
+            html = self._browser.page_source or ""
+        except Exception:
+            url, title, html = "", "", ""
+        assessment = assess_page(
+            url=url if isinstance(url, str) else "",
+            title=title if isinstance(title, str) else "",
+            html=html if isinstance(html, str) else "",
+        )
+        state = _VERDICT_KIND_TO_STATE.get(assessment.kind)
+        if state is not None:
+            return state
+
         try:
             raw = self._browser.execute_script("return document.body.innerText")
             page_text = (raw or "").lower()

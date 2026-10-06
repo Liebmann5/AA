@@ -13,6 +13,8 @@ This is a fundamental application of the Dependency Inversion Principle.
 from abc import ABC, abstractmethod
 from typing import Any
 
+from auto_apply.domain.models.motion import MotionCapabilities, MotionPlan
+
 
 class ElementInterface(ABC):
     """
@@ -311,6 +313,27 @@ class BrowserInterface(ABC):
     def perform_mouse_fidget(self) -> None:
         """Performs a small, random mouse wiggle to simulate human-like behavior."""
         ...
+
+    def execute_motion(self, plan: MotionPlan) -> None:
+        """Executes a pointer/wheel motion plan as honestly as the driver allows.
+
+        Deliberately NON-abstract: an adapter that has not implemented motion
+        plans must fail loudly at call time rather than break at class
+        creation (unknown adapters outside this tree subclass this port).
+        Check :attr:`motion_capabilities` first; capable adapters override.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not execute motion plans"
+        )
+
+    @property
+    def motion_capabilities(self) -> MotionCapabilities:
+        """What this adapter can truthfully do with motion plans.
+
+        Defaults to "nothing" so an adapter that predates motion plans is
+        honest by construction; capable adapters override the property.
+        """
+        return MotionCapabilities()
 
     @abstractmethod
     def save_screenshot(self, filepath: str) -> None:

@@ -947,25 +947,13 @@ class TestJSONLDExtraction:
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestIndeedProviderHealthCheck:
-    """Test IndeedProvider's page‑health check with optional evasion."""
+    """IndeedProvider's page-health check asks the one page verdict.
 
-    def test_healthy_with_no_evasion(self):
-        """Without an evasion manager, the page is always considered healthy."""
+    The blocked and observation cases live in tests/adapters/
+    test_indeed_block_gate.py; this keeps the empty-page default.
+    """
+
+    def test_an_empty_snapshot_is_healthy(self):
+        """An empty page is UNKNOWN, not blocked: the gate never invents a block."""
         provider = IndeedProvider(_mock_browser())
-        assert provider._is_page_healthy() is True
-
-    def test_blocked_when_evasion_detects(self):
-        """If the evasion manager detects a block, _is_page_healthy returns False."""
-        browser = _mock_browser()
-        evasion = MagicMock()
-        evasion.check_page_safety.return_value = False  # blocked
-        provider = IndeedProvider(browser, evasion_manager=evasion)
-        assert provider._is_page_healthy() is False
-
-    def test_healthy_when_evasion_ok(self):
-        """If the evasion manager says the page is safe, returns True."""
-        browser = _mock_browser()
-        evasion = MagicMock()
-        evasion.check_page_safety.return_value = True
-        provider = IndeedProvider(browser, evasion_manager=evasion)
         assert provider._is_page_healthy() is True

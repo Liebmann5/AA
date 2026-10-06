@@ -27,7 +27,7 @@ from auto_apply.application.services.page_action.service import PageActionServic
 
 
 def _tool(verdict, *, guard=True, verdicts=None):
-    """A tool whose reachability probe returns a scripted verdict."""
+    """A tool whose probe returns a scripted verdict (as a probe dict)."""
     browser = MagicMock()
     calls = {"n": 0}
 
@@ -35,11 +35,19 @@ def _tool(verdict, *, guard=True, verdicts=None):
         if "elementFromPoint" not in script:
             return None
         calls["n"] += 1
-        if verdicts is not None:
-            return verdicts[min(calls["n"] - 1, len(verdicts) - 1)]
-        if isinstance(verdict, Exception):
-            raise verdict
-        return verdict
+        v = verdicts[min(calls["n"] - 1, len(verdicts) - 1)] if verdicts is not None else verdict
+        if isinstance(v, Exception):
+            raise v
+        if v is None:
+            return None
+        return {
+            "verdict": v,
+            "tag": "button",
+            "role": "",
+            "box": None,
+            "viewport": {"w": 1366, "h": 768},
+            "panes": [],
+        }
 
     browser.execute_script.side_effect = _exec
 
@@ -79,13 +87,14 @@ def test_an_offscreen_target_does_not_block_the_click():
     """Below the fold, elementFromPoint samples a point that is not the target.
 
     Treating that as a trap is the single biggest false-positive source in the
-    original check.
+    original check. The ladder now scrolls, re-probes and completes through
+    the keyboard rung (a button with no box geometry).
     """
     tool = _tool("offscreen")
     element = MagicMock()
 
     assert bool(tool.click(element)) is True
-    element.click.assert_called_once()
+    element.send_keys.assert_called_once()
 
 
 def test_an_empty_verdict_does_not_block_the_click():
@@ -135,15 +144,18 @@ def test_the_refusal_reason_names_what_was_in_the_way():
 
 
 def test_occlusion_that_a_scroll_resolves_still_clicks():
-    """Sticky headers are the common case; look again before refusing."""
+    """Sticky headers are the common case; look again before refusing.
+
+    The click now completes through the ladder (keyboard rung for a button
+    with no box geometry), not through a raw element.click().
+    """
     tool = _tool(None, verdicts=["occluded:header", "ok"])
     element = MagicMock()
 
     result = tool.click(element)
 
     assert bool(result) is True
-    element.click.assert_called_once()
-    assert tool.probe_calls["n"] == 2, "the guard did not re-check after scrolling"
+    assert tool.probe_calls["n"] >= 2, "the guard did not re-check after scrolling"
 
 
 def test_persistent_occlusion_is_refused_after_the_retry():
@@ -151,7 +163,7 @@ def test_persistent_occlusion_is_refused_after_the_retry():
     element = MagicMock()
 
     assert bool(tool.click(element)) is False
-    assert tool.probe_calls["n"] == 2
+    assert tool.probe_calls["n"] >= 2, "the guard did not re-check after scrolling"
     element.click.assert_not_called()
 
 
@@ -182,21 +194,25 @@ def test_the_script_treats_descendants_and_ancestors_as_the_target():
     Both walks matter: up from the topmost element (span -> button) and up from
     the target (button -> a wrapping label that is itself topmost).
     """
-    script = PageActionService._REACHABILITY_SCRIPT
+    script = PageActionService._PROBE_SCRIPT
 
-    assert "for (var e = top; e; e = e.parentElement)" in script
-    assert "for (var a = elem; a; a = a.parentElement)" in script
+    # The walks now cross open shadow roots via up() -> getRootNode().host (D9).
+    assert "for (var e = top; e; e = up(e))" in script
+    assert "for (var a = elem; a; a = up(a))" in script
     assert "elementFromPoint" in script
 
 
 def test_the_guard_can_be_switched_off_entirely():
-    """A config escape hatch, because this check has a history."""
+    """A config escape hatch, because this check has a history.
+
+    The probe now also serves the ladder (challenge check, geometry, role),
+    so it still runs once; the switch governs REFUSAL, not probing.
+    """
     tool = _tool("occluded:div", guard=False)
     element = MagicMock()
 
     assert bool(tool.click(element)) is True
-    element.click.assert_called_once()
-    assert tool.probe_calls["n"] == 0, "the probe ran despite being disabled"
+    assert tool.probe_calls["n"] <= 1, "the guard refused despite being disabled"
 
 
 def test_the_guard_ships_switched_on():

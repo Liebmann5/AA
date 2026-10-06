@@ -1,3 +1,4 @@
+# RETIRED FROM: packages/auto_apply/src/auto_apply/domain/browser_state.py
 """Defines the Pydantic models for capturing a browser's state and identity.
 
 This module contains a set of strongly-typed data models that are used to create a

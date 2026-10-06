@@ -18,6 +18,29 @@ navigation_retries: 3
 occlusion_guard: true   #! refuse clicks that would land on an overlay
 force_analysis_tier: ""   #! empty = router chooses per page
 infinite_scroll_settle_s: 2.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pointer & wheel motion (the mouse tool)
+# ─────────────────────────────────────────────────────────────────────────────
+# Active profile and override slots. The three named profiles — "instant"
+# (CI / fast replay), "human" (default: a fast human), and "careful"
+# (slower, stealth-max) — carry their field values in exactly one place:
+# domain/models/motion_profile.py, where every field is documented with its
+# unit and its valid range.
+motion:
+  # "instant" | "human" | "careful"
+  profile: human
+  # Permit a synthetic JS click as the absolute last click fallback. Never
+  # used on irreversible actions (form submits), regardless of this setting.
+  allow_js_click: true
+  # Per-field overrides applied onto the ACTIVE profile. Keys are
+  # MotionProfile field names; an unknown key or an out-of-range value is
+  # refused at startup, naming the key, the value and the allowed range.
+  overrides: {}
+  # Full profile redefinitions, keyed by profile name, merged over the
+  # built-in profile of the same name.
+  profiles: {}
+
 preferred_browser_order:
   - chrome
   - firefox
@@ -156,16 +179,6 @@ applications:
   thinking_pause_probability: 0.05  # ↓ 1/15 ≈ 0.067 → 1/20 — fewer long pauses
   thinking_pause_min: 0.2           # ↓ 0.3 → 0.2
   thinking_pause_max: 0.6           # ↓ 0.8 → 0.6
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Browser mouse & navigation (BehaviorParameters / TimingProfile)
-# ─────────────────────────────────────────────────────────────────────────────
-browser:
-  mouse_move_steps: 4               # ↓ 5 → 4 — slightly fewer micro‑moves
-  mouse_offset_min_px: 30           # ↓ 50 → 30 — tighter movements
-  mouse_offset_max_px: 150          # ↓ 200 → 150
-  mouse_step_delay_min: 0.05        # ↓ 0.2 → 0.05
-  mouse_step_delay_max: 0.2         # ↓ 0.8 → 0.2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GPT4All local LLM settings

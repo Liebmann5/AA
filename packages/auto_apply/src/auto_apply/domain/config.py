@@ -327,7 +327,13 @@ def get_install_root() -> Path:
 class EvasionConfig(BaseModel):
     """Settings for bot-detection evasion and CAPTCHA handling."""
     enable_captcha_detection: bool = True
-    on_captcha_detected: str = "stop"  # Options: "stop", "notify", "wait_and_retry"
+    # on_captcha_detected is deleted. It had three definitions (here: "stop";
+    # EvasionManager's constructor default: "skip"; runtime_defaults.yaml:
+    # "skip") and zero live readers — the retired EvasionManager was its only
+    # consumer and returned False identically for every value. Challenge
+    # handling is ruled behaviour per path, not a policy: discovery aborts
+    # the provider page (D5 gate); the application path pauses in place
+    # (gate-crossing ruling A). The YAML key is removed with it.
 
 
 class AppSettings(BaseSettings):

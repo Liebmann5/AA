@@ -58,14 +58,6 @@ class ApplicationTimingSettings(_Frozen):
     thinking_pause_max: float
 
 
-class BrowserMotionSettings(_Frozen):
-    mouse_move_steps: int
-    mouse_offset_min_px: int
-    mouse_offset_max_px: int
-    mouse_step_delay_min: float
-    mouse_step_delay_max: float
-
-
 class Gpt4AllSettings(_Frozen):
     model: str
     max_tokens: int
@@ -105,11 +97,10 @@ class EffectiveConfig(_Frozen):
     log_retention_days: int
     page_copy_keep_days: int
     page_copy_max_mb: int
-    # ── 5 typed nested sections ──────────────────────────────────────────────
+    # ── 4 typed nested sections ──────────────────────────────────────────────
     vetting: VettingSettings
     discovery: DiscoverySettings
     applications: ApplicationTimingSettings
-    browser: BrowserMotionSettings
     gpt4all: Gpt4AllSettings
 
     @classmethod

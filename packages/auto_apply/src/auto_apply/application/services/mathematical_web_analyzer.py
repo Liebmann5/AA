@@ -215,8 +215,6 @@ class MathematicalWebAnalyzer:
                 dom_root=None,
                 forms=[],
                 job_listings=[],
-                is_captcha_present=False,
-                is_login_wall=False,
             )
         return self._form_analyzer.analyze(
             dom_root,

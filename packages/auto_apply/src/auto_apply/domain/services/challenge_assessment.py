@@ -47,6 +47,18 @@ Verdict vocabulary:
                  reCAPTCHA widget in a sign-in modal, say). The page can be
                  worked; the element only matters if a later step trips on it.
     "clear"    — no challenge evidence.
+
+Vendor annotation:
+    When challenge markup matches, the matched vendor is recorded on the
+    assessment (``vendors``) as an annotation for research — which anti-bot
+    system a site runs is access-equity evidence. It is never a verdict
+    input, and nothing about it is persisted. This preserves, in pure
+    form, the one unique capability of the retired evasion auditor.
+
+Page kinds beyond challenge and login wall (application form, job
+description, 404, ...) are composed from this engine by
+domain/services/page_assessment.py — the ONE page verdict. This module
+remains the single implementation of the challenge and login-wall answers.
 """
 
 from __future__ import annotations
@@ -66,6 +78,11 @@ _CHALLENGE_URL_MARKERS: tuple[str, ...] = (
     "/human-challenge/",
     "/cdn-cgi/",
     "/checkpoint/",
+    # Lifted from the retired evasion/detection.py after passing the 20-page
+    # fixtures: an auth-flow verification page gates scraping exactly like a
+    # challenge page. The same list's "blocked"/"denied" substrings were NOT
+    # lifted — they match "/unblocked/" and job titles ("denied-claims").
+    "/verify/",
     "geo.captcha-delivery.com",
 )
 
@@ -84,12 +101,43 @@ _CHALLENGE_WIDGET_MARKERS: tuple[str, ...] = (
     "h-captcha",
     "cf-chl-widget",
     "challenge-form",
+    # Lifted from the retired CloudflareDetectionStrategy after passing the
+    # fixtures: the cf-spinner class only exists on Cloudflare challenge pages.
+    "cf-spinner",
 )
+
+#: Public alias for the live-click probe in PageActionService, which refuses
+#: to operate anything inside one of these markers. One list, two consumers,
+#: so the verdict vocabulary cannot drift between detection and interaction.
+CHALLENGE_WIDGET_MARKERS: tuple[str, ...] = _CHALLENGE_WIDGET_MARKERS
 
 _CHALLENGE_SCRIPT_MARKERS: tuple[str, ...] = (
     "challenge-platform",
     "captcha-delivery",
     "challenges.cloudflare.com",
+)
+
+#: Marker substring → anti-bot vendor, matched against element attributes
+#: (src, class, id, name) during the SAME single parse. Annotation only —
+#: never a verdict input. Salvages the vendor probe of the retired
+#: evasion/auditor.py at HTML level (page_source includes injected scripts).
+_VENDOR_MARKERS: tuple[tuple[str, str], ...] = (
+    ("captcha-delivery", "datadome"),
+    ("challenges.cloudflare.com", "cloudflare"),
+    ("cdn-cgi", "cloudflare"),
+    ("challenge-platform", "cloudflare"),
+    ("cf-turnstile", "cloudflare"),
+    ("cf-chl", "cloudflare"),
+    ("cf-spinner", "cloudflare"),
+    ("g-recaptcha", "recaptcha"),
+    ("recaptcha", "recaptcha"),
+    ("h-captcha", "hcaptcha"),
+    ("hcaptcha", "hcaptcha"),
+    ("funcaptcha", "arkose"),
+    ("arkose", "arkose"),
+    ("px-captcha", "perimeterx"),
+    ("perimeterx", "perimeterx"),
+    ("akamai", "akamai"),
 )
 
 #: Login-wall URL markers, as WHOLE PATH SEGMENTS. Exact-segment matching
@@ -132,6 +180,11 @@ _MIN_CONTENT_TEXT_CHARS: int = 800
 #: A page whose whole purpose is authentication does not host many forms.
 _MAX_LOGIN_WALL_FORMS: int = 2
 
+#: Cap on the visible text a probe keeps for phrase matching. Confirmation,
+#: already-applied and closed language lives well inside the first 50k
+#: characters of rendered text on every measured page.
+_VISIBLE_TEXT_CAP: int = 50_000
+
 
 @dataclass(frozen=True)
 class ChallengeAssessment:
@@ -144,6 +197,9 @@ class ChallengeAssessment:
     verdict: ChallengeVerdict
     signals: tuple[str, ...]
     detail: str
+    #: Anti-bot vendors seen on the page, as an annotation for research.
+    #: Never a verdict input; empty when none matched.
+    vendors: tuple[str, ...] = ()
 
 
 class _PageProbe(HTMLParser):
@@ -163,12 +219,17 @@ class _PageProbe(HTMLParser):
         self.challenge_widget: bool = False
         self.challenge_script: bool = False
         self.visible_text_chars: int = 0
+        self.vendors: set[str] = set()
+        self._text_parts: list[str] = []
         self._ignored_depth: int = 0
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
         attr_text = " ".join(f"{name}={value}" for name, value in attrs).lower()
+        for _marker, _vendor in _VENDOR_MARKERS:
+            if _marker in attr_text:
+                self.vendors.add(_vendor)
         if tag == "script":
             self._ignored_depth += 1
             src = (dict(attrs).get("src") or "").lower()
@@ -201,7 +262,20 @@ class _PageProbe(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self._ignored_depth == 0:
-            self.visible_text_chars += len(data.strip())
+            chunk = data.strip()
+            self.visible_text_chars += len(chunk)
+            if chunk:
+                self._text_parts.append(chunk)
+
+    @property
+    def visible_text(self) -> str:
+        """The page's rendered visible text, lowercased, capped.
+
+        Comments and <script>/<style> bodies are excluded — the two places
+        every measured false positive lived. This is the ONLY text that
+        phrase matchers may read.
+        """
+        return " ".join(self._text_parts).lower()[:_VISIBLE_TEXT_CAP]
 
 
 def _probe(html: str) -> _PageProbe:
@@ -216,6 +290,17 @@ def _probe(html: str) -> _PageProbe:
     return probe
 
 
+def visible_page_text(html: str) -> str:
+    """The page's rendered visible text, lowercased and capped.
+
+    The one correct HTMLParser lives in this module; this is its public
+    text accessor for the verdict's phrase matching. Comments and
+    <script>/<style> bodies are never included. Never raises — a malformed
+    page yields partial text.
+    """
+    return _probe(html).visible_text
+
+
 def assess_challenge(*, url: str, title: str, html: str) -> ChallengeAssessment:
     """Decide whether a human-verification challenge is PRESENTED on this page.
 
@@ -227,10 +312,14 @@ def assess_challenge(*, url: str, title: str, html: str) -> ChallengeAssessment:
     del title  # deliberately unused: titles are localized and vendor-controlled
     url_l = (url or "").lower()
     if any(m in url_l for m in _CHALLENGE_URL_MARKERS):
+        url_vendors = tuple(
+            sorted({vendor for marker, vendor in _VENDOR_MARKERS if marker in url_l})
+        )
         return ChallengeAssessment(
             verdict="gated",
             signals=("challenge-url",),
             detail=f"challenge URL marker in {url_l[:80]}",
+            vendors=url_vendors,
         )
 
     probe = _probe(html)
@@ -266,17 +355,25 @@ def assess_challenge(*, url: str, title: str, html: str) -> ChallengeAssessment:
     if not (
         probe.challenge_iframe or probe.challenge_widget or probe.challenge_script
     ):
-        return ChallengeAssessment("clear", tuple(signals), detail)
+        return ChallengeAssessment(
+            "clear", tuple(signals), detail, vendors=tuple(sorted(probe.vendors))
+        )
     if not has_content:
         # Challenge markup and nothing else: the page IS the challenge,
         # whatever its title says and in whatever language.
-        return ChallengeAssessment("gated", tuple(signals), detail)
+        return ChallengeAssessment(
+            "gated", tuple(signals), detail, vendors=tuple(sorted(probe.vendors))
+        )
     if probe.challenge_iframe or probe.challenge_widget:
         # A rendered challenge element inside a usable page.
-        return ChallengeAssessment("embedded", tuple(signals), detail)
+        return ChallengeAssessment(
+            "embedded", tuple(signals), detail, vendors=tuple(sorted(probe.vendors))
+        )
     # Only a challenge-platform SCRIPT on a content page: a loaded library
     # is not a presented challenge.
-    return ChallengeAssessment("clear", tuple(signals), detail)
+    return ChallengeAssessment(
+        "clear", tuple(signals), detail, vendors=tuple(sorted(probe.vendors))
+    )
 
 
 def assess_login_wall(*, url: str, html: str) -> bool:
