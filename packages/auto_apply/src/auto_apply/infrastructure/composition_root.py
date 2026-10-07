@@ -787,7 +787,7 @@ def build_orchestrator(  # noqa: PLR0914
     # Built once and shared. Discovery adapters receive them instead of
     # importing scrolling and pagination across the layer boundary.
     _page_scroller = None
-    _paginator = None
+    _advancer_factory = None
     _max_pages_per_query = 1
 
     # ── Audit observers ───────────────────────────────────────────────────
@@ -977,7 +977,6 @@ def build_orchestrator(  # noqa: PLR0914
         )
         from auto_apply.adapters.secondary.navigation.pagination import (  # noqa: PLC0415
             InfiniteScrollStrategy,
-            PaginationHandler,
         )
 
         _nav_cfg = registry.get_all_effective_config()
@@ -995,11 +994,53 @@ def build_orchestrator(  # noqa: PLR0914
             driver,
             scroller=page_action_tool,
         )
-        _paginator = (
-            PaginationHandler(driver, interaction_port)
-            if interaction_port is not None
-            else None
+
+        # ── Verified page advance: one STATELESS advancer per query ─────
+        # Built by a per-provider factory (the shared, stateful
+        # pagination handler is retired). The URL-template rung comes from
+        # the engine YAML through the existing SelectorLoader — this wires
+        # that previously WIRE-LATER module. Unknown engines get no
+        # template and fall through to the structural rungs.
+        from auto_apply.adapters.secondary.navigation.page_advancer import (  # noqa: PLC0415
+            VerifiedPageAdvancer,
         )
+        from auto_apply.adapters.secondary.discovery.strategies.selector_loader import (  # noqa: PLC0415
+            SelectorLoader,
+        )
+        from auto_apply.domain.services.url_templating import (  # noqa: PLC0415
+            url_template_from_config,
+        )
+
+        _selector_loader = SelectorLoader()
+        _pagination_change_timeout_s = float(
+            _discovery_cfg.get("pagination_change_timeout_s", 4.0)
+        )
+
+        def _advancer_factory(engine: str):
+            url_template = (
+                url_template_from_config(
+                    (_selector_loader.load(engine) or {}).get("pagination")
+                )
+                if engine
+                else None
+            )
+
+            def _build() -> VerifiedPageAdvancer:
+                return VerifiedPageAdvancer(
+                    browser=driver,
+                    page_action=page_action_tool,
+                    readiness=dom_readiness,
+                    url_template=url_template,
+                    scroll=(
+                        page_action_tool.scroll_to_bottom
+                        if page_action_tool is not None
+                        else None
+                    ),
+                    change_timeout_s=_pagination_change_timeout_s,
+                    engine=engine,
+                )
+
+            return _build
 
         from auto_apply.application.services.auditing.reporter import (  # noqa: PLC0415
             AuditReporter,
@@ -1039,7 +1080,7 @@ def build_orchestrator(  # noqa: PLR0914
                 ats_registry=_ats_registry,
                 page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
-                paginator=_paginator,
+                advancer_factory=_advancer_factory("google"),
                 max_pages=_max_pages_per_query,
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
@@ -1053,7 +1094,7 @@ def build_orchestrator(  # noqa: PLR0914
                 browser=driver,
                 page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
-                paginator=_paginator,
+                advancer_factory=_advancer_factory("bing"),
                 max_pages=_max_pages_per_query,
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
@@ -1067,7 +1108,7 @@ def build_orchestrator(  # noqa: PLR0914
                 browser=driver,
                 page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
-                paginator=_paginator,
+                advancer_factory=_advancer_factory("indeed"),
                 max_pages=_max_pages_per_query,
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
@@ -1075,6 +1116,7 @@ def build_orchestrator(  # noqa: PLR0914
                 degradation_detector=_degradation_detector,
                 research_observer=research_observer,
                 readiness=dom_readiness,
+                page_action=page_action_tool,
             ),
         ]
 
@@ -1090,7 +1132,9 @@ def build_orchestrator(  # noqa: PLR0914
             search_prefs=search_prefs_for_miner,
             source_tag="CompanyDirect",
             scroller=_page_scroller,
-            paginator=_paginator,
+            advancer=(
+                _advancer_factory("")() if _advancer_factory is not None else None
+            ),
             max_pages=_max_pages_per_query,
             observer=_extraction_observer,
             reporter=_audit_reporter,

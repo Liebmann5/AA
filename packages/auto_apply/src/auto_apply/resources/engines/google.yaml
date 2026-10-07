@@ -118,3 +118,12 @@ toolbar:
             value: "a[href*='qdr:y']"
         fallback:
           text_contains: ["past year", "last year"]
+
+pagination:
+  # The one page parameter the codebase already proves real: the search
+  # strategy builds URLs with "start": 0 (engine_strategies.py). Page N is
+  # value = first + step * (N - 1), so page 2 is start=10.
+  url_template:
+    param: start
+    first: 0
+    step: 10

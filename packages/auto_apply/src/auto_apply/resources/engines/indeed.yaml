@@ -74,3 +74,14 @@ toolbar:
             value: "//button[contains(normalize-space(), 'Last year')]"
         fallback:
           text_contains: ["last year", "past year"]
+
+# ── Pagination ─────────────────────────────────────────────────────────────
+# No verified URL page parameter is shipped: inventing one would be a vendor
+# "fact" nobody measured. Structural rungs (rel=next, numbered, arrows)
+# handle paging. To add a verified parameter — here or in the user override,
+# without a release:
+# pagination:
+#   url_template:
+#     param: start
+#     first: 0
+#     step: 10

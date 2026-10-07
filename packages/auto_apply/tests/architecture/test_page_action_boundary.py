@@ -28,7 +28,7 @@ _PAGE_ACTION = (
 )
 _SERVICE_SRC = _PAGE_ACTION / "service.py"
 
-_COMPONENT_MODULES = ("probe.py", "pacing.py", "scrolling.py", "clicking.py", "typing.py")
+_COMPONENT_MODULES = ("probe.py", "pacing.py", "scrolling.py", "clicking.py", "text_input.py")
 _COMPONENT_ATTRS = ("_probe", "_pacing", "_scroller", "_clicker", "_typer")
 
 #: The surface every caller was built against before the split.
@@ -53,7 +53,7 @@ def test_the_component_modules_exist_and_the_facade_imports_them() -> None:
     for name in _COMPONENT_MODULES + ("result.py", "state.py"):
         assert (_PAGE_ACTION / name).is_file(), f"missing component: {name}"
     text = _service_text()
-    for dotted in ("probe", "pacing", "scrolling", "clicking", "typing", "result", "state"):
+    for dotted in ("probe", "pacing", "scrolling", "clicking", "text_input", "result", "state"):
         assert f"page_action.{dotted} import" in text, (
             f"the facade does not import page_action.{dotted}"
         )

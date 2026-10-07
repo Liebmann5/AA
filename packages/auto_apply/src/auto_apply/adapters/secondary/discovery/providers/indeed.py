@@ -52,7 +52,7 @@ class IndeedProvider(BaseSearchProvider):
         self,
         browser: BrowserInterface,
         scroller=None,
-        paginator=None,
+        advancer_factory=None,
         max_pages: int = 1,
         observer=None,
         reporter=None,
@@ -61,11 +61,12 @@ class IndeedProvider(BaseSearchProvider):
         page_understanding_port=None,
         research_observer=None,
         readiness=None,
+        page_action=None,
     ) -> None:
         super().__init__(
             browser,
             scroller,
-            paginator,
+            advancer_factory,
             max_pages,
             observer,
             reporter,
@@ -75,13 +76,17 @@ class IndeedProvider(BaseSearchProvider):
         self._page_understanding = page_understanding_port
         self._research_observer = research_observer
         self._readiness = readiness
+        # The interaction tool: toolbar clicks, human search navigation and
+        # card-activation clicks go through it (C3). The composition root
+        # always injects it; a bare construction degrades honestly.
+        self._page_action = page_action
 
         # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
-        self._engine_strategy = IndeedSearchStrategy()
+        self._engine_strategy = IndeedSearchStrategy(page_action=self._page_action)
 
         self.nav_stack = [
             DirectURLNavigation(browser),
-            HumanSearchNavigation(browser),
+            HumanSearchNavigation(browser, page_action=self._page_action),
         ]
 
         self.navigator = ResilientNavigator(browser, self.nav_stack)
@@ -124,6 +129,7 @@ class IndeedProvider(BaseSearchProvider):
             observer=self._observer,
             readiness=self._readiness,
             research_observer=self._research_observer,
+            page_action=self._page_action,
         )
 
     def run(self, instruction: SearchInstruction) -> list[Job]:
@@ -156,6 +162,12 @@ class IndeedProvider(BaseSearchProvider):
         # ── Apply toolbar filters (date, etc.) after navigation ─────────────
         self._engine_strategy.apply_toolbar_filters(self.browser, instruction)
 
+        # Fresh, stateless advancer per query — a shared one would leak its
+        # page position into the next search.
+        advancer = (
+            self._advancer_factory() if callable(self._advancer_factory) else None
+        )
+
         try:
             scraper = GenericSERPStrategy(
                 self.browser,
@@ -164,7 +176,7 @@ class IndeedProvider(BaseSearchProvider):
                 max_results=instruction.max_results,
                 fast_extractor=self._fast_extractor(),
                 scroller=self._scroller,
-                paginator=self._paginator,
+                advancer=advancer,
                 max_pages=self._max_pages,
                 observer=self._observer,
                 reporter=self._reporter,

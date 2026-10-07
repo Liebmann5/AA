@@ -18,11 +18,18 @@
 # application/services/ would import from adapters/ and reintroduce the
 # violation in the opposite direction.
 
-"""Provides a resilient, multi-strategy system for handling pagination.
+"""The feed-scroll strategy, kept; the click strategies are retired (call 3).
 
-This module contains strategies for finding and clicking 'Next Page' controls.
-It is robust against different website styles (Infinite Scroll, Numbered Lists,
-Arrow Buttons) and integrates with InteractionPort to click naturally.
+KeywordPagination, ArrowPagination, NumberedPagination and PaginationHandler
+were removed here: they matched English words ('next', 'more', 'continue'),
+clicked the LAST match, verified nothing, and one shared NumberedPagination
+leaked its page counter across queries and providers. Verified page advance
+now lives in adapters/secondary/navigation/page_advancer.py — one stateless
+advancer per query, advancing by a verified ladder.
+
+InfiniteScrollStrategy stays: the composition root injects it as the
+discovery loop's scroll collaborator (its next_page() delegates to the
+interaction tool's measured scroll_to_bottom).
 """
 
 
@@ -32,7 +39,6 @@ from abc import ABC, abstractmethod
 
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.interaction_port import InteractionPort
-from auto_apply.domain.types import Locator
 
 logger = logging.getLogger(__name__)
 
@@ -76,109 +82,6 @@ class PaginationStrategy(ABC):
         """
         ...
 
-class KeywordPagination(PaginationStrategy):
-    """A strategy that handles simple, keyword-based pagination buttons.
-
-    This strategy searches for buttons or links containing common "next" keywords
-    like 'Next', 'More', 'Continue', etc.
-    """
-
-    def __init__(self, browser: BrowserInterface, interactor: InteractionPort):
-        """Initializes the keyword strategy with a predefined list of keywords."""
-        super().__init__(browser, interactor)
-        self.keywords = ['next', 'more', 'show more', 'continue', 'load more']
-
-    def next_page(self) -> bool:
-        """Scans for buttons with specific keywords."""
-        xpath_template = (
-            "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{kw}')] | "  # noqa: E501
-            "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{kw}')]"  # noqa: E501
-        )
-
-        for keyword in self.keywords:
-            try:
-                xpath = xpath_template.format(kw=keyword)
-                elements = self.browser.find_elements(Locator.XPATH, xpath)
-
-                if elements:
-                    target = elements[-1]
-                    logger.info(f"{self.name}: Clicking '{keyword}' button.")
-                    self._interactor.click(target)
-                    return True
-            except Exception:
-                continue
-
-        return False
-
-class NumberedPagination(PaginationStrategy):
-    """Handles numbered lists (1, 2, 3...) by finding the *current* page + 1."""
-
-    def __init__(
-        self,
-        browser: BrowserInterface,
-        interactor: InteractionPort,
-        state_manager: object = None,
-    ):
-        """Initializes the numbered strategy."""
-        super().__init__(browser, interactor)
-        self.current_page = 1
-
-    def next_page(self) -> bool:
-        """Finds the link for (current_page + 1)."""
-        next_target = self.current_page + 1
-        logger.debug(f"{self.name}: Looking for page {next_target}...")
-
-        try:
-            xpath = f"//a[normalize-space()='{next_target}'] | //button[normalize-space()='{next_target}']"  # noqa: E501
-            elements = self.browser.find_elements(Locator.XPATH, xpath)
-
-            if not elements:
-                aria_xpath = f"//*[@aria-label='Page {next_target}']"
-                elements = self.browser.find_elements(Locator.XPATH, aria_xpath)
-
-            if elements:
-                target = elements[0]
-                self._interactor.click(target)
-                self.current_page += 1
-                return True
-
-        except Exception:
-            pass
-
-        return False
-
-class ArrowPagination(PaginationStrategy):
-    """
-    A strategy that handles arrow-based buttons (e.g., > or >>) and those
-    identified by ARIA labels (e.g., 'Next Page').
-
-    This strategy is highly effective on modern websites as it relies on
-    stable, accessibility-focused `aria-label` attributes rather than visual
-    text or icons.
-    """
-
-    def __init__(self, browser: BrowserInterface, interactor: InteractionPort):
-        """Initializes the arrow strategy with a list of common ARIA labels."""
-        super().__init__(browser, interactor)
-        self.aria_labels = ['next page', 'go to next page', 'next', 'pagination next']
-
-    def next_page(self) -> bool:
-        """Scans for elements with specific aria-labels."""
-        for label in self.aria_labels:
-            try:
-                selector = f"[aria-label*='{label}']"
-                elements = self.browser.find_elements(Locator.CSS_SELECTOR, selector)
-
-                if elements:
-                    target = elements[-1]
-                    logger.info(f"{self.name}: Clicking ARIA label '{label}'.")
-                    self._interactor.click(target)
-                    return True
-            except Exception:
-                continue
-        return False
-
-
 class InfiniteScrollStrategy(PaginationStrategy):
     """
     Handles 'Endless Scroll' pages (LinkedIn Feed, Google Jobs Widget).
@@ -209,32 +112,3 @@ class InfiniteScrollStrategy(PaginationStrategy):
         )
         return False
 
-class PaginationHandler:
-    """Orchestrates multiple pagination strategies for robust page navigation."""
-
-    def __init__(self, browser: BrowserInterface, interactor: InteractionPort):
-        self.browser = browser
-        self.strategies = [
-            KeywordPagination(browser, interactor),
-            ArrowPagination(browser, interactor),
-            NumberedPagination(browser, interactor),
-            InfiniteScrollStrategy(browser, interactor),
-        ]
-
-    def navigate_to_next_page(self) -> bool:
-        """Attempts to navigate to the next page using available strategies.
-
-        Returns:
-            bool: True if any strategy successfully navigated to the next page.
-        """
-        for strategy in self.strategies:
-            try:
-                if strategy.next_page():
-                    logger.info(f"Successfully navigated using {strategy.name}")
-                    return True
-            except Exception as e:
-                logger.debug(f"Strategy {strategy.name} failed: {e}")
-                continue
-
-        logger.info("All pagination strategies failed - likely at end of results")
-        return False

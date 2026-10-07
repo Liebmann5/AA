@@ -97,7 +97,9 @@ SEVERITY_FLAG: str = "flag"
 SEVERITY_CONCERN: str = "concern"
 SEVERITY_VIOLATION: str = "violation"
 
-RESEARCH_SCHEMA_VERSION: int = 3
+# 4: discovery_pages gained page_index, advance_method, stop_reason and
+#    page_count (verified pagination). Rows written at 2 and 3 stay valid.
+RESEARCH_SCHEMA_VERSION: int = 4
 RESEARCH_SALT_ENV_VAR: str = "AA_RESEARCH_SALT"
 
 # ── EventBus Event Names (Research Module) ───────────────────────────────────

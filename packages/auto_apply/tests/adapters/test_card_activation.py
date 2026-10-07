@@ -9,6 +9,7 @@ from __future__ import annotations
 from auto_apply.adapters.secondary.discovery.components.card_activation import (
     CardActivator,
 )
+from auto_apply.application.services.page_action.result import ActionResult
 from auto_apply.adapters.secondary.discovery.components.page_understanding_extractor import (
     PageUnderstandingExtractor,
     _is_opaque_uniform,
@@ -23,6 +24,35 @@ from auto_apply.domain.ports.page_understanding_port import (
 
 PAGE_URL = "https://serp.example.com/search"
 SERP_HOST = "serp.example.com"
+
+
+class _FakeTool:
+    """Stands in for PageActionService: records the click and drives the fake
+    browser's state machine exactly as a real ladder rung would."""
+
+    def __init__(self) -> None:
+        self.clicks = 0
+
+    def click(self, element):
+        self.clicks += 1
+        element.click()
+        return ActionResult(True)
+
+
+def test_activation_without_a_tool_is_an_honest_error_not_a_raw_click() -> None:
+    """TEETH: the raw-click fallback is retired — no tool means a refused
+    activation and an element that was never clicked, not an untrusted click."""
+    browser = _FakeBrowser(before=[], after=[])
+    outcome = CardActivator(browser).activate(
+        identity_attribute="data-job-ref",
+        identity_value="k777",
+        title="Structural Engineer",
+        serp_host=SERP_HOST,
+        page_url=PAGE_URL,
+    )
+    assert "no interaction tool" in outcome.error
+    assert browser.element.clicked is False
+    assert outcome.candidates == ()
 
 
 class _FakeElement:
@@ -80,7 +110,7 @@ def test_relocate_click_revealed_anchor_resolves() -> None:
             {"href": "https://boards.example.org/apply/eng-9", "text": "Apply for this role"},
         ],
     )
-    outcome = CardActivator(browser, readiness=_FakeReadiness()).activate(
+    outcome = CardActivator(browser, readiness=_FakeReadiness(), page_action=_FakeTool()).activate(
         identity_attribute="data-job-ref",
         identity_value="k777",
         title="Structural Engineer",
@@ -96,7 +126,7 @@ def test_relocate_click_revealed_anchor_resolves() -> None:
 
 def test_non_unique_relocation_aborts_without_clicking() -> None:
     browser = _FakeBrowserMulti(before=[], after=[])
-    outcome = CardActivator(browser).activate(
+    outcome = CardActivator(browser, page_action=_FakeTool()).activate(
         identity_attribute="data-job-ref",
         identity_value="k777",
         title="Structural Engineer",
@@ -114,7 +144,7 @@ def test_navigation_outcome_produces_navigation_candidate() -> None:
         after=[],
         url_after="https://boards.example.org/jobs/eng-9",
     )
-    outcome = CardActivator(browser, readiness=_FakeReadiness()).activate(
+    outcome = CardActivator(browser, readiness=_FakeReadiness(), page_action=_FakeTool()).activate(
         identity_attribute="data-job-ref",
         identity_value="k777",
         title="Structural Engineer",
@@ -132,7 +162,7 @@ def test_click_revealing_nothing_is_honest_empty() -> None:
         before=[{"href": "https://serp.example.com/home", "text": "Home"}],
         after=[{"href": "https://serp.example.com/home", "text": "Home"}],
     )
-    outcome = CardActivator(browser, readiness=_FakeReadiness()).activate(
+    outcome = CardActivator(browser, readiness=_FakeReadiness(), page_action=_FakeTool()).activate(
         identity_attribute="data-job-ref",
         identity_value="k777",
         title="Structural Engineer",
@@ -147,7 +177,7 @@ def test_click_revealing_nothing_is_honest_empty() -> None:
 def test_readiness_port_is_used_for_settle() -> None:
     readiness = _FakeReadiness()
     browser = _FakeBrowser(before=[], after=[])
-    CardActivator(browser, readiness=readiness).activate(
+    CardActivator(browser, readiness=readiness, page_action=_FakeTool()).activate(
         identity_attribute="data-job-ref",
         identity_value="k777",
         title="Structural Engineer",
@@ -216,6 +246,7 @@ def test_finalize_returns_only_activation_resolved_jobs() -> None:
         page_understanding=_FakeUnderstanding(),
         browser=browser,
         readiness=_FakeReadiness(),
+        page_action=_FakeTool(),
     )
 
     new_jobs = extractor.finalize_harvest("TestProvider")

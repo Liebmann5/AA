@@ -230,6 +230,12 @@ class DiscoveryObservation:
         activation_attempts: Cards clicked during deferred resolution.
         activation_resolved: Cards that became resolved via activation.
         learned_identity: Identity attributes learned by sibling diff.
+        page_index: 0-based results-page index within the query; -1 marks a
+            query-summary row (a query record, not a results page).
+        advance_method: How this page was reached ("" for the first page);
+            the summary row carries every method used, ";"-joined.
+        stop_reason: Why pagination stopped (summary row only, "" elsewhere).
+        page_count: Pages visited (summary row only, 0 elsewhere).
         cards: Per-card observation records.
     """
 
@@ -247,6 +253,10 @@ class DiscoveryObservation:
     activation_attempts: int = 0
     activation_resolved: int = 0
     learned_identity: tuple[str, ...] = ()
+    page_index: int = 0
+    advance_method: str = ""
+    stop_reason: str = ""
+    page_count: int = 0
     cards: tuple[DiscoveryCardObservation, ...] = ()
 
 

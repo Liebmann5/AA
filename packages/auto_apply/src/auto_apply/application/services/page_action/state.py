@@ -64,6 +64,10 @@ class PageActionContext:
         self.infinite_scroll_settle_s: float = float(
             cfg.get("infinite_scroll_settle_s", 2.0)
         )
+        # Bound on waiting for a pane's offset to settle after wheel input
+        # before measuring it (C1): Playwright's wheel returns before the
+        # page scrolls and smooth scrolling animates afterwards.
+        self.scroll_settle_s: float = float(cfg.get("scroll_settle_timeout_s", 0.6))
 
         # One typed, validated profile drives every pointer/wheel behaviour.
         self.motion: MotionConfig = MotionConfig.from_mapping(cfg)

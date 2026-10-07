@@ -197,13 +197,51 @@ class Scroller:
             except Exception as exc:
                 logger.warning("wheel rung failed | %s", exc)
                 return False
-            after = TargetProbe.match_pane_offsets(self._probe.run(element), pane)
+            after = TargetProbe.match_pane_offsets(
+                self._settle_pane(element, pane), pane
+            )
             if after is not None:
                 new_pos = after[1] if horizontal else after[0]
                 if abs(new_pos - pos) > 0.5:
                     return True
             # No movement in this pane — try the next ancestor.
         return False
+
+    def _settle_pane(self, element, pane: dict) -> dict | None:
+        """Re-probe until the pane's offset stops changing, then return the probe.
+
+        Playwright's wheel returns before the page scrolls, and smooth
+        scrolling animates afterwards; an immediate re-probe reads the
+        PRE-scroll offset and reports "no movement" (measured live: 1 run in
+        4 on Chromium 141 fell back to the instant JS scroll for exactly
+        this reason). Poll until the offset is stable across two consecutive
+        reads that differ from the pre-scroll offset — or the configured
+        ``scroll_settle_timeout_s`` budget expires. Bounded always; a pane
+        that never moves costs one budget, never a hang.
+        """
+        before_top = float(pane.get("top", 0))
+        before_left = float(pane.get("left", 0))
+        deadline = time.monotonic() + self._state.scroll_settle_s
+        last: tuple[float, float] | None = None
+        probe: dict | None = None
+        while time.monotonic() < deadline:
+            probe = self._probe.run(element)
+            offsets = TargetProbe.match_pane_offsets(probe, pane)
+            if offsets is not None:
+                moved = (
+                    abs(offsets[0] - before_top) > 0.5
+                    or abs(offsets[1] - before_left) > 0.5
+                )
+                if (
+                    moved
+                    and last is not None
+                    and abs(offsets[0] - last[0]) <= 0.5
+                    and abs(offsets[1] - last[1]) <= 0.5
+                ):
+                    break
+                last = offsets
+            time.sleep(0.05)
+        return probe
 
     # ------------------------------------------------------------------
     # Container scroll (the AD-1 primitive)
@@ -252,7 +290,9 @@ class Scroller:
             except Exception as exc:
                 logger.warning("scroll_container wheel failed | %s", exc)
                 return 0
-            after = TargetProbe.match_pane_offsets(self._probe.run(element), pane)
+            after = TargetProbe.match_pane_offsets(
+                self._settle_pane(element, pane), pane
+            )
             return int(after[0] - top) if after is not None else 0
         return 0
 

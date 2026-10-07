@@ -85,11 +85,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "selects it. Note: its InteractionPort annotation is what keeps that "
         "port wired",
     ),
-    "auto_apply.adapters.secondary.discovery.strategies.selector_loader": (
-        "WIRE-LATER",
-        "YAML selector loader for ToolbarElementLocator (AD-9); nothing calls "
-        "SearchEngineStrategy.set_locator so it is never constructed",
-    ),
     "auto_apply.adapters.secondary.discovery.strategies.toolbar_locator": (
         "WIRE-LATER",
         "selector+fallback locator (AD-9); wired only via set_locator, which "

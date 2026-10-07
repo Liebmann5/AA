@@ -696,6 +696,19 @@ These answer: "where do I look for jobs?"
 `MathDiscoveryProvider` — This does not belong in the provider list.
 See Section 9 for the correct placement of the math subsystem.
 
+#### Page Advance (Pagination)
+`VerifiedPageAdvancer` (`adapters/secondary/navigation/page_advancer.py`,
+implementing `domain/ports/page_advance_port.py`) supersedes the retired
+`PaginationHandler`: one stateless advancer per query, advancing by a
+verified ladder — engine-YAML URL template → `rel=next` → structural next →
+numbered → load-more → scroll growth. An advance counts only when the
+result list provably changes (first/last identities — a URL change AA
+caused itself is no evidence); the block verdict and overlay dismissal
+re-run on every page; method, pages visited and stop reason are recorded
+on `discovery_pages`. Engine URL templates live in `resources/engines/
+*.yaml` (Google's `start` is the only one shipped verified), user-
+overridable through `SelectorLoader`.
+
 ### 7.3 Perception Adapters
 
 These answer: "what is on this page?"
@@ -1669,7 +1682,7 @@ See Section 14.3.
 | P1-7 | `NetworkAuditor` requires `throttler` (not optional) | `network_auditor.py` | Make `throttler` optional |
 | P1-8 | `MathDiscoveryProvider` architectural violation | `composition_root.py`, `discovery_workflow.py` | Remove from providers, create `PageUnderstandingPort` |
 | P1-9 | `PageClassifier` using dummy objects as band-aid | `serp_strategy.py` | Proper DI injection |
-| P1-10 | `PaginationStrategy` over-constrains `InfiniteScrollStrategy` | `serp_strategy.py` | Make `interactor` optional |
+| ~~P1-10~~ | ~~`PaginationStrategy` over-constrains `InfiniteScrollStrategy`~~ | `serp_strategy.py` | **CLOSED — superseded by `page_advancer.py` (verified ladder); `PaginationHandler` retired** |
 | P1-11 | `_handle_detection` raises RuntimeError instead of returning False | `manager.py` | Return False, never raise from validator chain |
 | P1-12 | `Pydantic Config` vs `model_config` incorrect usage | `job.py` | Replace `class Config` with `model_config = ConfigDict(...)` |
 | P1-13 | `_is_likely_card()` checks CSS class names | `dom_segmentation.py` | Use structural hash + geometry + `<a href>` |

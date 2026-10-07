@@ -49,7 +49,7 @@ class BingProvider(BaseSearchProvider):
         self,
         browser: BrowserInterface,
         scroller=None,
-        paginator=None,
+        advancer_factory=None,
         max_pages: int = 1,
         observer=None,
         reporter=None,
@@ -63,7 +63,7 @@ class BingProvider(BaseSearchProvider):
         super().__init__(
             browser,
             scroller,
-            paginator,
+            advancer_factory,
             max_pages,
             observer,
             reporter,
@@ -112,6 +112,7 @@ class BingProvider(BaseSearchProvider):
             observer=self._observer,
             readiness=self._readiness,
             research_observer=self._research_observer,
+            page_action=self._page_action,
         )
 
     def run(self, instruction: SearchInstruction) -> list[Job]:
@@ -146,6 +147,12 @@ class BingProvider(BaseSearchProvider):
         if self._page_action is not None:
             self._page_action.macro_pause(2.0, 3.0)
 
+        # Fresh, stateless advancer per query — a shared one would leak its
+        # page position into the next search.
+        advancer = (
+            self._advancer_factory() if callable(self._advancer_factory) else None
+        )
+
         scraper = GenericSERPStrategy(
             browser=self.browser,
             search_prefs=None,
@@ -153,7 +160,7 @@ class BingProvider(BaseSearchProvider):
             max_results=instruction.max_results,
             fast_extractor=self._fast_extractor(),
             scroller=self._scroller,
-            paginator=self._paginator,
+            advancer=advancer,
             max_pages=self._max_pages,
             observer=self._observer,
             reporter=self._reporter,

@@ -10,7 +10,7 @@ sibling modules, each owning its piece exactly once:
     pacing.py     — Pacing: settle, macro pause, warmup, idle fidgets
     scrolling.py  — Scroller: into view (pane-aware), container, feed, reveal
     clicking.py   — Clicker: the click ladder and hover
-    typing.py     — Typer: text entry, select and checkbox values
+    text_input.py — Typer: text entry, select and checkbox values
 
 The facade keeps only what is genuinely its own: navigation (with bounded
 retries and the one-time warmup), element location, the public timing
@@ -58,7 +58,7 @@ from auto_apply.application.services.page_action.probe import (
 from auto_apply.application.services.page_action.result import ActionResult
 from auto_apply.application.services.page_action.scrolling import Scroller
 from auto_apply.application.services.page_action.state import PageActionContext
-from auto_apply.application.services.page_action.typing import Typer
+from auto_apply.application.services.page_action.text_input import Typer
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 from auto_apply.domain.ports.interaction_primitives_port import DomReadinessPort
 from auto_apply.domain.ports.registry_port import RegistryPort

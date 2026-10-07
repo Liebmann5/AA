@@ -26,7 +26,7 @@ class BaseSearchProvider(DiscoveryProviderPort):
         self,
         browser: BrowserInterface,
         scroller=None,
-        paginator=None,
+        advancer_factory=None,
         max_pages: int = 1,
         observer=None,
         reporter=None,
@@ -34,10 +34,13 @@ class BaseSearchProvider(DiscoveryProviderPort):
     ) -> None:
         """Initializes the provider with the browser and its page collaborators.
 
-        The scroller and paginator are injected rather than constructed here:
-        a discovery adapter should ask for the next page, not decide how one
-        is fetched. ``max_pages`` is a ceiling, defaulting to 1 — today's
-        single-page behaviour.
+        The scroller and advancer factory are injected rather than
+        constructed here: a discovery adapter should ask for the next page,
+        not decide how one is fetched. The factory builds a FRESH, stateless
+        advancer per query — a shared advancer would leak its page position
+        across queries and providers, the exact bug the retired
+        PaginationHandler had. ``max_pages`` is a ceiling, defaulting to 1 —
+        today's single-page behaviour.
 
         Args:
             browser: The active browser instance.
@@ -49,7 +52,7 @@ class BaseSearchProvider(DiscoveryProviderPort):
         """
         self.browser = browser
         self._scroller = scroller
-        self._paginator = paginator
+        self._advancer_factory = advancer_factory
         self._max_pages = max(1, int(max_pages))
         self._observer = observer
         self._reporter = reporter

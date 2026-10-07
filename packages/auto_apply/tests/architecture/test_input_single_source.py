@@ -51,18 +51,13 @@ LEDGER: dict[str, tuple[str, int]] = {
         1,
     ),
     "adapters/secondary/discovery/strategies/navigators.py": (
-        "no-tool fallback; reachable only for providers not yet wired with "
-        "the tool (direct-URL navigation is the primary strategy)",
+        "no-tool fallback for direct construction in tests; every production "
+        "provider now injects the tool (Indeed wired in call 3)",
         1,
     ),
     "adapters/secondary/navigation/interruption.py": (
         "no-tool fallback for adapter call sites that construct the handler "
         "bare; the composition root injects the tool",
-        1,
-    ),
-    "adapters/secondary/discovery/components/card_activation.py": (
-        "raw fallback until PageUnderstandingExtractor passes the tool "
-        "through (call 3 wiring)",
         1,
     ),
     "adapters/secondary/discovery/strategies/toolbar_locator.py": (

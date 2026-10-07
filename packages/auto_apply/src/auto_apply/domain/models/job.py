@@ -41,7 +41,9 @@ class Job(BaseModel):
             "'provider' (str) — discovery source name; "
             "'parsed' (dict) — output of ParsedJobDescription.model_dump(); "
             "'apply_url' (str | None) — direct apply button URL if different from job.url; "
-            "'company_cooldown_days' (int | None) — cooldown extracted from confirmation page."
+            "'company_cooldown_days' (int | None) — cooldown extracted from confirmation page; "
+            "'page_index' (int) — 0-based results page this listing was harvested from; "
+            "'rank' (int) — position within that page's harvest (-1 = resolved by deferred activation)."
         ),
     )
 

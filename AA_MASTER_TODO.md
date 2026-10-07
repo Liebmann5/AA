@@ -524,7 +524,7 @@ change per stage · verify by execution · own mistakes plainly.
 
 # Appendix B — "Built and never connected"
 
-**Canonical. Count: 21, of which 6 are closed.**
+**Canonical. Count: 21, of which 7 are closed.**
 
 | # | Instance | Status |
 |---|---|---|
@@ -532,7 +532,7 @@ change per stage · verify by execution · own mistakes plainly.
 | 5, 6 | PRA loop / `ApplicationState` · `TaskLifecycleState` | open (AD-2) |
 | 7 | `honeypot_detection` + `entropy` + `occlusion` — dead **as one chain** | open — **keep and wire** |
 | 9 | `JobCardInfo.confidence` — the recorded doubt nobody reads. **Still written by `resolve_card_group`; still unread.** | open, low priority |
-| 10 | `PaginationHandler`'s 4-strategy cascade — `max_pages_per_query=1` makes `range(1,1)` empty | open (AD-1) |
+| 10 | ~~`PaginationHandler`'s 4-strategy cascade~~ — retired; replaced by `page_advancer.py`: one stateless verified advancer per query (engine-YAML URL template → rel=next → structural → numbered → load-more → scroll growth), per-page block verdict, pagination evidence on `discovery_pages` | **CLOSED (call 3)** |
 | 11 | The humanised scrollers — orphaned via `HeuristicFinder`, **now recovered and retired, so the route back exists** | open (**AD-10**) |
 | 12–15 | `fingerprint_js` · `telemetry` · `heuristic_adapter` · `location_extractor` | **retired 2026-09-02**, recoverable. `telemetry.py` is a working Bayesian confidence tracker `PageActionService` was meant to consult |
 | 16 | `selector_loader` + `toolbar_locator` | open, exempted `WIRE-LATER` |

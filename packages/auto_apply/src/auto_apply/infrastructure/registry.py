@@ -110,6 +110,7 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "occlusion_guard": True,
     "force_analysis_tier": "",
     "infinite_scroll_settle_s": 2.0,
+    "scroll_settle_timeout_s": 0.6,
     # Pointer/wheel motion: selection + override slots only. The named
     # profiles' field values live ONCE in domain/models/motion_profile.py.
     "motion": {
@@ -170,6 +171,7 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "degradation_collapse_ratio": 0.15,
         "degradation_page_bytes_ratio": 0.25,
         "degradation_min_samples": 3,
+        "pagination_change_timeout_s": 4.0,
     },
     "applications": {
         "max_pages": 10,
