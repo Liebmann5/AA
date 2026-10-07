@@ -139,19 +139,22 @@ class HumanSearchNavigation(NavigationStrategy):
 
                 logger.info("Typing query: %s", query_text)
 
-                if self._page_action is not None:
-                    # Tool path: a trusted pointer click and the seeded
-                    # keystroke rhythm (the evasion typing helper is routed
-                    # to the tool in call 2).
-                    if not self._page_action.click(search_input):
-                        return False
-                    self._page_action.type_text(search_input, query_text)
-                else:
-                    # No tool wired (a provider not yet on the tool): the raw
-                    # fallback, with no pacing invented here — inventing one
-                    # would recreate the duplication the tool removed.
-                    search_input.click()
-                    search_input.send_keys(query_text)
+                if self._page_action is None:
+                    # No raw-click fallback: a click outside the tool skips
+                    # the probe, the pacing and the tally. Failing the
+                    # strategy is the honest outcome — ResilientNavigator
+                    # tries the next one. Every production provider injects
+                    # the tool.
+                    logger.warning(
+                        "HumanSearchNavigation has no interaction tool — "
+                        "refusing a raw click; strategy reports failure"
+                    )
+                    return False
+                # Tool path: a trusted pointer click and the seeded
+                # keystroke rhythm.
+                if not self._page_action.click(search_input):
+                    return False
+                self._page_action.type_text(search_input, query_text)
                 time.sleep(0.5)
                 search_input.send_keys(Keys.ENTER)
                 return True

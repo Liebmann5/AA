@@ -132,6 +132,7 @@ nav:
       - "015 Polled UI state": adr/015_polled_ui_state.md
       - "016 Retirement over deletion": adr/016_retirement_over_deletion.md
       - "017 Documentation gate": adr/017_documentation_gate.md
+      - "018 Layered settings": adr/018_layered_settings_and_motion_profile.md
 
   - Research:
       - Overview: research_module/index.md

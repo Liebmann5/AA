@@ -35,29 +35,15 @@ _ALLOWED_FILES = frozenset({
 #: pin is green both before and after the retire.py step runs.
 LEDGER: dict[str, tuple[str, int]] = {
     "infrastructure/resilient_driver.py": (
-        "legacy click helper + overlay dismissal pending a caller census "
-        "(call 3 retires or delegates); the wrapper is also a port forwarder",
-        6,
+        "port forwards for the pointer/fidget primitives only — the dead "
+        "click helper and its overlay dismissal were removed in call 4; no "
+        "click sites remain",
+        3,
     ),
     "adapters/secondary/resolution/captcha_adapter.py": (
         "the audio resolver clicks inside a challenge widget BY DESIGN; the "
         "tool's ladder refuses challenge widgets, so routing it would kill "
         "the resolver — ruled with the suspend/resume contract (predicate 10)",
-        1,
-    ),
-    "adapters/secondary/interaction/handlers/base.py": (
-        "no-tool fallback for direct construction in tests; production "
-        "always injects the tool",
-        1,
-    ),
-    "adapters/secondary/discovery/strategies/navigators.py": (
-        "no-tool fallback for direct construction in tests; every production "
-        "provider now injects the tool (Indeed wired in call 3)",
-        1,
-    ),
-    "adapters/secondary/navigation/interruption.py": (
-        "no-tool fallback for adapter call sites that construct the handler "
-        "bare; the composition root injects the tool",
         1,
     ),
     "adapters/secondary/discovery/strategies/toolbar_locator.py": (

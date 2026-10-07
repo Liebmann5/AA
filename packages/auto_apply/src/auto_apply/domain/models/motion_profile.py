@@ -144,6 +144,12 @@ _BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
     ),
 }
 
+#: The selectable behaviour-profile names. Single source: the GUI combobox,
+#: the CLI wizard, the profile validator, AdminPolicy and the docs all read
+#: this tuple instead of restating the names.
+MOTION_PROFILE_NAMES: tuple[str, ...] = tuple(_BUILTIN_PROFILES)
+
+
 class MotionConfig(BaseModel):
     """The resolved motion configuration for a session."""
 

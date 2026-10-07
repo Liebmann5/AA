@@ -433,6 +433,15 @@ class PageActionService:
     # DIAGNOSTICS
     # =========================================================================
 
+    def tally_snapshot(self) -> dict:
+        """The session's interaction tally: clicks and scrolls by rung, and
+        click refusals. Read by the orchestrator at teardown (into the
+        SessionReport) and by live diagnostics. A copy — mutate away.
+        """
+        snapshot = self._state.tally.snapshot()
+        snapshot["motion_profile"] = self._state.motion.profile.name
+        return snapshot
+
     def __repr__(self) -> str:
         return (
             f"PageActionService("

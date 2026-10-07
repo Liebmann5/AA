@@ -20,7 +20,7 @@ and here is why not" from "nobody thought of it".
 1. **ADRs are immutable once accepted.** They record history, not current state.
 2. **A reversed decision gets a new ADR**, and the old one is marked
    `Superseded` with a link. It is never edited to look correct in hindsight.
-3. **The next number is `018`.** Take it by creating the file; if two people
+3. **The next number is `019`.** Take it by creating the file; if two people
    collide, the second renumbers.
 4. Write an ADR when a change alters a layer boundary, a port contract, a data
    format, a user-visible guarantee, or reverses an earlier decision.
@@ -49,6 +49,7 @@ and here is why not" from "nobody thought of it".
 | [015](015_polled_ui_state.md) | Interfaces poll the port; they do not subscribe | Accepted | 2026-09-15 |
 | [016](016_retirement_over_deletion.md) | Retirement replaces deletion | Accepted | 2026-08-30 |
 | [017](017_documentation_gate.md) | Documentation is enforced by a gate | Accepted | 2026-09-19 |
+| [018](018_layered_settings_and_motion_profile.md) | Layered settings disclosure and the per-user motion profile | Accepted | 2026-10-05 |
 
 `tests/infrastructure/test_docs_gate.py` asserts that this table and the
 directory contain the same set of records.

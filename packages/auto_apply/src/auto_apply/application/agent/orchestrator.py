@@ -160,6 +160,7 @@ class AgentOrchestrator:
         workflows: dict[str, Any] | None = None,
         behavior_parameters: BehaviorParameters | None = None,
         research_session: ResearchSessionPort | None = None,
+        page_action: Any | None = None,
     ) -> None:
         """Initializes all orchestrator components.
 
@@ -186,6 +187,10 @@ class AgentOrchestrator:
                 session-lifetime port (item 3). Teardown stops it — flushing
                 what is queued — and writes its accounting into the session
                 report. None means research is off (NullResearchObserver).
+            page_action: The shared interaction tool (PageActionService),
+                injected by the composition root for the session interaction
+                tally written into the SessionReport at teardown. None when
+                no browser ran.
         """
         # ── Core dependencies ─────────────────────────────────────────────
         self.profile = profile
@@ -213,6 +218,12 @@ class AgentOrchestrator:
         self._research_session: ResearchSessionPort = (
             research_session if research_session is not None else NullResearchObserver()
         )
+
+        # ── The shared interaction tool (session tally source) ────────────
+        # Injected by the composition root; None without a driver. Read once,
+        # at teardown, to write how AA acted into the session report. Duck-
+        # typed for the same reason as the monitors above.
+        self._page_action: Any | None = page_action
 
         # ── Session report (accumulates application outcomes incrementally)
         self._session_report = SessionReport(
@@ -2082,6 +2093,16 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.warning("Browser close error during teardown | error=%s", exc)
             self._driver = None
+
+        # ── 4b. Record how AA acted (the tool's session tally) ────────────
+        page_action = getattr(self, "_page_action", None)
+        if page_action is not None:
+            try:
+                snapshot = page_action.tally_snapshot()
+                if isinstance(snapshot, dict):
+                    self._session_report.interaction = snapshot
+            except Exception as exc:
+                logger.debug("Interaction tally unavailable (non-fatal) | %s", exc)
 
         # ── 5. Finalize and save session report ───────────────────────────
         self._session_report.research = self.research_accounting()

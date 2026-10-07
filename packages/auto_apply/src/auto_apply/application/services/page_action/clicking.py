@@ -55,7 +55,19 @@ class Clicker:
         self._scroller = scroller
 
     def click(self, element: ElementInterface, *, irreversible: bool = False) -> ActionResult:
-        """Performs a click through the ladder.
+        """Performs a click through the ladder, recording the outcome rung.
+
+        Every click — landed or refused — is counted in the session tally
+        exactly once (here, at the ladder's single exit), so the
+        SessionReport can show how AA actually clicked.
+        """
+        result = self._click_ladder(element, irreversible=irreversible)
+        self._state.tally.record_click(result.rung, result.success)
+        return result
+
+    def _click_ladder(self, element: ElementInterface, *, irreversible: bool = False) -> ActionResult:
+        """The ladder itself. Returns the ActionResult; the public ``click``
+        records it.
 
         Args:
             element: The ElementInterface to click.

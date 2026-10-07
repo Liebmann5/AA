@@ -348,6 +348,25 @@ def _print_check_config(profile_repo) -> None:
         print(f" Admin policy      : active ({admin.policy_version})")
     else:
         print(" Admin policy      : none")
+
+    # Resolved pointer/scroll behaviour — validated by the same MotionConfig
+    # the session is validated with at registry build, printed so an engineer
+    # can see the effective values (YAML default < user pick < admin lock)
+    # without starting a run.
+    from auto_apply.domain.models.motion_profile import MotionConfig  # noqa: PLC0415
+
+    try:
+        _motion = MotionConfig.from_mapping(registry.get_all_effective_config())
+        _mp = _motion.profile
+        motion_line = (
+            f"{_mp.name} (pointer {_mp.fitts_a_ms}+{_mp.fitts_b_ms}*log2(D/W+1)ms, "
+            f"wheel {_mp.wheel_tick_px_min}-{_mp.wheel_tick_px_max}px / "
+            f"{_mp.wheel_tick_ms_min}-{_mp.wheel_tick_ms_max}ms, "
+            f"js-click fallback {'allowed' if _motion.allow_js_click else 'off'})"
+        )
+    except Exception as exc:
+        motion_line = f"INVALID — {exc}"
+    print(f" Motion profile    : {motion_line}")
     print("")
 
 

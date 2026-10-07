@@ -19,6 +19,41 @@ from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.interaction_primitives_port import DomReadinessPort
 
 
+class InteractionTally:
+    """The session's record of HOW the tool acted, rung by rung.
+
+    Single source: every component reports through this one object on the
+    shared context, the facade exposes it as ``tally_snapshot()``, and the
+    orchestrator writes it into the SessionReport at teardown. Counts only —
+    no URLs, no element identities, nothing about the user.
+    """
+
+    __slots__ = ("clicks", "scrolls", "click_refusals")
+
+    def __init__(self) -> None:
+        self.clicks: dict[str, int] = {}
+        self.scrolls: dict[str, int] = {}
+        self.click_refusals: int = 0
+
+    def record_click(self, rung: str, success: bool) -> None:
+        if success:
+            key = rung or "unknown"
+            self.clicks[key] = self.clicks.get(key, 0) + 1
+        else:
+            self.click_refusals += 1
+
+    def record_scroll(self, rung: str) -> None:
+        key = rung or "unknown"
+        self.scrolls[key] = self.scrolls.get(key, 0) + 1
+
+    def snapshot(self) -> dict:
+        return {
+            "clicks": dict(self.clicks),
+            "scrolls": dict(self.scrolls),
+            "click_refusals": self.click_refusals,
+        }
+
+
 class PageActionContext:
     """Everything the tool's components share. Built once, by the facade."""
 
@@ -82,3 +117,5 @@ class PageActionContext:
         self.logged_caps: set[str] = set()
         # One-time warmup flag for the first navigation of the session.
         self.warmed_up: bool = False
+        # How the tool actually acted, rung by rung (research evidence).
+        self.tally: InteractionTally = InteractionTally()

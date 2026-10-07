@@ -123,7 +123,7 @@ def test_no_pii_in_the_activity_stream() -> None:
 #   composition_root.py    one stderr write during wiring.
 #
 EXPECTED_PRINT_SITES: dict[str, int] = {
-    "main.py": 39,
+    "main.py": 40,
     "application/services/session_controller.py": 4,
     "infrastructure/composition_root.py": 1,
 }

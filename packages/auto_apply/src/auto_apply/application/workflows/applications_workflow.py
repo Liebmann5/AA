@@ -2280,10 +2280,9 @@ class ApplicationsWorkflow:
         })
 
         try:
-            self._interaction_port.click(submit_button, irreversible=True)
-            evidence = evidence.model_copy(update={
-                "submit_clicked": True,
-            })
+            submit_result = self._interaction_port.click(
+                submit_button, irreversible=True
+            )
         except Exception as exc:
             return evidence.model_copy(update={
                 "submit_clicked": False,
@@ -2292,6 +2291,29 @@ class ApplicationsWorkflow:
                 "confidence": 0.90,
                 **self._run_statistics(),
             })
+
+        # A returned (non-raised) ladder failure is a failed submit too. None
+        # means the port reports no detail (older contract) — preserved as
+        # before. Anything falsy-but-not-None (an ActionResult that exhausted
+        # every rung) previously recorded submit_clicked=True and scanned for
+        # a confirmation that could not exist; it now records the failure.
+        if submit_result is not None and not submit_result:
+            reason = str(
+                getattr(submit_result, "reason", "all click rungs exhausted")
+            )
+            return evidence.model_copy(update={
+                "submit_clicked": False,
+                "outcome": "ERROR",
+                "error_message": f"submit click did not complete: {reason}"[:200],
+                "confidence": 0.90,
+                **self._run_statistics(),
+            })
+
+        evidence = evidence.model_copy(update={
+            "submit_clicked": True,
+            "submit_rung": str(getattr(submit_result, "rung", "") or ""),
+            "submit_effect": str(getattr(submit_result, "effect", "") or ""),
+        })
 
         # ── Wait for post-submit page to settle ───────────────────────────
         try:

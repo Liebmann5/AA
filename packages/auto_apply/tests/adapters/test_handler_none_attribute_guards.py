@@ -41,10 +41,11 @@ def test_select_handler_completes_with_none_tag_name() -> None:
     browser.find_elements.return_value = []
     element = _none_element()
 
-    handler = SelectInputHandler(browser)
+    tool = MagicMock()  # the handler requires the tool (no raw click)
+    handler = SelectInputHandler(browser, page_action=tool)
     handler.handle(element, "Mathematics")
 
-    element.send_keys.assert_called()
+    tool.type_text.assert_called()
 
 
 def test_file_handler_completes_with_none_tag_name(tmp_path) -> None:

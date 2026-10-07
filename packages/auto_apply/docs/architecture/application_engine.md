@@ -215,7 +215,7 @@ appropriate handler:
 | `TYPE` | `TextInputHandler` | Clears existing text (triggers React events), then types character‑by‑character with parabolic delays. |
 | `SELECT_OPTION` | `SelectInputHandler` | For native `<select>`: matches options semantically. For custom comboboxes: clicks to open, types partial keyword, selects best match. |
 | `UPLOAD_FILE` | `FileInputHandler` | Validates file exists, locates hidden `<input type="file">`, forces visibility, sends path. |
-| `CLICK` | via `PageActionService` | Moves mouse along a Bezier curve, overshoots the target, pauses, re‑centres, clicks. |
+| `CLICK` | via `PageActionService` | The click ladder: probe, then a trusted pointer click on a planned curved path to a sampled off‑centre point; keyboard, native and (config‑gated, never on submits) JS rungs behind it. |
 | `CHECK` (checkbox) | `CheckableInputHandler` | Checks current state, clicks only if needed to reach the desired state. |
 
 Every action is wrapped with **micro‑timing** (parabolic pauses) and
@@ -443,7 +443,7 @@ user interface:
 # Composition root (simplified)
 engine = ApplicationEngine(
     perception_port=MathPerceptionAdapter(driver),   # or BS4, or DOM
-    interaction_port=InteractionExecutor(driver, StealthHumanStrategy()),
+    interaction_port=InteractionExecutor(driver, page_action=page_action),
     reasoning_port=FormSolver(profile),
     event_bus=event_bus,
     interrupt_policy=ProfileBasedInterruptPolicy(checkpoints),

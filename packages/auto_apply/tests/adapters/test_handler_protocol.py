@@ -171,16 +171,21 @@ def test_the_two_one_second_waits_are_gone():
 
 
 def test_handlers_work_without_either_collaborator():
-    """Worst-case/static: no tool and no observer, no crash, no invented pacing."""
+    """Worst-case/static: no tool and no observer. A click is REFUSED (no
+    silent raw click); typing, settle and readiness still degrade safely."""
+    import pytest
+
     from auto_apply.adapters.secondary.interaction.handlers.text import (
         TextInputHandler,
     )
+    from auto_apply.domain.exceptions import ApplicationError
 
     handler = TextInputHandler(browser=MagicMock())
     element = MagicMock()
 
-    handler._click(element)
-    element.click.assert_called_once()
+    with pytest.raises(ApplicationError):
+        handler._click(element)
+    element.click.assert_not_called()
 
     handler._type(element, "hello")
     element.send_keys.assert_called_once_with("hello")

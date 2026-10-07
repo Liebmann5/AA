@@ -92,10 +92,14 @@ def test_consent_overlay_is_dismissed_before_filling() -> None:
 
     browser.find_elements.side_effect = _find_elements
 
-    workflow = _make_workflow(InterruptionHandler(browser), browser)
+    tool = MagicMock()  # production injects the tool; no raw-click fallback
+    workflow = _make_workflow(
+        InterruptionHandler(browser, page_action=tool), browser
+    )
     proceed = workflow._handle_interruptions(_job())
 
-    consent_button.click.assert_called_once()
+    tool.click.assert_called_once_with(consent_button)
+    consent_button.click.assert_not_called()
     assert proceed is True
 
 

@@ -65,6 +65,12 @@ class Scroller:
         return self.scroll_into_view(element)
 
     def scroll_into_view(self, element: ElementInterface) -> ActionResult:
+        """Records the rung of every into-view scroll in the session tally."""
+        result = self._scroll_into_view_impl(element)
+        self._state.tally.record_scroll(result.rung)
+        return result
+
+    def _scroll_into_view_impl(self, element: ElementInterface) -> ActionResult:
         """Scrolls panes (innermost first) with real wheel input until the
         element's box centre sits inside the VISIBLE REGION — the window
         viewport intersected with every scrolling ancestor's client rect.
@@ -293,7 +299,10 @@ class Scroller:
             after = TargetProbe.match_pane_offsets(
                 self._settle_pane(element, pane), pane
             )
-            return int(after[0] - top) if after is not None else 0
+            moved = int(after[0] - top) if after is not None else 0
+            if moved:
+                self._state.tally.record_scroll("wheel")
+            return moved
         return 0
 
     # ------------------------------------------------------------------
@@ -348,6 +357,7 @@ class Scroller:
                     if dy_px > 0
                     else "window.scrollTo(0, 0);"
                 )
+                self._state.tally.record_scroll("js-scroll")
             return False
         if dy_px == 0:
             return False
@@ -375,6 +385,7 @@ class Scroller:
         )
         if path:
             self._state.cursor = origin
+        self._state.tally.record_scroll("wheel")
         return True
 
     def _await_feed_settle(self) -> None:

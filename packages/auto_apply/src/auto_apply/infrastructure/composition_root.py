@@ -1319,7 +1319,9 @@ def build_orchestrator(  # noqa: PLR0914
             from auto_apply.adapters.secondary.navigation.interruption import (  # noqa: PLC0415
                 InterruptionHandler,
             )
-            _interruption_handler = InterruptionHandler(browser=driver)
+            _interruption_handler = InterruptionHandler(
+                browser=driver, page_action=page_action_tool
+            )
         except Exception as _exc:
             logger.warning(
                 "build_orchestrator: InterruptionHandler unavailable: %s", _exc
@@ -1450,6 +1452,9 @@ def build_orchestrator(  # noqa: PLR0914
         # The same instance the workflows observe through — aggregator or
         # Null — seen through its session-lifetime port (item 3).
         research_session=research_session,
+        # The shared interaction tool, for the session tally the teardown
+        # writes into the session report. None without a driver.
+        page_action=page_action_tool,
     )
 
     logger.info(

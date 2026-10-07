@@ -76,9 +76,9 @@ class InterruptionHandler:
             page_action: Optional interaction tool. Dismissal clicks go
                 through it when wired — a trusted, planned click is what a
                 human produces, and the tool's challenge-widget refusal now
-                holds for overlays too. Without it, the raw click fallback
-                below runs (adapter call sites that construct the handler
-                bare); the composition root always injects the tool.
+                holds for overlays too. Without it the handler warns and
+                leaves overlays in place (no raw-click fallback); the
+                composition root always injects the tool.
         """
         self.browser = browser
         self._page_action = page_action
@@ -97,21 +97,23 @@ class InterruptionHandler:
                 visible_elements = [el for el in elements if self._is_visible(el)]
                 for element in visible_elements:
                     logger.info(f"InterruptionHandler: Dismissing overlay via {heuristic['selector']}")
-                    if self._page_action is not None:
-                        # Through the tool: a refusal (e.g. challenge
-                        # ancestry) is HONOURED, never forced through.
-                        if self._page_action.click(element):
-                            return
-                        logger.debug(
-                            "Overlay dismissal click did not complete — "
-                            "trying the next candidate."
+                    if self._page_action is None:
+                        # No raw-click fallback: an overlay left in place is
+                        # a visible, honest degradation; a silent unprobed
+                        # click is not. The composition root injects the tool.
+                        logger.warning(
+                            "InterruptionHandler has no interaction tool — "
+                            "overlay left in place rather than raw-clicked"
                         )
-                        continue
-                    try:
-                        element.click()   # no-tool fallback: no pacing exists to apply
                         return
-                    except Exception:
-                        logger.debug("Found overlay but failed to click.")
+                    # Through the tool: a refusal (e.g. challenge
+                    # ancestry) is HONOURED, never forced through.
+                    if self._page_action.click(element):
+                        return
+                    logger.debug(
+                        "Overlay dismissal click did not complete — "
+                        "trying the next candidate."
+                    )
             except Exception:
                 continue
         # logger.debug("Scanning for interruption overlays...")

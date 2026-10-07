@@ -95,6 +95,17 @@ _DOCUMENTS_TAB_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _motion_choices(strings: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    """Layer 0 of the layered settings pattern (ADR 018): three plain-
+    language choices anyone understands, mapped to the canonical
+    MotionProfile names the session validates against."""
+    return (
+        (strings["motion_option_human"], "human"),
+        (strings["motion_option_careful"], "careful"),
+        (strings["motion_option_instant"], "instant"),
+    )
+
+
 def _about_you_field_keys() -> list[str]:
     """Return the schema-driven field keys rendered in the "About you" tab.
 
@@ -369,6 +380,7 @@ class SettingsEditor(tk.Toplevel):
         notebook.add(frame, text="Browser Engine")
 
         config = self.profile.app_config
+        self._MOTION_CHOICES = _motion_choices(self.strings)
 
         # 1. Headless Mode (Admin Lockable)
         # mypy cannot narrow force_headless through the separate headless_locked
@@ -402,14 +414,56 @@ class SettingsEditor(tk.Toplevel):
         if self.admin_policy.allowed_browsers:
             self._add_note(frame, "Options restricted by System Administrator.")
 
-        # 3. Humanization (Admin Lockable)
+        # 3. Pointer & scroll behaviour (Admin Lockable, field-level)
+        # The honest home of "how human AA moves": the motion profile. The
+        # stealth-driver checkbox below never governed this.
+        motion_locked = self.admin_policy.motion_profile is not None
+        motion_label = self._lock_label(
+            self.strings["motion_profile_label"], motion_locked
+        )
+        ttk.Label(frame, text=motion_label).pack(anchor=tk.W, pady=(15, 5))
+
+        self._motion_display_to_name = {
+            display: name for display, name in self._MOTION_CHOICES
+        }
+        self._motion_name_to_display = {
+            name: display for display, name in self._MOTION_CHOICES
+        }
+        if motion_locked:
+            current_motion = self.admin_policy.motion_profile
+        else:
+            # Show the EFFECTIVE profile: the user's pick, else the resolved
+            # app-wide default the session would actually use.
+            current_motion = config.motion_profile or self._effective_motion_profile()
+        motion_var = tk.StringVar(
+            value=self._motion_name_to_display.get(
+                (current_motion or "human").strip().lower(),
+                self._motion_name_to_display["human"],
+            )
+        )
+        self._vars["motion_profile"] = motion_var
+        motion_combo = ttk.Combobox(
+            frame,
+            textvariable=motion_var,
+            values=tuple(self._motion_display_to_name),
+            state=tk.DISABLED if motion_locked else "readonly",
+            width=38,
+        )
+        motion_combo.pack(anchor=tk.W)
+        if motion_locked:
+            self._add_note(frame, self.strings["motion_profile_locked"])
+        else:
+            self._add_note(frame, self.strings["motion_profile_note"])
+
+        # 4. Stealth driver (Admin Lockable) — honestly named: this gates
+        # ONLY undetected-chromedriver eligibility, not pacing or motion.
         humanize_locked = self.admin_policy.force_humanization is not None
         humanize_state = tk.DISABLED if humanize_locked else tk.NORMAL
-        humanize_label = self._lock_label("Enable Human Behavior Simulation", humanize_locked)  # noqa: E501
+        humanize_label = self._lock_label(self.strings["stealth_driver_label"], humanize_locked)  # noqa: E501
         humanize_val = True if humanize_locked else config.enable_behavior_humanization
 
         self._add_checkbox(frame, humanize_label, "humanize", humanize_val, state=humanize_state)  # noqa: E501
-        self._add_note(frame, "Adds random pauses and mouse movements to avoid detection.")  # noqa: E501
+        self._add_note(frame, self.strings["stealth_driver_note"])  # noqa: E501
 
     def _build_search_tab(self, notebook: ttk.Notebook) -> None:
         """Tab: Job Search Preferences.
@@ -570,6 +624,19 @@ class SettingsEditor(tk.Toplevel):
         """Returns the UIField for *key*, or None if the schema is unavailable."""
         return next((f for f in self._ui_schema if f.key == key), None)
 
+    def _effective_motion_profile(self) -> str:
+        """The motion profile the session would resolve without a user pick.
+
+        Read from the registry's already-merged effective config (the same
+        value --check-config prints), never guessed locally.
+        """
+        try:
+            motion = self.registry.get_effective_config("motion") or {}
+            name = str(motion.get("profile", "human")).lower()
+        except Exception:
+            name = "human"
+        return name if name in self._motion_name_to_display else "human"
+
     @staticmethod
     def _lock_label(text: str, locked: bool) -> str:
         """Appends a lock icon to a label if the field is admin-locked."""
@@ -651,6 +718,18 @@ class SettingsEditor(tk.Toplevel):
                 self.profile.app_config.headless_mode = self._vars["headless_mode"].get()
 
             self.profile.app_config.preferred_browser = self._vars["preferred_browser"].get()  # noqa: E501
+
+            if not self.admin_policy.is_field_locked("motion_profile"):
+                display = self._vars["motion_profile"].get()
+                canonical: str | None = self._motion_display_to_name.get(display, "human")
+                if (
+                    self.profile.app_config.motion_profile is None
+                    and canonical == self._effective_motion_profile()
+                ):
+                    # Untouched: keep inheriting the app-wide default rather
+                    # than pinning today's value into the profile.
+                    canonical = None
+                self.profile.app_config.motion_profile = canonical
 
             if not self.admin_policy.is_field_locked("force_humanization"):
                 self.profile.app_config.enable_behavior_humanization = self._vars["humanize"].get()  # noqa: E501

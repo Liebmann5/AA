@@ -401,3 +401,56 @@ def test_a_handlers_refused_click_is_no_longer_silent():
 
     with pytest.raises(ApplicationError, match="occluded:div"):
         handler._click(MagicMock())
+
+
+def test_a_handler_without_a_tool_refuses_a_raw_click():
+    from auto_apply.adapters.secondary.interaction.handlers.base import BaseInputHandler
+
+    class _H(BaseInputHandler):
+        def handle(self, element, value):
+            ...
+
+    handler = _H(browser=MagicMock(), page_action=None)
+    element = MagicMock()
+
+    with pytest.raises(ApplicationError, match="no interaction tool"):
+        handler._click(element)
+    element.click.assert_not_called()
+
+
+# ── the session tally ────────────────────────────────────────────────────────
+
+
+def test_the_tally_counts_a_pointer_click_once():
+    tool = _tool([_probe(box=BOX)])
+
+    assert bool(tool.click(MagicMock())) is True
+    assert tool.tally_snapshot()["clicks"] == {"pointer": 1}
+    assert tool.tally_snapshot()["click_refusals"] == 0
+
+
+def test_the_tally_counts_a_refusal_without_a_rung():
+    tool = _tool([_probe(verdict="challenge")])
+
+    assert bool(tool.click(MagicMock())) is False
+    snap = tool.tally_snapshot()
+    assert snap["clicks"] == {}
+    assert snap["click_refusals"] == 1
+
+
+def test_the_tally_counts_a_js_click_as_js():
+    tool = _tool([_probe(box=BOX, tag="div", role="")], caps=NO_CAPS)
+    element = MagicMock()
+    element.click.side_effect = RuntimeError("native failed")
+
+    assert bool(tool.click(element)) is True
+    assert tool.tally_snapshot()["clicks"] == {"js": 1}
+
+
+def test_the_tally_counts_scroll_rungs():
+    tool = _tool([_probe(box=BOX)])
+
+    result = tool.scroll_into_view(MagicMock())
+
+    assert result.rung == "already-visible"
+    assert tool.tally_snapshot()["scrolls"] == {"already-visible": 1}

@@ -52,11 +52,12 @@ class BaseInputHandler(ABC):
     # ------------------------------------------------------------------
 
     def _click(self, element: ElementInterface) -> None:
-        """Click through the tool, falling back to the raw element.
+        """Click through the tool. The tool is REQUIRED.
 
-        The fallback is timing-free by design: without the tool there is no
-        pacing to apply, and inventing some here would recreate the duplication
-        this stage removes. In production the tool is always injected.
+        There is deliberately no raw-element fallback: a raw click bypasses
+        the probe (occlusion, challenge widgets), the pacing and the session
+        tally, so a mis-wired handler would click silently and untraceably.
+        The composition root always injects the tool; tests inject a fake.
 
         A refused or failed tool click RAISES. Discarding the ActionResult
         (the old behaviour) let a widget that was never actually operated
@@ -64,8 +65,9 @@ class BaseInputHandler(ABC):
         (the checkable handler's JS click) actually reach it.
         """
         if self._act is None:
-            element.click()
-            return
+            raise ApplicationError(
+                "input handler has no interaction tool — refusing a raw click"
+            )
         result = self._act.click(element)
         if not result:
             reason = getattr(result, "reason", "unknown")

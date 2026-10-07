@@ -79,6 +79,13 @@ class ApplicationEvidence(BaseModel):
     submit_button_found: bool = False
     submit_button_text: str = ""
     submit_clicked: bool = False
+    #: Which click-ladder rung fired the submit ("pointer" | "keyboard" |
+    #: "native" | "js" | ""), and the page effect observed after it — how AA
+    #: believes it submitted, so a study can separate a trusted-pointer
+    #: submission from a last-resort synthetic one. Empty when the workflow
+    #: never reached the click or the interaction port returned no detail.
+    submit_rung: str = ""
+    submit_effect: str = ""
 
     # ── Post-submit state ────────────────────────────────────────────────
     post_submit_url: str = ""

@@ -144,14 +144,19 @@ patterns automatically.
 AA provides two strategies, selectable based on the user’s hardware and
 risk tolerance:
 
-| Strategy | Behaviour | Use Case |
-| -------- | --------- | -------- |
-| `StealthHumanStrategy` | Full humanisation: curved mouse paths, parabolic typing, overshoot clicks, micro‑fidgets. | Live job boards (LinkedIn, Greenhouse, Workday). |
-| `InstantHeadlessStrategy` | No delays, no curves, direct driver calls. | Headless CI, fast replays, local testing. |
+| Profile | Behaviour | Use Case |
+| ------- | --------- | -------- |
+| `human` (default) | Full humanisation: curved pointer paths, parabolic typing, off‑centre clicks, idle fidgets. | Live job boards (LinkedIn, Greenhouse, Workday). |
+| `careful` | Slower, longer pauses, more overshoot — maximum stealth. | High‑risk or high‑value sessions. |
+| `instant` | No delays, no curves, single‑tick moves. | Headless CI, fast replays, local testing. |
 
-The strategy is injected into `InteractionExecutor` by the composition root.
-The engines call the same `click()` and `type_text()` methods regardless —
-they never know which strategy is active.
+The profile is selected app‑wide by `motion.profile` in
+`runtime_defaults.yaml`, per user by `app_config.motion_profile` (Settings →
+Browser Engine, or the CLI wizard), and lockable per device by
+`AdminPolicy.motion_profile` (ADR‑018). It is resolved once into a validated
+`MotionConfig` inside the shared `PageActionService`; the engines call the
+same `click()` and `type_text()` regardless — they never know which profile
+is active.
 
 ### Adaptive Timing
 All timing parameters are read from `CapabilitiesRegistry._effective_config`
@@ -286,7 +291,7 @@ The composition root wires everything:
 page_action = PageActionService(browser, registry)
 engine = ApplicationEngine(
     perception_port=perception_port,
-    interaction_port=InteractionExecutor(browser, strategy=StealthHumanStrategy()),
+    interaction_port=InteractionExecutor(browser, page_action=page_action),
     reasoning_port=FormSolver(profile),
 )
 ```

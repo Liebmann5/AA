@@ -51,7 +51,7 @@ from auto_apply.domain.config import DB_PATH
 from auto_apply.domain.models.environment import EnvironmentCapabilities
 from auto_apply.domain.models.motion_profile import MotionConfig
 from auto_apply.domain.models.policy import AdminPolicy
-from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.profile import ApplicationConfig, UserProfile
 from auto_apply.domain.models.effective_config import EffectiveConfig
 from auto_apply.domain.models.resources import RuntimeProfile
 from auto_apply.domain.models.session_plan import SessionPlan
@@ -419,10 +419,54 @@ class CapabilitiesRegistry:
                 b for b in order if b != browser_pick
             ]
 
+        # Motion-behaviour reconciliation (input -> resolution -> resolved
+        # state), the same pattern as the browser pick above. The profile
+        # carries the user's choice as flat declarative inputs
+        # (motion_profile, motion_overrides); MotionConfig reads the nested
+        # motion section. Fold them in here so the two can never drift, then
+        # drop the flat keys. AdminPolicy.motion_profile is applied AFTER
+        # config_overrides below, so the named lock beats even a full-motion
+        # replacement (named fields outrank the escape hatch, as documented
+        # in docs/user_guide/admin_policy.md).
+        motion_pick = merged.get("motion_profile")
+        merged.pop("motion_profile", None)
+        motion_user_overrides = merged.get("motion_overrides")
+        merged.pop("motion_overrides", None)
+        if admin_policy is not None and admin_policy.motion_profile is not None:
+            # A locked profile is locked in full: the user's per-value
+            # overrides would otherwise retune the locked profile.
+            if motion_pick or motion_user_overrides:
+                logger.info("Admin policy locks motion; user motion settings ignored")
+            motion_pick = None
+            motion_user_overrides = None
+        if motion_pick or motion_user_overrides:
+            motion_section = dict(merged.get("motion") or {})
+            if motion_pick:
+                motion_section["profile"] = str(motion_pick)
+            if motion_user_overrides:
+                if not isinstance(motion_user_overrides, dict):
+                    raise ValueError(
+                        "motion_overrides must be a mapping of MotionProfile "
+                        f"field names to values, got "
+                        f"{type(motion_user_overrides).__name__}"
+                    )
+                overrides = dict(motion_section.get("overrides") or {})
+                overrides.update(motion_user_overrides)
+                motion_section["overrides"] = overrides
+            merged["motion"] = motion_section
+
         if admin_policy:
             for key, value in admin_policy.config_overrides.items():
                 merged[key] = value
                 logger.debug("Admin policy override | key=%s value=%s", key, value)
+            if admin_policy.motion_profile is not None:
+                motion_section = dict(merged.get("motion") or {})
+                motion_section["profile"] = admin_policy.motion_profile
+                merged["motion"] = motion_section
+                logger.info(
+                    "Admin policy locks motion profile | profile=%s",
+                    admin_policy.motion_profile,
+                )
 
         if is_low_resource:
             # NOTE: "static_fetch" was removed from these overrides on
@@ -630,7 +674,10 @@ class CapabilitiesRegistry:
                 ai_enabled = True
 
         # ── Stealth driver eligibility ──────────────────────────────────────
-        enable_humanization = bool(config.get("enable_behavior_humanization", True))
+        enable_humanization = bool(config.get(
+            "enable_behavior_humanization",
+            ApplicationConfig.model_fields["enable_behavior_humanization"].default,
+        ))
         use_stealth_driver = (
             not caps.is_low_resource
             and "undetected_chromedriver" in caps.available_tools

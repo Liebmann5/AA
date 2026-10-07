@@ -727,8 +727,8 @@ These answer: "how do I interact with elements?"
 
 | Adapter | Port | When Used |
 |---|---|---|
-| `HumanLikeAdapter` | `InteractionPort` | Always (default, Bezier curves, human timing) |
-| `APIDirectAdapter` | `InteractionPort` | Headless mode, no anti-bot risk |
+| `InteractionExecutor` | `InteractionPort` | Always — delegates every click/type to `PageActionService` |
+| `PageActionService` | the interaction tool | The single implementation of clicks, typing, pacing and scrolling, driven by the motion profiles (`domain/models/motion_profile.py`) |
 
 ### 7.5 Evasion Adapters
 
@@ -966,22 +966,21 @@ All other methods: pure delegation to `self._driver`.
 
 ### 10.3 Human Behavior in Browser
 
-The `BehaviorSimulator` (in `evasion/components/behavior.py`) is the sole
-authority on human-like browser behavior. Do not implement human timing anywhere else.
-
-**Session-level idle behavior:**
-When the agent is running (states: DISCOVERING, VETTING, APPLYING), the browser
-must never be stationary for >8 seconds. An idle behavior daemon fires every 5-10
-seconds (random) to perform one of: `perform_mouse_fidget()`, slight scroll,
-move to random position. This daemon must:
-- Run as a daemon thread
-- Check `_is_navigating` flag before acting (never interrupt an active navigation)
-- Stop immediately when state is IDLE, STOPPED, or FAILED
+The interaction tool (`application/services/page_action/`) is the sole
+authority on human-like browser behavior. Pointer and wheel motion come from
+one of three named, validated profiles in `domain/models/motion_profile.py`
+— `instant`, `human` (default), `careful` — selected app-wide by
+`motion.profile` in `runtime_defaults.yaml`, per user by
+`app_config.motion_profile`, and lockable per device by
+`AdminPolicy.motion_profile` (see ADR-018). Every click travels a planned
+curved path to a sampled off-centre point behind the recorded ladder
+(probe → trusted pointer → keyboard → native → config-gated JS), and the
+tool keeps a per-session tally of which rung landed — written into the
+SessionReport at teardown. Do not implement human timing anywhere else.
 
 **Between-provider pauses:**
-A random 2.0–5.0 second pause between providers in a single discovery run.
-This is already present in `behavior.py` — verify it is actually called and
-not silently skipped.
+Configured by `discovery.between_provider_pause_min/max` in
+`runtime_defaults.yaml` and applied by the discovery workflow.
 
 ---
 
@@ -1944,12 +1943,8 @@ class TimingProfile(BaseModel):
     thinking_pause_min: float = 0.3
     thinking_pause_max: float = 0.8
     
-    # Mouse behavior
-    mouse_move_steps: int = 5       # moves per fidget
-    mouse_offset_min_px: int = 50   # min single-move distance
-    mouse_offset_max_px: int = 200  # max single-move distance
-    mouse_step_delay_min: float = 0.2
-    mouse_step_delay_max: float = 0.8
+    # Pointer/wheel behaviour lives in domain/models/motion_profile.py
+    # (the three named profiles: instant, human, careful) — not here.
     
     # Navigation
     between_provider_pause_min: float = 2.0
@@ -2534,7 +2529,7 @@ inventory exactly — a new violation fails, and clearing one also fails until
 the map is updated, which forces the count down deliberately rather than
 letting it drift either way.
 
-- **Prints:** 44 real calls outside `adapters/primary`. 39 are in `main.py`,
+- **Prints:** 45 real calls outside `adapters/primary`. 40 are in `main.py`,
   the process entry point, exempt by design — it prints before any surface
   exists. The other five are debt: four in `session_controller` are the
   Profile Check advisory, which goes to stdout and therefore **a GUI user
