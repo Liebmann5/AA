@@ -2776,7 +2776,14 @@ def parse_reply_order(prompt: str) -> List[Tuple[int, str]]:
         raw: List[Tuple[Optional[int], str]] = []
         after = line[m.end():]
         if after.lstrip().startswith(":") and after.split(":", 1)[1].strip():
-            for piece in after.split(":", 1)[1].split(","):
+            body = after.split(":", 1)[1]
+            # Split where a numbered item starts after a separator, so a
+            # comma inside a section's name ('count, with arithmetic') and a
+            # '·' or ';' list both read right; else fall back to commas.
+            pieces = re.split(r"\s*[,·;|]\s*(?=\d+\s*[.)]?\s)", body)
+            if len(pieces) < 2:
+                pieces = body.split(",")
+            for piece in pieces:
                 pm = re.match(r"\s*(\d+)\s*[.)]?\s+(.+)", piece)
                 raw.append((int(pm.group(1)), pm.group(2)) if pm else (None, piece))
         elif len(_shape_words(re.sub(r"[#*:_]", " ", line))) <= 5:
@@ -2797,7 +2804,7 @@ def parse_reply_order(prompt: str) -> List[Tuple[int, str]]:
         items: List[Tuple[int, str]] = []
         for k, (given, text) in enumerate(raw):
             text = text.strip().rstrip(".")
-            if not text or re.fullmatch(r"`[^`]*`", text) or re.search(r"change blocks?\b", text, re.I):
+            if not text or re.fullmatch(r"`[^`]*`", text) or re.search(r"change blocks?\b|^code\b", text, re.I):
                 continue
             name, _rest = _split_label(text)
             if _shape_words(name):
@@ -4858,6 +4865,9 @@ def absent_function():
                       for m in reply_shape_problems(order, stopped))
               and reply_shape_problems(order, dropped) == ["required section 1. Rulings is missing"]
               and [n for n, _ in inline] == [0, 1, 7] and parse_reply_order(att) == []
+              and [n for n, _ in parse_reply_order(
+                  "Reply order: 0. PHILOSOPHY CHECK · 1. MEASUREMENTS · 5. Predicted "
+                  "count, with arithmetic · 6. BETTER IDEA?")] == [0, 1, 5, 6]
               and inherit == order
               and reply_shape_problems([], "Done.\n\n## Next steps\n")
               == ["the reply stops at a heading ('## Next steps') with nothing under it"],
