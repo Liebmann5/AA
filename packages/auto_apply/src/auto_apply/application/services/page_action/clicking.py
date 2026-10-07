@@ -140,7 +140,7 @@ class Clicker:
 
         # ── Rung 1: trusted pointer click at a sampled, off-centre point ──
         caps = self._probe.capabilities()
-        box = TargetProbe.absolute_box(probe)
+        box = TargetProbe.clickable_box(probe)
         viewport = self._probe.viewport_from_probe(probe)
         if (probe or {}).get("frameBroken"):
             # Cross-origin frame: box offsets could not be accumulated, so
@@ -301,7 +301,7 @@ class Clicker:
         if str((probe or {}).get("verdict") or "") in ("offscreen", "pane-clip"):
             self._scroller.scroll_to(element)
             probe = self._probe.run(element)
-        box = TargetProbe.absolute_box(probe)
+        box = TargetProbe.clickable_box(probe)
         viewport = self._probe.viewport_from_probe(probe)
         caps = self._probe.capabilities()
         if (

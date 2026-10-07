@@ -258,6 +258,30 @@ class TargetProbe:
         return {"x": box["x"] + fx, "y": box["y"] + fy, "w": box["w"], "h": box["h"]}
 
     @staticmethod
+    def clickable_box(probe: dict | None) -> dict | None:
+        """The part of the target a pointer can actually hit, in TOP-LEVEL
+        coordinates: the box intersected with visible_region (the viewport
+        and every scrolling ancestor), then frame-offset like absolute_box.
+
+        Measured on real Chrome: a button half-clipped by its pane had its
+        landing point sampled from the WHOLE box; about 1 click in 10 fell
+        on the clipped-off strip, hit the background, and was reported as
+        a success. None when nothing of the target is visible.
+        """
+        box = (probe or {}).get("box")
+        if not isinstance(box, dict):
+            return None
+        rx, ry, rw, rh = TargetProbe.visible_region(probe)
+        x1, y1 = max(float(box["x"]), rx), max(float(box["y"]), ry)
+        x2 = min(float(box["x"]) + float(box["w"]), rx + rw)
+        y2 = min(float(box["y"]) + float(box["h"]), ry + rh)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        frame = (probe or {}).get("frame") or {}
+        fx, fy = frame.get("x", 0) or 0, frame.get("y", 0) or 0
+        return {"x": x1 + fx, "y": y1 + fy, "w": x2 - x1, "h": y2 - y1}
+
+    @staticmethod
     def pane_origin(pane: dict) -> tuple[int, int]:
         ox, oy = pane.get("ox"), pane.get("oy")
         if ox is None or oy is None:
