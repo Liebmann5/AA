@@ -13,11 +13,41 @@
 headless_mode: false
 browser_timeout_seconds: 30
 page_load_timeout_seconds: 20
+#! Bound on resolving a Playwright element handle for a JS call (was a 30s
+#! driver default; one stale element cost 30s per call down the click ladder).
+js_handle_timeout_ms: 2000
 # Max navigation attempts before giving up on a URL (bounded-retry).
 navigation_retries: 3
 occlusion_guard: true   #! refuse clicks that would land on an overlay
 force_analysis_tier: ""   #! empty = router chooses per page
 infinite_scroll_settle_s: 2.0
+#! Bound on waiting for a scrolled pane's offset to settle before measuring
+#! it (Playwright's wheel returns before the page scrolls; smooth scrolling
+#! animates afterwards). Bounded always — a stuck pane costs one budget.
+scroll_settle_timeout_s: 0.6
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pointer & wheel motion (the mouse tool)
+# ─────────────────────────────────────────────────────────────────────────────
+# Active profile and override slots. The three named profiles — "instant"
+# (CI / fast replay), "human" (default: a fast human), and "careful"
+# (slower, stealth-max) — carry their field values in exactly one place:
+# domain/models/motion_profile.py, where every field is documented with its
+# unit and its valid range.
+motion:
+  # "instant" | "human" | "careful"
+  profile: human
+  # Permit a synthetic JS click as the absolute last click fallback. Never
+  # used on irreversible actions (form submits), regardless of this setting.
+  allow_js_click: true
+  # Per-field overrides applied onto the ACTIVE profile. Keys are
+  # MotionProfile field names; an unknown key or an out-of-range value is
+  # refused at startup, naming the key, the value and the allowed range.
+  overrides: {}
+  # Full profile redefinitions, keyed by profile name, merged over the
+  # built-in profile of the same name.
+  profiles: {}
+
 preferred_browser_order:
   - chrome
   - firefox
@@ -125,6 +155,11 @@ discovery:
   degradation_collapse_ratio: 0.15      # yield <= 15% of baseline ...
   degradation_page_bytes_ratio: 0.25    # ... AND page bytes <= 25% of baseline
   degradation_min_samples: 3            # need >= 3 prior harvests to judge
+  #! Bound on proving a page advanced (fingerprint change after a template
+  #! navigation or a control click). A page that does not provably change in
+  #! time is "no change" — pagination stops, and the old page is never
+  #! re-mined as a new one.
+  pagination_change_timeout_s: 4.0
   # Pause between switching search providers (faster engine switching).
   between_provider_pause_min: 1.0   # ↓ 2.0 → 1.0
   between_provider_pause_max: 2.0   # ↓ 5.0 → 2.0
@@ -135,6 +170,9 @@ discovery:
 applications:
   # Maximum form pages to navigate before aborting.
   max_pages: 10
+  #! Bounded wheel-scan of a form page BEFORE analysis so lazy sections
+  #! render; the tool then wheels back to the top. Each step is measured.
+  form_reveal_max_scrolls: 8
   # Maximum interaction steps per page before aborting.
   max_steps_per_page: 15
   # Seconds to wait for DOM to stabilize after each navigation.
@@ -156,16 +194,6 @@ applications:
   thinking_pause_probability: 0.05  # ↓ 1/15 ≈ 0.067 → 1/20 — fewer long pauses
   thinking_pause_min: 0.2           # ↓ 0.3 → 0.2
   thinking_pause_max: 0.6           # ↓ 0.8 → 0.6
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Browser mouse & navigation (BehaviorParameters / TimingProfile)
-# ─────────────────────────────────────────────────────────────────────────────
-browser:
-  mouse_move_steps: 4               # ↓ 5 → 4 — slightly fewer micro‑moves
-  mouse_offset_min_px: 30           # ↓ 50 → 30 — tighter movements
-  mouse_offset_max_px: 150          # ↓ 200 → 150
-  mouse_step_delay_min: 0.05        # ↓ 0.2 → 0.05
-  mouse_step_delay_max: 0.2         # ↓ 0.8 → 0.2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GPT4All local LLM settings

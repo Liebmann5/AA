@@ -389,6 +389,12 @@ class AutoApplyApp(tk.Tk):
         file_menu.add_command(
             label="Research…", command=self._open_research,
         )
+        file_menu.add_command(
+            label="Install / Repair…", command=self._open_install,
+        )
+        file_menu.add_command(
+            label="Uninstall…", command=self._open_uninstall,
+        )
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
 
@@ -736,6 +742,106 @@ class AutoApplyApp(tk.Tk):
         if consent is None:
             consent = build_research_consent()
         ResearchWindow(self, consent)
+
+    # =====================================================================
+    # LIFECYCLE (Install / Repair…, Uninstall…)
+    # =====================================================================
+    # Both are ALWAYS enabled, like Research…: they are device-scoped and
+    # work before any profile or session exists. Both delegate to the same
+    # engines the CLI uses, through the same composition-root helpers; every
+    # word they show comes from lifecycle_wording.py (the parity pin holds
+    # the two surfaces together).
+
+    def _open_install(self) -> None:
+        """File → Install / Repair…: the GUI surface for the turn-2 engine.
+
+        Managed run: repairs the current root. Development run: offers a
+        managed install using THIS checkout as the source (recorded
+        pre-existing — never deleted by uninstall). Frozen: nothing to do.
+        """
+        import os  # noqa: PLC0415
+
+        from auto_apply.adapters.primary.gui.lifecycle_window import (  # noqa: PLC0415
+            LifecycleMode,
+            LifecycleWindow,
+        )
+        from auto_apply.infrastructure.composition_root import (  # noqa: PLC0415
+            InstallEnvironment,
+            load_pins,
+        )
+        from auto_apply.domain.config import (  # noqa: PLC0415
+            IS_FROZEN,
+            get_install_root,
+            get_run_mode,
+        )
+
+        if IS_FROZEN:
+            messagebox.showinfo(
+                "Install / Repair",
+                "This AutoApply is a self-contained build — there is nothing to install.",
+                parent=self,
+            )
+            return
+        try:
+            pins = load_pins()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Install / Repair", f"Cannot read install pins: {exc}", parent=self)
+            return
+        managed_root = os.environ.get("AA_MANAGED_ROOT")
+        if managed_root:
+            env = InstallEnvironment(root=Path(managed_root), pins=pins)
+        elif get_run_mode() == "development":
+            env = InstallEnvironment(
+                root=InstallEnvironment.default_root(),
+                pins=pins,
+                source=get_install_root(),
+                project_origin="preexisting",
+            )
+        else:
+            env = InstallEnvironment(root=InstallEnvironment.default_root(), pins=pins)
+        LifecycleWindow(self, LifecycleMode.INSTALL, install_env=env)
+
+    def _open_uninstall(self) -> None:
+        """File → Uninstall…: the GUI surface for the turn-1 engine.
+
+        Warns first when a session is running (the engine stops every AA
+        process — that should never be a surprise). After the report, the
+        window offers Close AutoApply so the detached finisher's parent-pid
+        wait can complete and the runtime folder can be removed.
+        """
+        from auto_apply.adapters.primary.gui.lifecycle_window import (  # noqa: PLC0415
+            LifecycleMode,
+            LifecycleWindow,
+        )
+        from auto_apply.infrastructure.composition_root import (  # noqa: PLC0415
+            UninstallEnvironment,
+            export_research_bundle,
+            verify_research_bundle,
+        )
+
+        def _export_bundle(dest: Path, fmt: str = "csv") -> object:
+            return export_research_bundle(fmt, dest)
+
+        if self.controller is not None and self.controller.is_running:
+            if not messagebox.askyesno(
+                "Session running",
+                "A session is running. Uninstall will stop it and every other "
+                "AA process on this machine. Continue?",
+                parent=self,
+                default=messagebox.NO,
+            ):
+                return
+        env = UninstallEnvironment.from_config(
+            consent_factory=build_research_consent,
+            export_bundle=_export_bundle,
+            verify_bundle=verify_research_bundle,
+        )
+        LifecycleWindow(
+            self,
+            LifecycleMode.UNINSTALL,
+            uninstall_env=env,
+            on_close_app=self._on_close,
+        )
 
     # =====================================================================
     # CUSTODY DIALOGS (C2)

@@ -53,6 +53,7 @@ from typing import Any, cast
 from auto_apply.domain.config import USER_DATA_DIR
 from auto_apply.domain.models.math_dom import DOMNode
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
+from auto_apply.domain.ports.interaction_primitives_port import PageActionPrimitives
 from auto_apply.domain.types import Locator
 
 logger = logging.getLogger(__name__)
@@ -289,12 +290,14 @@ class ToolbarElementLocator:
         loader: Any,  # SelectorLoader (avoids circular import)
         math_dom_adapter: Any | None = None,
         confidence_tracker: SelectorConfidenceTracker | None = None,
+        page_action: PageActionPrimitives | None = None,
     ) -> None:
         self._browser = browser
         self._engine_name = engine_name
         self._loader = loader
         self._math_dom = math_dom_adapter
         self._confidence = confidence_tracker or SelectorConfidenceTracker()
+        self._page_action = page_action
         self._config: dict[str, Any] = loader.load(engine_name)
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -392,10 +395,22 @@ class ToolbarElementLocator:
         if element is None:
             return False
 
-        try:
-            from auto_apply.adapters.secondary.evasion.components import behavior  # noqa: PLC0415
+        if self._page_action is not None:
+            # Through the tool (call 2): trusted pointer, tool pacing.
+            result = self._page_action.click(element)
+            if not result:
+                logger.warning(
+                    "ToolbarElementLocator: click did not complete | path=%s reason=%s",
+                    section_path,
+                    getattr(result, "reason", "unknown"),
+                )
+                return False
+            return True
 
-            behavior.human_like_click(self._browser, element)
+        # No tool wired (this module is WIRE-LATER and constructed bare in
+        # tests): the raw fallback, with no pacing invented here.
+        try:
+            element.click()
             return True
         except Exception as exc:
             logger.warning(

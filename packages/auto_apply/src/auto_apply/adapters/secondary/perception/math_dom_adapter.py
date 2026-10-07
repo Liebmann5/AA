@@ -467,7 +467,6 @@ class MathPageUnderstandingAdapter:
                 job_cards=tuple(cards),
                 pagination_present=False,
                 total_results_text="",
-                captcha_detected=structure.is_captcha_present,
                 resolution_report=report,
             )
 

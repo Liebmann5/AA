@@ -3,10 +3,12 @@ thinned content.
 
 A provider that decides AA is a bot has three ways to say so:
 
-  1. Hard block (403/429)          — covered: "403 forbidden" is a detection
-                                     keyword in evasion/detection.py.
-  2. Soft block (challenge page    — covered: DefaultDetectionStrategy /
-     at HTTP 200, e.g. /sorry/)      PageClassifier abort the strategy.
+  1. Hard block (403/429)          — covered: the navigation layer raises on
+                                     a hard block, and an error page is caught
+                                     by the one page verdict's ERROR_404 kind.
+  2. Soft block (challenge page    — covered: the ONE page verdict
+     at HTTP 200, e.g. /sorry/)      (domain/services/page_assessment.py)
+                                     aborts the strategy via the D5 gate.
   3. SILENT DEGRADATION            — previously uncovered. A normal-looking
      page, served thinned. Measured: Indeed went from 17 real jobs in 88s to
      3 nav links in 2.2s (a ~40x page-size drop) between runs, and nothing

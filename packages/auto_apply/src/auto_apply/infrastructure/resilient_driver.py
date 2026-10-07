@@ -4,6 +4,7 @@ import threading
 import time
 
 from auto_apply.domain.config import LOG_DIR
+from auto_apply.domain.models.motion import MotionCapabilities, MotionPlan
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 
 logger = logging.getLogger(__name__)
@@ -18,12 +19,18 @@ class ResilientDriver(BrowserInterface):
     """A Decorator/Wrapper that adds enterprise-grade resilience to any browser adapter.
 
     Capabilities:
-    1. Automatic Popup Dismissal (Interruption Handling).
-    2. Deep DOM Search (Recursive Iframe traversal).
-    3. Tab Management (Focus control).
-    4. Health Checks (404/Login detection).
-    5. Context manager support (forwarded to wrapped driver).
-    6. Navigation timeout recovery with exponential backoff.
+    1. Deep DOM Search (Recursive Iframe traversal).
+    2. Tab Management (Focus control).
+    3. Health Checks (404/Login detection).
+    4. Context manager support (forwarded to wrapped driver).
+    5. Navigation timeout recovery with exponential backoff.
+
+    Clicking is deliberately NOT one of them. Every click in AA goes through
+    the interaction tool (application/services/page_action), which owns the
+    probe, the ladder, pacing and the session tally. The old ``click()``
+    helper and its overlay-dismissal fallback were removed: no callers, and
+    both jobs are covered — clicks by the tool, overlays by
+    InterruptionHandler with the tool injected.
     """
 
     # ── Navigation timeout recovery constants ────────────────────────────────
@@ -258,6 +265,14 @@ class ResilientDriver(BrowserInterface):
         with self._command_lock:
             self._driver.perform_mouse_fidget()
 
+    def execute_motion(self, plan: MotionPlan) -> None:
+        with self._command_lock:
+            return self._driver.execute_motion(plan)
+
+    @property
+    def motion_capabilities(self) -> MotionCapabilities:
+        return self._driver.motion_capabilities
+
     # ------------------------------------------------------------------
     # BrowserInterface abstract methods – screenshots
     # ------------------------------------------------------------------
@@ -269,27 +284,6 @@ class ResilientDriver(BrowserInterface):
     # ------------------------------------------------------------------
     # Additional public helpers (not part of BrowserInterface)
     # ------------------------------------------------------------------
-
-    def click(self, element: ElementInterface) -> None:
-        """Robust click with popover handling and JS fallback."""
-        with self._command_lock:
-            max_retries = 3
-            for i in range(max_retries):
-                try:
-                    element.click()
-                    return
-                except Exception as e:
-                    msg = str(e).lower()
-                    if "intercepted" in msg or "obscured" in msg:
-                        logger.warning("Click intercepted. Attempting to clear obstructions...")
-                        if self._handle_interruptions():
-                            time.sleep(0.5)
-                            continue
-                    if i == max_retries - 1:
-                        logger.info("Standard click failed. Using JS Fallback.")
-                        self._driver.execute_script("arguments[0].click();", element)
-                        return
-                    time.sleep(1)
 
     def is_alive(self) -> bool:
         """Health-check probe; intentionally lock‑free to avoid deadlock with health monitor.
@@ -363,24 +357,6 @@ class ResilientDriver(BrowserInterface):
             except Exception:
                 pass
             time.sleep(0.5)
-
-    def _handle_interruptions(self) -> bool:
-        heuristics = [
-            "button[id*='cookie'][id*='accept']",
-            "button[class*='cookie'][class*='accept']",
-            "div[class*='modal'] button[class*='close']",
-            "button[aria-label='Close']"
-        ]
-        for selector in heuristics:
-            try:
-                elements = self._driver.find_elements("css selector", selector)
-                for btn in elements:
-                    if btn.get_size()[0] > 0:
-                        self._driver.execute_script("arguments[0].click();", btn)
-                        return True
-            except Exception:
-                continue
-        return False
 
     def _search_frames_recursive(self, by, selector, depth=0) -> ElementInterface | None:
         if depth > 2:

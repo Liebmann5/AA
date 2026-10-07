@@ -1258,6 +1258,10 @@ def mk(tmp_path):
     (repo / "packages/auto_apply/docs").mkdir(parents=True)
     (repo / "packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md").write_text(
         "# AA Engineering Philosophy\n\nWorst-case user first. PHIL-MARKER\n", encoding="utf-8")
+    (repo / "packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md").write_text(
+        "# AA Architecture Bible\n\nPorts and adapters. BIBLE-MARKER\n", encoding="utf-8")
+    (repo / "AA_MASTER_TODO.md").write_text("# AA Master TODO\n\n- item 12. TODO-MARKER\n",
+                                            encoding="utf-8")
     return repo
 
 
@@ -1386,14 +1390,17 @@ def test_philosophy_is_not_sent_twice(tmp_path):
     copy.write_text(phil.read_text(encoding="utf-8"), encoding="utf-8")
     base = dict(philosophy=str(phil))
     # attached by path, or the same content under another name: one copy is enough
+    # (only the short note saying what it is and how it ranks still goes)
     for attach in ([str(phil)], [str(copy)]):
         msg, part, err = K.philosophy_context(argparse.Namespace(attach=attach, **base))
-        assert msg is None and err is None and "attach" in part[0]
-    # already a section of the codebase dump
-    dump = ("\n---\nFile: AA/packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md\n---\nbody\n"
+        assert err is None and "attach" in part[0]
+        assert msg and "body" not in msg and "PHILOSOPHY FIRST" in msg
+    # already a section of the codebase dump, with the same text
+    dump = ("\n---\nFile: AA/packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md\n---\n"
+            "# AA Engineering Philosophy\n\nbody\n"
             "\n---\nFile: AA/packages/auto_apply/src/auto_apply/core.py\n---\nx = 1\n")
     msg, part, err = K.philosophy_context(argparse.Namespace(attach=[], **base), dump)
-    assert msg is None and err is None and "dump" in part[0]
+    assert err is None and "dump" in part[0] and msg and "body" not in msg
     # otherwise it is sent
     msg, part, err = K.philosophy_context(argparse.Namespace(attach=[], **base), "")
     assert msg and "<engineering_philosophy" in msg and err is None
@@ -1418,3 +1425,80 @@ def test_a_reply_without_the_check_is_flagged_not_blocked(tmp_path):
                           "--no-todo", "-y", "--no-count"],
                   "## 0. PHILOSOPHY CHECK\n- Worst-case user first: one line changed.\n\n" + GOOD)
     assert "no PHILOSOPHY CHECK section" not in r2.stdout
+
+
+def test_every_call_carries_the_bible_and_the_todo(tmp_path):
+    repo = mk(tmp_path)
+    r = run_main(repo, ["--prompt", "fix it", "--request-code", "--codebase", str(repo / "dump.txt"),
+                        "-y", "--no-count"], GOOD)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "bible (AA_ARCHITECTURE_BIBLE.md)" in r.stdout and "todo (AA_MASTER_TODO.md)" in r.stdout
+    system = [m["content"] for m in _session_messages(repo) if m["role"] == "system"]
+    at = {tag: next(i for i, c in enumerate(system) if tag in c)
+          for tag in ("<engineering_philosophy", "<architecture_bible", "<authoritative_todo")}
+    assert at["<engineering_philosophy"] < at["<architecture_bible"] < at["<authoritative_todo"]
+    assert "BIBLE-MARKER" in system[at["<architecture_bible"]]
+    assert "TODO-MARKER" in system[at["<authoritative_todo"]]
+
+
+@pytest.mark.parametrize("name, path, what", [
+    ("bible", "packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md", "architecture bible"),
+    ("todo", "AA_MASTER_TODO.md", "master TODO"),
+])
+def test_a_missing_bible_or_todo_stops_the_call_unless_turned_off(tmp_path, name, path, what):
+    repo = mk(tmp_path)
+    (repo / path).unlink()
+    r = run_main(repo, ["--prompt", "fix it", "--codebase", str(repo / "dump.txt"),
+                        "-y", "--no-count"], GOOD)
+    assert r.returncode == 1 and "Not sent" in r.stdout and f"{what} not found" in r.stdout
+    r = run_main(repo, ["--prompt", "fix it", "--codebase", str(repo / "dump.txt"),
+                        f"--no-{name}", "-y", "--no-count"], GOOD)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"{name}: OFF (--no-{name})" in r.stdout
+
+
+def test_both_a_doc_flag_and_its_no_flag_is_refused(tmp_path):
+    repo = mk(tmp_path)
+    r = run_main(repo, ["--prompt", "fix it", "--codebase", str(repo / "dump.txt"),
+                        "--bible", str(repo / "packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md"),
+                        "--no-bible", "-y", "--no-count"], GOOD)
+    assert r.returncode == 1 and "--bible and --no-bible were both given" in r.stdout
+
+
+def test_a_standing_doc_in_the_dump_is_not_sent_twice_but_a_retired_copy_does_not_count(tmp_path):
+    repo = mk(tmp_path)
+    bible = (repo / "packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md").read_text(encoding="utf-8")
+    core = "\n---\nFile: AA/packages/auto_apply/src/auto_apply/core.py\n---\nx = 1\n"
+    live = f"\n---\nFile: AA/packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md\n---\n{bible}" + core
+    retired = (f"\n---\nFile: AA/packages/auto_apply/docs/old_retired_files/AA_ARCHITECTURE_BIBLE.md"
+               f"\n---\n{bible}" + core)
+    older = ("\n---\nFile: AA/packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md\n---\n# old draft\n"
+             + core)
+    old_root = K.PROJECT_ROOT
+    K.PROJECT_ROOT = repo.resolve()
+    try:
+        ns = argparse.Namespace(attach=[], bible=None, no_bible=False)
+        doc = K.StandingDoc("bible", "architecture bible", repo / "packages/auto_apply/docs/"
+                            "AA_ARCHITECTURE_BIBLE.md", "architecture_bible", "NOTE")
+        m_live, p_live, _ = K.standing_doc_context(doc, ns, live)
+        m_ret, p_ret, _ = K.standing_doc_context(doc, ns, retired)
+        m_old, p_old, _ = K.standing_doc_context(doc, ns, older)
+    finally:
+        K.PROJECT_ROOT = old_root
+    assert "in the codebase dump" in p_live[0] and "BIBLE-MARKER" not in m_live and "NOTE" in m_live
+    assert "BIBLE-MARKER" in m_ret and p_ret[1] > 0
+    assert "BIBLE-MARKER" in m_old and "older" in p_old[0] and "older copy" in m_old
+
+
+def test_a_reply_that_stops_at_its_last_heading_is_flagged(tmp_path):
+    repo = mk(tmp_path)
+    prompt = ("Design it.\n\n# DELIVERABLE: REPLY ORDER\n\n0. PHILOSOPHY CHECK\n1. Rulings\n"
+              "2. BETTER IDEA? (required, last)\n")
+    cut = "## 0. PHILOSOPHY CHECK\n- Worst-case user first.\n\n## 1. Rulings\nA.\n\n---\n\n## 2. BETTER IDEA?\n"
+    r = run_main(repo, ["--prompt", prompt, "--codebase", str(repo / "dump.txt"), "-y", "--no-count"], cut)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "stops at its last heading: 2. BETTER IDEA? has nothing under it" in r.stdout
+    whole = cut + "None - the design holds.\n"
+    r2 = run_main(mk(tmp_path / "second"), ["--prompt", prompt, "--codebase", str(repo / "dump.txt"),
+                                            "-y", "--no-count"], whole)
+    assert r2.returncode == 0 and "REPLY SHAPE" not in r2.stdout

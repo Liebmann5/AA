@@ -74,6 +74,8 @@ nav:
 
   - User Guide:
       - Overview: user_guide/index.md
+      - Installing AutoApply: user_guide/installing.md
+      - Uninstalling AutoApply: user_guide/uninstalling.md
       - Running a Job Hunt: user_guide/running_a_job_hunt.md
       - Understanding the Output: user_guide/understanding_output.md
       - Labelling: user_guide/labelling.md
@@ -130,12 +132,14 @@ nav:
       - "015 Polled UI state": adr/015_polled_ui_state.md
       - "016 Retirement over deletion": adr/016_retirement_over_deletion.md
       - "017 Documentation gate": adr/017_documentation_gate.md
+      - "018 Layered settings": adr/018_layered_settings_and_motion_profile.md
 
   - Research:
       - Overview: research_module/index.md
       - Data Format: research_module/data_format.md
       - Signals Taxonomy: research_module/signals_taxonomy.md
       - Consent Dialogue: RESEARCH_CONSENT_DIALOG.md
+      - Retention Holds: research_module/retention_holds.md
       - Reproducibility: REPRODUCIBILITY.md
       - Ethics: ETHICS.md
 

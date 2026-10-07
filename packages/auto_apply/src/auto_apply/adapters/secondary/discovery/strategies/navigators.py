@@ -18,10 +18,10 @@ from collections.abc import Callable
 from auto_apply.adapters.secondary.discovery.strategies.engine_strategies import (
     SearchEngineStrategy,
 )
-from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.adapters.secondary.navigation.interruption import InterruptionHandler
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
+from auto_apply.domain.ports.interaction_primitives_port import PageActionPrimitives
 from auto_apply.domain.types import Keys, Locator
 
 logger = logging.getLogger(__name__)
@@ -37,8 +37,13 @@ class NavigationStrategy(ABC):
     submitted).
     """
 
-    def __init__(self, browser: BrowserInterface) -> None:
+    def __init__(
+        self,
+        browser: BrowserInterface,
+        page_action: PageActionPrimitives | None = None,
+    ) -> None:
         self.browser = browser
+        self._page_action = page_action
 
     @property
     def name(self) -> str:
@@ -104,7 +109,9 @@ class HumanSearchNavigation(NavigationStrategy):
         time.sleep(2)
 
         # Clear cookie banners BEFORE trying to find/type in search bar.
-        InterruptionHandler(self.browser).handle_interruptions()
+        InterruptionHandler(
+            self.browser, page_action=self._page_action
+        ).handle_interruptions()
 
         try:
             selectors = engine_strategy.search_bar_selectors
@@ -132,11 +139,22 @@ class HumanSearchNavigation(NavigationStrategy):
 
                 logger.info("Typing query: %s", query_text)
 
-                # Click to focus
-                search_input.click()
-                time.sleep(0.2)
-
-                behavior.human_like_typing(search_input, query_text)
+                if self._page_action is None:
+                    # No raw-click fallback: a click outside the tool skips
+                    # the probe, the pacing and the tally. Failing the
+                    # strategy is the honest outcome — ResilientNavigator
+                    # tries the next one. Every production provider injects
+                    # the tool.
+                    logger.warning(
+                        "HumanSearchNavigation has no interaction tool — "
+                        "refusing a raw click; strategy reports failure"
+                    )
+                    return False
+                # Tool path: a trusted pointer click and the seeded
+                # keystroke rhythm.
+                if not self._page_action.click(search_input):
+                    return False
+                self._page_action.type_text(search_input, query_text)
                 time.sleep(0.5)
                 search_input.send_keys(Keys.ENTER)
                 return True

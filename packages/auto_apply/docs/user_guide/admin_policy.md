@@ -89,6 +89,7 @@ else will use the user's preference.
   "force_humanization": true,
   "force_respect_robots_txt": true,
   "min_action_delay_seconds": 2.0,
+  "motion_profile": "careful",
   "disable_research_collection": true,
   "config_overrides": {
     "log_retention_days": 7
@@ -156,6 +157,27 @@ could trigger bot detection and get your institution's IP address flagged.
 ```json
 "force_humanization": true
 ```
+
+### `motion_profile`
+
+Locks the pointer/scroll behaviour profile — how human AA's movements look —
+to one of the three named profiles:
+
+```json
+"motion_profile": "careful"
+```
+
+- `"human"` — natural pacing (the default)
+- `"careful"` — slower, hardest to detect
+- `"instant"` — no human pacing (tests only)
+
+The user's choice (Settings → Browser Engine, or `app_config.motion_profile`
+in the profile) is overridden, and so are any per-value
+`app_config.motion_overrides`; the settings UI shows the field as locked
+(disabled, with a lock icon); an unknown name is refused at startup with the
+allowed names listed. Prefer this field-level lock over replacing the whole
+`motion` section via `config_overrides` — and if both are set, the named
+field wins.
 
 ### `force_respect_robots_txt`
 

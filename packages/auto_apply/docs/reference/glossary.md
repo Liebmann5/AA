@@ -81,9 +81,10 @@ implements this interface.
 
 ### Checkpoint
 A point in the application pipeline where AA pauses and asks the user for
-approval before proceeding.  Default checkpoints are
-`BEFORE_FORM_SUBMIT` and `ON_SUSPICIOUS_REDIRECT`.  Users can customise
-which checkpoints are active.
+approval before proceeding.  Named checkpoints include
+`BEFORE_FORM_SUBMIT`, `ON_SUSPICIOUS_REDIRECT`, and `CAPTCHA_PRESENTED`
+(a presented challenge, paused in place on the challenging page).  Users
+can customise which review checkpoints are active.
 
 ### Composition Root
 The single file (`infrastructure/composition_root.py`) where all concrete
@@ -277,8 +278,9 @@ that fail any filter are rejected.
 
 ### Work Unit
 An atomic task in AA’s priority queue.  Each work unit has a type
-(`DISCOVER`, `VET`, `APPLY`, `HANDLE_CAPTCHA`), a priority, and a
-payload.  The **Orchestrator** dequeues and dispatches them.
+(`DISCOVER`, `VET`, `APPLY`; `HANDLE_CAPTCHA` exists but is dormant —
+challenges pause in place instead), a priority, and a payload.  The
+**Orchestrator** dequeues and dispatches them.
 
 ### Worst‑Case First
 AA’s overriding design principle.  Every feature must work on the

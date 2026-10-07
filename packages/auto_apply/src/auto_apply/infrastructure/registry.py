@@ -49,8 +49,9 @@ from auto_apply.adapters.secondary.os.platform_inspector import PlatformInspecto
 from auto_apply.adapters.secondary.persistence.policy_manager import PolicyManager
 from auto_apply.domain.config import DB_PATH
 from auto_apply.domain.models.environment import EnvironmentCapabilities
+from auto_apply.domain.models.motion_profile import MotionConfig
 from auto_apply.domain.models.policy import AdminPolicy
-from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.profile import ApplicationConfig, UserProfile
 from auto_apply.domain.models.effective_config import EffectiveConfig
 from auto_apply.domain.models.resources import RuntimeProfile
 from auto_apply.domain.models.session_plan import SessionPlan
@@ -104,10 +105,20 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "headless_mode": False,
     "browser_timeout_seconds": 30,
     "page_load_timeout_seconds": 20,
+    "js_handle_timeout_ms": 2000,
     "navigation_retries": 3,
     "occlusion_guard": True,
     "force_analysis_tier": "",
     "infinite_scroll_settle_s": 2.0,
+    "scroll_settle_timeout_s": 0.6,
+    # Pointer/wheel motion: selection + override slots only. The named
+    # profiles' field values live ONCE in domain/models/motion_profile.py.
+    "motion": {
+        "profile": "human",
+        "allow_js_click": True,
+        "overrides": {},
+        "profiles": {},
+    },
     "preferred_browser_order": ["chrome", "firefox", "edge", "safari"],
     "framework_order": ["playwright", "selenium", "camoufox"],
     "max_applications_per_session": 50,
@@ -160,9 +171,11 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "degradation_collapse_ratio": 0.15,
         "degradation_page_bytes_ratio": 0.25,
         "degradation_min_samples": 3,
+        "pagination_change_timeout_s": 4.0,
     },
     "applications": {
         "max_pages": 10,
+        "form_reveal_max_scrolls": 8,
         "max_steps_per_page": 15,
         "dom_stabilization_timeout_s": 3.0,
         "dom_stabilization_poll_interval_s": 0.25,
@@ -176,13 +189,6 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "thinking_pause_probability": 0.05,
         "thinking_pause_min": 0.2,
         "thinking_pause_max": 0.6,
-    },
-    "browser": {
-        "mouse_move_steps": 4,
-        "mouse_offset_min_px": 30,
-        "mouse_offset_max_px": 150,
-        "mouse_step_delay_min": 0.05,
-        "mouse_step_delay_max": 0.2,
     },
     "gpt4all": {
         "model": "Meta-Llama-3-8B-Instruct.Q4_0.gguf",
@@ -350,6 +356,11 @@ class CapabilitiesRegistry:
         # Construct BehaviorParameters from the merged config
         behavior_params = BehaviorParameters.from_config(effective_config)
 
+        # Validate the motion configuration NOW, not at first click: a bad
+        # profile name, unknown override key or out-of-range value is refused
+        # here with the key, the value and the allowed range in the message.
+        MotionConfig.from_mapping(effective_config)
+
         # Construct the SessionPlan using the canonical factory
         plan = SessionPlan.from_config(
             session_id=_new_session_id(),
@@ -408,10 +419,54 @@ class CapabilitiesRegistry:
                 b for b in order if b != browser_pick
             ]
 
+        # Motion-behaviour reconciliation (input -> resolution -> resolved
+        # state), the same pattern as the browser pick above. The profile
+        # carries the user's choice as flat declarative inputs
+        # (motion_profile, motion_overrides); MotionConfig reads the nested
+        # motion section. Fold them in here so the two can never drift, then
+        # drop the flat keys. AdminPolicy.motion_profile is applied AFTER
+        # config_overrides below, so the named lock beats even a full-motion
+        # replacement (named fields outrank the escape hatch, as documented
+        # in docs/user_guide/admin_policy.md).
+        motion_pick = merged.get("motion_profile")
+        merged.pop("motion_profile", None)
+        motion_user_overrides = merged.get("motion_overrides")
+        merged.pop("motion_overrides", None)
+        if admin_policy is not None and admin_policy.motion_profile is not None:
+            # A locked profile is locked in full: the user's per-value
+            # overrides would otherwise retune the locked profile.
+            if motion_pick or motion_user_overrides:
+                logger.info("Admin policy locks motion; user motion settings ignored")
+            motion_pick = None
+            motion_user_overrides = None
+        if motion_pick or motion_user_overrides:
+            motion_section = dict(merged.get("motion") or {})
+            if motion_pick:
+                motion_section["profile"] = str(motion_pick)
+            if motion_user_overrides:
+                if not isinstance(motion_user_overrides, dict):
+                    raise ValueError(
+                        "motion_overrides must be a mapping of MotionProfile "
+                        f"field names to values, got "
+                        f"{type(motion_user_overrides).__name__}"
+                    )
+                overrides = dict(motion_section.get("overrides") or {})
+                overrides.update(motion_user_overrides)
+                motion_section["overrides"] = overrides
+            merged["motion"] = motion_section
+
         if admin_policy:
             for key, value in admin_policy.config_overrides.items():
                 merged[key] = value
                 logger.debug("Admin policy override | key=%s value=%s", key, value)
+            if admin_policy.motion_profile is not None:
+                motion_section = dict(merged.get("motion") or {})
+                motion_section["profile"] = admin_policy.motion_profile
+                merged["motion"] = motion_section
+                logger.info(
+                    "Admin policy locks motion profile | profile=%s",
+                    admin_policy.motion_profile,
+                )
 
         if is_low_resource:
             # NOTE: "static_fetch" was removed from these overrides on
@@ -619,7 +674,10 @@ class CapabilitiesRegistry:
                 ai_enabled = True
 
         # ── Stealth driver eligibility ──────────────────────────────────────
-        enable_humanization = bool(config.get("enable_behavior_humanization", True))
+        enable_humanization = bool(config.get(
+            "enable_behavior_humanization",
+            ApplicationConfig.model_fields["enable_behavior_humanization"].default,
+        ))
         use_stealth_driver = (
             not caps.is_low_resource
             and "undetected_chromedriver" in caps.available_tools

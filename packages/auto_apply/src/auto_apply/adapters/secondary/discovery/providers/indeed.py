@@ -17,10 +17,13 @@ from auto_apply.adapters.secondary.discovery.strategies.navigators import (
     HumanSearchNavigation,
     ResilientNavigator,
 )
+from auto_apply.adapters.secondary.browser.page_snapshot import browser_page_snapshot
 from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (
+    BLOCK_PAGE_TYPES,
     GenericSERPStrategy,
+    record_blocked_observation,
 )
-from auto_apply.adapters.secondary.evasion.manager import EvasionManager
+from auto_apply.domain.services.page_assessment import assess_page
 from auto_apply.adapters.secondary.perception.dom_adapter import SmartTextExtractor
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.search_instruction import SearchInstruction
@@ -40,15 +43,16 @@ class IndeedProvider(BaseSearchProvider):
     """A provider that navigates to Indeed to discover job listings.
 
     Inherits from BaseSearchProvider for a uniform provider hierarchy.
-    Supports an optional evasion manager to check page safety.
+    Page safety is the ONE page verdict (domain/services/page_assessment.py),
+    asked in ``_is_page_healthy`` during navigation; a blocked page is
+    recorded as a blocked observation, not an empty harvest.
     """
 
     def __init__(
         self,
         browser: BrowserInterface,
-        evasion_manager: EvasionManager | None = None,
         scroller=None,
-        paginator=None,
+        advancer_factory=None,
         max_pages: int = 1,
         observer=None,
         reporter=None,
@@ -57,11 +61,12 @@ class IndeedProvider(BaseSearchProvider):
         page_understanding_port=None,
         research_observer=None,
         readiness=None,
+        page_action=None,
     ) -> None:
         super().__init__(
             browser,
             scroller,
-            paginator,
+            advancer_factory,
             max_pages,
             observer,
             reporter,
@@ -71,25 +76,25 @@ class IndeedProvider(BaseSearchProvider):
         self._page_understanding = page_understanding_port
         self._research_observer = research_observer
         self._readiness = readiness
+        # The interaction tool: toolbar clicks, human search navigation and
+        # card-activation clicks go through it (C3). The composition root
+        # always injects it; a bare construction degrades honestly.
+        self._page_action = page_action
 
         # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
-        self._engine_strategy = IndeedSearchStrategy()
+        self._engine_strategy = IndeedSearchStrategy(page_action=self._page_action)
 
         self.nav_stack = [
             DirectURLNavigation(browser),
-            HumanSearchNavigation(browser),
+            HumanSearchNavigation(browser, page_action=self._page_action),
         ]
 
         self.navigator = ResilientNavigator(browser, self.nav_stack)
 
-        # ── Evasion (optional) ───────────────────────────────────────────────
-        # No auto-construct fallback: if the caller doesn't explicitly supply
-        # an EvasionManager, this provider genuinely performs no evasion
-        # checking (matches the `| None = None` default honestly). Wiring a
-        # real EvasionManager for production use belongs in the composition
-        # root, which is where cross-cutting concerns like this should be
-        # assembled explicitly rather than adapters silently self-configuring.
-        self._evasion_manager = evasion_manager
+        # The block verdict comes from the ONE page verdict
+        # (_is_page_healthy below). One blocked page is one observation per
+        # run: the navigator may health-check more than once.
+        self._blocked_observation_emitted: bool = False
 
     @property
     def name(self) -> str:
@@ -124,6 +129,7 @@ class IndeedProvider(BaseSearchProvider):
             observer=self._observer,
             readiness=self._readiness,
             research_observer=self._research_observer,
+            page_action=self._page_action,
         )
 
     def run(self, instruction: SearchInstruction) -> list[Job]:
@@ -144,6 +150,7 @@ class IndeedProvider(BaseSearchProvider):
             instruction.date_range or "none",
         )
 
+        self._blocked_observation_emitted = False
         if not self.navigator.navigate_with_fallback(
             self._engine_strategy, instruction, self._is_page_healthy
         ):
@@ -155,6 +162,12 @@ class IndeedProvider(BaseSearchProvider):
         # ── Apply toolbar filters (date, etc.) after navigation ─────────────
         self._engine_strategy.apply_toolbar_filters(self.browser, instruction)
 
+        # Fresh, stateless advancer per query — a shared one would leak its
+        # page position into the next search.
+        advancer = (
+            self._advancer_factory() if callable(self._advancer_factory) else None
+        )
+
         try:
             scraper = GenericSERPStrategy(
                 self.browser,
@@ -163,7 +176,7 @@ class IndeedProvider(BaseSearchProvider):
                 max_results=instruction.max_results,
                 fast_extractor=self._fast_extractor(),
                 scroller=self._scroller,
-                paginator=self._paginator,
+                advancer=advancer,
                 max_pages=self._max_pages,
                 observer=self._observer,
                 reporter=self._reporter,
@@ -196,12 +209,28 @@ class IndeedProvider(BaseSearchProvider):
             return []
 
     def _is_page_healthy(self) -> bool:
-        """Check page safety using the evasion manager, if available.
+        """Check page safety with the ONE page verdict.
 
-        Returns False if a known block/CAPTCHA is detected.
+        A CAPTCHA interstitial, a login wall, or a 404 is a *blocked* page,
+        not an empty result set. When blocked, record the observation the
+        SERP gate records — once per run, since the navigator may
+        health-check more than once — and report unhealthy.
         """
-        if self._evasion_manager:
-            # check_page_safety returns True if safe, False if blocked
-            if not self._evasion_manager.check_page_safety():
-                return False
-        return True
+        url, title, html = browser_page_snapshot(self.browser)
+        assessment = assess_page(url=url, title=title, html=html)
+        if assessment.kind not in BLOCK_PAGE_TYPES:
+            return True
+        logger.warning(
+            "IndeedProvider: page blocked | kind=%s signals=%s",
+            assessment.kind.name,
+            ",".join(assessment.signals),
+        )
+        if not self._blocked_observation_emitted:
+            self._blocked_observation_emitted = True
+            record_blocked_observation(
+                source_tag="Indeed",
+                browser=self.browser,
+                research_observer=self._research_observer,
+                page_type=assessment.kind,
+            )
+        return False

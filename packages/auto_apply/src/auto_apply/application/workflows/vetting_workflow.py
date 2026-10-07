@@ -7,7 +7,9 @@ What this engine does:
     jobs as APPLY WorkUnits.
 
 9-step sequence:
-    1. _fetch_job_description           — navigate to job URL via perception port
+    1. _fetch_job_description           — navigate to job URL via perception port;
+                                          learn the posting's off-host apply target
+                                          into metadata["apply_url"] (item 12B)
     2. _parse_with_spacy                — extract skills, experience, metadata via TextMatcher
     3. _observe_job_posting             — JobPostingObservation with the REAL description
                                           ("" when the fetch fell back to the job title)
@@ -67,6 +69,7 @@ from auto_apply.domain.ports.research_port import (
     ResearchObserverPort,
 )
 from auto_apply.domain.services.posting_context import posting_observation
+from auto_apply.domain.services.apply_target import find_apply_controls
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +254,46 @@ class VettingWorkflow:
                 job.url, exc,
             )
             return None
+
+    def _learn_apply_target(self, job: Job) -> None:
+        """Record the posting's off-host apply target, if it carries one.
+
+        Vetting is already on the posting — learning the target here means
+        the application stage can navigate straight to it and skip reloading
+        the most bot-guarded page in the flow. The parse is the same pure
+        function the application stage follows (domain/services/apply_target.py),
+        so the target learned and the target followed cannot be two answers.
+        This is the first writer of the reserved ``metadata["apply_url"]`` key.
+        Only off-host targets are recorded: an on-host target tells the
+        application stage nothing it will not see for itself.
+        """
+        if self._perception_port is None or not hasattr(job, "metadata"):
+            return
+        try:
+            html = self._perception_port.get_page_html() or ""
+        except Exception:
+            return
+        if not isinstance(html, str) or not html:
+            return
+        try:
+            controls = find_apply_controls(url=job.url, html=html)
+        except Exception as exc:
+            logger.debug(
+                "VettingWorkflow: apply-target parse failed (non-fatal) | "
+                "url=%s error=%s",
+                job.url,
+                exc,
+            )
+            return
+        for control in controls:
+            if control.href and control.off_host:
+                job.metadata["apply_url"] = control.href
+                logger.debug(
+                    "VettingWorkflow: apply target learned | url=%s target=%s",
+                    job.url,
+                    control.href,
+                )
+                return
 
     def _parse_with_spacy(self, job: Job, description: str) -> ParsedJobDescription:
         """Run NLP extraction on the job description and store results in metadata.
@@ -586,6 +629,8 @@ class VettingWorkflow:
 
         fetch = self._fetch_job_description(job)
         self._parse_with_spacy(job, fetch.text)
+        if fetch.from_page:
+            self._learn_apply_target(job)
 
         # Observed after the fetch+parse and BEFORE the filter chain, so a
         # rejected job is still observed with the text its rejection was

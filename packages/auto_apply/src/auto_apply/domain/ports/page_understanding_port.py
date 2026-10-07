@@ -136,8 +136,12 @@ class SERPStructure:
         job_cards: All detected job listing cards.
         pagination_present: Whether there are more pages to navigate.
         total_results_text: Raw "About 12,400 results" string if present.
-        captcha_detected: Whether a CAPTCHA challenge is visible.
         resolution_report: Group-level resolution metadata.
+
+    Page identity (challenge, login wall) is deliberately NOT part of this
+    structure: it is answered once by domain/services/page_assessment.py.
+    The captcha_detected field that used to sit here was written and never
+    read.
     """
 
     PASS_FRACTION: ClassVar[float] = 0.6
@@ -145,7 +149,6 @@ class SERPStructure:
     job_cards: tuple[JobCardInfo, ...] = field(default=())
     pagination_present: bool = False
     total_results_text: str = ""
-    captcha_detected: bool = False
     resolution_report: SerpResolutionReport = field(default_factory=SerpResolutionReport)
 
     @property

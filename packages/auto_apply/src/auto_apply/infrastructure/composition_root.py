@@ -24,6 +24,8 @@ from auto_apply.application.services.i18n import configure_locale
 from auto_apply.application.services.mathematical_web_analyzer import MathematicalWebAnalyzer
 from auto_apply.domain.config import (
     DB_PATH,
+    FOOTPRINT_LEDGER_PATH,
+    INSTANCES_DIR,
     IS_FROZEN,
     PAGE_COPIES_DIR,
     PROVENANCE_KEY_PATH,
@@ -31,6 +33,9 @@ from auto_apply.domain.config import (
     RESEARCH_DB_PATH,
     RESEARCH_SALT_PATH,
     USER_DATA_DIR,
+    ensure_data_dirs,
+    get_install_root,
+    get_run_mode,
 )
 from auto_apply.domain.exceptions import BrowserSetupError
 from auto_apply.domain.models.timing import BehaviorParameters
@@ -46,6 +51,28 @@ from auto_apply.infrastructure.browser_lease_manager import BrowserLeaseManager
 from auto_apply.adapters.secondary.browser.selenium_provider import SeleniumProvider
 from auto_apply.adapters.secondary.browser.playwright_provider import PlaywrightProvider
 
+# ── Lifecycle re-exports (the primary adapters' sanctioned route) ─────────
+# The research-consent precedent: primary adapters never import application
+# services directly; they take these names from the wiring layer (the reach
+# pin in tests/architecture/test_safety_pins.py holds that inventory).
+from auto_apply.application.services import lifecycle_wording
+from auto_apply.application.services.install.bootstrap_pins import load_pins
+from auto_apply.application.services.install.engine import (
+    InstallEngine,
+    InstallEnvironment,
+    InstallError,
+)
+from auto_apply.application.services.uninstall.engine import (
+    UninstallEngine,
+    UninstallEnvironment,
+    UninstallRefused,
+)
+from auto_apply.application.services.uninstall.model import (
+    ResearchDecision,
+    UninstallDecision,
+    UninstallReport,
+)
+
 if TYPE_CHECKING:
     from auto_apply.application.agent.orchestrator import AgentOrchestrator
     #from auto_apply.application.agent.task_kernel import TaskKernel
@@ -54,6 +81,7 @@ if TYPE_CHECKING:
     from auto_apply.domain.ports.page_copy_port import PageCopierPort
     from auto_apply.application.services.session_controller import SessionController
     from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
+    from auto_apply.application.services.instance_registry import InstanceRegistry
     from auto_apply.adapters.secondary.research.research_exporter import (
         ExportResult,
     )
@@ -65,12 +93,23 @@ if TYPE_CHECKING:
 # Re-export so existing callers don't break.
 __all__ = [
     "CapabilitiesRegistry",
+    "InstallEngine",
+    "InstallEnvironment",
+    "InstallError",
+    "ResearchDecision",
+    "UninstallDecision",
+    "UninstallEngine",
+    "UninstallEnvironment",
+    "UninstallRefused",
+    "UninstallReport",
     "build_orchestrator",
     "build_page_copier",
     "build_research_consent",
     "build_session",
     "build_session_controller",
     "export_research_bundle",
+    "lifecycle_wording",
+    "load_pins",
     "research_public_key_fingerprint",
     "run_replay",
     "verify_research_bundle",
@@ -267,7 +306,7 @@ def build_page_copier(
     )
 
 
-def export_research_bundle(fmt: str = "csv") -> "ExportResult":
+def export_research_bundle(fmt: str = "csv", export_root: Path | None = None) -> "ExportResult":
     """Export the research database as one verifiable bundle — the consent
     screens' route to the exporter (FORK 5).
 
@@ -285,6 +324,10 @@ def export_research_bundle(fmt: str = "csv") -> "ExportResult":
         fmt: 'csv', 'ndjson', or 'parquet'. A plain str, validated here,
             because the ExportFormat Literal lives in the secondary adapter
             the screens may not import.
+        export_root: Where the bundle directory is written. Defaults to
+            REPORTS_DIR (inside the data home). The uninstaller passes the
+            user's chosen folder — a bundle written inside the data home
+            would be deleted moments later.
 
     Raises:
         ValueError: For an unknown format.
@@ -306,7 +349,7 @@ def export_research_bundle(fmt: str = "csv") -> "ExportResult":
         )
     exporter = ResearchExporter(
         db_path=RESEARCH_DB_PATH,
-        export_root=REPORTS_DIR,
+        export_root=export_root or REPORTS_DIR,
         provenance_key_path=PROVENANCE_KEY_PATH,
     )
     return exporter.export(formats[fmt])
@@ -484,6 +527,9 @@ def build_orchestrator(  # noqa: PLR0914
                 browser=raw._pw_browser,
                 playwright=raw._pw_playwright,
                 rng=behavior_params.make_rng("playwright.adapter"),
+                handle_timeout_ms=_positive_int_setting(
+                    registry, "js_handle_timeout_ms"
+                ),
             ),
         }
 
@@ -677,27 +723,11 @@ def build_orchestrator(  # noqa: PLR0914
         # every scan_page call).
         perception_port = None
 
-    # ── The shared element-interaction tool ───────────────────────────────────
-    # PageActionService owns every click, all pacing, and the seeded RNG; the
-    # InteractionExecutor injected into the engines delegates to it. The RNG
-    # namespace is allocated unconditionally so seeded stream allocation does
-    # not depend on whether a driver was acquired.
-    from auto_apply.application.services.page_action.service import (  # noqa: PLC0415
-        PageActionService,
-    )
-
-    interaction_pacing_rng = behavior_params.make_rng("interaction.pacing")
-
-    page_action_tool = (
-        PageActionService(browser=driver, registry=registry, rng=interaction_pacing_rng)
-        if driver is not None
-        else None
-    )
-
     # ── DOM readiness ─────────────────────────────────────────────────────
-    # Built here rather than beside the workflow so the handlers can have it
-    # too: ONE observer instance is shared by the Applications engine and
-    # every form handler. Budgets come from config, never from literals.
+    # Built BEFORE the interaction tool so the tool's feed settles are
+    # MEASURED (DomReadinessPort) rather than slept: one observer instance is
+    # shared by the tool, the Applications engine and every form handler.
+    # Budgets come from config, never from literals.
     dom_readiness = None
     if driver is not None:
         try:
@@ -717,6 +747,32 @@ def build_orchestrator(  # noqa: PLR0914
         except Exception as _exc:
             logger.debug("build_orchestrator: DOMObserver unavailable: %s", _exc)
 
+    # ── The shared element-interaction tool ───────────────────────────────────
+    # PageActionService owns every click, all pacing, and the seeded RNG; the
+    # InteractionExecutor injected into the engines delegates to it. The RNG
+    # namespace is allocated unconditionally so seeded stream allocation does
+    # not depend on whether a driver was acquired.
+    from auto_apply.application.services.page_action.service import (  # noqa: PLC0415
+        PageActionService,
+    )
+
+    interaction_pacing_rng = behavior_params.make_rng("interaction.pacing")
+    motion_pointer_rng = behavior_params.make_rng("motion.pointer")
+    motion_wheel_rng = behavior_params.make_rng("motion.wheel")
+
+    page_action_tool = (
+        PageActionService(
+            browser=driver,
+            registry=registry,
+            rng=interaction_pacing_rng,
+            pointer_rng=motion_pointer_rng,
+            wheel_rng=motion_wheel_rng,
+            readiness=dom_readiness,
+        )
+        if driver is not None
+        else None
+    )
+
     interaction_port = (
         InteractionExecutor(
             driver,
@@ -731,7 +787,7 @@ def build_orchestrator(  # noqa: PLR0914
     # Built once and shared. Discovery adapters receive them instead of
     # importing scrolling and pagination across the layer boundary.
     _page_scroller = None
-    _paginator = None
+    _advancer_factory = None
     _max_pages_per_query = 1
 
     # ── Audit observers ───────────────────────────────────────────────────
@@ -919,23 +975,8 @@ def build_orchestrator(  # noqa: PLR0914
         from auto_apply.adapters.secondary.discovery.providers.indeed import (  # noqa: PLC0415
             IndeedProvider,
         )
-        from auto_apply.adapters.secondary.evasion.manager import (  # noqa: PLC0415
-            EvasionManager,
-        )
-
-        try:
-            _indeed_evasion_manager = EvasionManager(driver)
-        except Exception as _exc:
-            logger.warning(
-                "build_orchestrator: EvasionManager construction failed for "
-                "IndeedProvider — proceeding without evasion checking: %s",
-                _exc,
-            )
-            _indeed_evasion_manager = None
-
         from auto_apply.adapters.secondary.navigation.pagination import (  # noqa: PLC0415
             InfiniteScrollStrategy,
-            PaginationHandler,
         )
 
         _nav_cfg = registry.get_all_effective_config()
@@ -952,13 +993,54 @@ def build_orchestrator(  # noqa: PLR0914
         _page_scroller = InfiniteScrollStrategy(
             driver,
             scroller=page_action_tool,
-            settle_s=_nav_cfg.get("infinite_scroll_settle_s", 2.0),
         )
-        _paginator = (
-            PaginationHandler(driver, interaction_port)
-            if interaction_port is not None
-            else None
+
+        # ── Verified page advance: one STATELESS advancer per query ─────
+        # Built by a per-provider factory (the shared, stateful
+        # pagination handler is retired). The URL-template rung comes from
+        # the engine YAML through the existing SelectorLoader — this wires
+        # that previously WIRE-LATER module. Unknown engines get no
+        # template and fall through to the structural rungs.
+        from auto_apply.adapters.secondary.navigation.page_advancer import (  # noqa: PLC0415
+            VerifiedPageAdvancer,
         )
+        from auto_apply.adapters.secondary.discovery.strategies.selector_loader import (  # noqa: PLC0415
+            SelectorLoader,
+        )
+        from auto_apply.domain.services.url_templating import (  # noqa: PLC0415
+            url_template_from_config,
+        )
+
+        _selector_loader = SelectorLoader()
+        _pagination_change_timeout_s = float(
+            _discovery_cfg.get("pagination_change_timeout_s", 4.0)
+        )
+
+        def _advancer_factory(engine: str):
+            url_template = (
+                url_template_from_config(
+                    (_selector_loader.load(engine) or {}).get("pagination")
+                )
+                if engine
+                else None
+            )
+
+            def _build() -> VerifiedPageAdvancer:
+                return VerifiedPageAdvancer(
+                    browser=driver,
+                    page_action=page_action_tool,
+                    readiness=dom_readiness,
+                    url_template=url_template,
+                    scroll=(
+                        page_action_tool.scroll_to_bottom
+                        if page_action_tool is not None
+                        else None
+                    ),
+                    change_timeout_s=_pagination_change_timeout_s,
+                    engine=engine,
+                )
+
+            return _build
 
         from auto_apply.application.services.auditing.reporter import (  # noqa: PLC0415
             AuditReporter,
@@ -998,7 +1080,7 @@ def build_orchestrator(  # noqa: PLR0914
                 ats_registry=_ats_registry,
                 page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
-                paginator=_paginator,
+                advancer_factory=_advancer_factory("google"),
                 max_pages=_max_pages_per_query,
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
@@ -1006,12 +1088,13 @@ def build_orchestrator(  # noqa: PLR0914
                 degradation_detector=_degradation_detector,
                 research_observer=research_observer,
                 readiness=dom_readiness,
+                page_action=page_action_tool,
             ),
             BingProvider(
                 browser=driver,
                 page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
-                paginator=_paginator,
+                advancer_factory=_advancer_factory("bing"),
                 max_pages=_max_pages_per_query,
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
@@ -1019,13 +1102,13 @@ def build_orchestrator(  # noqa: PLR0914
                 degradation_detector=_degradation_detector,
                 research_observer=research_observer,
                 readiness=dom_readiness,
+                page_action=page_action_tool,
             ),
             IndeedProvider(
                 browser=driver,
-                evasion_manager=_indeed_evasion_manager,
                 page_understanding_port=page_understanding_port,
                 scroller=_page_scroller,
-                paginator=_paginator,
+                advancer_factory=_advancer_factory("indeed"),
                 max_pages=_max_pages_per_query,
                 observer=_extraction_observer,
                 reporter=_audit_reporter,
@@ -1033,6 +1116,7 @@ def build_orchestrator(  # noqa: PLR0914
                 degradation_detector=_degradation_detector,
                 research_observer=research_observer,
                 readiness=dom_readiness,
+                page_action=page_action_tool,
             ),
         ]
 
@@ -1048,11 +1132,14 @@ def build_orchestrator(  # noqa: PLR0914
             search_prefs=search_prefs_for_miner,
             source_tag="CompanyDirect",
             scroller=_page_scroller,
-            paginator=_paginator,
+            advancer=(
+                _advancer_factory("")() if _advancer_factory is not None else None
+            ),
             max_pages=_max_pages_per_query,
             observer=_extraction_observer,
             reporter=_audit_reporter,
             forced_tier=_forced_tier,
+            page_action=page_action_tool,
         ).execute()
 
     # Single-URL careers-page scraper for DISCOVER_COMPANY tasks: navigate the
@@ -1167,6 +1254,26 @@ def build_orchestrator(  # noqa: PLR0914
         ),
     )
 
+    # ── Context manager — tab/window switching for offsite apply clicks ────
+    # Measured 2026-09-10: this class existed (and was constructed inside
+    # other adapters) but was NEVER passed to ApplicationsWorkflow, so an
+    # Apply control that opened a new tab stranded AA on the posting. Built
+    # here for the same reason as the lease: the composition root is the
+    # only layer that may construct adapters.
+    _context_manager = None
+    if driver is not None:
+        try:
+            from auto_apply.adapters.secondary.browser.context_manager import (  # noqa: PLC0415
+                ContextManager,
+            )
+            _context_manager = ContextManager(driver)
+        except Exception as _exc:
+            logger.warning(
+                "build_orchestrator: ContextManager unavailable — apply "
+                "clicks that open a new tab cannot be followed: %s",
+                _exc,
+            )
+
     # ApplicationsWorkflow — try to construct each optional component.
     _field_classifier = None
     _semantic_filler = None
@@ -1212,7 +1319,9 @@ def build_orchestrator(  # noqa: PLR0914
             from auto_apply.adapters.secondary.navigation.interruption import (  # noqa: PLC0415
                 InterruptionHandler,
             )
-            _interruption_handler = InterruptionHandler(browser=driver)
+            _interruption_handler = InterruptionHandler(
+                browser=driver, page_action=page_action_tool
+            )
         except Exception as _exc:
             logger.warning(
                 "build_orchestrator: InterruptionHandler unavailable: %s", _exc
@@ -1245,6 +1354,7 @@ def build_orchestrator(  # noqa: PLR0914
         config=_effective_config,
         research_observer=research_observer,
         browser_lease=browser_lease,       # enforce concurrency safety
+        context_manager=_context_manager,  # follow new tabs after apply clicks
         rng=apps_workflow_rng,
         page_analysis_router=page_analysis_router,  # <<< NEW
         plan=plan,
@@ -1291,10 +1401,20 @@ def build_orchestrator(  # noqa: PLR0914
     from auto_apply.application.services.job_posting_resolver import (  # noqa: PLC0415
         JobPostingResolver,
     )
-    from auto_apply.adapters.secondary.evasion.components.behavior import (  # noqa: PLC0415
-        simulate_idle_time,
+
+    # The resolver's post-navigation idle pause is the tool's seeded macro
+    # pause (the evasion behaviour module's simulate_idle_time is superseded).
+    # None without a tool (no driver) degrades to no pause, which the
+    # resolver already tolerates.
+    job_posting_resolver = JobPostingResolver(
+        idle_simulator=(
+            lambda _driver, min_seconds, max_seconds: page_action_tool.macro_pause(
+                min_seconds, max_seconds
+            )
+        )
+        if page_action_tool is not None
+        else None
     )
-    job_posting_resolver = JobPostingResolver(idle_simulator=simulate_idle_time)
 
     # ── Optional CLI progress display (Wave M — Session Observability) ────────
     # Constructed here, not by the orchestrator itself, since composition_root
@@ -1332,6 +1452,9 @@ def build_orchestrator(  # noqa: PLR0914
         # The same instance the workflows observe through — aggregator or
         # Null — seen through its session-lifetime port (item 3).
         research_session=research_session,
+        # The shared interaction tool, for the session tally the teardown
+        # writes into the session report. None without a driver.
+        page_action=page_action_tool,
     )
 
     logger.info(
@@ -1420,7 +1543,10 @@ def _refuse_no_browser(registry: CapabilitiesRegistry, cascade: BrowserCascade) 
     raise BrowserSetupError(message)
 
 
-def _register_exit_shutdown(controller: "SessionController") -> None:
+def _register_exit_shutdown(
+    controller: "SessionController",
+    instances: "InstanceRegistry | None" = None,
+) -> None:
     """Registers a WEAK atexit hook that shuts *controller* down at interpreter exit.
 
     This is the last-resort release net for exits nobody named: a sys.exit
@@ -1445,12 +1571,21 @@ def _register_exit_shutdown(controller: "SessionController") -> None:
 
     def _shutdown_if_alive() -> None:
         instance = controller_ref()
-        if instance is None:
-            return
         try:
-            instance.shutdown()
-        except Exception:  # noqa: BLE001 — an atexit hook must never raise
-            pass
+            if instance is not None:
+                try:
+                    instance.shutdown()
+                except Exception:  # noqa: BLE001 — an atexit hook must never raise
+                    pass
+        finally:
+            # The instance record must go even when the controller was
+            # already collected — otherwise the registry reports a dead
+            # process as live until the next liveness sweep.
+            if instances is not None:
+                try:
+                    instances.unregister()
+                except Exception:  # noqa: BLE001 — an atexit hook must never raise
+                    pass
 
     atexit.register(_shutdown_if_alive)
 
@@ -1517,12 +1652,21 @@ def build_session_controller(
     controller._perform_startup_recovery()   # reset stuck IN_PROGRESS tasks
     controller._wire_approval_gate()         # bind HITL gate to workflow
 
-    # 5. Last-resort release net — see _register_exit_shutdown. Covers exits
+    # 5. Instance registry — how a future uninstall tells this process is
+    # alive. A DIRECTORY of per-process records, not a lock: a lock goes
+    # stale on SIGKILL and forbids legitimate concurrent instances; liveness
+    # is re-checked on read, PID-reuse included.
+    from auto_apply.application.services.instance_registry import InstanceRegistry  # noqa: PLC0415
+
+    instances = InstanceRegistry(INSTANCES_DIR)
+    instances.register()
+
+    # 6. Last-resort release net — see _register_exit_shutdown. Covers exits
     # no caller names (a stray sys.exit, an unhandled exception) by shutting
     # the controller down at interpreter exit IF it is still alive. Cannot
     # cover a killed process (SIGKILL, Task Manager, power loss); nothing
     # in-process can.
-    _register_exit_shutdown(controller)
+    _register_exit_shutdown(controller, instances=instances)
 
     return controller
 
@@ -1548,5 +1692,20 @@ def build_session(master_password: str | None = None):
         ProfileRepository,
     )
 
+    # Bootstrap creates the hierarchy explicitly; the import-time creation
+    # in domain.config is suppressed on the uninstall path
+    # (AA_NO_CREATE_DIRS), which never reaches this function.
+    ensure_data_dirs()
     DatabaseManager()  # Initializes DB / creates tables if absent.
+    # Record how this AA arrived — the uninstaller reads the ledger instead
+    # of guessing the install route (last roots record wins).
+    from auto_apply.application.services.footprint_ledger import (  # noqa: PLC0415
+        FootprintLedger,
+    )
+
+    FootprintLedger(FOOTPRINT_LEDGER_PATH).record_roots(
+        run_mode=get_run_mode(),
+        data_root=USER_DATA_DIR,
+        install_root=get_install_root(),
+    )
     return ProfileRepository(master_password=master_password)

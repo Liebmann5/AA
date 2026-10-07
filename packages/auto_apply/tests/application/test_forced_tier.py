@@ -60,21 +60,12 @@ def _classify_as_serp(monkeypatch):
     browser needs this same fixture.
     """
     from auto_apply.adapters.secondary.discovery.strategies import serp_strategy
-    from auto_apply.domain.types import PageType
 
-    class _AlwaysSerp:
-        def __init__(self, browser, scanner) -> None:
-            pass
-
-        def classify(self):
-            return PageType.SERP
-
-    class _NoDetection:
-        def __init__(self, browser) -> None:
-            pass
-
-    monkeypatch.setattr(serp_strategy, "PageClassifier", _AlwaysSerp)
-    monkeypatch.setattr(serp_strategy, "DefaultDetectionStrategy", _NoDetection)
+    # The block gate asks the one page verdict; these pins are about tier
+    # selection, so the gate answers "not blocked" (never weakened elsewhere).
+    monkeypatch.setattr(
+        serp_strategy.GenericSERPStrategy, "_page_block_type", lambda self: None
+    )
 
 
 def _job(n):

@@ -17,6 +17,10 @@ class PageType(Enum):
     CAPTCHA_BLOCK = auto()       # Hard block / Cloudflare / CAPTCHA
     ERROR_404 = auto()           # HTTP 404 or generic "Not Found"
     SUCCESS_PAGE = auto()        # "Thank you for applying" confirmation
+    ALREADY_APPLIED = auto()     # "You have already applied" — vocabulary for the
+                                 # one page verdict; detection lands with the
+                                 # application-path fold-in (turn 2)
+    CLOSED = auto()              # Posting closed / no longer accepting (turn 2)
 
 class JobStatus(Enum):
     """Enumeration for the status of a job in the application workflow."""

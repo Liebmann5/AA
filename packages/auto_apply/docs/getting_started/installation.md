@@ -43,6 +43,51 @@ If that prints 3.9 or lower, or "command not found", try `python3 --version`.
 
 ---
 
+## Method 0 — one-command installer
+
+**No Python, no developer tools, no admin rights needed.** One command
+fetches a short, readable bootstrap, which installs uv and a uv-managed
+Python inside a single AA folder (default `~/.auto_apply`), fetches the AA
+source, and hands over to AA's own `--install` — which builds the
+environment, writes the launcher, and reports what it found. Nothing is
+installed system-wide; your browser is detected, never installed. On a Mac,
+none of this needs the Command Line Tools: no `git`, no compiler — wheels
+only.
+
+macOS / Linux (needs only `curl`, which both ship):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Liebmann5/AA/main/packages/auto_apply/install.sh | sh
+```
+
+Windows (PowerShell, which Windows ships):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Liebmann5/AA/main/packages/auto_apply/install.ps1 | iex"
+```
+
+The bootstrap shows exactly what it will download, the approximate sizes,
+and where everything goes, and asks before downloading. uv and Python are
+verified against pinned checksums (`install_pins.txt` in the repo); a failed
+verification deletes the download and stops the install. Offline / USB:
+`install.sh --root /media/usb/AutoApply --archive AA-src.tar.gz --offline`
+installs from a pre-populated folder with no network (one prepared copy per
+operating system — uv and Python builds are per-platform).
+
+!!! warning "Requires the first release"
+
+    The bootstrap's default source is the release archive **plus its
+    checksum file**: the release process publishes `AA-src.tar.gz` and
+    `SHA256SUMS.txt` as assets, and the bootstrap verifies the archive
+    against them. A release without the checksum file makes the bootstrap
+    REFUSE — an unverified source archive is not acceptable for an
+    installer that refuses an unverified uv. The explicit, printed opt-out
+    is `--allow-unverified-source`. Until the first GitHub release exists,
+    pass `--archive <path-to-a-source-tar.gz>` or use Method 1. Piping a
+    script from the internet is a trust decision: the script and the pins
+    file are in the repository to read first, and the executables it runs
+    are checksum-verified rather than channel-trusted.
+
 ## Method 1 — from a source checkout (recommended today)
 
 **AA is not yet published to PyPI.** `pip install auto_apply` does not work; any
@@ -107,10 +152,17 @@ database, logs, reports, caches.
 
 !!! warning "Containment is not yet proven"
 
-    `[PARTIAL]`. Portable mode runs, but `launch_portable.sh` has known
-    containment defects — most importantly it does not set `SE_CACHE_PATH`, so
-    Selenium Manager can write a driver into the **host's** cache directory
-    while the script's header claims nothing is written outside the drive.
+    `[PARTIAL]`. Portable mode runs. Two former leaks are now contained
+    in-process, on every launch path: Selenium Manager's driver cache
+    (`SE_CACHE_PATH`, with its usage statistics opted out) and the
+    snap-Firefox geckodriver profile root both resolve inside the data
+    directory.
+
+    Known gaps remain: Playwright browsers and the Hugging Face / GPT4All
+    model caches use their per-OS defaults unless the launcher environment
+    covers them, and pip-installed SpaCy models always live in the Python
+    environment they were installed into. The uninstaller's discovery list
+    knows these locations and reports them; it never removes shared caches.
 
     Treat "leaves no trace" as an intention, not a guarantee, until
     [STATUS.md](../STATUS.md) says otherwise.

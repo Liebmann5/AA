@@ -85,31 +85,22 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "selects it. Note: its InteractionPort annotation is what keeps that "
         "port wired",
     ),
-    "auto_apply.adapters.secondary.discovery.strategies.selector_loader": (
-        "WIRE-LATER",
-        "YAML selector loader for ToolbarElementLocator (AD-9); nothing calls "
-        "SearchEngineStrategy.set_locator so it is never constructed",
-    ),
     "auto_apply.adapters.secondary.discovery.strategies.toolbar_locator": (
         "WIRE-LATER",
         "selector+fallback locator (AD-9); wired only via set_locator, which "
         "has no caller",
     ),
-    "auto_apply.adapters.secondary.evasion.auditor": (
+    "auto_apply.adapters.secondary.evasion": (
         "WIRE-LATER",
-        "fingerprint audit display using requests; evasion audit wiring "
-        "deferred (Bible 16)",
+        "empty package __init__; its only inbound edge was the retired "
+        "components/behavior.py, and every module in it is the unwired "
+        "evasion layer exempted below",
     ),
     "auto_apply.adapters.secondary.evasion.captcha_handler": (
         "WIRE-LATER",
         "AudioCaptchaSolver scaffold whose solve() returns False; the "
         "orchestrator uses CaptchaResolutionService "
         "(resolution/captcha_adapter.py) instead",
-    ),
-    "auto_apply.adapters.secondary.evasion.components.session": (
-        "WIRE-LATER",
-        "SessionManager persona persistence + warmup (Bible 16.1); the "
-        "cascade/orchestrator do not construct it yet",
     ),
     "auto_apply.adapters.secondary.evasion.fingerprint_chrome": (
         "WIRE-LATER",
@@ -130,11 +121,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "PLANNED",
         "empty stub for the headless APIDirectAdapter interaction path "
         "(Bible 7.4)",
-    ),
-    "auto_apply.adapters.secondary.interaction.execution_strategies": (
-        "WIRE-LATER",
-        "Stealth/Instant strategies for InteractionExecutor; the composition "
-        "root builds the executor without a strategy",
     ),
     "auto_apply.adapters.secondary.network.network": (
         "RETIRE-CANDIDATE",
@@ -209,11 +195,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "BaseApplicationStrategy ABC; its only importer is "
         "linkedin_easy_apply.py, itself unreachable",
     ),
-    "auto_apply.domain.browser_state": (
-        "RETIRE-CANDIDATE",
-        "audit snapshot models used only by the unwired evasion/auditor.py; "
-        "0 other importers, no standing ruling",
-    ),
     "auto_apply.domain.models.execution": (
         "RETIRE-CANDIDATE",
         "SchedulingMode/ExecutionConfiguration predate SessionPlan; "
@@ -247,17 +228,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "WIRE-LATER",
         "unreachable because HealthMonitor has no consumer (orchestrator "
         "holds monitors as Any) — same fact, two pins",
-    ),
-    "auto_apply.domain.ports.interaction_primitives_port": (
-        "WIRE-LATER",
-        "unreachable because PageActionPrimitives/DomReadinessPort/"
-        "PageNavigationPort have no executable consumers — same fact, two pins",
-    ),
-    "auto_apply.domain.ports.page_classification_port": (
-        "WIRE-LATER",
-        "unreachable because PageClassifierPort has no consumer "
-        "(GenericSERPStrategy constructs PageClassifier concretely) — same "
-        "fact, two pins",
     ),
     "auto_apply.domain.ports.raw_driver_port": (
         "WIRE-LATER",
@@ -324,6 +294,10 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
 # The file moves to docs/old_retired_files/ via retire.py — a manual step the
 # maintainer runs; this entry is removed in anticipation of that move, and the
 # pin fails loudly naming ui_handler.py if the move has not happened yet.
+# Dropped to 47 with the page-verdict consolidation: evasion/auditor,
+# domain/browser_state and domain/ports/page_classification_port retired.
+# Dropped to 45 with the call-2 retirements: interaction/execution_strategies
+# and evasion/components/session moved to docs/old_retired_files/.
 MAX_EXEMPTIONS = 50
 
 

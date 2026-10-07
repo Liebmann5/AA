@@ -13,6 +13,20 @@ Locale detection order:
 from auto_apply.application.services.i18n import configure_locale, get_text
 
 
+def _tr(key: str, default: str) -> str:
+    """Translate *key*, falling back to *default* when the locale lacks it.
+
+    New settings keys land in the locale resources out of band; until a
+    locale file carries them, the UI must still render. Three miss shapes
+    are covered: get_text raising, returning "", or echoing the key.
+    """
+    try:
+        value = get_text(key)
+    except Exception:
+        return default
+    return value if value and value != key else default
+
+
 def get_strings(lang_code: str | None = None) -> dict[str, str]:
     """Returns a flat dict of UI labels for the given locale.
 
@@ -69,4 +83,23 @@ def get_strings(lang_code: str | None = None) -> dict[str, str]:
         "metric_vetted": t("dashboard.vetted"),
         "metric_applied": t("dashboard.applied"),
         "metric_failed": t("dashboard.failed"),
+
+        # --- Settings: pointer & scroll behaviour (ADR 018, layer 0) ---
+        "motion_profile_label": _tr("settings.motion_profile_label", "Pointer & scroll behaviour:"),
+        "motion_profile_note": _tr(
+            "settings.motion_profile_note",
+            "Natural is right for almost everyone. Instant removes all human pacing — use it only for tests.",
+        ),
+        "motion_option_human": _tr("settings.motion_option_human", "Natural (recommended)"),
+        "motion_option_careful": _tr("settings.motion_option_careful", "Careful — slower, hardest to detect"),
+        "motion_option_instant": _tr("settings.motion_option_instant", "Instant — no human pacing (tests only)"),
+        "motion_profile_locked": _tr(
+            "settings.motion_profile_locked",
+            "Behaviour profile locked by your System Administrator.",
+        ),
+        "stealth_driver_label": _tr("settings.stealth_driver_label", "Use stealth browser driver when available"),
+        "stealth_driver_note": _tr(
+            "settings.stealth_driver_note",
+            "Chrome only, needs undetected-chromedriver. Does not change pacing — pacing comes from the behaviour profile above.",
+        ),
     }

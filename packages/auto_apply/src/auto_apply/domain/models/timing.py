@@ -33,13 +33,6 @@ class TimingProfile(BaseModel):
     thinking_pause_min: float = Field(default=0.3, description="Minimum thinking pause duration, seconds.")
     thinking_pause_max: float = Field(default=0.8, description="Maximum thinking pause duration, seconds.")
 
-    # ── Mouse behavior ────────────────────────────────────────────────
-    mouse_move_steps: int = Field(default=5, description="Number of incremental moves per fidget or mouse action.")
-    mouse_offset_min_px: int = Field(default=50, description="Minimum pixel offset per single mouse move.")
-    mouse_offset_max_px: int = Field(default=200, description="Maximum pixel offset per single mouse move.")
-    mouse_step_delay_min: float = Field(default=0.2, description="Minimum delay between mouse moves, seconds.")
-    mouse_step_delay_max: float = Field(default=0.8, description="Maximum delay between mouse moves, seconds.")
-
     # ── Navigation ─────────────────────────────────────────────────────
     between_provider_pause_min: float = Field(default=2.0, description="Minimum pause between search providers, seconds.")
     between_provider_pause_max: float = Field(default=5.0, description="Maximum pause between search providers, seconds.")
@@ -102,11 +95,6 @@ class BehaviorParameters(BaseModel):
                 thinking_pause_probability=settings.applications.thinking_pause_probability,
                 thinking_pause_min=settings.applications.thinking_pause_min,
                 thinking_pause_max=settings.applications.thinking_pause_max,
-                mouse_move_steps=settings.browser.mouse_move_steps,
-                mouse_offset_min_px=settings.browser.mouse_offset_min_px,
-                mouse_offset_max_px=settings.browser.mouse_offset_max_px,
-                mouse_step_delay_min=settings.browser.mouse_step_delay_min,
-                mouse_step_delay_max=settings.browser.mouse_step_delay_max,
                 between_provider_pause_min=settings.discovery.between_provider_pause_min,
                 between_provider_pause_max=settings.discovery.between_provider_pause_max,
                 page_load_timeout=settings.page_load_timeout_seconds,

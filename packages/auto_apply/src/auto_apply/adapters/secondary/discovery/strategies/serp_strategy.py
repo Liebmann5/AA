@@ -21,35 +21,94 @@ from auto_apply.domain.ports.extraction_observer_port import (
 from auto_apply.domain.ports.research_port import (
     DiscoveryObservation,
     NullResearchObserver,
+    ResearchObserverPort,
 )
 from auto_apply.adapters.secondary.discovery.components.miner import SemanticMiner
 from auto_apply.adapters.secondary.discovery.components.page_understanding_extractor import (
     FallbackSerpExtractor,
 )
-from auto_apply.adapters.secondary.dom.classifier import PageClassifier
+from auto_apply.adapters.secondary.browser.page_snapshot import browser_page_snapshot
 from auto_apply.adapters.secondary.navigation.interruption import InterruptionHandler
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import JobSearchPreferences
 from auto_apply.domain.ports.browser_port import BrowserInterface
-from auto_apply.domain.types import Locator, PageType
+from auto_apply.domain.ports.page_advance_port import PageAdvancePort
+from auto_apply.domain.services.page_assessment import assess_page
+from auto_apply.domain.types import PageType
 
 from auto_apply.adapters.secondary.perception.dom_adapter import (
     BaseExtractor,
     SmartTextExtractor,
     SmartURLExtractor,
 )
-from auto_apply.adapters.secondary.evasion.detection import DefaultDetectionStrategy
 
 logger = logging.getLogger(__name__)
 
 # Page types that mean "we were blocked", not "there are no jobs". A blocked
 # page must never become a zero-yield measurement or a degradation-guard
-# baseline.
-_BLOCK_PAGE_TYPES = frozenset({
+# baseline. Public because two gates classify by it: this strategy's, and
+# IndeedProvider's navigation health check.
+BLOCK_PAGE_TYPES = frozenset({
     PageType.CAPTCHA_BLOCK,
     PageType.LOGIN_REQUIRED,
     PageType.ERROR_404,
 })
+
+
+def record_blocked_observation(
+    *,
+    source_tag: str,
+    browser: BrowserInterface,
+    research_observer: ResearchObserverPort | None,
+    page_type: PageType,
+) -> None:
+    """Emit a blocked-page discovery observation (consent-gated).
+
+    The observation carries the block verdict — it is an access-equity
+    datum for the research record, not an empty harvest. Shared by
+    GenericSERPStrategy (blocked mid-strategy) and IndeedProvider (blocked
+    during navigation) so one blocked page produces one observation shape,
+    whoever met it.
+    """
+    if research_observer is None or not research_observer.is_enabled:
+        return
+    try:
+        host = ""
+        try:
+            host = urllib.parse.urlsplit(
+                getattr(browser, "current_url", "") or ""
+            ).netloc.lower()
+        except Exception:
+            pass
+        research_observer.observe_discovery(
+            DiscoveryObservation(
+                provider=source_tag,
+                page_host=host,
+                page_state=page_type.name.lower(),
+                blocked=True,
+                architecture="none",
+                card_count=0,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "%s: blocked-page observation failed (non-fatal): %s",
+            source_tag,
+            exc,
+        )
+
+
+def _stamp_job_page(job, page_index: int, rank: int) -> None:
+    """Record which results page and position a listing came from.
+
+    Jobs carry this in their metadata scratch-pad (reserved keys, documented
+    on the model). Listings from test doubles or older extractors that have
+    no metadata dict are left untouched — evidence must never break a harvest.
+    """
+    metadata = getattr(job, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata["page_index"] = page_index
+        metadata["rank"] = rank
 
 
 class GenericSERPStrategy:
@@ -71,7 +130,7 @@ class GenericSERPStrategy:
         dry_scroll_limit: int = 3,
         inter_scroll_delay_s: float = 2.0,
         scroller=None,
-        paginator=None,
+        advancer: PageAdvancePort | None = None,
         max_pages: int = 1,
         observer=None,
         reporter=None,
@@ -79,6 +138,7 @@ class GenericSERPStrategy:
         fast_extractor=None,
         degradation_detector=None,
         research_observer=None,
+        page_action=None,
     ):
         """Initializes the strategy with specific parsing tools.
 
@@ -101,15 +161,18 @@ class GenericSERPStrategy:
         # inter_scroll_delay_s paces between scrolls (0.0 in tests for speed).
         self._dry_scroll_limit = max(1, int(dry_scroll_limit))
         self._inter_scroll_delay_s = max(0.0, float(inter_scroll_delay_s))
-        # Scrolling and pagination arrive as collaborators. This adapter no
+        # Scrolling and page advance arrive as collaborators. This adapter no
         # longer imports them across the layer boundary, and no longer
-        # decides how a page advances — it only asks for the next one.
+        # decides how a page advances — it asks, and trusts only a VERIFIED
+        # advance (see _mine_all_pages).
         self._scroller = scroller
-        self._paginator = paginator
+        self._advancer = advancer
         # Ceiling, not a quota. Default 1 = today's single-page behaviour.
         self._max_pages = max(1, int(max_pages))
 
-        self.interruption_handler = InterruptionHandler(browser)
+        self.interruption_handler = InterruptionHandler(
+            browser, page_action=page_action
+        )
         # Auditing is observation. Nulls by default, so an unwired audit
         # trail can never change or break what discovery extracts.
         self._observer = observer or NullExtractionObserver()
@@ -119,6 +182,7 @@ class GenericSERPStrategy:
         # None (unwired) leaves discovery byte-identical to before S8k.
         self._degradation_detector = degradation_detector
         self._research_observer = research_observer or NullResearchObserver()
+        self._page_action = page_action
 
         self.title_parser = title_parser or SmartTextExtractor()
         self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])
@@ -153,13 +217,16 @@ class GenericSERPStrategy:
         and ``run()`` apply the identical check instead of one path having
         it and the other not.
         """
-        classifier = PageClassifier(
-            self.browser,
-            DefaultDetectionStrategy(self.browser),
-        )
-        page_type = classifier.classify()
-        if page_type in _BLOCK_PAGE_TYPES:
-            return page_type
+        url, title, html = browser_page_snapshot(self.browser)
+        assessment = assess_page(url=url, title=title, html=html)
+        if assessment.kind in BLOCK_PAGE_TYPES:
+            logger.info(
+                "%s: page verdict %s | signals=%s",
+                self.source_tag,
+                assessment.kind.name,
+                ",".join(assessment.signals),
+            )
+            return assessment.kind
         return None
 
     def _abort_blocked(self, page_type: PageType, context: str) -> list[Job]:
@@ -178,39 +245,26 @@ class GenericSERPStrategy:
 
     def _emit_blocked_observation(self, page_type: PageType) -> None:
         """Emit a blocked-page discovery observation (consent-gated)."""
-        if not self._research_observer.is_enabled:
-            return
-        try:
-            host = ""
-            try:
-                host = urllib.parse.urlsplit(
-                    self.browser.current_url or ""
-                ).netloc.lower()
-            except Exception:
-                pass
-            self._research_observer.observe_discovery(
-                DiscoveryObservation(
-                    provider=self.source_tag,
-                    page_host=host,
-                    page_state=page_type.name.lower(),
-                    blocked=True,
-                    architecture="none",
-                    card_count=0,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "%s: blocked-page observation failed (non-fatal): %s",
-                self.source_tag,
-                exc,
-            )
+        record_blocked_observation(
+            source_tag=self.source_tag,
+            browser=self.browser,
+            research_observer=self._research_observer,
+            page_type=page_type,
+        )
 
     def _mine_all_pages(self, scroller) -> dict:
         """Mines the current page, then advances while pages remain.
 
         With ``max_pages == 1`` (the shipped default) this runs the harvest
-        exactly once and never touches the paginator, so discovery output is
+        exactly once and never touches the advancer, so discovery output is
         byte-for-byte what it was before pagination existed.
+
+        Every advance is VERIFIED — the advancer only reports success when
+        the page provably changed, so the old page is never re-mined wearing
+        a new number. And every new page is treated as a new page: the block
+        verdict and overlay dismissal re-run before it is mined, and pacing
+        between pages comes from the interaction tool's macro pause, never
+        a bare sleep.
 
         Args:
             scroller: The injected scroll collaborator.
@@ -218,26 +272,171 @@ class GenericSERPStrategy:
         Returns:
             The merged dict of unique jobs across every page visited.
         """
-        unique = self._scroll_and_mine(scroller)
+        unique = self._scroll_and_mine(scroller, page_index=0, advance_method="")
 
+        pages_visited = 1
+        methods_used: list[str] = []
+        stop_reason = "page-cap"
         for page in range(1, self._max_pages):
             if len(unique) >= self.max_results:
+                stop_reason = "result-cap"
                 break
-            if self._paginator is None:
+            if self._advancer is None:
+                stop_reason = "no-advancer"
                 break
             try:
-                if not self._paginator.navigate_to_next_page():
-                    logger.info(
-                        "%s: no further pages after page %d", self.source_tag, page
-                    )
-                    break
+                outcome = self._advancer.advance()
             except Exception as exc:
-                logger.debug("%s: pagination failed: %s", self.source_tag, exc)
+                logger.debug("%s: page advance failed: %s", self.source_tag, exc)
+                stop_reason = "advance-error"
                 break
-            logger.info("%s: advanced to page %d", self.source_tag, page + 1)
-            unique.update(self._scroll_and_mine(scroller))
+            if not outcome.advanced:
+                logger.info(
+                    "%s: no further pages after page %d (%s)",
+                    self.source_tag,
+                    page,
+                    outcome.stop_reason or "no next page",
+                )
+                stop_reason = outcome.stop_reason or "no-next"
+                break
+            pages_visited += 1
+            methods_used.append(outcome.method)
+            logger.info(
+                "%s: advanced to page %d via %s (verified)",
+                self.source_tag,
+                page + 1,
+                outcome.method,
+            )
+            # A new page is a new page: the block verdict re-runs FIRST — a
+            # CAPTCHA on page 2 is a block, never an empty harvest — then
+            # overlays are dismissed and pacing is applied before mining.
+            block_type = self._page_block_type()
+            if block_type is not None:
+                logger.warning(
+                    "%s: page %d failed health check (%s). Stopping pagination.",
+                    self.source_tag,
+                    page + 1,
+                    block_type.name,
+                )
+                self._emit_blocked_observation(block_type)
+                stop_reason = f"blocked:{block_type.name.lower()}"
+                break
+            self._dismiss_overlays()
+            self._pause_between_pages()
+            unique.update(
+                self._scroll_and_mine(
+                    scroller, page_index=page, advance_method=outcome.method
+                )
+            )
 
+        self._record_pagination_summary(
+            pages_visited, methods_used, stop_reason, len(unique)
+        )
         return unique
+
+    def _dismiss_overlays(self) -> None:
+        """Dismiss cookie banners / popups on the current page. Never raises."""
+        try:
+            self.interruption_handler.handle_interruptions()
+        except Exception:
+            pass
+
+    def _pause_between_pages(self) -> None:
+        """Pacing between page fetches: the tool's macro pause, which is a
+        measured human reading pause — never a bare sleep. Rate limits are
+        real (Google's /sorry/ at ~3 searches/minute); pages are paced."""
+        tool = self._page_action
+        if tool is None:
+            return
+        try:
+            tool.macro_pause()
+        except Exception:
+            pass
+
+    def _record_pagination_summary(
+        self,
+        pages_visited: int,
+        methods_used: list[str],
+        stop_reason: str,
+        job_count: int,
+    ) -> None:
+        """Emit one query-level pagination summary observation (consent-gated).
+
+        Only when pagination was actually in play (an advancer wired AND the
+        ceiling above one page), so the shipped single-page default records
+        exactly what it recorded before. The summary row carries
+        ``page_index=-1`` to distinguish it from per-page rows: it is a
+        query record, not a results page.
+        """
+        if self._advancer is None or self._max_pages <= 1:
+            return
+        observer = self._research_observer
+        if observer is None or not getattr(observer, "is_enabled", False):
+            return
+        try:
+            host = ""
+            try:
+                host = urllib.parse.urlsplit(
+                    getattr(self.browser, "current_url", "") or ""
+                ).netloc.lower()
+            except Exception:
+                pass
+            observer.observe_discovery(
+                DiscoveryObservation(
+                    provider=self.source_tag,
+                    page_host=host,
+                    page_state="normal",
+                    blocked=False,
+                    architecture="",
+                    card_count=job_count,
+                    page_index=-1,
+                    advance_method=";".join(methods_used) or "none",
+                    stop_reason=stop_reason,
+                    page_count=pages_visited,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "%s: pagination summary failed (non-fatal): %s",
+                self.source_tag,
+                exc,
+            )
+
+    def _paginate_json_ld(self, jobs: list[Job]) -> list[Job]:
+        """Advance a JSON-LD page through the same verified ladder.
+
+        Ruled: a JSON-LD page MAY advance — structured data describes the
+        current page, not the site's size. Only attempted when the ceiling
+        allows more pages and an advancer is wired, so the shipped default
+        (one page) is byte-identical to before. Each new page re-runs the
+        block verdict and overlay dismissal before extraction.
+        """
+        seen = {j.url for j in jobs}
+        for _page in range(1, self._max_pages):
+            if len(jobs) >= self.max_results or self._advancer is None:
+                break
+            try:
+                outcome = self._advancer.advance()
+            except Exception as exc:
+                logger.debug(
+                    "%s: JSON-LD page advance failed: %s", self.source_tag, exc
+                )
+                break
+            if not outcome.advanced:
+                break
+            block_type = self._page_block_type()
+            if block_type is not None:
+                self._emit_blocked_observation(block_type)
+                break
+            self._dismiss_overlays()
+            self._pause_between_pages()
+            for job in self._try_extract_json_ld():
+                if len(jobs) >= self.max_results:
+                    break
+                if job.url and job.url not in seen:
+                    seen.add(job.url)
+                    jobs.append(job)
+        return jobs
 
     def _extractor_label(self) -> str:
         """Name the route that produced the last harvest, for the log line."""
@@ -319,7 +518,9 @@ class GenericSERPStrategy:
             pass
         return None, None
 
-    def _scroll_and_mine(self, scroller) -> dict:
+    def _scroll_and_mine(
+        self, scroller, page_index: int = 0, advance_method: str = ""
+    ) -> dict:
         """Single source of truth for the scroll-and-mine harvest loop.
 
         Scrolls and mines the current page, deduplicating jobs, until one of
@@ -344,9 +545,10 @@ class GenericSERPStrategy:
                     return unique  # empty — fail closed, discard the harvest
 
             new_count = 0
-            for job in visible:
+            for rank, job in enumerate(visible):
                 key = job.url if job.url else f"{job.title}|{job.company}"
                 if key not in unique:
+                    _stamp_job_page(job, page_index, rank)
                     unique[key] = job
                     new_count += 1
 
@@ -406,11 +608,19 @@ class GenericSERPStrategy:
         finalize = getattr(self.miner, "finalize_harvest", None)
         if callable(finalize):
             try:
-                for job in finalize(source_name=self.source_tag) or []:
+                for job in (
+                    finalize(
+                        source_name=self.source_tag,
+                        page_index=page_index,
+                        advance_method=advance_method,
+                    )
+                    or []
+                ):
                     if len(unique) >= self.max_results:
                         break
                     key = job.url if job.url else f"{job.title}|{job.company}"
                     if key not in unique:
+                        _stamp_job_page(job, page_index, -1)
                         unique[key] = job
             except Exception as exc:
                 logger.debug("%s: finalize merge failed: %s", self.source_tag, exc)
@@ -447,6 +657,7 @@ class GenericSERPStrategy:
                 self.source_tag,
                 len(json_ld_jobs),
             )
+            json_ld_jobs = self._paginate_json_ld(json_ld_jobs)
             self._observer.audit_final_job_list(json_ld_jobs, self.source_tag)
             return json_ld_jobs
 
@@ -473,6 +684,11 @@ class GenericSERPStrategy:
         if block_type is not None:
             return self._abort_blocked(block_type, "run")
 
+        # Overlay dismissal: run() previously never dismissed popups at all
+        # (only execute() did). Both entry paths now dismiss once per page;
+        # later pages are dismissed inside _mine_all_pages after each advance.
+        self._dismiss_overlays()
+
         scroller = self._scroller
 
         logger.info(f"{self.source_tag}: Starting robust infinite scroll extraction...")
@@ -487,6 +703,7 @@ class GenericSERPStrategy:
                 self.source_tag,
                 len(json_ld_jobs),
             )
+            json_ld_jobs = self._paginate_json_ld(json_ld_jobs)
             self._observer.audit_final_job_list(json_ld_jobs, self.source_tag)
             return json_ld_jobs
 

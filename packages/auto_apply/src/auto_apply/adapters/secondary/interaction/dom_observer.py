@@ -12,8 +12,10 @@ import time
 from enum import Enum, auto
 
 from auto_apply.adapters.secondary.browser.context_manager import ContextManager
+from auto_apply.adapters.secondary.browser.page_snapshot import browser_page_snapshot
 from auto_apply.domain.ports.browser_port import BrowserInterface
-from auto_apply.domain.types import Locator
+from auto_apply.domain.services.page_assessment import assess_page
+from auto_apply.domain.types import Locator, PageType
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +179,13 @@ class DOMObserver:
         # Execute Deep Scan
         # This will switch the browser context to the frame where state was found.
         # It returns True if the predicate returned True.
-        found = self.ctx_mgr.find_context_with_content(_analyze_context)
+        # The scan's contract is "Call reset() when done"; honour it in
+        # finally so later probes and clicks run on the top-level document,
+        # not in a leaked frame context.
+        try:
+            found = self.ctx_mgr.find_context_with_content(_analyze_context)
+        finally:
+            self.ctx_mgr.reset()
 
         if not found:
             # If nothing specific is found after scanning all frames, return Unknown.
@@ -249,43 +257,49 @@ class DOMObserver:
         return False
 
     def _detect_success(self, context) -> bool:
-        """Checks for success indicators."""
-        #LinkedIn specific success header
-        try:
-            header = self.browser.find_element(Locator.CSS_SELECTOR, "h2[id*='post-apply-modal']")  # noqa: E501
-            if header and "added to your applied jobs" in header.text.lower():
-                return True
+        """Success is a page kind: ask the ONE verdict, keep no phrases here.
 
-            text = context.text.lower()
-            keywords = [
-                "application sent",
-                "successfully submitted",
-                "thank you for applying",
-                "received your application",
-                "application has been submitted"
-            ]
-            return any(k in text for k in keywords)
+        The LinkedIn success-header phrase ("added to your applied jobs")
+        lives in the locale-keyed confirmation table (page_phrases.py).
+        The verdict reads the top-frame snapshot; a confirmation rendered
+        entirely inside a frame is detected at the top frame. ``context``
+        is kept for signature compatibility with the context-scan loop.
+        """
+        try:
+            url, title, html = browser_page_snapshot(self.browser)
+            return (
+                assess_page(url=url, title=title, html=html).kind
+                is PageType.SUCCESS_PAGE
+            )
         except Exception:
-            pass
-        return False
+            return False
 
     def _detect_already_applied(self) -> bool:
-        """Checks if the job was already applied to."""
+        """Already-applied is a page kind: ask the ONE verdict.
+
+        The "application status" phrase this used to match is a nav link on
+        posting pages and was dropped with the phrase-table curation.
+        """
         try:
-            #Look for generic "Applied" tags or disabled buttons
-            body = self.browser.find_element(Locator.TAG_NAME, "body")
-            if body is None:
-                return False
-            body_text = body.text.lower()
-            return "you applied on" in body_text or "already applied" in body_text or "application status" in body_text  # noqa: E501
+            url, title, html = browser_page_snapshot(self.browser)
+            return (
+                assess_page(url=url, title=title, html=html).kind
+                is PageType.ALREADY_APPLIED
+            )
         except Exception:
             return False
 
     def _detect_closed(self, context) -> bool:
-        """Checks if the job posting is no longer active."""
+        """Closed is a page kind: ask the ONE verdict, keep no phrases here.
+
+        ``context`` is kept for signature compatibility with the scan loop.
+        """
         try:
-            text = context.text.lower()
-            return "no longer accepting" in text or "job closed" in text or "position filled" in text  # noqa: E501
+            url, title, html = browser_page_snapshot(self.browser)
+            return (
+                assess_page(url=url, title=title, html=html).kind
+                is PageType.CLOSED
+            )
         except Exception:
             return False
 

@@ -98,7 +98,7 @@ stateDiagram-v2
 | `PAUSED` | Execution suspended (user request, network loss, CAPTCHA). Browser stays alive. |
 | `RESOLVING_CAPTCHA` | CAPTCHA resolution service is active. |
 | `RESOLVING_LOGIC_CONFLICT` | A form field conflict requires user input. |
-| `AWAITING_HUMAN` | Paused at a HITL checkpoint, waiting for user approval. |
+| `AWAITING_HUMAN` | Paused at a HITL checkpoint, waiting for user approval — including a presented challenge, which pauses in place on the challenging page (`CAPTCHA_PRESENTED`). |
 | `ERROR_RECOVERY` | Attempting self‑healing after a recoverable error. |
 | `STOPPING` | Shutting down; current task will complete. |
 | `STOPPED` | Session ended cleanly. Terminal state. |
@@ -124,7 +124,7 @@ as `WorkUnit` objects in a persistent SQLite priority queue.
 | `DISCOVER_COMPANY` | 4 | Scrape a company careers page. Produces VET tasks. |
 | `VET` | 5 | Evaluate a single job against the user profile. Produces APPLY tasks. |
 | `APPLY` | 1 | Fill out and submit an application form. Highest execution priority. |
-| `HANDLE_CAPTCHA` | 1 | Attempt automatic CAPTCHA resolution; escalate to manual if needed. |
+| `HANDLE_CAPTCHA` | 1 | Dormant (item 12A): nothing enqueues it. Challenges pause the session in place, on the challenging page, via the HITL gate; this remains only as the consumer for rows queued by older versions. |
 
 Lower priority numbers are processed first. APPLY tasks get priority 1
 because a vetted job sitting idle wastes the browser session. DISCOVER tasks
@@ -192,7 +192,8 @@ Each iteration:
 
 7. **Dispatch** — the task is routed to the correct handler method:
    `_handle_discovery()`, `_handle_company_discovery()`, `_handle_vetting()`,
-   `_buffer_application()`, or `_handle_captcha()`.
+   `_buffer_application()`, or `_handle_captcha()` (dormant — see the task
+   table; challenges are paused in place by the Applications engine).
 
 8. **Mark complete** — on success, the task is marked `COMPLETED` in the
    database.

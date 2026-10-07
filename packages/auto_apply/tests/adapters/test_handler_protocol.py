@@ -46,8 +46,11 @@ def _protocol_methods(cls) -> set[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_the_tool_protocol_is_exactly_three_verbs():
-    """click / type_text / settle — nothing more, or this is a back door."""
+def test_the_tool_protocol_is_exactly_four_verbs():
+    """click / type_text / settle / select_option — nothing more, or this is
+    a back door. select_option joined in call 2: a native <select>'s options
+    are OS-drawn and cannot be pointer-clicked, so the handler resolves the
+    option text and the tool applies the value."""
     from auto_apply.domain.ports.interaction_primitives_port import (
         PageActionPrimitives,
     )
@@ -56,6 +59,7 @@ def test_the_tool_protocol_is_exactly_three_verbs():
         "click",
         "type_text",
         "settle",
+        "select_option",
     }
 
 
@@ -108,15 +112,16 @@ def _attribute_calls(source: str, receiver: str) -> set[str]:
     return found
 
 
-def test_handlers_touch_only_the_three_tool_verbs():
+def test_handlers_touch_only_the_four_tool_verbs():
     """AST-checked across every handler module, including the base."""
     reached: set[str] = set()
     for path in sorted(HANDLERS.glob("*.py")):
         reached |= _attribute_calls(path.read_text(encoding="utf-8"), "_act")
 
-    assert reached <= {"click", "type_text", "settle"}, (
-        f"handlers reached beyond the three-verb protocol: "
-        f"{sorted(reached - {'click', 'type_text', 'settle'})}"
+    allowed = {"click", "type_text", "settle", "select_option"}
+    assert reached <= allowed, (
+        f"handlers reached beyond the four-verb protocol: "
+        f"{sorted(reached - allowed)}"
     )
 
 
@@ -166,16 +171,21 @@ def test_the_two_one_second_waits_are_gone():
 
 
 def test_handlers_work_without_either_collaborator():
-    """Worst-case/static: no tool and no observer, no crash, no invented pacing."""
+    """Worst-case/static: no tool and no observer. A click is REFUSED (no
+    silent raw click); typing, settle and readiness still degrade safely."""
+    import pytest
+
     from auto_apply.adapters.secondary.interaction.handlers.text import (
         TextInputHandler,
     )
+    from auto_apply.domain.exceptions import ApplicationError
 
     handler = TextInputHandler(browser=MagicMock())
     element = MagicMock()
 
-    handler._click(element)
-    element.click.assert_called_once()
+    with pytest.raises(ApplicationError):
+        handler._click(element)
+    element.click.assert_not_called()
 
     handler._type(element, "hello")
     element.send_keys.assert_called_once_with("hello")

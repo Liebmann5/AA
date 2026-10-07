@@ -28,8 +28,11 @@ Snap-installed Firefox (Ubuntu's default packaging) is a special case:
 geckodriver rejects the /usr/bin/firefox wrapper with "binary is not a
 Firefox executable".  When no explicit binary is configured, the provider
 resolves the real in-snap executable automatically and points geckodriver's
---profile-root at a directory under the user's home, which snap confinement
-can read.  If that resolution fails, set AA_FIREFOX_BINARY_PATH to the real
+--profile-root at a directory inside AA's own data home (previously the
+user's home; the data home is where AA's uninstaller can find it — on a USB
+drive, snap's removable-media plug governs readability and
+AA_GECKO_PROFILE_ROOT is the escape hatch).  If that resolution fails, set
+AA_FIREFOX_BINARY_PATH to the real
 in-snap executable; a Firefox-shaped AA_BROWSER_BINARY_PATH is accepted as a
 fallback.  Detection is filesystem-existence only — AA never carries a list
 of distributions it recognises and never shells out to `snap`.
@@ -520,7 +523,13 @@ class SeleniumProvider:
                 Service as FirefoxService,
             )
 
-            profile_root = Path.home() / ".auto_apply" / "gecko-profile-root"
+            # Inside the data home since the lifecycle work: this was
+            # ~/.auto_apply/gecko-profile-root — the one measured write
+            # outside the data root. The uninstaller's discovery list still
+            # knows the legacy location so older installs get cleaned.
+            from auto_apply.domain.config import GECKO_PROFILE_ROOT_DIR  # noqa: PLC0415
+
+            profile_root = GECKO_PROFILE_ROOT_DIR
             if not profile_root.is_dir():
                 profile_root.mkdir(parents=True, exist_ok=True)
                 logger.info(

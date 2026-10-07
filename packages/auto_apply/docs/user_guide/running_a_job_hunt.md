@@ -107,6 +107,25 @@ The wizard asks:
     applied. Both halves were fixed together; a run today uses the numbers you
     entered.
 
+### Behaviour profiles
+
+One setting most people never need to touch: how AA moves the pointer and
+scrolls the page. In **Settings → Browser Engine** (GUI) or in the profile
+wizard (CLI) you can pick:
+
+| Choice | What it means |
+| --- | --- |
+| **Natural** | Moves and scrolls like a person. Right for almost everyone |
+| **Careful** | Slower and steadier — hardest for bot detection to spot |
+| **Instant** | No human pacing at all. Only for tests |
+
+The choice is stored in your profile (`app_config.motion_profile`), so it
+travels with you on a USB stick, and an administrator can lock it on a
+shared machine. Engineers can tune every individual value through
+`app_config.motion_overrides` in the profile file — an invalid value is
+refused with a plain message naming the field and its allowed range, and
+`--check-config` shows the resolved values.
+
 ---
 
 ## 4. Watch it run

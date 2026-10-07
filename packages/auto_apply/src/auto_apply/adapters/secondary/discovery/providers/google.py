@@ -28,7 +28,6 @@ from auto_apply.adapters.secondary.discovery.strategies.navigators import (
 from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (
     GenericSERPStrategy,
 )
-from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.adapters.secondary.perception.dom_adapter import (
     SmartTextExtractor,
     SmartURLExtractor,
@@ -56,7 +55,7 @@ class GoogleProvider(BaseSearchProvider):
         ats_registry=None,
         page_understanding_port=None,
         scroller=None,
-        paginator=None,
+        advancer_factory=None,
         max_pages: int = 1,
         observer=None,
         reporter=None,
@@ -64,11 +63,12 @@ class GoogleProvider(BaseSearchProvider):
         degradation_detector=None,
         research_observer=None,
         readiness=None,
+        page_action=None,
     ) -> None:
         super().__init__(
             browser,
             scroller,
-            paginator,
+            advancer_factory,
             max_pages,
             observer,
             reporter,
@@ -81,13 +81,17 @@ class GoogleProvider(BaseSearchProvider):
         self._page_understanding = page_understanding_port
         self._research_observer = research_observer
         self._readiness = readiness
+        # The interaction tool, untyped: this provider needs macro_pause,
+        # which sits outside the four-verb PageActionPrimitives seam its
+        # collaborators are typed against.
+        self._page_action = page_action
 
         # ── Engine‑specific strategy (URL construction, toolbar interactions) ──
-        self._engine_strategy = GoogleSearchStrategy()
+        self._engine_strategy = GoogleSearchStrategy(page_action=self._page_action)
 
         self.navigator = ResilientNavigator(browser, [
             DirectURLNavigation(browser),
-            HumanSearchNavigation(browser),
+            HumanSearchNavigation(browser, page_action=self._page_action),
         ])
 
     def _fast_extractor(self):
@@ -117,6 +121,7 @@ class GoogleProvider(BaseSearchProvider):
             observer=self._observer,
             readiness=self._readiness,
             research_observer=self._research_observer,
+            page_action=self._page_action,
         )
 
     def _is_page_healthy(self) -> bool:
@@ -152,8 +157,13 @@ class GoogleProvider(BaseSearchProvider):
         # ── Apply toolbar filters (date, etc.) after navigation ─────────────
         self._engine_strategy.apply_toolbar_filters(self.browser, instruction)
 
-        behavior.simulate_idle_time(
-            self.browser, min_seconds=2.0, max_seconds=4.0
+        if self._page_action is not None:
+            self._page_action.macro_pause(2.0, 4.0)
+
+        # Fresh, stateless advancer per query — a shared one would leak its
+        # page position into the next search.
+        advancer = (
+            self._advancer_factory() if callable(self._advancer_factory) else None
         )
 
         scraper = GenericSERPStrategy(
@@ -163,13 +173,14 @@ class GoogleProvider(BaseSearchProvider):
             max_results=instruction.max_results,
             fast_extractor=self._fast_extractor(),
             scroller=self._scroller,
-            paginator=self._paginator,
+            advancer=advancer,
             max_pages=self._max_pages,
             observer=self._observer,
             reporter=self._reporter,
             degradation_detector=self._degradation_detector,
             forced_tier=self._forced_tier,
             research_observer=self._research_observer,
+            page_action=self._page_action,
             title_parser=SmartTextExtractor(
                 strategies=[
                     "div[role='heading']",

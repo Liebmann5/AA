@@ -188,6 +188,10 @@ CREATE TABLE IF NOT EXISTS discovery_pages (
     activation_attempts  INTEGER,
     activation_resolved  INTEGER,
     learned_identity     TEXT,
+    page_index           INTEGER DEFAULT 0,
+    advance_method       TEXT,
+    stop_reason          TEXT,
+    page_count           INTEGER DEFAULT 0,
     observed_date        TEXT NOT NULL,
     schema_version       INTEGER DEFAULT 2
 );
@@ -296,6 +300,12 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # Rows written before salary extraction read NULL: "no as-stated span
     # recorded", which is true of them.
     ("salary_observations", "source_text", "TEXT"),
+    # Pagination evidence (call 3). Rows written earlier read NULL — "no
+    # pagination was recorded", which is true of them.
+    ("discovery_pages", "page_index", "INTEGER"),
+    ("discovery_pages", "advance_method", "TEXT"),
+    ("discovery_pages", "stop_reason", "TEXT"),
+    ("discovery_pages", "page_count", "INTEGER"),
 )
 
 
@@ -1769,6 +1779,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                 obs.no_destination_count, obs.sponsored_card_count,
                 obs.activation_attempts, obs.activation_resolved,
                 json.dumps(list(obs.learned_identity)),
+                obs.page_index, obs.advance_method, obs.stop_reason,
+                obs.page_count,
                 observed_date, RESEARCH_SCHEMA_VERSION,
             ))
             for card in obs.cards:
@@ -1801,8 +1813,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
                         multi_route_count, deferred_count,
                         no_destination_count, sponsored_card_count,
                         activation_attempts, activation_resolved,
-                        learned_identity, observed_date, schema_version)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        learned_identity, page_index, advance_method,
+                        stop_reason, page_count, observed_date, schema_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     page_rows,
                 )
                 conn.executemany(

@@ -246,8 +246,10 @@ Controls AA's runtime behavior.
 |---|---|---|---|
 | `preferred_browser` | string | `"any"` | `"chrome"`, `"firefox"`, `"edge"`, `"safari"`, `"any"` |
 | `run_headless` | boolean | `false` | Hide the browser window |
-| `daily_application_limit` | integer | 200 | Hard cap per session |
-| `enable_behavior_humanization` | boolean | `true` | Add human-like timing |
+| `daily_application_limit` | integer | 1000 | Hard cap per UTC day, across sessions |
+| `enable_behavior_humanization` | boolean | `true` | Stealth browser driver only (Chrome / undetected-chromedriver) — pacing comes from `motion_profile`, not this flag |
+| `motion_profile` | string | `"human"` | Pointer/scroll behaviour: `"human"`, `"careful"`, or `"instant"`. Omit to inherit the app-wide default |
+| `motion_overrides` | object | none | Engineer layer: per-field MotionProfile overrides, e.g. `{"fitts_a_ms": 150}`. Validated on load/save |
 
 ### `politeness_settings`
 

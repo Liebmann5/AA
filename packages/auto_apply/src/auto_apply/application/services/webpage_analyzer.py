@@ -261,8 +261,6 @@ class WebpageAnalyzer:
             dom_root=dom_root,
             forms=[],
             job_listings=[],
-            is_captcha_present=False,
-            is_login_wall=False,
         )
 
     # -------------------------------------------------------------------------

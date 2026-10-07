@@ -123,7 +123,7 @@ def test_no_pii_in_the_activity_stream() -> None:
 #   composition_root.py    one stderr write during wiring.
 #
 EXPECTED_PRINT_SITES: dict[str, int] = {
-    "main.py": 39,
+    "main.py": 40,
     "application/services/session_controller.py": 4,
     "infrastructure/composition_root.py": 1,
 }
@@ -208,6 +208,16 @@ EXPECTED_REACHES: dict[str, set[str]] = {
         # verifier helper (composition_root.verify_research_bundle) — the
         # same precedent as research_consent_screen above. It may NOT
         # import the secondary verifier itself.
+        "auto_apply.infrastructure.composition_root",
+    },
+    "cli/lifecycle_screen.py": {
+        # The install/uninstall screen reaches the wiring layer for the
+        # lifecycle engines and wording (composition_root) — the same
+        # precedent as research_consent_screen above.
+        "auto_apply.infrastructure.composition_root",
+    },
+    "gui/lifecycle_window.py": {
+        # The GUI twin of cli/lifecycle_screen.py; same precedent.
         "auto_apply.infrastructure.composition_root",
     },
     "gui/research_window.py": {

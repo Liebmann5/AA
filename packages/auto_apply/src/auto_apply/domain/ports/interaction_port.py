@@ -21,7 +21,7 @@ class InteractionPort(ABC):
     """
 
     @abstractmethod
-    def click(self, element: ElementInterface) -> None:
+    def click(self, element: ElementInterface, *, irreversible: bool = False) -> None:
         """Clicks a UI element.
 
         The adapter may apply human-like cursor movement or a random pre-click
@@ -29,6 +29,10 @@ class InteractionPort(ABC):
 
         Args:
             element: The element to click.
+            irreversible: True when the click commits an action that cannot be
+                undone (a form submission). Irreversible clicks are
+                fail-closed: no silent retry of a rung that raised after it
+                may have acted, and never a synthetic-JS last resort.
         """
 
     @abstractmethod

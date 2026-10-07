@@ -268,6 +268,7 @@ _OUTCOME_KIND_MAP: dict[str, ActivityKind] = {
     "POLICY_BLOCKED": ActivityKind.REFUSED,
     "CAPTCHA_BLOCKED": ActivityKind.BLOCKED,
     "LOGIN_WALL_BLOCKED": ActivityKind.BLOCKED,
+    "ACCOUNT_REQUIRED": ActivityKind.BLOCKED,
     "AMBIGUOUS": ActivityKind.FAILED,
     "FAILED_NO_SUBMIT_BUTTON": ActivityKind.FAILED,
     "FAILED_NAVIGATION": ActivityKind.FAILED,
@@ -388,6 +389,8 @@ def _application_outcome_text(kind: ActivityKind, payload: dict) -> str:
     if kind is ActivityKind.BLOCKED:
         if outcome == "CAPTCHA_BLOCKED":
             barrier = "CAPTCHA"
+        elif outcome == "ACCOUNT_REQUIRED":
+            barrier = "an account requirement"
         elif outcome == "LOGIN_WALL_BLOCKED":
             barrier = "login wall"
         else:
@@ -613,6 +616,9 @@ class SessionController:
                 required_fields_filled=int(payload.get("fields_filled") or 0),
                 pages_navigated=int(payload.get("pages_navigated") or 0),
                 used_gpt4all=bool(payload.get("used_gpt4all", False)),
+                challenge_signals=[
+                    str(s) for s in (payload.get("challenge_signals") or [])
+                ],
             )
             self._report.record_application(job, evidence)
         except Exception as exc:  # noqa: BLE001

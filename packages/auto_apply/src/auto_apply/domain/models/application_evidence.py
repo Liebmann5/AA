@@ -16,72 +16,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ATS-specific confirmation patterns — organized by ATS platform.
-# These are the phrases that appear on confirmation pages.
-# Used by ApplicationsWorkflow._submit_application().
-# ─────────────────────────────────────────────────────────────────────────────
-
-ATS_CONFIRMATION_PATTERNS: dict[str, list[str]] = {
-    "greenhouse": [
-        "thank you for applying",
-        "application submitted",
-        "/confirmations/",
-        "we'll review",
-    ],
-    "lever": [
-        "thank you for applying",
-        "application received",
-        "/thank-you",
-        "we'll be in touch",
-    ],
-    "workday": [
-        "thank you for your interest",
-        "application submitted",
-        "your application has been submitted",
-        "we have received",
-    ],
-    "ashby": [
-        "thanks for applying",
-        "application submitted",
-        "received your application",
-    ],
-    "icims": [
-        "application was submitted",
-        "thank you",
-        "successfully submitted",
-        "/system/templates/selfapply/",
-    ],
-    "taleo": [
-        "application submission is confirmed",
-        "thank you for completing",
-        "application was submitted",
-    ],
-    "smartrecruiters": [
-        "thank you",
-        "application received",
-        "we received",
-    ],
-    "brassring": [
-        "your application has been submitted",
-        "thank you",
-    ],
-    "jobvite": [
-        "thank you",
-        "application submitted",
-        "/web#action/ViewJobPostings",
-    ],
-    "generic": [
-        "thank you for applying",
-        "application submitted",
-        "application received",
-        "we'll be in touch",
-        "successfully submitted",
-        "thank you for your interest",
-        "your application",
-        "we have received your",
-    ],
-}
+# Confirmation phrases moved to domain/services/page_phrases.py — locale-keyed
+# data matched on visible text by the ONE page verdict. The per-ATS split is
+# preserved there for translators; matching unions every ATS and locale. The
+# weak phrases this table carried are curated out there, with reasons.
 
 
 class ApplicationEvidence(BaseModel):
@@ -116,7 +54,16 @@ class ApplicationEvidence(BaseModel):
     attempt_id: str = ""   # joins this outcome to its per-page research rows
     pre_submit_url: str = ""
     page_title_before: str = ""
-    ats_platform: str | None = None  # matched ATS name (e.g. "greenhouse")
+    ats_platform: str | None = None  # matched ATS name, of the LANDED page
+
+    # ── Apply-route evidence (item 12B) ──────────────────────────────────
+    # How AA got from the posting to the form — the hiring-friction record:
+    # how many hops, through whom, before a job seeker reaches the
+    # employer's application.
+    posting_host: str = ""        # host of job.url (in live runs, a job board)
+    apply_target_host: str = ""   # host of the learned/followed apply target
+    landed_host: str = ""         # host of the page AA ended on
+    apply_route_hops: int = 0     # navigations after the initial load
 
     # ── Form interaction evidence ────────────────────────────────────────
     fields_classified: int = 0
@@ -132,6 +79,13 @@ class ApplicationEvidence(BaseModel):
     submit_button_found: bool = False
     submit_button_text: str = ""
     submit_clicked: bool = False
+    #: Which click-ladder rung fired the submit ("pointer" | "keyboard" |
+    #: "native" | "js" | ""), and the page effect observed after it — how AA
+    #: believes it submitted, so a study can separate a trusted-pointer
+    #: submission from a last-resort synthetic one. Empty when the workflow
+    #: never reached the click or the interaction port returned no detail.
+    submit_rung: str = ""
+    submit_effect: str = ""
 
     # ── Post-submit state ────────────────────────────────────────────────
     post_submit_url: str = ""
@@ -143,6 +97,12 @@ class ApplicationEvidence(BaseModel):
     captcha_encountered: bool = False
     login_wall_encountered: bool = False
     unknown_required_field: str | None = None  # label of blocking field
+    #: Signal vocabulary of the page verdict that shaped this attempt
+    #: (computed by domain/services/page_assessment.py; the challenge signal
+    #: vocabulary originates in domain/services/challenge_assessment.py).
+    #: Empty when no challenge evidence was seen. Recorded so a disputed
+    #: verdict says WHY, not just WHAT.
+    challenge_signals: list[str] = Field(default_factory=list)
 
     # ── Final outcome classification ─────────────────────────────────────
     outcome: Literal[
@@ -155,6 +115,7 @@ class ApplicationEvidence(BaseModel):
         "FAILED_FILE_UPLOAD",       # Required file upload failed
         "CAPTCHA_BLOCKED",          # Stopped by CAPTCHA challenge
         "LOGIN_WALL_BLOCKED",       # Stopped by login/sign-up requirement
+        "ACCOUNT_REQUIRED",         # The apply route demands an account on the site
         "USER_SKIPPED",             # User declined at HITL checkpoint
         "SUBMISSION_GATE_BLOCKED",  # Submission gate unsatisfied — never clicked
         "POLICY_BLOCKED",           # Admin policy or cooldown blocked
@@ -177,6 +138,7 @@ class ApplicationEvidence(BaseModel):
         return self.outcome in (
             "CAPTCHA_BLOCKED",
             "LOGIN_WALL_BLOCKED",
+            "ACCOUNT_REQUIRED",
             "FAILED_REQUIRED_FIELD",
             "FAILED_FILE_UPLOAD",
         )

@@ -511,7 +511,7 @@ class ResearchConsentManager:
         logger.info("ResearchConsent | page copies withdrawn")
         return self._repository.purge_page_copies() if delete else 0
 
-    def withdraw_consent(self, purge_data: bool = True) -> int:
+    def withdraw_consent(self, purge_data: bool = True, *, purge_copies: bool = True) -> int:
         """Withdraw consent and optionally purge all collected research data.
 
         Args:
@@ -519,6 +519,11 @@ class ResearchConsentManager:
                 attributable to this user — immediately, per the data
                 retention policy in docs/ETHICS.md. The purge itself is
                 synchronous.
+            purge_copies: If False, kept page copies are preserved too. The
+                ONLY caller is the uninstaller's retention-hold path, which
+                must destroy nothing research-related. Every other caller
+                keeps the default: the page-copies consent text promises
+                deletion on withdrawal either way.
 
         Order (FORK 3): stop the running observer FIRST (no new writes; its
         queued items are flushed by stop()'s tested drain), then persist the
@@ -551,8 +556,10 @@ class ResearchConsentManager:
             count = self._repository.purge_research_data()
             logger.info("ResearchConsent | Purged %d research records", count)
             return count
-        # Page copies (item 6) go either way: they exist only to check
-        # research rows against their pages while the person participates,
-        # and the withdraw text promises they are deleted.
-        self._repository.purge_page_copies()
+        # Page copies (item 6) go either way unless purge_copies is False:
+        # they exist only to check research rows against their pages while
+        # the person participates, and the withdraw text promises they are
+        # deleted. The False path is the uninstall retention hold's alone.
+        if purge_copies:
+            self._repository.purge_page_copies()
         return 0

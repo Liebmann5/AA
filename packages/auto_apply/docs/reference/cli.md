@@ -21,7 +21,7 @@ auto-apply                # console script, available after install
 | --- | --- | --- |
 | `--cli` | — | Run the terminal interface instead of the GUI |
 | `--debug` | — | Verbose debug logging |
-| `--check-config` | — | Print an environment and capability summary, then exit |
+| `--check-config` | — | Print an environment and capability summary — including the resolved motion (pointer/scroll) profile and its effective values — then exit |
 | `--profile` | `NAME_OR_PATH` | Use a named profile or a profile file for this run |
 | `--portable` | — | Store all data in `./data/` relative to the working directory |
 | `--seed` | `N` | Deterministic mode. Identical configuration produces identical execution traces |

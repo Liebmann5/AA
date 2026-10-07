@@ -27,6 +27,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from auto_apply.domain.config import CHECKPOINTS_DIR
+from auto_apply.domain.models.motion_profile import (
+    MOTION_PROFILE_NAMES,
+    MotionConfig,
+)
 
 from pydantic import (
     AliasChoices,
@@ -35,6 +39,7 @@ from pydantic import (
     EmailStr,
     Field,
     HttpUrl,
+    ValidationInfo,
     field_validator,
 )
 
@@ -548,7 +553,78 @@ class ApplicationConfig(BaseModel):
     # than connect directly — see BrowserCascade._build_config.
     proxy_server: str | None = None
     daily_application_limit: int = 1000
-    enable_behavior_humanization: bool = False
+    # Gates ONLY the undetected-chromedriver stealth driver (registry.py
+    # use_stealth_driver). It does not change pacing or pointer motion —
+    # those come from motion_profile below. The default mirrors the registry
+    # fallback so a profile that never sets it behaves the way the registry
+    # always intended; the old False default silently disabled the stealth
+    # driver for every GUI-made profile while the label claimed otherwise.
+    enable_behavior_humanization: bool = True
+    # The user's pointer/scroll behaviour choice (layer 0 of the layered
+    # settings pattern, ADR 018): one of MOTION_PROFILE_NAMES, or None to
+    # inherit runtime_defaults.yaml's motion.profile. Validated HERE so a
+    # bad value is refused in plain words at edit time, not at session
+    # build. Folded into the effective config's motion section by
+    # CapabilitiesRegistry._merge_config; AdminPolicy.motion_profile wins.
+    motion_profile: str | None = Field(
+        None,
+        description=(
+            "Pointer/scroll behaviour profile: 'human' (natural, default), "
+            "'careful' (slower, hardest to detect) or 'instant' (no human "
+            "pacing — tests only). None inherits the app-wide default."
+        ),
+    )
+    # Engineer/researcher layer: per-field MotionProfile overrides (e.g.
+    # {"wheel_tick_ms_min": 40}), validated by the SAME MotionConfig the
+    # session is validated with, so a bad key or range is refused at save
+    # time with the key, the value and the allowed range in the message.
+    motion_overrides: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "Per-field MotionProfile overrides for engineers/researchers, "
+            "validated by MotionConfig. Example: {'fitts_a_ms': 150}."
+        ),
+    )
+
+    @field_validator("motion_profile")
+    @classmethod
+    def _validate_motion_profile(cls, v: Any) -> Any:
+        """Refuse an unknown behaviour profile in plain words, at edit time."""
+        if v is None:
+            return v
+        name = str(v).strip().lower()
+        if name not in MOTION_PROFILE_NAMES:
+            raise ValueError(
+                f"Unknown behaviour profile {v!r}. Choose one of: "
+                f"{' | '.join(MOTION_PROFILE_NAMES)} "
+                f"(human = natural pacing, careful = slower and stealthier, "
+                f"instant = no pacing, for tests)."
+            )
+        return name
+
+    @field_validator("motion_overrides")
+    @classmethod
+    def _validate_motion_overrides(cls, v: Any, info: ValidationInfo) -> Any:
+        """Validate per-field motion overrides with the session's own validator."""
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            raise ValueError(
+                "motion_overrides must be a mapping of MotionProfile field "
+                "names to values."
+            )
+        try:
+            # Against the profile the user chose (declared above, so it is
+            # already validated); unset means the app-wide default, which
+            # the session re-validates at registry build.
+            section: dict[str, Any] = {"overrides": dict(v)}
+            chosen = info.data.get("motion_profile")
+            if chosen:
+                section["profile"] = chosen
+            MotionConfig.from_mapping({"motion": section})
+        except ValueError as exc:
+            raise ValueError(f"Invalid motion override: {exc}") from exc
+        return dict(v)
     rotate_user_agent: bool = Field(
         False,
         description=(
@@ -755,6 +831,13 @@ class UserProfile(BaseModel):
             result["max_applications_per_session"] = ac.daily_application_limit
             result["enable_behavior_humanization"] = ac.enable_behavior_humanization
             result["auto_optimize_performance"] = ac.auto_optimize_performance
+            # Emitted only when set: None means "inherit runtime_defaults",
+            # and a flat None key would shadow the YAML value. _merge_config
+            # folds these flat inputs into the nested motion section.
+            if ac.motion_profile:
+                result["motion_profile"] = ac.motion_profile
+            if ac.motion_overrides:
+                result["motion_overrides"] = dict(ac.motion_overrides)
 
         # ── Politeness settings ───────────────────────────────────────
         if self.politeness:

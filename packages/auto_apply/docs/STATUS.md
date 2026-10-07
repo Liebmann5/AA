@@ -32,14 +32,26 @@ Most recent full live run:
 | --- | --- |
 | Application attempts | 18 |
 | **Submissions** | **0** |
-| Stopped by CAPTCHA | 13 |
-| Stopped by a login wall | 5 |
+| Recorded as stopped by CAPTCHA | 13 |
+| Recorded as stopped by a login wall | 5 |
 
-This is published rather than withheld because it is the project's most
-informative result. AA's thesis is about comprehending unfamiliar interfaces;
-the measurement says the binding constraint today is *access*, not
-comprehension. Every "just fix the selectors" suggestion is answering a
-different question than the one this number asks.
+**Correction (2026-09-10): the two "stopped by" numbers are not trustworthy.**
+They came from a substring search over the page source — any page containing
+the text `recaptcha` anywhere, including inside an HTML comment, was recorded
+as a CAPTCHA. Hand triage of 20 pages that verdict flagged found 12 were
+ordinary rendered job postings (every LinkedIn page sampled was a false
+positive) and only 8 were real challenges. A later run recorded three vetted
+postings as CAPTCHA_BLOCKED seconds after vetting had read real job text from
+those same URLs. The "login wall" count was never triaged at all. The
+challenge verdict has since been rebuilt on page structure — challenge
+markup, form count, rendered content — with the page title deliberately
+ignored, and the pause now happens in place, on the challenging page.
+
+The conclusion previously drawn here — that "the binding constraint today is
+*access*, not comprehension" — is **withdrawn**. The honest summary is: AA
+has submitted 0 of 18 attempts, the reasons recorded for most of those
+failures are unreliable, and re-measuring with the corrected verdict is the
+next milestone. The 0 stands; the 13 and the 5 do not.
 
 ---
 
@@ -166,7 +178,7 @@ Highest first. These are the reasons AA is not alpha.
 | L-9 | The exported `source` column always reads `history` | Which engine found a job is lost — the column you most want, given that only Bing yields |
 | L-10 | The export dialogue defaults into the repository and describes plaintext as a convenience | A profile with real identity data was written to `packages/` |
 | L-7 | Discovery yield is Bing-only | Two of three providers return nothing |
-| L-5 | The human-in-the-loop gate can open after the application is already dead | Solving the challenge cannot rescue the attempt |
+| ~~L-5~~ | **Fixed 2026-09-10 (item 12A):** the challenge pause now happens in place, on the challenging page, before any outcome is recorded; a solve continues the same attempt | Remaining: prove it on a live run |
 | L-4 | `IDLE → ERROR_RECOVERY` is missing from the transition table | The dashboard shows `PAUSED` while the agent state is `IDLE` |
 | L-1 | Settings cannot save a profile with an empty optional `Literal` field | Blocks editing for some profiles |
 | L-2 | Two write paths disagree about résumé path portability | Onboarding breaks `--portable` for the users who need it |

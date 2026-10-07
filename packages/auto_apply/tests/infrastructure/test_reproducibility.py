@@ -258,11 +258,13 @@ class TestSeleniumProviderReproducibility:
 # 4. ApplicationsWorkflow — lazy‑scroll sleep timing
 # ----------------------------------------------------------------------
 
-class TestApplicationsWorkflowReproducibility:
-    """
-    ``_lazy_scroll_to_top`` is the only randomness‑touching part of the
-    ApplicationsWorkflow that currently receives an ``rng`` parameter.
-    It calls ``time.sleep(…)`` with a value from ``self._rng.uniform(…))``.
+class TestApplicationsWorkflowFormReveal:
+    """The form reveal moved into the PageActionService tool (call 2).
+
+    The workflow now delegates to ``navigation.reveal_page()`` BEFORE form
+    analysis and contains no raw scrolling of its own; the seeded pacing
+    for the reveal lives in the tool, pinned by
+    tests/application/test_scroll_primitive.py.
     """
 
     @pytest.fixture
@@ -308,42 +310,31 @@ class TestApplicationsWorkflowReproducibility:
         default_kwargs.update(kwargs)
         return ApplicationsWorkflow(**default_kwargs)
 
-    def _captured_sleep(self, seed: int) -> list[float]:
-        """Construct a workflow with *seed*, call ``_lazy_scroll_to_top()``,
-        and return the list of float arguments passed to ``time.sleep``.
-        """
-        mock_browser = MagicMock()
-        # We need to ensure that the browser's ``execute_script`` doesn't fail.
-        mock_browser.execute_script.return_value = None
+    def test_the_workflow_delegates_the_reveal_to_the_tool(self):
+        """``_reveal_form_content`` calls the injected navigation tool exactly
+        once, with the configured bound — the workflow owns no scrolling."""
+        navigation = MagicMock()
+        wf = self._build_workflow(42, MagicMock())
+        wf._navigation = navigation
 
-        with patch("time.sleep", autospec=True) as sleep_mock:
-            wf = self._build_workflow(seed, mock_browser)
-            wf._lazy_scroll_to_top()
+        wf._reveal_form_content()
 
-        # _lazy_scroll_to_top calls time.sleep exactly once with a float.
-        calls = [
-            args[0] for args, _kwargs in sleep_mock.call_args_list
-        ]
-        assert len(calls) == 1, "Expected a single time.sleep call"
-        return calls
+        navigation.reveal_page.assert_called_once()
 
-    def test_same_seed_same_sleep_duration(self):
-        """Two independent workflow instances with the same seed produce
-        identical sleep durations for the lazy‑scroll pause."""
-        d1 = self._captured_sleep(seed=42)
-        d2 = self._captured_sleep(seed=42)
-        assert d1 == d2, (
-            f"Expected identical sleep durations with same seed, got {d1} vs {d2}"
+    def test_no_raw_scroll_survives_in_the_workflow(self):
+        """Structural: the raw smooth ``window.scrollTo`` (and the lazy-scroll
+        method that held it) are gone from the workflow source."""
+        import pathlib  # noqa: PLC0415
+
+        from auto_apply.application.workflows import (  # noqa: PLC0415
+            applications_workflow as _aw_module,
         )
 
-    def test_different_seeds_different_sleep_duration(self):
-        """Two independent workflow instances with different seeds should
-        (with very high probability) produce different sleep durations."""
-        d1 = self._captured_sleep(seed=10)
-        d2 = self._captured_sleep(seed=20)
-        assert d1 != d2, (
-            f"Expected different sleep durations with different seeds, but both returned {d1}"
+        src = pathlib.Path(_aw_module.__file__).read_text(
+            encoding="utf-8", errors="ignore"
         )
+        assert "window.scrollTo" not in src
+        assert "_lazy_scroll_to_top" not in src
 
 
 # ----------------------------------------------------------------------
@@ -455,6 +446,8 @@ class TestCompositionRootNamespacing:
             ("applications_workflow",),
             ("discovery.provider_order",),
             ("interaction.pacing",),
+            ("motion.pointer",),
+            ("motion.wheel",),
         }
         missing = required - namespaces
         assert not missing, (

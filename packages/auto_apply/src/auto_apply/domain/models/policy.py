@@ -118,6 +118,14 @@ class AdminPolicy:
     force_respect_robots_txt:  bool | None  = None
     min_action_delay_seconds:  float | None = None
 
+    # -- Interaction behaviour ----------------------------------------------
+    # Field-level lock on the pointer/scroll behaviour profile ("instant" |
+    # "human" | "careful"). Finer than routing all of `motion` through
+    # config_overrides (which replaces the whole section), and it shows up
+    # as a locked field in the settings UI. None = user-controlled. An
+    # unknown name is refused at registry build, naming the allowed names.
+    motion_profile: str | None = None
+
     # -- Data collection ----------------------------------------------------
     disable_research_collection: bool | None = None
 
@@ -235,6 +243,7 @@ class AdminPolicy:
             self.force_humanization is not None,
             self.force_respect_robots_txt is not None,
             self.min_action_delay_seconds is not None,
+            self.motion_profile is not None,
             self.disable_research_collection is not None,
             bool(self.config_overrides),
         ])
@@ -249,6 +258,7 @@ class AdminPolicy:
                 "force_humanization" if self.force_humanization else None,
                 "force_robots_txt" if self.force_respect_robots_txt else None,
                 f"min_delay={self.min_action_delay_seconds}s" if self.min_action_delay_seconds is not None else None,  # noqa: E501
+                f"motion={self.motion_profile}" if self.motion_profile is not None else None,
                 "no_research" if self.disable_research_collection else None,
                 f"overrides({len(self.config_overrides)})" if self.config_overrides else None,  # noqa: E501
             ]

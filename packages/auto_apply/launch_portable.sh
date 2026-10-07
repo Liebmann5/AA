@@ -22,6 +22,9 @@ echo ""
 export AA_DATA_DIR="${PORTABLE_ROOT}/data"
 
 # ── Browser profile on the drive ────────────────────────────────────────────
+# New name read by current AA; the legacy USER_DATA_DIR variable (a generic
+# name, not the USER_DATA_DIR constant) stays for older AA builds.
+export AA_BROWSER_PROFILE_DIR="${PORTABLE_ROOT}/data/cache/chromium_profile"
 export USER_DATA_DIR="${PORTABLE_ROOT}/data/cache/chromium_profile"
 
 # ── Temporary files on the drive ────────────────────────────────────────────
@@ -82,18 +85,21 @@ mkdir -p \
     "${AA_DATA_DIR}/tmp"
 
 # ── Determine how to launch ──────────────────────────────────────────────────
+AA_STATUS=0
 if [[ -f "${PORTABLE_ROOT}/AutoApply" ]]; then
     # Frozen binary (PyInstaller --onedir)
     echo ""
     echo "Starting AutoApply (frozen binary)..."
-    "${PORTABLE_ROOT}/AutoApply" "$@"
+    # || AA_STATUS=$? keeps `set -e` from aborting before the cleanup below
+    # when AA exits non-zero (measured: cleanup was skipped on any failure).
+    "${PORTABLE_ROOT}/AutoApply" "$@" || AA_STATUS=$?
 
 elif [[ -f "${PORTABLE_ROOT}/AA/packages/auto_apply/src/auto_apply/main.py" ]]; then
     # Source mode
     echo ""
     echo "Starting AutoApply (source mode)..."
     cd "${PORTABLE_ROOT}/AA"
-    python -m auto_apply "$@"
+    python -m auto_apply "$@" || AA_STATUS=$?
 
 else
     echo ""
@@ -110,3 +116,4 @@ echo "Session complete. Cleaning up temporary files..."
 rm -rf "${AA_DATA_DIR}/tmp"
 mkdir -p "${AA_DATA_DIR}/tmp"
 echo "Temp files removed. All session data saved to the USB drive."
+exit "${AA_STATUS}"

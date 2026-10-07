@@ -104,6 +104,7 @@ class PageUnderstandingExtractor:
         observer: Any = None,
         readiness: Any = None,
         research_observer: Any = None,
+        page_action: Any = None,
         max_card_activations: int = DEFAULT_MAX_CARD_ACTIVATIONS,
     ) -> None:
         """Store the collaborators.
@@ -119,6 +120,10 @@ class PageUnderstandingExtractor:
             research_observer: Optional ResearchObserverPort. Receives one
                 ``observe_discovery`` per finalized page. The null observer
                 (default) makes observation cost exactly nothing.
+            page_action: Optional interaction tool. Activation clicks travel
+                its ladder; without it CardActivator refuses honestly rather
+                than clicking raw. The composition root wires it through the
+                providers.
             max_card_activations: Hard cap on clicks per page.
         """
         self._page_understanding = page_understanding
@@ -126,6 +131,7 @@ class PageUnderstandingExtractor:
         self._observer = observer
         self._readiness = readiness
         self._research_observer = research_observer or NullResearchObserver()
+        self._page_action = page_action
         self._max_card_activations = max(0, int(max_card_activations))
         # State consumed by FallbackSerpExtractor's commit rule: how many
         # cards the most recent analyze_serp saw. Fallback commits use it to
@@ -154,7 +160,9 @@ class PageUnderstandingExtractor:
             return self._activator
         if not callable(getattr(self._browser, "find_elements", None)):
             return None
-        self._activator = CardActivator(self._browser, readiness=self._readiness)
+        self._activator = CardActivator(
+            self._browser, readiness=self._readiness, page_action=self._page_action
+        )
         return self._activator
 
     def mine_jobs(self, source_name: str) -> list[Job]:
@@ -240,7 +248,13 @@ class PageUnderstandingExtractor:
     # Deferred resolution — runs once per page, AFTER the scroll loop
     # ------------------------------------------------------------------
 
-    def finalize_harvest(self, source_name: str) -> list[Job]:
+    def finalize_harvest(
+        self,
+        source_name: str,
+        *,
+        page_index: int = 0,
+        advance_method: str = "",
+    ) -> list[Job]:
         """Resolve deferred cards via bounded click activation.
 
         Called once per page after the scroll loop completes, so a click
@@ -359,7 +373,14 @@ class PageUnderstandingExtractor:
             cards = updated
 
         self._emit_observation(
-            source_name, context, cards, report, activation_attempts, activation_resolved
+            source_name,
+            context,
+            cards,
+            report,
+            activation_attempts,
+            activation_resolved,
+            page_index=page_index,
+            advance_method=advance_method,
         )
 
         logger.info(
@@ -384,6 +405,9 @@ class PageUnderstandingExtractor:
         report: SerpResolutionReport | None,
         activation_attempts: int,
         activation_resolved: int,
+        *,
+        page_index: int = 0,
+        advance_method: str = "",
     ) -> None:
         """Build and emit one DiscoveryObservation for the finalized page.
 
@@ -465,6 +489,8 @@ class PageUnderstandingExtractor:
                 activation_attempts=activation_attempts,
                 activation_resolved=activation_resolved,
                 learned_identity=tuple(report.learned_identity) if report else (),
+                page_index=page_index,
+                advance_method=advance_method,
                 cards=tuple(card_obs),
             )
             self._research_observer.observe_discovery(observation)
@@ -609,19 +635,20 @@ class FallbackSerpExtractor:
         self._commit(self._fallback, "fallback:empty")
         return self._fallback.mine_jobs(source_name=source_name)
 
-    def finalize_harvest(self, source_name: str) -> list[Job]:
+    def finalize_harvest(self, source_name: str, **kwargs) -> list[Job]:
         """Delegate post-scroll deferred resolution to the fast extractor.
 
         The fast extractor always ran at least the first harvest, so it is
         the right place to emit the page observation and to run bounded
         activation. When the chosen route is the miner, the fast extractor
-        holds no deferred cards and returns nothing.
+        holds no deferred cards and returns nothing. Pagination evidence
+        (page_index, advance_method) passes through in kwargs.
         """
         finalize = getattr(self._fast, "finalize_harvest", None)
         if not callable(finalize):
             return []
         try:
-            return finalize(source_name=source_name) or []
+            return finalize(source_name=source_name, **kwargs) or []
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "%s: finalize_harvest failed (%s); returning no additional jobs.",

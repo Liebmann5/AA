@@ -134,6 +134,14 @@ class SessionReport:
     # inactive accounting, so every report carries the section.
     research: ResearchAccounting = field(default_factory=ResearchAccounting)
 
+    # How AA's interactions actually landed this session, from the
+    # interaction tool's session tally: clicks by ladder rung (pointer /
+    # keyboard / native / js), scrolls by rung (wheel / js-scroll /
+    # already-visible), and click refusals. Counts only — no URLs, no
+    # element identities, no user data. Set by the orchestrator at teardown;
+    # empty when no browser ran.
+    interaction: dict[str, Any] = field(default_factory=dict)
+
     # ── Derived counts (computed from applications list) ──────────────────
 
     @property
@@ -331,6 +339,7 @@ class SessionReport:
                 "records": [a.to_dict() for a in self.applications],
             },
             "research": self.research.to_dict(),
+            "interaction": self.interaction,
         }
 
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -356,6 +365,9 @@ class SessionReport:
             "submitted_job_urls": self.submitted_job_urls,
             "submitted_companies": self.submitted_companies,
             "success_rate": self.success_rate,
+            # How AA acted: the interaction tool's session tally (clicks and
+            # scrolls by rung, refusals). Empty dict without a browser.
+            "interaction": self.interaction,
             # Per-task timing (new — Wave M)
             "total_task_duration_seconds": round(
                 self.total_task_duration_seconds, 1

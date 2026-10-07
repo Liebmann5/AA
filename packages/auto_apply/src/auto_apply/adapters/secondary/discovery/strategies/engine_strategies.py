@@ -33,8 +33,8 @@ import time
 from abc import ABC, abstractmethod
 from urllib.parse import urlencode
 
-from auto_apply.adapters.secondary.evasion.components import behavior
 from auto_apply.domain.models.search_instruction import SearchInstruction
+from auto_apply.domain.ports.interaction_primitives_port import PageActionPrimitives
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.types import Locator
 
@@ -159,18 +159,53 @@ class SearchEngineStrategy(ABC):
 
     # ── Constructor (shared by subclasses) ──────────────────────────────
 
-    def __init__(self, locator=None) -> None:
+    def __init__(
+        self,
+        locator=None,
+        page_action: PageActionPrimitives | None = None,
+    ) -> None:
         """Initialise the strategy.
 
         Args:
             locator: Optional :class:`ToolbarElementLocator`.  When provided,
                 toolbar interactions use YAML‑driven selectors with Math‑DOM
                 fallback.  When ``None``, legacy hardcoded selectors are used.
+            page_action: Optional interaction tool, seen through the
+                four-verb PageActionPrimitives seam. Toolbar clicks go
+                through it when wired; without it the toolbar pass is
+                SKIPPED — every engine already encodes date_range in the
+                search URL, so the toolbar is belt-and-braces, never the
+                only filter.
         """
         self._locator = locator
+        self._page_action = page_action
         # Defaults — subclasses override in their own __init__.
         self._homepage_url = ""
         self._search_bar_selectors = []
+
+    def _click_toolbar(self, element) -> bool:
+        """One toolbar click through the interaction tool, or a skip.
+
+        The predecessor called ``behavior.human_like_click`` (routed to the
+        tool in call 2). Skipping is safe by design: date_range travels in
+        the search URL on every engine, so the toolbar pass only re-asserts
+        it.
+        """
+        if self._page_action is None:
+            logger.debug(
+                "%s: no interaction tool wired — toolbar click skipped",
+                self.engine_name,
+            )
+            return False
+        result = self._page_action.click(element)
+        if not result:
+            logger.debug(
+                "%s: toolbar click did not complete (%s)",
+                self.engine_name,
+                getattr(result, "reason", "unknown"),
+            )
+            return False
+        return True
 
     # ── Locator‑based toolbar interaction ───────────────────────────────
 
@@ -278,8 +313,8 @@ _GOOGLE_DATE_RANGE_MAP: dict[str, str] = {
 class GoogleSearchStrategy(SearchEngineStrategy):
     """Google‑specific search URL construction and toolbar interactions."""
 
-    def __init__(self, locator=None) -> None:
-        super().__init__(locator)
+    def __init__(self, locator=None, page_action=None) -> None:
+        super().__init__(locator, page_action=page_action)
         self._homepage_url = "https://www.google.com"
         self._search_bar_selectors = [
             "input[name='q']",
@@ -330,8 +365,7 @@ class GoogleSearchStrategy(SearchEngineStrategy):
                 "a[aria-label='Tools'], div.hdtb-tl-sel",
             )
             if tools_btn is not None:
-                behavior.human_like_click(browser, tools_btn)
-                time.sleep(0.5)
+                self._click_toolbar(tools_btn)
 
             # 2. Click "Any time" dropdown
             time_menu = browser.find_element(
@@ -340,8 +374,7 @@ class GoogleSearchStrategy(SearchEngineStrategy):
                 "div[aria-label*='time' i], g-menu[role='menu']",
             )
             if time_menu is not None:
-                behavior.human_like_click(browser, time_menu)
-                time.sleep(0.4)
+                self._click_toolbar(time_menu)
 
             # 3. Click the specific date option
             label_map: dict[str, str] = {
@@ -361,7 +394,7 @@ class GoogleSearchStrategy(SearchEngineStrategy):
                 f"//g-menu-item[contains(., '{target_label}')]",
             )
             if option is not None:
-                behavior.human_like_click(browser, option)
+                self._click_toolbar(option)
                 logger.info(
                     "GoogleSearchStrategy: legacy toolbar date filter applied | %s",
                     target_label,
@@ -393,8 +426,8 @@ _BING_DATE_RANGE_MAP: dict[str, str] = {
 class BingSearchStrategy(SearchEngineStrategy):
     """Bing‑specific search URL construction and toolbar interactions."""
 
-    def __init__(self, locator=None) -> None:
-        super().__init__(locator)
+    def __init__(self, locator=None, page_action=None) -> None:
+        super().__init__(locator, page_action=page_action)
         self._homepage_url = "https://www.bing.com"
         self._search_bar_selectors = [
             "input[name='q']",
@@ -441,8 +474,7 @@ class BingSearchStrategy(SearchEngineStrategy):
                 "div.ftrB > div, a[title*='date' i]",
             )
             if date_btn is not None:
-                behavior.human_like_click(browser, date_btn)
-                time.sleep(0.3)
+                self._click_toolbar(date_btn)
 
             label_map: dict[str, str] = {
                 "hour":  "Past 24 hours",
@@ -461,7 +493,7 @@ class BingSearchStrategy(SearchEngineStrategy):
                 f"//a[contains(normalize-space(), '{target_label}')]",
             )
             if option is not None:
-                behavior.human_like_click(browser, option)
+                self._click_toolbar(option)
                 logger.info(
                     "BingSearchStrategy: legacy toolbar date filter applied | %s",
                     target_label,
@@ -488,8 +520,8 @@ _INDEED_DATE_RANGE_DAYS: dict[str, int] = {
 class IndeedSearchStrategy(SearchEngineStrategy):
     """Indeed‑specific search URL construction and toolbar interactions."""
 
-    def __init__(self, locator=None) -> None:
-        super().__init__(locator)
+    def __init__(self, locator=None, page_action=None) -> None:
+        super().__init__(locator, page_action=page_action)
         self._homepage_url = "https://www.indeed.com"
         self._search_bar_selectors = [
             "input[name='q']",
@@ -543,8 +575,7 @@ class IndeedSearchStrategy(SearchEngineStrategy):
                 "button#filter-date-button",
             )
             if date_filter is not None:
-                behavior.human_like_click(browser, date_filter)
-                time.sleep(0.3)
+                self._click_toolbar(date_filter)
 
             label_map: dict[str, str] = {
                 "hour":  "Last 24 hours",
@@ -564,7 +595,7 @@ class IndeedSearchStrategy(SearchEngineStrategy):
                 f"//button[contains(normalize-space(), '{target_label}')]",
             )
             if option is not None:
-                behavior.human_like_click(browser, option)
+                self._click_toolbar(option)
                 logger.info(
                     "IndeedSearchStrategy: legacy toolbar date filter applied | %s",
                     target_label,

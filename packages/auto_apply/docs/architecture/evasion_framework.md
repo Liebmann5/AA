@@ -106,12 +106,17 @@ uniform rhythm. Bot‑detection ML models are trained to spot these patterns.
 browser interaction, and it applies human‑consistent timing and movement
 patterns automatically.
 
-> **Status (Stage 1).** Every **click**, and the pacing between plan steps,
-> passes through the tool. Keystrokes, scrolling and pagination still have
-> other live paths (the interaction handlers, `InfiniteScrollStrategy`,
-> `behavior.human_like_scroll`) and are scheduled to move behind the tool in
-> later stages. Treat this section as the target state, not a description of
-> today's every code path.
+> **Status (mouse-tool core).** Every click through the tool now travels a
+> planned curved pointer path to a sampled off-centre point — one W3C action
+> sequence per movement on Selenium, bounded chunked moves on Playwright —
+> behind a recorded ladder: probe → trusted pointer click → keyboard
+> activation → native click → (config-gated, never on irreversible actions)
+> synthetic JS. Scrolling is wheel-first through the same tool, with the
+> instant teleport kept only as a recorded fallback. The claim this section
+> used to make about Bezier curves is now true of the motion model; before
+> this stage nothing in AA actually curved. Keystrokes and the remaining
+> free-function call sites (`behavior.human_like_*`) are still being
+> migrated, and the per-rung outcome record feeds the evidence layer.
 
 ### MICRO Timing — Intra‑Task (milliseconds)
 - **Parabolic keystroke delays:** Each character is typed with a pause drawn
@@ -139,14 +144,19 @@ patterns automatically.
 AA provides two strategies, selectable based on the user’s hardware and
 risk tolerance:
 
-| Strategy | Behaviour | Use Case |
-| -------- | --------- | -------- |
-| `StealthHumanStrategy` | Full humanisation: curved mouse paths, parabolic typing, overshoot clicks, micro‑fidgets. | Live job boards (LinkedIn, Greenhouse, Workday). |
-| `InstantHeadlessStrategy` | No delays, no curves, direct driver calls. | Headless CI, fast replays, local testing. |
+| Profile | Behaviour | Use Case |
+| ------- | --------- | -------- |
+| `human` (default) | Full humanisation: curved pointer paths, parabolic typing, off‑centre clicks, idle fidgets. | Live job boards (LinkedIn, Greenhouse, Workday). |
+| `careful` | Slower, longer pauses, more overshoot — maximum stealth. | High‑risk or high‑value sessions. |
+| `instant` | No delays, no curves, single‑tick moves. | Headless CI, fast replays, local testing. |
 
-The strategy is injected into `InteractionExecutor` by the composition root.
-The engines call the same `click()` and `type_text()` methods regardless —
-they never know which strategy is active.
+The profile is selected app‑wide by `motion.profile` in
+`runtime_defaults.yaml`, per user by `app_config.motion_profile` (Settings →
+Browser Engine, or the CLI wizard), and lockable per device by
+`AdminPolicy.motion_profile` (ADR‑018). It is resolved once into a validated
+`MotionConfig` inside the shared `PageActionService`; the engines call the
+same `click()` and `type_text()` regardless — they never know which profile
+is active.
 
 ### Adaptive Timing
 All timing parameters are read from `CapabilitiesRegistry._effective_config`
@@ -204,7 +214,19 @@ page, or a login wall. AA detects these challenges proactively and decides
 how to respond.
 
 ### Detection
-On every page load, the `DefaultDetectionStrategy` runs a series of checks:
+The application path — where a wrong answer ends an application — uses the
+single structural predicate in `domain/services/challenge_assessment.py`:
+challenge markup in the rendered DOM (vendor iframe, widget attributes,
+challenge-platform script), weighed against whether the page carries its
+own content (a form or an apply control). The page title is never read,
+text inside comments and script bodies never counts, and the verdict is
+three-valued (`gated` / `embedded` / `clear`) with the deciding signals
+recorded on the outcome. A merely loaded vendor library is not a presented
+challenge.
+
+The discovery path still uses `DefaultDetectionStrategy`, which runs a
+series of weighted checks (migrating it to the same predicate is a named
+follow-up):
 
 1. **URL & Title keywords** — “verify you are human,” “access denied,”
    “attention required,” `/recaptcha/`, `/challenge-platform/`.
@@ -217,30 +239,28 @@ On every page load, the `DefaultDetectionStrategy` runs a series of checks:
 Detection is fast — it short‑circuits on the first positive result.
 
 ### Resolution
-When a challenge is detected, AA publishes a `CAPTCHA_DETECTED` event on the
-EventBus. The orchestrator pauses the current task and dispatches a
-`HANDLE_CAPTCHA` work unit.
+When the application path's verdict is `gated`, AA pauses **in place**
+(ruling A, item 12A): the human is asked before any outcome is recorded,
+while the browser is still on the challenging page. The gate publishes
+`HUMAN_APPROVAL_REQUESTED`; the GUI or CLI presents the prompt; the agent
+thread blocks on the approval gate.
 
-AA attempts automatic resolution first:
+- **Solved** — the page is re-checked where it sits; if it is clear, the
+  same application attempt continues (same attempt id, with
+  `captcha_encountered=True` on the evidence).
+- **Skip / stop / timeout** — the attempt is recorded `CAPTCHA_BLOCKED`,
+  with who answered (human or timeout) in the approval evidence.
+- **No gate wired** — `CAPTCHA_BLOCKED` with the reason recorded; the
+  session never hangs. A challenge that keeps returning after repeated
+  solves exhausts a per-attempt pause budget and blocks honestly.
 
-- **Audio reCAPTCHA:** The `CaptchaResolutionService` clicks the “Audio”
-  button on the reCAPTCHA widget to switch modes. The audio file can be
-  downloaded and processed with an offline speech‑to‑text engine (`vosk`).
-  This feature is experimental and bundled in the `[captcha]` extra.
-
-If automatic resolution fails (or if the `[captcha]` extra is not installed),
-AA escalates to **manual resolution**:
-
-1. The orchestrator publishes `CAPTCHA_REQUIRES_MANUAL_SOLVE`.
-2. The GUI displays a “Please solve the CAPTCHA” message, or the CLI prompts
-   the user.
-3. The agent pauses and waits for the user to solve the challenge in the
-   browser window.
-4. Once solved, the user clicks “Continue” (or presses Enter in the CLI), and
-   the agent resumes.
-
-This two‑tier approach ensures that AA never gets permanently stuck on a
-CAPTCHA — it either solves it automatically or asks for human help.
+The older hand-off — enqueue a `HANDLE_CAPTCHA` work unit and ask later,
+over whatever page happened to be showing by then — is deferred: nothing
+enqueues it, and `orchestrator._handle_captcha` remains only as the
+consumer for rows queued by older versions. Automatic resolution stays
+available behind the `ResolutionInterface` port for legitimate local
+resolvers (accessibility audio, ATS APIs, a permissioned lab operator);
+the bundled audio solver is not yet implemented.
 
 ### Detection Configuration
 Challenge detection keywords are stored in a JSON configuration file
@@ -271,7 +291,7 @@ The composition root wires everything:
 page_action = PageActionService(browser, registry)
 engine = ApplicationEngine(
     perception_port=perception_port,
-    interaction_port=InteractionExecutor(browser, strategy=StealthHumanStrategy()),
+    interaction_port=InteractionExecutor(browser, page_action=page_action),
     reasoning_port=FormSolver(profile),
 )
 ```

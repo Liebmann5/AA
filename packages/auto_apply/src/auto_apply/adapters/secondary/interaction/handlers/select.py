@@ -80,61 +80,103 @@ class SelectInputHandler(BaseInputHandler):
 
             candidates = list(option_map.keys())
 
+            # ── Tiers 1-5: choose the option TEXT to apply ───────────────
+            # Matching is unchanged; application changed (call 2): a native
+            # <select>'s options are drawn by the OPERATING SYSTEM and
+            # cannot be pointer-clicked cross-framework, so the chosen text
+            # is applied through the tool (_select_native), never by
+            # clicking <option> elements.
+            chosen: str | None = None
+
             # ── Tier 1: exact text match ──────────────────────────────────
             if user_value in option_map:
-                option_map[user_value].click()
+                chosen = user_value
                 logger.info("Select exact match | value=%r", user_value)
-                return
 
             # ── Tier 2: case‑insensitive exact match ──────────────────────
-            lower_value = user_value.lower()
-            for text, opt in option_map.items():
-                if text.lower() == lower_value:
-                    opt.click()
-                    logger.info("Select case‑insensitive match | value=%r → %r", user_value, text)
-                    return
+            if chosen is None:
+                lower_value = user_value.lower()
+                for text in candidates:
+                    if text.lower() == lower_value:
+                        chosen = text
+                        logger.info(
+                            "Select case‑insensitive match | value=%r → %r",
+                            user_value, text,
+                        )
+                        break
 
             # ── Tier 3: substring / contains match ────────────────────────
-            for text, opt in option_map.items():
-                text_lower = text.lower()
-                if lower_value in text_lower or text_lower in lower_value:
-                    opt.click()
-                    logger.info(
-                        "Select substring match | value=%r → %r",
-                        user_value, text,
-                    )
-                    return
+            if chosen is None:
+                lower_value = user_value.lower()
+                for text in candidates:
+                    text_lower = text.lower()
+                    if lower_value in text_lower or text_lower in lower_value:
+                        chosen = text
+                        logger.info(
+                            "Select substring match | value=%r → %r",
+                            user_value, text,
+                        )
+                        break
 
             # ── Tier 4: semantic match ────────────────────────────────────
             # The matcher is optional (ctor default None). Without one there
             # is no semantic tier -- fall through to Tier 5 rather than
             # raising, which is what an unguarded call did.
-            if self.matcher is None:
-                logger.info("Select: no text matcher injected — skipping semantic tier")
-                best_match_text, score = "", 0.0
-            else:
-                best_match_text, score = self.matcher.find_best_match(user_value, candidates)
+            if chosen is None:
+                if self.matcher is None:
+                    logger.info("Select: no text matcher injected — skipping semantic tier")
+                    best_match_text, score = "", 0.0
+                else:
+                    best_match_text, score = self.matcher.find_best_match(user_value, candidates)
 
-            logger.info(
-                "Select semantic | user=%r → option=%r (score=%.2f)",
-                user_value, best_match_text, score,
-            )
-
-            if score > 0.6:
-                option_map[best_match_text].click()
-                return
+                logger.info(
+                    "Select semantic | user=%r → option=%r (score=%.2f)",
+                    user_value, best_match_text, score,
+                )
+                if score > 0.6:
+                    chosen = best_match_text
 
             # ── Tier 5: fallback — first non‑placeholder option ───────────
-            if option_map:
-                first_text = candidates[0]
-                option_map[first_text].click()
+            if chosen is None and candidates:
+                chosen = candidates[0]
                 logger.warning(
                     "Select: no match for %r — selected first option %r",
-                    user_value, first_text,
+                    user_value, chosen,
                 )
+
+            if chosen is not None:
+                self._select_native(element, chosen)
 
         except Exception as e:
             logger.error("Failed to handle standard select: %s", e)
+
+    def _select_native(self, element: ElementInterface, text: str) -> None:
+        """Applies a chosen option to a NATIVE <select> through the tool.
+
+        Without a tool (direct construction in tests), the value is set
+        directly — no pacing exists to apply, and inventing some here would
+        recreate the duplication the tool removed.
+        """
+        if self._act is None:
+            self.browser.execute_script(
+                "var s=arguments[0],t=arguments[1];"
+                "for(var i=0;i<s.options.length;i++){"
+                "  if(s.options[i].text.trim()===t.trim()){"
+                "    s.selectedIndex=i;"
+                "    s.dispatchEvent(new Event('change',{bubbles:true}));"
+                "    break;"
+                "  }"
+                "}",
+                element, text,
+            )
+            return
+        result = self._act.select_option(element, by_text=text)
+        if not result:
+            logger.warning(
+                "Select: tool could not apply %r (%s)",
+                text,
+                getattr(result, "reason", "unknown"),
+            )
 
     def _handle_custom_combobox(self, element: ElementInterface, user_value: str) -> None:  # noqa: E501
         """Handles React-Select, Select2, and ARIA comboboxes.
@@ -198,7 +240,7 @@ class SelectInputHandler(BaseInputHandler):
 
             # Fallback: If we can't find the list or match, hit Enter and hope
             logger.warning("Could not intelligently select from combobox. Sending Enter.")  # noqa: E501
-            element.send_keys(Keys.ENTER)
+            self._type(element, Keys.ENTER)
 
         except Exception as e:
             logger.error("Failed to handle custom combobox: %s", e)

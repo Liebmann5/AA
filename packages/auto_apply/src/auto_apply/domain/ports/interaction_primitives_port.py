@@ -7,7 +7,7 @@ the PageActionService tool, in one place, config-driven and seeded.
 
 Two protocols, deliberately tiny, so the seam cannot widen into a back door:
 
-    * :class:`PageActionPrimitives` — exactly three verbs on the tool.
+    * :class:`PageActionPrimitives` — exactly four verbs on the tool.
     * :class:`DomReadinessPort` — exactly one method on the observer.
 
 Anything a handler needs beyond these is a signal that the work belongs in the
@@ -24,6 +24,12 @@ class PageActionPrimitives(Protocol):
 
     Implemented by ``PageActionService``. Each verb already applies the tool's
     own settle pause, which is why handlers need no sleeps of their own.
+
+    Four verbs (widened from three in call 2): ``select_option`` joined when
+    the native-<select> path moved into the tool — a native select's options
+    are drawn by the operating system and cannot be pointer-clicked
+    cross-framework, so the handler resolves the option text and the tool
+    applies the value.
     """
 
     def click(self, element: Any) -> Any:
@@ -36,6 +42,17 @@ class PageActionPrimitives(Protocol):
 
     def settle(self) -> None:
         """Short post-action pause from the tool's configured range."""
+        ...
+
+    def select_option(
+        self,
+        select_element: Any,
+        *,
+        by_value: Any = None,
+        by_text: Any = None,
+        by_index: Any = None,
+    ) -> Any:
+        """Set a native <select>'s value, with the tool's verification."""
         ...
 
 

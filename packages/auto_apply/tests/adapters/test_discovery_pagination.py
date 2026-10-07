@@ -1,52 +1,78 @@
+"""Pins for the verified page-advance loop and its per-query wiring (call 3).
 
-"""Pins for bounded pagination and injected page collaborators (Stage 4).
-
-This is the first stage that moves live discovery, so the guard comes first:
-with the shipped default (``max_pages_per_query: 1``) discovery must produce
-byte-for-byte what it produced before pagination existed — same jobs, same
-order, and no extra page fetches.
-
-It is also the stage that revives four strategies which could not have worked
-before. ``KeywordPagination``, ``ArrowPagination`` and ``NumberedPagination``
-all call ``self._interactor.click(...)`` — the method ``InteractionExecutor``
-did not have until Stage 1. That dependency is why pagination waited.
+The regression guard stands: with the shipped default (``max_pages_per_query:
+1``) discovery is byte-for-byte what it was before pagination existed. The
+old Keyword/Arrow/Numbered strategies and the shared PaginationHandler are
+retired — they matched English words, clicked the last match, verified
+nothing, and one shared NumberedPagination leaked its page counter across
+queries and providers.
 """
-import pathlib
+from __future__ import annotations
 
-import pytest
+import importlib
+import pathlib
 from unittest.mock import MagicMock
 
-PROVIDERS = (
-    pathlib.Path(__file__).resolve().parent.parent.parent
-    / "src"
-    / "auto_apply"
-    / "adapters"
-    / "secondary"
-    / "discovery"
-    / "providers"
+import pytest
+
+from auto_apply.adapters.secondary.discovery.strategies import (
+    serp_strategy as serp_strategy_module,
 )
+from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (
+    GenericSERPStrategy,
+)
+from auto_apply.domain.models.job import Job
+from auto_apply.domain.models.page_advance import AdvanceOutcome
+from auto_apply.domain.models.search_instruction import SearchInstruction
+from auto_apply.domain.services.page_assessment import PageAssessment
+from auto_apply.domain.types import PageType
+
+SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "auto_apply"
 
 
-def _strategy(*, max_pages=1, paginator=None, scroller=None, pages=None):
-    """A SERP strategy whose mining step is replaced by a scripted page feed."""
-    from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (
-        GenericSERPStrategy,
-    )
+class _FakeAdvancer:
+    """A scripted advancer: replays outcomes, then reports no-next."""
 
+    def __init__(self, outcomes=()):
+        self._outcomes = list(outcomes)
+        self.calls = 0
+
+    def advance(self):
+        self.calls += 1
+        if self._outcomes:
+            return self._outcomes.pop(0)
+        return AdvanceOutcome(False, stop_reason="no-next-control")
+
+
+def _advance(method="numbered"):
+    return AdvanceOutcome(True, method=method, verified=True)
+
+
+def _verdict(kind):
+    return PageAssessment(kind=kind, challenge="clear", signals=("stubbed",),
+                          detail="stub", confidence=1.0)
+
+
+def _strategy(*, max_pages=1, advancer=None, pages=None, browser=None, observer=None):
+    browser = browser or MagicMock()
+    browser.page_source = ""
     strategy = GenericSERPStrategy(
-        browser=MagicMock(),
+        browser=browser,
         search_prefs=None,
         source_tag="Test",
         max_results=100,
-        scroller=scroller if scroller is not None else MagicMock(),
-        paginator=paginator,
+        scroller=MagicMock(),
+        advancer=advancer,
         max_pages=max_pages,
+        research_observer=observer,
     )
-
+    strategy.interruption_handler = MagicMock()
+    strategy._page_block_type = lambda: None  # verdict stubbed; the block
+    # test restores the real method and stubs the module assess_page instead
     feed = list(pages or [{"a": "job-a"}])
     mined = {"calls": 0}
 
-    def _mine(_scroller):
+    def _mine(_scroller, **_kwargs):
         page = feed[min(mined["calls"], len(feed) - 1)]
         mined["calls"] += 1
         return dict(page)
@@ -61,256 +87,317 @@ def _strategy(*, max_pages=1, paginator=None, scroller=None, pages=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_the_default_ceiling_mines_exactly_one_page():
-    """No second harvest, and the paginator is never touched."""
-    paginator = MagicMock()
-    strategy = _strategy(max_pages=1, paginator=paginator)
-
+def test_default_ceiling_mines_once_and_never_touches_the_advancer():
+    advancer = _FakeAdvancer([_advance()])
+    strategy = _strategy(max_pages=1, advancer=advancer)
     strategy._mine_all_pages(strategy._scroller)
-
     assert strategy.mined["calls"] == 1
-    paginator.navigate_to_next_page.assert_not_called()
+    assert advancer.calls == 0
 
 
-def test_the_default_ceiling_preserves_jobs_and_their_order():
-    """Same jobs, same order — the dict the caller receives is unchanged."""
+def test_default_ceiling_preserves_jobs_and_their_order():
     page = {"u1": "job-1", "u2": "job-2", "u3": "job-3"}
-    strategy = _strategy(max_pages=1, paginator=MagicMock(), pages=[page])
-
+    strategy = _strategy(max_pages=1, advancer=_FakeAdvancer(), pages=[page])
     result = strategy._mine_all_pages(strategy._scroller)
-
     assert result == page
     assert list(result.keys()) == ["u1", "u2", "u3"]
 
 
 def test_the_shipped_default_is_one_page():
-    """Config and code agree, so nobody has to trust the default by eye."""
-    from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (
-        GenericSERPStrategy,
+    yaml_text = (SRC / "resources" / "config" / "runtime_defaults.yaml").read_text(
+        encoding="utf-8"
     )
-
-    yaml_text = (
-        pathlib.Path(__file__).resolve().parent.parent.parent
-        / "src"
-        / "auto_apply"
-        / "resources"
-        / "config"
-        / "runtime_defaults.yaml"
-    ).read_text(encoding="utf-8")
-
     assert "max_pages_per_query: 1" in yaml_text
     assert (
-        GenericSERPStrategy(
-            browser=MagicMock(), search_prefs=None, source_tag="T"
-        )._max_pages
+        GenericSERPStrategy(browser=MagicMock(), search_prefs=None, source_tag="T")._max_pages
         == 1
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ABOVE ONE, IT REALLY PAGINATES — AND STOPS AT THE CEILING
+# THE LOOP ADVANCES, VERIFIES AND STOPS
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_a_higher_ceiling_walks_pages_and_merges_them():
-    paginator = MagicMock()
-    paginator.navigate_to_next_page.return_value = True
-
+def test_advances_merges_and_stops_at_the_ceiling():
+    advancer = _FakeAdvancer([_advance(), _advance(), _advance()])
     strategy = _strategy(
-        max_pages=3,
-        paginator=paginator,
-        pages=[{"u1": "a"}, {"u2": "b"}, {"u3": "c"}],
+        max_pages=3, advancer=advancer, pages=[{"u1": "a"}, {"u2": "b"}, {"u3": "c"}]
     )
-
     result = strategy._mine_all_pages(strategy._scroller)
-
     assert strategy.mined["calls"] == 3
     assert result == {"u1": "a", "u2": "b", "u3": "c"}
+    assert advancer.calls == 2
 
 
-def test_pagination_stops_exactly_at_the_ceiling():
-    """A page feed that never ends is bounded by the ceiling, not by luck."""
-    paginator = MagicMock()
-    paginator.navigate_to_next_page.return_value = True
-
-    strategy = _strategy(max_pages=2, paginator=paginator, pages=[{"u1": "a"}])
-    strategy._mine_all_pages(strategy._scroller)
-
-    assert strategy.mined["calls"] == 2
-    assert paginator.navigate_to_next_page.call_count == 1
-
-
-def test_pagination_stops_when_the_site_runs_out_of_pages():
-    paginator = MagicMock()
-    paginator.navigate_to_next_page.side_effect = [True, False]
-
-    strategy = _strategy(max_pages=5, paginator=paginator)
-    strategy._mine_all_pages(strategy._scroller)
-
-    assert strategy.mined["calls"] == 2
-
-
-def test_pagination_stops_once_the_result_cap_is_reached():
-    """The result cap still wins — the runaway-scroll lesson, applied to pages."""
-    paginator = MagicMock()
-    paginator.navigate_to_next_page.return_value = True
-
-    strategy = _strategy(max_pages=10, paginator=paginator, pages=[{"u1": "a"}])
-    strategy.max_results = 1
-
-    strategy._mine_all_pages(strategy._scroller)
-
-    assert strategy.mined["calls"] == 1
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# THE REVIVED STRATEGIES CLICK THROUGH THE INTERACTION TOOL
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "strategy_name",
-    ["KeywordPagination", "ArrowPagination", "NumberedPagination"],
-)
-def test_each_revived_strategy_clicks_through_the_interaction_tool(strategy_name):
-    """Every one of these called a method that did not exist until Stage 1.
-
-    ``InteractionExecutor`` had no ``click``, so each of these strategies would
-    have raised AttributeError the moment it found a Next link. That is the
-    dependency that ordered this stage after the interaction beachhead.
-    """
-    import auto_apply.adapters.secondary.navigation.pagination as pagination
-
-    cls = getattr(pagination, strategy_name)
-    interactor = MagicMock()
-    browser = MagicMock()
-
-    element = MagicMock()
-    element.is_displayed.return_value = True
-    element.is_enabled.return_value = True
-    element.text = "Next"
-    element.get_attribute.return_value = "Next page"
-    browser.find_elements.return_value = [element]
-    browser.find_element.return_value = element
-
-    strategy = cls(browser, interactor)
-    strategy.next_page()
-
-    assert interactor.click.called, (
-        f"{strategy_name} did not route its click through the interaction port"
-    )
-
-
-def test_the_pagination_handler_delegates_to_its_strategies():
-    from auto_apply.adapters.secondary.navigation.pagination import (
-        PaginationHandler,
-    )
-
-    handler = PaginationHandler(MagicMock(), MagicMock())
-    assert handler.strategies, "PaginationHandler has no strategies"
-    assert hasattr(handler, "navigate_to_next_page")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DEGRADATION
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def test_a_none_scroller_mines_once_without_raising():
-    """Static mode / no driver: one screenful beats a crash."""
-    strategy = _strategy(max_pages=1, scroller=None, paginator=None)
-    strategy._scroller = None
-
-    assert strategy._mine_all_pages(None) == {"a": "job-a"}
-
-
-def test_a_none_paginator_never_advances_and_never_raises():
-    strategy = _strategy(max_pages=5, paginator=None)
-
-    strategy._mine_all_pages(strategy._scroller)
-
-    assert strategy.mined["calls"] == 1
-
-
-def test_a_raising_paginator_ends_the_walk_quietly():
-    """A pagination fault ends the harvest; it must not kill the search."""
-    paginator = MagicMock()
-    paginator.navigate_to_next_page.side_effect = RuntimeError("no next link")
-
-    strategy = _strategy(max_pages=4, paginator=paginator)
+def test_an_unverified_no_advance_stops_and_never_re_mines():
+    """TEETH: the old loop logged 'advanced to page N' and re-mined whatever
+    was on screen — the same page twice, wearing a new number."""
+    advancer = _FakeAdvancer([AdvanceOutcome(False, stop_reason="no-change")])
+    strategy = _strategy(max_pages=5, advancer=advancer)
     result = strategy._mine_all_pages(strategy._scroller)
+    assert strategy.mined["calls"] == 1
+    assert result == {"a": "job-a"}
 
+
+def test_stops_when_the_site_runs_out_of_pages():
+    advancer = _FakeAdvancer([_advance()])  # second advance -> no-next
+    strategy = _strategy(max_pages=5, advancer=advancer, pages=[{"u1": "a"}, {"u2": "b"}])
+    result = strategy._mine_all_pages(strategy._scroller)
+    assert strategy.mined["calls"] == 2
+    assert result == {"u1": "a", "u2": "b"}
+
+
+def test_the_result_cap_still_wins():
+    advancer = _FakeAdvancer([_advance(), _advance()])
+    strategy = _strategy(max_pages=10, advancer=advancer, pages=[{"u1": "a"}])
+    strategy.max_results = 1
+    strategy._mine_all_pages(strategy._scroller)
+    assert strategy.mined["calls"] == 1
+    assert advancer.calls == 0
+
+
+def test_a_raising_advancer_ends_the_walk_quietly():
+    advancer = MagicMock()
+    advancer.advance.side_effect = RuntimeError("boom")
+    strategy = _strategy(max_pages=4, advancer=advancer)
+    result = strategy._mine_all_pages(strategy._scroller)
     assert strategy.mined["calls"] == 1
     assert result == {"a": "job-a"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# INJECTION — a provider without collaborators cannot happen on the live path
+# EVERY NEW PAGE IS A NEW PAGE
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_every_provider_accepts_and_stores_the_collaborators():
-    """All three engines carry them, via the shared base."""
-    from auto_apply.adapters.secondary.discovery.providers.bing import BingProvider
-    from auto_apply.adapters.secondary.discovery.providers.google import GoogleProvider
-    from auto_apply.adapters.secondary.discovery.providers.indeed import IndeedProvider
-
-    scroller, paginator = MagicMock(), MagicMock()
-
-    for factory in (
-        lambda: GoogleProvider(
-            browser=MagicMock(), scroller=scroller, paginator=paginator, max_pages=4
-        ),
-        lambda: BingProvider(
-            browser=MagicMock(), scroller=scroller, paginator=paginator, max_pages=4
-        ),
-        lambda: IndeedProvider(
-            browser=MagicMock(), scroller=scroller, paginator=paginator, max_pages=4
-        ),
-    ):
-        provider = factory()
-        assert provider._scroller is scroller
-        assert provider._paginator is paginator
-        assert provider._max_pages == 4
+def test_the_block_verdict_reruns_on_every_page(monkeypatch):
+    """TEETH: a CAPTCHA on page 2 used to be mined as an empty harvest."""
+    verdicts = [_verdict(PageType.CAPTCHA_BLOCK)]
+    monkeypatch.setattr(
+        serp_strategy_module, "assess_page", lambda **kw: verdicts.pop(0)
+    )
+    monkeypatch.setattr(
+        serp_strategy_module, "browser_page_snapshot", lambda b: ("u", "t", "")
+    )
+    observer = MagicMock()
+    observer.is_enabled = True
+    advancer = _FakeAdvancer([_advance(), _advance()])
+    strategy = _strategy(max_pages=3, advancer=advancer, observer=observer)
+    del strategy._page_block_type  # restore the real method over the stub
+    strategy._mine_all_pages(strategy._scroller)
+    assert strategy.mined["calls"] == 1  # page 2 was never mined
+    observation = observer.observe_discovery.call_args_list[0].args[0]
+    assert observation.blocked is True
+    assert observation.page_state == "captcha_block"
 
 
-def test_every_live_scraper_construction_passes_the_collaborators():
-    """Structural: no construction site may quietly omit them.
+def test_overlays_are_dismissed_once_per_page():
+    advancer = _FakeAdvancer([_advance()])
+    strategy = _strategy(max_pages=2, advancer=advancer, pages=[{"u1": "a"}, {"u2": "b"}])
+    strategy._mine_all_pages(strategy._scroller)
+    assert strategy.interruption_handler.handle_interruptions.call_count == 1
 
-    A provider built without a scroller would silently stop scrolling — the
-    regression pin (1) forbids — and the failure would look like "this site
-    only has six jobs" rather than like a bug. Every site that builds a
-    GenericSERPStrategy on the live path is checked here.
-    """
+
+def test_run_dismisses_overlays_on_the_first_page(monkeypatch):
+    """BEHAVIOUR CHANGE, disclosed: run() previously never dismissed popups."""
+    monkeypatch.setattr(
+        serp_strategy_module, "assess_page", lambda **kw: _verdict(PageType.SERP)
+    )
+    strategy = _strategy(max_pages=1)
+    strategy.run()
+    strategy.interruption_handler.handle_interruptions.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EVIDENCE
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_a_query_summary_records_methods_pages_and_the_stop_reason():
+    observer = MagicMock()
+    observer.is_enabled = True
+    advancer = _FakeAdvancer([_advance("numbered")])  # then no-next
+    strategy = _strategy(
+        max_pages=5, advancer=advancer, observer=observer,
+        pages=[{"u1": "a"}, {"u2": "b"}],
+    )
+    strategy._mine_all_pages(strategy._scroller)
+    summaries = [c.args[0] for c in observer.observe_discovery.call_args_list]
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary.page_index == -1
+    assert summary.page_count == 2
+    assert summary.advance_method == "numbered"
+    assert summary.stop_reason == "no-next-control"
+    assert summary.card_count == 2
+
+
+def test_no_summary_row_at_the_shipped_default():
+    observer = MagicMock()
+    observer.is_enabled = True
+    strategy = _strategy(max_pages=1, advancer=_FakeAdvancer(), observer=observer)
+    strategy._mine_all_pages(strategy._scroller)
+    observer.observe_discovery.assert_not_called()
+
+
+def test_finalize_receives_the_page_index_and_method(monkeypatch):
+    monkeypatch.setattr(
+        serp_strategy_module, "assess_page", lambda **kw: _verdict(PageType.SERP)
+    )
+    strategy = GenericSERPStrategy(
+        browser=MagicMock(), search_prefs=None, source_tag="T", max_results=100,
+        scroller=MagicMock(), advancer=_FakeAdvancer([_advance("rel-next")]),
+        max_pages=2,
+    )
+    strategy.interruption_handler = MagicMock()
+    strategy._page_block_type = lambda: None
+    miner = MagicMock()
+    miner.mine_jobs.return_value = []
+    miner.finalize_harvest.return_value = []
+    strategy.miner = miner
+    strategy._mine_all_pages(strategy._scroller)
+    calls = miner.finalize_harvest.call_args_list
+    assert calls[0].kwargs["page_index"] == 0
+    assert calls[1].kwargs["page_index"] == 1
+    assert calls[1].kwargs["advance_method"] == "rel-next"
+
+
+def test_jobs_carry_their_page_index_and_rank():
+    strategy = GenericSERPStrategy(
+        browser=MagicMock(), search_prefs=None, source_tag="T", max_results=100,
+        scroller=MagicMock(), advancer=_FakeAdvancer([_advance()]), max_pages=2,
+    )
+    strategy.interruption_handler = MagicMock()
+    strategy._page_block_type = lambda: None
+    j1 = Job(title="A", company="C", url="https://x/1", source="T")
+    j2 = Job(title="B", company="C", url="https://x/2", source="T")
+    j3 = Job(title="D", company="C", url="https://x/3", source="T")
+    miner = MagicMock()
+    miner.mine_jobs.side_effect = [[j1, j2]] * 4 + [[j3]] * 4
+    miner.finalize_harvest.return_value = []
+    strategy.miner = miner
+    result = strategy._mine_all_pages(strategy._scroller)
+    assert result[j1.url].metadata["page_index"] == 0
+    assert result[j1.url].metadata["rank"] == 0
+    assert result[j2.url].metadata["rank"] == 1
+    assert result[j3.url].metadata["page_index"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WIRING — a fresh advancer per query, never a shared one
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "module_name,class_name",
+    [("google", "GoogleProvider"), ("bing", "BingProvider"), ("indeed", "IndeedProvider")],
+)
+def test_provider_requests_a_fresh_advancer_once_per_run(module_name, class_name, monkeypatch):
+    module = importlib.import_module(
+        f"auto_apply.adapters.secondary.discovery.providers.{module_name}"
+    )
+    factory = MagicMock(return_value="SENTINEL")
+    scraper_instance = MagicMock()
+    scraper_instance.execute.return_value = []
+    scraper_instance.run.return_value = []
+    scraper_cls = MagicMock(return_value=scraper_instance)
+    monkeypatch.setattr(module, "GenericSERPStrategy", scraper_cls)
+    provider = getattr(module, class_name)(
+        browser=MagicMock(), advancer_factory=factory
+    )
+    provider.navigator = MagicMock()
+    provider.navigator.navigate_with_fallback.return_value = True
+    provider.run(SearchInstruction(title="t", location="l", workplace_type="remote"))
+    factory.assert_called_once_with()
+    assert scraper_cls.call_args.kwargs["advancer"] == "SENTINEL"
+
+
+def test_live_constructions_pass_an_advancer_and_nothing_builds_the_handler():
+    """Structural: the retired handler cannot come back, and every live
+    GenericSERPStrategy construction receives advancer=."""
     offenders = []
-    sites = [PROVIDERS / name for name in ("google.py", "bing.py", "indeed.py")]
-    sites.append(
-        pathlib.Path(__file__).resolve().parent.parent.parent
-        / "src"
-        / "auto_apply"
-        / "infrastructure"
-        / "composition_root.py"
-    )
-
-    for path in sites:
+    for path in (
+        SRC / "adapters" / "secondary" / "discovery" / "providers" / "google.py",
+        SRC / "adapters" / "secondary" / "discovery" / "providers" / "bing.py",
+        SRC / "adapters" / "secondary" / "discovery" / "providers" / "indeed.py",
+        SRC / "infrastructure" / "composition_root.py",
+    ):
         text = path.read_text(encoding="utf-8", errors="ignore")
+        assert "PaginationHandler" not in text, path.name
         for chunk in text.split("GenericSERPStrategy(")[1:]:
-            head = chunk[:600]
-            if "scroller=" not in head or "paginator=" not in head:
+            if "advancer=" not in chunk[:600]:
                 offenders.append(path.name)
+    assert not offenders, sorted(set(offenders))
 
-    assert not offenders, (
-        f"GenericSERPStrategy is constructed without page collaborators in: "
-        f"{sorted(set(offenders))}"
+
+def test_the_retired_strategies_are_gone_and_the_feed_scroller_stays():
+    source = (SRC / "adapters" / "secondary" / "navigation" / "pagination.py").read_text(
+        encoding="utf-8"
+    )
+    for name in ("KeywordPagination", "ArrowPagination",
+                 "NumberedPagination", "PaginationHandler"):
+        assert f"class {name}" not in source
+    assert "class InfiniteScrollStrategy" in source
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JSON-LD — ruled: a JSON-LD page MAY still advance
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _jsonld_page(title, url):
+    return (
+        '<html><script type="application/ld+json">'
+        '{"@context":"http://schema.org","@type":"JobPosting","title":"' + title
+        + '","hiringOrganization":{"name":"Acme"},"url":"' + url + '"}'
+        "</script></html>"
     )
 
 
-def test_the_serp_adapter_no_longer_imports_pagination_across_the_boundary():
-    """The 16 -> 15 retirement, pinned so it cannot come back."""
-    serp = (
-        PROVIDERS.parent
-        / "strategies"
-        / "serp_strategy.py"
-    ).read_text(encoding="utf-8", errors="ignore")
+class _JsonLdBrowser:
+    """page_source serves one JSON-LD document per extraction call."""
 
-    assert "adapters.secondary.navigation.pagination" not in serp
+    def __init__(self, sources):
+        self._sources = list(sources)
+        self._reads = 0
+        self.title = "SERP"
+        self.current_url = "https://serp.example/q"
+
+    @property
+    def page_source(self):
+        value = self._sources[min(self._reads, len(self._sources) - 1)]
+        self._reads += 1
+        return value
+
+
+def test_a_json_ld_page_advances_through_the_same_ladder():
+    pytest.importorskip("bs4")
+    browser = _JsonLdBrowser(
+        [_jsonld_page("Job One", "https://x/1"), _jsonld_page("Job Two", "https://x/2")]
+    )
+    advancer = _FakeAdvancer([_advance("url-template")])
+    strategy = GenericSERPStrategy(
+        browser=browser, search_prefs=None, source_tag="T", max_results=100,
+        advancer=advancer, max_pages=2,
+    )
+    strategy._page_block_type = lambda: None
+    jobs = strategy.execute()
+    assert [j.title for j in jobs] == ["Job One", "Job Two"]
+    assert advancer.calls == 1
+
+
+def test_a_json_ld_page_never_advances_at_the_default():
+    pytest.importorskip("bs4")
+    browser = _JsonLdBrowser(
+        [_jsonld_page("Job One", "https://x/1"), _jsonld_page("Job Two", "https://x/2")]
+    )
+    advancer = _FakeAdvancer([_advance()])
+    strategy = GenericSERPStrategy(
+        browser=browser, search_prefs=None, source_tag="T", max_results=100,
+        advancer=advancer, max_pages=1,
+    )
+    strategy._page_block_type = lambda: None
+    jobs = strategy.execute()
+    assert [j.title for j in jobs] == ["Job One"]
+    assert advancer.calls == 0

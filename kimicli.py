@@ -117,10 +117,14 @@ DEFAULT_CODEBASE = Path(os.getenv("KIMI_CODEBASE", r"D:\Downloads\AA-kimi.txt"))
 # AA's engineering philosophy rides along with EVERY call (Nick's standing rule,
 # 2026-10-01): every design and every change is judged against it, so the model
 # must always have it - not only when someone remembers to --attach it.
-DEFAULT_PHILOSOPHY = Path(os.getenv(
-    "KIMI_PHILOSOPHY",
-    PROJECT_ROOT / "packages" / "auto_apply" / "docs" / "ENGINEERING_PHILOSOPHY.md"))
-PHILOSOPHY_NAME = "ENGINEERING_PHILOSOPHY.md"
+# The architecture bible and the master TODO ride along the same way. Each of
+# the three has a default path, an environment override, a --<name> PATH flag
+# and a --no-<name> way out; an empty environment variable means the default.
+DEFAULT_PHILOSOPHY = Path(os.getenv("KIMI_PHILOSOPHY") or
+                          PROJECT_ROOT / "packages" / "auto_apply" / "docs" / "ENGINEERING_PHILOSOPHY.md")
+DEFAULT_BIBLE = Path(os.getenv("KIMI_BIBLE") or
+                     PROJECT_ROOT / "packages" / "auto_apply" / "docs" / "AA_ARCHITECTURE_BIBLE.md")
+DEFAULT_TODO = Path(os.getenv("KIMI_TODO") or PROJECT_ROOT / "AA_MASTER_TODO.md")
 
 OUT_DIR = PROJECT_ROOT / ".kimi_out"          # sessions, transcripts, staged files
 BACKUP_DIR = PROJECT_ROOT / ".kimi_backups"   # backups + manifests
@@ -2704,6 +2708,7 @@ class StageSummary:
     preview_path: Optional[Path] = None
     changed_lines: int = 0
     philosophy_check: bool = True
+    reply_shape: List[str] = field(default_factory=list)
 
 
 PHILOSOPHY_CHECK_RE = re.compile(r"^[#>*\s_\d.)]*PHILOSOPHY CHECK\b", re.I | re.M)
@@ -2713,6 +2718,202 @@ def has_philosophy_check(reply: str) -> bool:
     """True when the reply carries the PHILOSOPHY CHECK section the method rules
     require - as a heading, bold text or a numbered item at the start of a line."""
     return bool(PHILOSOPHY_CHECK_RE.search(reply or ""))
+
+
+# ---- reply shape ----------------------------------------------------------
+# A prompt's REPLY ORDER is a contract too. A reply can finish normally
+# (finish_reason=stop) and still leave out a required section, or stop at its
+# last heading with nothing under it. Nothing flagged either before: they were
+# found only by reading the whole reply. These are warnings; nothing is blocked.
+
+_REPLY_ORDER_RE = re.compile(r"REPLY\s+ORDER", re.I)
+_ORDER_ITEM_RE = re.compile(r"^ {0,3}(\d+)[.)]\s+(.+?)\s*$")
+_MD_HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+_BOLD_LINE_RE = re.compile(r"^ {0,3}\*\*([^*\n]+?)\*\*(.*)$")
+_RULE_RE = re.compile(r"^\s{0,3}([-*_])(\s*\1){2,}\s*$")
+_LABEL_SEPS = (": ", ". ", " — ", " – ", " - ", "; ", " (", "? ")
+_SHAPE_STOPWORDS = frozenset(
+    "a an and as at by each for from in into is it its of on one or per that the this to "
+    "versus vs with your".split())
+
+
+def _shape_words(text: str) -> List[str]:
+    return [w for w in re.findall(r"[a-z0-9]+", text.casefold()) if w not in _SHAPE_STOPWORDS]
+
+
+def _split_label(text: str) -> Tuple[str, str]:
+    """'BETTER IDEA? None - x' -> ('BETTER IDEA?', 'None - x'): the section's
+    name, and whatever the same line already says under it."""
+    s = text.replace("**", "").replace("`", "").strip()
+    cuts = [(i, sep) for sep in _LABEL_SEPS for i in [s.find(sep)] if i > 0]
+    if not cuts:
+        return s.rstrip(":").strip(), ""
+    i, sep = min(cuts)
+    keep = 1 if sep == "? " else 0                 # 'BETTER IDEA?' keeps its '?'
+    return s[:i + keep].rstrip(" :").strip(), s[i + len(sep):].strip()
+
+
+def _strip_attachments(text: str) -> str:
+    """An attached file can carry a REPLY ORDER of its own (an old prompt, a
+    transcript); only the prompt's own counts."""
+    return re.sub(r'<attachment name="[^"]*">\n.*?\n</attachment>', "", text or "", flags=re.S)
+
+
+def parse_reply_order(prompt: str) -> List[Tuple[int, str]]:
+    """The sections a prompt's REPLY ORDER asks for, as [(number, name)].
+
+    Two shapes are read: a short line or heading naming the REPLY ORDER with a
+    numbered list under it (the list ends at the next heading or rule), and an
+    inline 'REPLY ORDER: 0 PHILOSOPHY CHECK, 1 rulings, ...'. The last list of
+    two or more items wins. Change blocks and literal markers (`### END
+    CHANGES`) are left to the block parser, which already checks them."""
+    best: List[Tuple[int, str]] = []
+    lines = _strip_attachments(prompt).splitlines()
+    for i, line in enumerate(lines):
+        m = _REPLY_ORDER_RE.search(line)
+        if not m:
+            continue
+        raw: List[Tuple[Optional[int], str]] = []
+        after = line[m.end():]
+        if after.lstrip().startswith(":") and after.split(":", 1)[1].strip():
+            body = after.split(":", 1)[1]
+            # Split where a numbered item starts after a separator, so a
+            # comma inside a section's name ('count, with arithmetic') and a
+            # '·' or ';' list both read right; else fall back to commas.
+            pieces = re.split(r"\s*[,·;|]\s*(?=\d+\s*[.)]?\s)", body)
+            if len(pieces) < 2:
+                pieces = body.split(",")
+            for piece in pieces:
+                pm = re.match(r"\s*(\d+)\s*[.)]?\s+(.+)", piece)
+                raw.append((int(pm.group(1)), pm.group(2)) if pm else (None, piece))
+        elif len(_shape_words(re.sub(r"[#*:_]", " ", line))) <= 5:
+            expect: Optional[int] = None
+            for nxt in lines[i + 1:]:
+                if _MD_HEADING_RE.match(nxt) or _RULE_RE.match(nxt):
+                    break
+                im = _ORDER_ITEM_RE.match(nxt)
+                if not im:
+                    continue
+                n = int(im.group(1))
+                if expect is None and n not in (0, 1):
+                    continue
+                if expect is not None and n != expect:
+                    break
+                raw.append((n, im.group(2)))
+                expect = n + 1
+        items: List[Tuple[int, str]] = []
+        for k, (given, text) in enumerate(raw):
+            text = text.strip().rstrip(".")
+            if not text or re.fullmatch(r"`[^`]*`", text) or re.search(r"change blocks?\b|^code\b", text, re.I):
+                continue
+            name, _rest = _split_label(text)
+            if _shape_words(name):
+                items.append((given if given is not None else k, name))
+        if len(items) >= 2:
+            best = items
+    return best
+
+
+def reply_order_for(messages: List[Dict[str, Any]]) -> List[Tuple[int, str]]:
+    """The REPLY ORDER the latest prompt asks for. A prompt that names a REPLY
+    ORDER without listing one ('the REPLY ORDER from part A still applies')
+    inherits the most recent earlier list in the conversation."""
+    users = [m["content"] for m in messages
+             if m.get("role") == "user" and isinstance(m.get("content"), str)]
+    if not users:
+        return []
+    order = parse_reply_order(users[-1])
+    if order or not _REPLY_ORDER_RE.search(_strip_attachments(users[-1])):
+        return order
+    for earlier in reversed(users[:-1]):
+        order = parse_reply_order(earlier)
+        if order:
+            return order
+    return []
+
+
+def _reply_headings(reply: str) -> Tuple[List[str], List[Tuple[int, Optional[int], str, str, bool]]]:
+    """Heading-like lines outside code: (line index, number, label, same-line
+    text, is a markdown heading). Lines inside code fences and SEARCH/REPLACE
+    blocks are skipped - a '# comment' there is not a section."""
+    lines = reply.splitlines()
+    heads: List[Tuple[int, Optional[int], str, str, bool]] = []
+    fence: Optional[str] = None
+    in_block = False
+    for idx, ln in enumerate(lines):
+        fm = re.match(r"^\s*(`{3,}|~{3,})", ln)
+        if fm:
+            if fence is None:
+                fence = fm.group(1)
+            elif fm.group(1)[0] == fence[0] and len(fm.group(1)) >= len(fence):
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        if ln.startswith("<<<<<<< SEARCH"):
+            in_block = True
+            continue
+        if ln.startswith(">>>>>>> REPLACE"):
+            in_block = False
+            continue
+        if in_block:
+            continue
+        md = _MD_HEADING_RE.match(ln)
+        bold = None if md else _BOLD_LINE_RE.match(ln)
+        num = None if (md or bold) else _ORDER_ITEM_RE.match(ln)
+        if md:
+            text, tail = md.group(1), ""
+        elif bold:
+            text, tail = bold.group(1), bold.group(2)
+        elif num:
+            text, tail = num.group(0), ""
+        else:
+            continue
+        nm = re.match(r"\s*(\d+)[.)]?\s+(.*)$", text.replace("**", ""))
+        number = int(nm.group(1)) if nm else None
+        label, rest = _split_label(nm.group(2) if nm else text)
+        rest = (rest + " " + tail.lstrip(" :")).strip()
+        heads.append((idx, number, label, rest, bool(md)))
+    return lines, heads
+
+
+def reply_shape_problems(order: List[Tuple[int, str]], reply: str) -> List[str]:
+    """What a reply's shape gets wrong: a required section missing or empty,
+    or a reply that stops at a heading with nothing under it."""
+    if not (reply or "").strip():
+        return ["the reply is empty"]
+    lines, heads = _reply_headings(reply)
+    out: List[str] = []
+    found: List[Tuple[int, int, str]] = []         # (index into heads, number, name)
+    last = -1
+    for n, name in order:
+        key = _shape_words(name)[:3]
+        hits = [j for j, (_i, num, label, _r, _md) in enumerate(heads)
+                if set(key) <= set(_shape_words(label))
+                or (num == n and set(key) & set(_shape_words(label)))]
+        pick = next((j for j in hits if j > last), hits[0] if hits else None)
+        if pick is None:
+            out.append(f"required section {n}. {name} is missing")
+            continue
+        found.append((pick, n, name))
+        last = max(last, pick)
+    starts = sorted({j for j, _n, _nm in found})
+    final = max(starts) if starts else None
+    for j, n, name in found:
+        later = [k for k in starts if k > j]
+        end = heads[later[0]][0] if later else len(lines)
+        body = [heads[j][3]] + [ln for ln in lines[heads[j][0] + 1:end] if not _RULE_RE.match(ln)]
+        if not re.search(r"\w", "\n".join(body)):
+            out.append(f"the reply stops at its last heading: {n}. {name} has nothing under it"
+                       if j == final and not later else
+                       f"section {n}. {name} has nothing under it")
+    # Any reply, REPLY ORDER or not: one that ends on a heading was cut short.
+    tail = [i for i, ln in enumerate(lines) if ln.strip() and not _RULE_RE.match(ln)]
+    end_head = next((h for h in heads if tail and h[0] == tail[-1] and h[4]), None)
+    if end_head and not any("stops at its last heading" in p for p in out):
+        out.append(f"the reply stops at a heading ('{lines[end_head[0]].strip()}') "
+                   f"with nothing under it")
+    return out
 
 
 def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optional[str]) -> StageSummary:
@@ -2793,7 +2994,9 @@ def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optiona
         session.append_rows(rows)
 
     all_parse = pr.problems + gprobs
+    shape = reply_shape_problems(reply_order_for(session.messages), reply)
     session.write_parse_report(turn, {
+        "reply_shape": shape,
         "turn": turn, "finish_reason": finish_reason, "repairs": repairs,
         "end_marker": pr.end_marker, "blocks": len(pr.blocks), "files": len(groups),
         "blocks_after_end": pr.blocks_after_end,
@@ -2802,7 +3005,7 @@ def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optiona
     })
 
     summary = StageSummary(turn=turn, parse=pr, group_problems=gprobs, plans=plans,
-                           philosophy_check=has_philosophy_check(reply))
+                           philosophy_check=has_philosophy_check(reply), reply_shape=shape)
     if plans:
         summary.preview_path = session.dir / f"preview_turn{turn}.diff"
         summary.changed_lines = trial.write_preview(plans, summary.preview_path)
@@ -2849,12 +3052,19 @@ def print_stage_summary(s: StageSummary, session: "Session") -> None:
     files = len(s.plans)
     errors = [p for p in pr.problems + s.group_problems if p.severity == "error"]
     warnings = [p for p in pr.problems + s.group_problems if p.severity != "error"]
+    if s.reply_shape:
+        print("\n" + "=" * 70)
+        print(f"REPLY SHAPE, TURN {s.turn}")
+        for msg in s.reply_shape:
+            print(f"  ! {msg}")
+        print("  Nothing is blocked. Read the end of the reply; to get the missing part, resume "
+              "and ask for that section only.")
     if not pr.blocks and not errors and not warnings:
         return
     print("\n" + "=" * 70)
     print(f"CHANGES IN TURN {s.turn}: {n_edit} EDIT block(s) + {n_file} FILE block(s) across "
           f"{files} file(s)   END marker: {'yes' if pr.end_marker else 'NO'}")
-    if pr.blocks and not s.philosophy_check:
+    if pr.blocks and not s.philosophy_check and not any("PHILOSOPHY CHECK" in m for m in s.reply_shape):
         print("  ! no PHILOSOPHY CHECK section in this reply - the method rules require one. "
               "Nothing is blocked; review the change against ENGINEERING_PHILOSOPHY.md yourself.")
     for pl in s.plans:
@@ -3418,44 +3628,141 @@ def _age(path: Path) -> str:
     return f"made {s / 86400:.0f} days ago"
 
 
-def philosophy_context(
-    args: argparse.Namespace, dump_text: str = "",
-) -> Tuple[Optional[str], Optional[Tuple[str, int]], Optional[str]]:
-    """The engineering philosophy as a system message, unless it is already
-    in the call. Returns (message, preflight part, error).
+@dataclass(frozen=True)
+class StandingDoc:
+    """A document that rides along with every fresh call: the engineering
+    philosophy, the architecture bible, the master TODO."""
+    name: str           # flag and argparse dest: --<name> PATH, --no-<name>
+    what: str           # how messages name it
+    default: Path
+    tag: str            # the XML element it is wrapped in
+    note: str           # what it is and how it ranks, sent after it
 
-    Already in the call means: the codebase dump carries a section for it, or
-    an --attach names the same file or the same content - one copy is enough.
-    A missing file is an ERROR, not a warning: the method rules require a
-    PHILOSOPHY CHECK, and a call that cannot carry the document would be billed
-    for a check the model cannot make. --no-philosophy is the explicit way out.
+
+STANDING_DOCS: Tuple[StandingDoc, ...] = (
+    StandingDoc("philosophy", "engineering philosophy", DEFAULT_PHILOSOPHY, "engineering_philosophy",
+                "Every design and every change is judged against this document; see the "
+                "PHILOSOPHY FIRST method rule."),
+    StandingDoc("bible", "architecture bible", DEFAULT_BIBLE, "architecture_bible",
+                "AA's architecture bible: a respected reference, not a specification. Where it "
+                "falls short of ENGINEERING_PHILOSOPHY.md, or could serve it better, the philosophy "
+                "wins: say so, and say how the bible should change."),
+    StandingDoc("todo", "master TODO", DEFAULT_TODO, "authoritative_todo",
+                "This file supersedes docs/adr/* and every docstring in the codebase, which are "
+                "known to be stale."),
+)
+STANDING = {d.name: d for d in STANDING_DOCS}
+
+
+def _same_text(a: str, b: str) -> bool:
+    """Equal apart from line endings and trailing whitespace - a dump tool or
+    a git checkout may change those, and it is still the same document."""
+    def norm(t: str) -> str:
+        return "\n".join(ln.rstrip() for ln in t.replace("\r\n", "\n").split("\n")).strip()
+    return norm(a) == norm(b)
+
+
+def _dump_copy(dump_text: str, path: Path) -> Optional[bool]:
+    """Does the codebase dump already carry this document?
+    None = no; True = yes, the same text; False = yes, but an older text.
+
+    Only a section at the document's own repo path counts. Matching the bare
+    file name, or the text alone, would take a retired copy under
+    docs/old_retired_files/ for the live one. A document from outside the
+    project has no repo path, so for it the same text anywhere counts."""
+    if not dump_text:
+        return None
+    sections, _ = split_dump(dump_text)
+    if not sections:
+        return None
+    try:
+        rel: Optional[str] = path.resolve().relative_to(PROJECT_ROOT).as_posix().casefold()
+    except (ValueError, OSError):
+        rel = None
+    body = read_text(path)
+    found: Optional[bool] = None
+    for sec_path, sec_text in sections:
+        sp = sec_path.replace("\\", "/").casefold()
+        if rel and not (sp.lstrip("/") == rel or sp.endswith("/" + rel)):
+            continue
+        for pat in SECTION_PATTERNS:
+            m = pat.match(sec_text)
+            if m:
+                sec_text = sec_text[m.end():]
+                break
+        if _same_text(sec_text, body):
+            return True
+        if rel:
+            found = False
+    return found
+
+
+def standing_doc_context(
+    doc: StandingDoc, args: argparse.Namespace, dump_text: str = "",
+) -> Tuple[Optional[str], Optional[Tuple[str, int]], Optional[str]]:
+    """One standing document as a system message, unless it is already in the
+    call. Returns (message, preflight part, error).
+
+    Already in the call means: the codebase dump carries the same text, or an
+    --attach names the same file or the same content - one copy is enough. A
+    dump copy at the document's path with OLDER text does not count: the
+    current file is sent, labelled as the current one.
+
+    Either way the short note saying what the document is and how it ranks
+    is still sent.
+
+    A missing or empty file is an ERROR, not a warning: a call that cannot
+    carry the document would be billed for answers made without it.
+    --no-<name> is the explicit way out; giving both --<name> and --no-<name>
+    is refused rather than guessed at.
     """
-    if getattr(args, "no_philosophy", False):
-        return None, ("philosophy: OFF (--no-philosophy)", 0), None
-    named = getattr(args, "philosophy", None)
-    path = Path(named).expanduser() if named else DEFAULT_PHILOSOPHY
+    off = getattr(args, f"no_{doc.name}", False)
+    named = getattr(args, doc.name, None)
+    if off and named:
+        return None, None, (f"--{doc.name} and --no-{doc.name} were both given. Pick one.")
+    if off:
+        return None, (f"{doc.name}: OFF (--no-{doc.name})", 0), None
+    path = Path(named).expanduser() if named else doc.default
     if not path.is_file():
         return None, None, (
-            f"engineering philosophy not found at {path}. Every call carries it. Pass "
-            f"--philosophy <path> to point at it, or --no-philosophy to send without it.")
+            f"{doc.what} not found at {path}. Every call carries it. Pass --{doc.name} <path> "
+            f"to point at it, or --no-{doc.name} to send without it.")
     body = read_text(path)
-    if dump_text:
-        sections, _ = split_dump(dump_text)
-        if any(sec_path.replace("\\", "/").endswith(PHILOSOPHY_NAME) for sec_path, _b in sections):
-            return None, ("philosophy: in the codebase dump", 0), None
-    digest = sha256(body)
+    if not body.strip():
+        return None, None, (f"{doc.what} at {path} is empty. Pass --{doc.name} <path> to point at "
+                            f"the real one, or --no-{doc.name} to send without it.")
+    # One copy is enough - but the note saying what the document is and how
+    # it ranks still goes, or a TODO in the dump is just another file.
+    def pointer(where: str) -> str:
+        return f"The {doc.what} ({path.name}) is already in this conversation, {where}. {doc.note}"
+
+    in_dump = _dump_copy(dump_text, path)
+    if in_dump is True:
+        msg = pointer("in the codebase dump")
+        return msg, (f"{doc.name}: in the codebase dump (note only)", est_tokens(msg)), None
     for spec in (getattr(args, "attach", None) or []):
         a = Path(spec).expanduser()
         try:
-            same = a.is_file() and (a.resolve() == path.resolve() or sha256(read_text(a)) == digest)
+            same = a.is_file() and (a.resolve() == path.resolve() or _same_text(read_text(a), body))
         except OSError:
             same = False
         if same:
-            return None, ("philosophy: sent as an --attach", 0), None
-    msg = (f"<engineering_philosophy file=\"{path.name}\">\n{body}\n</engineering_philosophy>\n"
-           f"Every design and every change is judged against this document; see the "
-           f"PHILOSOPHY FIRST method rule.")
-    return msg, (f"philosophy ({path.name})", est_tokens(body)), None
+            msg = pointer(f"as the attachment {a.name}")
+            return msg, (f"{doc.name}: sent as an --attach (note only)", est_tokens(msg)), None
+    note = doc.note
+    label = f"{doc.name} ({path.name})"
+    if in_dump is False:
+        note += (" The codebase dump carries an older copy of this file; this one is current "
+                 "and replaces it.")
+        label += " - the dump's copy is older, sending the current one"
+    msg = f"<{doc.tag} file=\"{path.name}\">\n{body}\n</{doc.tag}>\n{note}"
+    return msg, (label, est_tokens(body)), None
+
+
+def philosophy_context(
+    args: argparse.Namespace, dump_text: str = "",
+) -> Tuple[Optional[str], Optional[Tuple[str, int]], Optional[str]]:
+    return standing_doc_context(STANDING["philosophy"], args, dump_text)
 
 
 def build_context(args: argparse.Namespace) -> Context:
@@ -3464,11 +3771,11 @@ def build_context(args: argparse.Namespace) -> Context:
         [0] codebase        huge, stable  -> the cached prefix
         [1] method rules    stable
         [2] applier contract stable
-        [3] philosophy      stable (ENGINEERING_PHILOSOPHY.md, unless the dump or
-                            an --attach already carries it)
-        [4] master TODO     semi-stable
-        [5] memory          volatile
-        [6] attachments + prompt (user)   volatile
+        [3] philosophy      stable  } each sent unless the dump or an --attach
+        [4] bible           stable  } already carries the same text
+        [5] master TODO     semi-stable
+        [6] memory          volatile
+        [7] attachments + prompt (user)   volatile
 
     Anything that changes must sit as late as possible: a cache hit covers the
     identical leading tokens only, so one edited byte near the front costs you
@@ -3509,24 +3816,16 @@ def build_context(args: argparse.Namespace) -> Context:
     messages.append({"role": "system", "content": APPLIER_CONTRACT})
     parts.append(("applier contract", est_tokens(APPLIER_CONTRACT)))
 
-    # The philosophy is stable, so it sits with the other stable system parts,
-    # ahead of the TODO and the volatile user message.
-    phil_msg, phil_part, phil_err = philosophy_context(args, dump_text)
-    if phil_err:
-        errors.append(phil_err)
-    if phil_msg:
-        messages.append({"role": "system", "content": phil_msg})
-    if phil_part:
-        parts.append(phil_part)
-
-    todo = Path(args.todo) if args.todo else (PROJECT_ROOT / "AA_MASTER_TODO.md")
-    if not args.no_todo and todo.exists():
-        body = read_text(todo)
-        messages.append({"role": "system", "content":
-                         f"<authoritative_todo file=\"{todo.name}\">\n{body}\n</authoritative_todo>\n"
-                         f"This file supersedes docs/adr/* and every docstring in the codebase, "
-                         f"which are known to be stale."})
-        parts.append((f"todo ({todo.name})", est_tokens(body)))
+    # Most stable first (philosophy, bible), then the TODO, which changes more
+    # often - all ahead of the volatile memory and user message.
+    for doc in STANDING_DOCS:
+        d_msg, d_part, d_err = standing_doc_context(doc, args, dump_text)
+        if d_err:
+            errors.append(d_err)
+        if d_msg:
+            messages.append({"role": "system", "content": d_msg})
+        if d_part:
+            parts.append(d_part)
 
     mem = OUT_DIR / "memory.md"
     if args.memory and mem.exists() and mem.stat().st_size > 0:
@@ -4481,14 +4780,98 @@ def absent_function():
         pm_miss, _pp2, pe_miss = philosophy_context(
             argparse.Namespace(philosophy=str(root / "missing.md"), attach=[]))
         pm_off, _pp3, pe_off = philosophy_context(
-            argparse.Namespace(philosophy=str(root / "missing.md"), no_philosophy=True, attach=[]))
+            argparse.Namespace(philosophy=None, no_philosophy=True, attach=[]))
         pm_dup, _pp4, pe_dup = philosophy_context(
             argparse.Namespace(philosophy=str(phil), attach=[str(phil)]))
         check("every call carries the engineering philosophy; a missing one stops the request",
               bool(pm) and "Worst-case user first." in (pm or "") and pe is None
               and pm_miss is None and bool(pe_miss) and pm_off is None and pe_off is None
-              and pm_dup is None and pe_dup is None,
+              and "Worst-case user first." not in (pm_dup or "") and "PHILOSOPHY FIRST" in (pm_dup or "")
+              and pe_dup is None,
               f"{pe!r} {pe_miss!r} {pe_off!r} {pe_dup!r}")
+        g2 = globals()
+        saved_root = g2["PROJECT_ROOT"]
+        g2["PROJECT_ROOT"] = root.resolve()
+        try:
+            docs = root / "packages" / "auto_apply" / "docs"
+            docs.mkdir(parents=True, exist_ok=True)
+            bib = docs / "AA_ARCHITECTURE_BIBLE.md"
+            # bytes, not write_text: on Windows write_text turns "\r\n" into "\r\r\n"
+            bib.write_bytes(b"# Bible\r\nPorts and adapters.\r\n")
+            todo_f = root / "AA_MASTER_TODO.md"
+            todo_f.write_text("# TODO\n- item 12\n", encoding="utf-8")
+            (root / "empty.md").write_text("  \n", encoding="utf-8")
+            B, T = STANDING["bible"], STANDING["todo"]
+
+            def ctx(doc: StandingDoc, dump: str = "", **kw: Any) -> Tuple[Any, Any, Any]:
+                ns = argparse.Namespace(attach=[], **{doc.name: None, f"no_{doc.name}": False})
+                for k_, v_ in kw.items():
+                    setattr(ns, k_, v_)
+                return standing_doc_context(doc, ns, dump)
+
+            ok_b, ok_t = ctx(B, bible=str(bib)), ctx(T, todo=str(todo_f))
+            miss, empty = ctx(B, bible=str(root / "nope.md")), ctx(T, todo=str(root / "empty.md"))
+            both, off = ctx(T, todo=str(todo_f), no_todo=True), ctx(B, no_bible=True)
+            check("the bible and the TODO ride along like the philosophy: missing, empty or "
+                  "contradictory flags stop the request; --no-<name> is the way out",
+                  "Ports and adapters." in (ok_b[0] or "") and "respected reference" in (ok_b[0] or "")
+                  and "item 12" in (ok_t[0] or "") and ok_b[2] is None and ok_t[2] is None
+                  and miss[0] is None and bool(miss[2]) and empty[0] is None and bool(empty[2])
+                  and both[0] is None and bool(both[2]) and off[0] is None and off[2] is None
+                  and [d.name for d in STANDING_DOCS] == ["philosophy", "bible", "todo"],
+                  f"{miss[2]!r} {empty[2]!r} {both[2]!r}")
+
+            def dump_of(*secs: Tuple[str, str]) -> str:
+                return "".join(f"---\nFile: {sp}\n---\n{body}\n" for sp, body in secs)
+
+            filler = ("AA/README.md", "# AA\n")
+            same = ctx(B, dump_of(filler, ("AA/packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md",
+                                           "# Bible\nPorts and adapters.   \n")), bible=str(bib))
+            retired_path = "AA/packages/auto_apply/docs/old_retired_files/AA_ARCHITECTURE_BIBLE.md"
+            retired = ctx(B, dump_of(filler, (retired_path, "# Bible\nPorts and adapters.\n")),
+                          bible=str(bib))
+            older = ctx(B, dump_of(filler, ("AA/packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md",
+                                            "# Bible\nAn older draft.\n")), bible=str(bib))
+            check("a standing document already in the dump is not sent twice; a retired copy or an "
+                  "older copy in the dump does not count",
+                  "Ports and adapters." not in (same[0] or "") and "respected reference" in (same[0] or "")
+                  and "in the codebase dump" in same[1][0]
+                  and "Ports and adapters." in (retired[0] or "")
+                  and retired[0] is not None
+                  and older[0] is not None and "older" in older[1][0] and "older copy" in older[0],
+                  f"{same[1]!r} {retired[1]!r} {older[1]!r}")
+        finally:
+            g2["PROJECT_ROOT"] = saved_root
+
+        ro_prompt = ("# TASK\n\n1. not the order\n\n# DELIVERABLE: REPLY ORDER\n\n0. PHILOSOPHY CHECK\n"
+                     "1. **Rulings:** one per fork\n2. Change blocks\n3. `### END CHANGES`\n"
+                     "4. Verified versus not verified\n5. BETTER IDEA? (required, last)\n\n---\nafter\n")
+        order = parse_reply_order(ro_prompt)
+        good = ("# 0. PHILOSOPHY CHECK\nok\n## 1. Rulings\nA.\n```python\n# 4. Verified\n```\n"
+                "# 4. VERIFIED VERSUS NOT VERIFIED\nsome\n---\n# 5. BETTER IDEA?\nNone - fine.\n")
+        stopped = good[:good.index("None - fine.")] + "\n---\n"
+        dropped = good.replace("## 1. Rulings\nA.\n", "")
+        inline = parse_reply_order("Then the REPLY ORDER: 0 PHILOSOPHY CHECK, 1 rulings, "
+                                   "3 change blocks, 4 `### END CHANGES`, 7 BETTER IDEA?")
+        att = ("<attachment name=\"old.md\">\n## REPLY ORDER\n0. PHILOSOPHY CHECK\n1. Old\n"
+               "</attachment>\n\nWhat does line 3 do?")
+        inherit = reply_order_for([{"role": "user", "content": ro_prompt},
+                                   {"role": "assistant", "content": good},
+                                   {"role": "user", "content": "Fix it. The REPLY ORDER from part A "
+                                                               "still applies."}])
+        check("a reply that leaves out a required section, or stops at its last heading, is noticed",
+              [n for n, _ in order] == [0, 1, 4, 5] and reply_shape_problems(order, good) == []
+              and any("stops at its last heading: 5. BETTER IDEA?" in m
+                      for m in reply_shape_problems(order, stopped))
+              and reply_shape_problems(order, dropped) == ["required section 1. Rulings is missing"]
+              and [n for n, _ in inline] == [0, 1, 7] and parse_reply_order(att) == []
+              and [n for n, _ in parse_reply_order(
+                  "Reply order: 0. PHILOSOPHY CHECK · 1. MEASUREMENTS · 5. Predicted "
+                  "count, with arithmetic · 6. BETTER IDEA?")] == [0, 1, 5, 6]
+              and inherit == order
+              and reply_shape_problems([], "Done.\n\n## Next steps\n")
+              == ["the reply stops at a heading ('## Next steps') with nothing under it"],
+              f"{order} {inline} {reply_shape_problems(order, stopped)} {reply_shape_problems(order, dropped)}")
         check("a reply without a PHILOSOPHY CHECK section is noticed",
               has_philosophy_check("## 0. PHILOSOPHY CHECK\n- Worst-case user ...")
               and has_philosophy_check("**PHILOSOPHY CHECK**: ...")
@@ -4574,11 +4957,20 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--exclude", action="append", default=[], metavar="DIR",
                    help="drop files under DIR from the dump, e.g. --exclude docs (repeatable)")
     g.add_argument("--attach", action="append", default=[], metavar="PATH", help="repeatable")
-    g.add_argument("--todo", help="path to AA_MASTER_TODO.md (auto-detected in the project root)")
-    g.add_argument("--no-todo", action="store_true")
+    g.add_argument("--todo", metavar="PATH",
+                   help="master TODO sent with every call (default: AA_MASTER_TODO.md in the "
+                        "project root, or KIMI_TODO)")
+    g.add_argument("--no-todo", action="store_true",
+                   help="send without the master TODO (it is required otherwise)")
+    g.add_argument("--bible", metavar="PATH",
+                   help="architecture bible sent with every call (default: packages/auto_apply/"
+                        "docs/AA_ARCHITECTURE_BIBLE.md, or KIMI_BIBLE)")
+    g.add_argument("--no-bible", action="store_true",
+                   help="send without the architecture bible (it is required otherwise)")
     g.add_argument("--philosophy", metavar="PATH",
                    help="engineering philosophy sent with every call "
-                        "(default: packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md)")
+                        "(default: packages/auto_apply/docs/ENGINEERING_PHILOSOPHY.md, "
+                        "or KIMI_PHILOSOPHY)")
     g.add_argument("--no-philosophy", action="store_true",
                    help="send without the engineering philosophy (it is required otherwise)")
     g.add_argument("--memory", action="store_true", help="include .kimi_out/memory.md")
@@ -4754,14 +5146,16 @@ def main() -> int:
         elif not args.cache_key:
             print(f"  cache key: {args.cache_key_resolved} (reused from turn 1)")
         session.cache_key = args.cache_key_resolved
-        # The prefix (dump, rules, TODO, memory) was fixed by turn 1; these
+        # The prefix (dump, rules, philosophy, bible, TODO, memory) was fixed by turn 1; these
         # flags cannot change it now. Say so rather than ignore them silently.
         ignored = [flag for flag, on in (
             ("--codebase", str(args.codebase) != str(DEFAULT_CODEBASE)), ("--no-codebase", args.no_codebase),
             ("--exclude", bool(args.exclude)), ("--todo", bool(args.todo)),
             ("--no-todo", args.no_todo), ("--memory", args.memory),
             ("--philosophy", bool(getattr(args, "philosophy", None))),
-            ("--no-philosophy", getattr(args, "no_philosophy", False))) if on]
+            ("--no-philosophy", getattr(args, "no_philosophy", False)),
+            ("--bible", bool(getattr(args, "bible", None))),
+            ("--no-bible", getattr(args, "no_bible", False))) if on]
         if ignored:
             print(f"  note: {', '.join(ignored)} ignored on --resume - the conversation's prefix was "
                   f"fixed by its first turn (and changing it would lose the cache).")

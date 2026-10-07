@@ -194,7 +194,7 @@ class InteractionExecutor(InteractionPort):
     # Public API — entry point used by ApplicationsWorkflow
     # ------------------------------------------------------------------
 
-    def click(self, element: ElementInterface) -> None:
+    def click(self, element: ElementInterface, *, irreversible: bool = False) -> None:
         """Clicks an element through the shared PageActionService tool.
 
         This method deliberately contains no mechanics. The tool owns the
@@ -222,7 +222,7 @@ class InteractionExecutor(InteractionPort):
                 "driver is present)."
             )
 
-        result = self._page_action.click(element)
+        result = self._page_action.click(element, irreversible=irreversible)
         if not result:
             reason = getattr(result, "reason", "unknown")
             raise ApplicationError(f"click did not complete: {reason}")
@@ -352,7 +352,16 @@ class InteractionExecutor(InteractionPort):
                 self.interactor.fill_input(element_ref, action.value)
 
             elif action.action_type == InteractionType.HOVER:
-                self.browser.move_mouse_to_element(element_ref)
+                # Routed to the tool (call 2): hover is a planned pointer
+                # path with the tool's pacing, not a raw port move.
+                if self._page_action is None:
+                    logger.error(
+                        "HOVER action requires the PageActionService tool; "
+                        "none was injected."
+                    )
+                    return False
+                if not self._page_action.hover(element_ref):
+                    return False
 
             elif action.action_type == InteractionType.WAIT_FOR:
                 # 'value' here represents seconds to wait

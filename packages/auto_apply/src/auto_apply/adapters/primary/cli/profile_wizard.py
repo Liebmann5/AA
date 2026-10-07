@@ -67,7 +67,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.profile import ApplicationConfig, UserProfile
 
 
 class _WizardCancelled(Exception):
@@ -192,6 +192,31 @@ def _repair_locations(profile: dict, msg: str) -> None:
     profile["search_preferences"]["preferred_locations"] = [value] if value else []
 
 
+# Plain-word ⇄ canonical-name maps for the behaviour question. The stored
+# value is ALWAYS the canonical MotionProfile name — the GUI writes the
+# same field (GUI/CLI parity, ADR 018).
+_MOTION_WORD_TO_NAME = {
+    "natural": "human",
+    "human": "human",
+    "careful": "careful",
+    "instant": "instant",
+}
+_MOTION_NAME_TO_WORD = {"human": "natural", "careful": "careful", "instant": "instant"}
+
+
+def _repair_motion_profile(profile: dict, msg: str) -> None:
+    print(f"\n  ✗ Behaviour profile was rejected: {msg}")  # noqa: T201
+    print("    Choose natural, careful or instant.")  # noqa: T201
+    value = prompt("Behaviour (natural / careful / instant)", default="natural")
+    name = _MOTION_WORD_TO_NAME.get(value.strip().lower())
+    if name is None:
+        # An interrupt or a second bad answer: drop the field — None is
+        # valid and means "inherit the app-wide default".
+        profile.setdefault("app_config", {}).pop("motion_profile", None)
+        return
+    profile.setdefault("app_config", {})["motion_profile"] = name
+
+
 _FIELD_REPAIRS = {
     ("personal_info", "first_name"): _repair_first_name,
     ("personal_info", "last_name"): _repair_last_name,
@@ -202,6 +227,7 @@ _FIELD_REPAIRS = {
     ("career_summary",): _repair_career_summary,
     ("search_preferences", "desired_job_titles"): _repair_job_titles,
     ("search_preferences", "preferred_locations"): _repair_locations,
+    ("app_config", "motion_profile"): _repair_motion_profile,
 }
 
 
@@ -272,6 +298,7 @@ def run_profile_wizard(
     pf_personal = (prefill or {}).get("personal_info", {}) or {}
     pf_links = (prefill or {}).get("links", {}) or {}
     pf_search = (prefill or {}).get("search_preferences", {}) or {}
+    pf_config = (prefill or {}).get("app_config", {}) or {}
 
     print("── Personal Information ─────────────────────────────────────")  # noqa: T201
     first_name = prompt(
@@ -372,6 +399,28 @@ def run_profile_wizard(
         print("  Profile creation cancelled.")  # noqa: T201
         return None
 
+    # ── Pointer & scroll behaviour (layer 0 of the layered settings pattern,
+    # ADR 018): three plain words, stored as the canonical MotionProfile name
+    # in app_config.motion_profile — the same field the GUI writes.
+    print()  # noqa: T201
+    print("── Behaviour ─────────────────────────────────────────────────────")  # noqa: T201
+    print("  How should AA move the pointer and scroll the page?")  # noqa: T201
+    print("    natural — like a person (recommended)")  # noqa: T201
+    print("    careful — slower, hardest to detect")  # noqa: T201
+    print("    instant — no human pacing (tests only)")  # noqa: T201
+    pf_motion = str(pf_config.get("motion_profile") or "")
+    motion_answer = prompt(
+        "Behaviour (natural / careful / instant)",
+        default=_MOTION_NAME_TO_WORD.get(pf_motion, "natural"),
+    )
+    motion_choice = _MOTION_WORD_TO_NAME.get(motion_answer.strip().lower())
+    while motion_choice is None:
+        print("  Please answer natural, careful or instant.")  # noqa: T201
+        motion_answer = prompt(
+            "Behaviour (natural / careful / instant)", default="natural"
+        )
+        motion_choice = _MOTION_WORD_TO_NAME.get(motion_answer.strip().lower())
+
     # ── Assemble the profile dict (prefill preserved verbatim where present) ──
     if prefill is not None:
         profile: dict[str, Any] = copy.deepcopy(prefill)
@@ -431,7 +480,13 @@ def run_profile_wizard(
     app_config.setdefault("preferred_browser", "any")
     app_config.setdefault("headless_mode", False)
     app_config.setdefault("daily_application_limit", 50)
-    app_config.setdefault("enable_behavior_humanization", True)
+    app_config.setdefault(
+        "enable_behavior_humanization",
+        ApplicationConfig.model_fields["enable_behavior_humanization"].default,
+    )
+    # The behaviour question is always answered (default "natural"), so the
+    # canonical name is always written — the same field the GUI saves.
+    app_config["motion_profile"] = motion_choice
 
     politeness = profile.setdefault("politeness_settings", {})
     politeness.setdefault("respect_robots_txt", True)

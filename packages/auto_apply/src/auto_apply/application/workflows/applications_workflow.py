@@ -8,7 +8,10 @@ What this engine does:
     forms, and submit the completed application.
 
 10‑step sequence:
-    1.  _navigate_to_application       — open form URL, detect ATS, click Apply CTA
+    1.  _navigate_to_application       — route from the posting to a real form:
+                                          learned apply target → off-host hrefs →
+                                          one bounded click; challenge and
+                                          account verdicts at every landing
     2.  _detect_login_wall             — check for authentication barriers before filling
     3.  _get_form_structure_with_iframe_fallback — search iFrames + Shadow DOM if main frame empty
     4.  _analyze_form_mathematically   — route analysis tier (KNOWN_PLATFORM/CSS_EXTRACTION/
@@ -18,7 +21,10 @@ What this engine does:
     7.  _generate_custom_answers       — GPT4All or SpaCy-ranked experience paragraph
     8.  _handle_file_uploads           — resume / cover letter upload
     9.  _navigate_multi_page_flow      — detect Next/Continue, click, wait for DOM
-    10. _handle_interruptions          — banners, CAPTCHA detection, redirect detection
+    10. _handle_interruptions          — banners, structural challenge detection via
+                                          the ONE domain predicate, an in-place
+                                          human pause on a presented challenge,
+                                          and redirect detection
     11. _submit_application            — HITL gate, submit button, cooldown extraction
     12. _record_application_outcome    — persist result, publish event, telemetry
 
@@ -37,7 +43,7 @@ Inputs:
     dom_observer      — DOMObserver (waits for DOM stability)
     ats_registry      — ATSRegistry (ATS platform detection)
     job_repo          — JobRepositoryPort (persists outcome)
-    task_queue        — WorkQueuePort (CAPTCHA hand-off)
+    task_queue        — WorkQueuePort (company batch scheduling).
     event_bus         — EventBus
     interrupt_policy  — InterruptPolicyPort (HITL checkpoint decisions)
     rng               — random.Random (deterministic randomness; optional)
@@ -58,22 +64,21 @@ How to extend:
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import random
 import re
 import time
 from collections.abc import Callable
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from auto_apply.application.services.company_batch_scheduler import (
     CompanyBatchScheduler,
 )
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.application_evidence import (
-    ATS_CONFIRMATION_PATTERNS,
     ApplicationEvidence,
 )
 from auto_apply.domain.models.job import Job
@@ -84,8 +89,6 @@ from auto_apply.domain.models.ui import (
     UIElement,
     UIElementType,
 )
-from auto_apply.domain.models.work_unit import TaskType, WorkUnit
-from auto_apply.domain.models.task_payloads import CaptchaResolutionPayload
 from auto_apply.domain.exceptions import ApplicationError
 from auto_apply.domain.ports.interrupt_policy_port import (
     ApplicationContext,
@@ -102,6 +105,17 @@ from auto_apply.domain.ports.research_port import (
     ResearchObserverPort,
 )
 from auto_apply.domain.services.posting_observation import infer_jurisdiction
+from auto_apply.domain.services.page_assessment import (
+    PageAssessment,
+    assess_page,
+)
+from auto_apply.domain.types import PageType
+from auto_apply.domain.services.apply_target import (
+    auth_dialog_present,
+    find_apply_controls,
+    is_apply_label,
+    page_has_fillable_form,
+)
 from auto_apply.domain.services.research_identity import compute_company_id
 from auto_apply.application.services.page_analysis_router import (
     PageAnalysisRouter,
@@ -138,17 +152,11 @@ _DEGREE_LEVEL_MAP = {
 }
 
 # ── Login wall detection ────────────────────────────────────────────────────
-
-_LOGIN_WALL_INDICATORS: frozenset[str] = frozenset({
-    "sign in", "log in", "login", "create an account", "register",
-    "sign up", "password", "forgot password", "authentication required",
-    "please log in", "member login", "employee login",
-})
-
-_LOGIN_WALL_URL_PATTERNS: frozenset[str] = frozenset({
-    "/login", "/signin", "/auth", "/register", "/signup",
-    "/account/login", "/users/sign_in", "/sso/",
-})
+# The indicator lists that used to live here are deleted. The verdict is
+# computed structurally by domain/services/challenge_assessment.py — the ONE
+# predicate — from the login URL markers and password-field/form/text shape
+# defined there. A title substring ("register") is no longer consulted, which
+# is why a posting titled "Registered Nurse" is no longer a login wall.
 
 
 class ApplicationsWorkflow:
@@ -213,7 +221,7 @@ class ApplicationsWorkflow:
             dom_observer: DOMObserver for waiting on DOM stability.
             ats_registry: ATSRegistry for ATS platform detection.
             job_repo: JobRepositoryPort for persisting application outcomes.
-            task_queue: WorkQueuePort for CAPTCHA hand-off WorkUnits.
+            task_queue: WorkQueuePort for the company batch scheduler.
             event_bus: EventBus for publishing application events.
             interrupt_policy: InterruptPolicyPort for HITL checkpoint decisions.
             text_generation_port: TextGenerationPort | None — GPT4All or None.
@@ -270,9 +278,14 @@ class ApplicationsWorkflow:
         #: two attempts at the same job do not merge into one set of rows.
         self._attempt_seq: int = 0
         self._attempt_id: str = ""
-        #: TEMPORARY (predicate 12): one-shot warning flag for the
-        #: detector-sample dump cap. Delete with the diagnostic block.
-        self._p12_dump_cap_logged: bool = False
+        #: Set when a challenge verdict shaped this attempt; stamped onto the
+        #: evidence so a disputed outcome says why, not just what.
+        self._captcha_encountered: bool = False
+        self._challenge_signals: list[str] = []
+        self._challenge_note: str = ""
+        #: Bounds in-place challenge pauses per attempt, so a challenge that
+        #: keeps returning after reported solves ends honestly, not in a loop.
+        self._challenge_pauses: int = 0
         self._fields_filled: int = 0
         self._fields_classified: int = 0
         self._required_fields_filled: int = 0
@@ -318,48 +331,55 @@ class ApplicationsWorkflow:
     # LOGIN WALL DETECTION (Wave K2)
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _page_snapshot(self, fallback_url: str) -> tuple[str, str, str]:
+        """(url, title, html) of the page the browser is on RIGHT NOW.
+
+        The browser is only a snapshot taker; every verdict about the page
+        is computed from these three values by the pure predicate. Values
+        are coerced defensively: a driver that cannot answer (or a test
+        double whose attributes are not strings) degrades to empty strings
+        rather than poisoning the parse.
+        """
+        url = getattr(self._browser, "current_url", "") or ""
+        if not isinstance(url, str) or not url:
+            url = fallback_url
+        title = getattr(self._browser, "title", "") or ""
+        if not isinstance(title, str):
+            title = ""
+        html = getattr(self._browser, "page_source", "") or ""
+        if not isinstance(html, str):
+            html = ""
+        return url, title, html
+
     def _detect_login_wall(self, job: Job) -> bool:
         """Returns True if the current page is a login/authentication wall.
 
-        Checks:
-        1. URL contains login-related path segments
-        2. Page title contains login-related text
-        3. Page source contains multiple login indicators
+        Structural verdict, computed by the ONE page verdict
+        (domain/services/page_assessment.py, which delegates to
+        challenge_assessment.py for the login answer): a login URL, or a
+        password field on a page too small to carry a posting. The page
+        title is never read — the old title-substring check made a posting
+        titled "Registered Nurse" a login wall.
 
         Called after navigation, before form filling — prevents AA from
         trying to fill a login form with the applicant's profile data.
         """
         try:
-            current_url = (self._browser.current_url or "").lower()
-            page_title = (getattr(self._browser, "title", "") or "").lower()
-
-            # URL check
-            for pattern in _LOGIN_WALL_URL_PATTERNS:
-                if pattern in current_url:
-                    logger.warning(
-                        "Login wall detected via URL | pattern=%s | job=%s @ %s",
-                        pattern,
-                        job.title[:30],
-                        job.company[:30],
-                    )
-                    return True
-
-            # Title check
-            for indicator in _LOGIN_WALL_INDICATORS:
-                if indicator in page_title:
-                    logger.warning(
-                        "Login wall detected via page title | indicator=%s | "
-                        "job=%s @ %s",
-                        indicator,
-                        job.title[:30],
-                        job.company[:30],
-                    )
-                    return True
-
+            url, title, html = self._page_snapshot(fallback_url=job.url)
+            walled = (
+                assess_page(url=url, title=title, html=html).kind
+                is PageType.LOGIN_REQUIRED
+            )
         except Exception as exc:
             logger.debug("Login wall detection error: %s", exc)
-
-        return False
+            return False
+        if walled:
+            logger.warning(
+                "Login wall detected (structural) | job=%s @ %s",
+                job.title[:30],
+                job.company[:30],
+            )
+        return walled
 
     # ──────────────────────────────────────────────────────────────────────────
     # IFRAME + SHADOW DOM FORM SEARCH (Wave K1)
@@ -501,21 +521,56 @@ class ApplicationsWorkflow:
     def _navigate_to_application(
         self, job: Job, evidence: ApplicationEvidence
     ) -> ApplicationEvidence:
-        """Open the job URL, detect ATS, and click the Apply CTA if on a listing page.
+        """Get from the job URL to a page carrying a fillable application form.
 
-        Args:
-            job: The Job to apply to.
-            evidence: Mutable evidence accumulator (returned updated).
+        The route:
+            1. Start from the apply target vetting recorded in
+               ``metadata["apply_url"]`` when there is one — the posting is
+               never reloaded in that case (it was already read, once, at
+               vetting; two navigations to the most bot-guarded page in the
+               flow was the measured cost of learning nothing).
+            2. Otherwise load the posting and work its apply controls: an
+               off-host <a> href is FOLLOWED BY NAVIGATION (deterministic,
+               and the hop is recorded); a target-less button is CLICKED
+               (what a person does), after which a new tab is followed, a
+               JS navigation is honoured, an authentication dialog ends the
+               route as ACCOUNT_REQUIRED, and a revealed form is filled.
+            3. Every landing page gets part A's two verdicts: a presented
+               challenge pauses in place; a login wall before any form ends
+               the route as ACCOUNT_REQUIRED. Hops are bounded
+               (``applications.max_apply_hops``, default 3) and loops end
+               honestly — never a hang.
+
+        The route is recorded on the evidence: posting host, apply target
+        host, landed host, hop count, and the ATS of the LANDED page.
+        Matching ATSRegistry against job.url alone could never match
+        anything when job.url is a job board — which in live runs is every
+        job.
 
         Returns:
-            Updated ApplicationEvidence.
+            Updated ApplicationEvidence. A terminal route outcome
+            (FAILED_NAVIGATION / CAPTCHA_BLOCKED / ACCOUNT_REQUIRED) means
+            the caller records and stops; anything else means a page worth
+            filling is loaded.
         """
+        metadata = job.metadata if hasattr(job, "metadata") else {}
+        apply_url = metadata.get("apply_url")
+        if not isinstance(apply_url, str) or not apply_url.strip():
+            apply_url = ""
+
+        posting_host = _host_of(job.url)
+        start_url = apply_url or job.url
+        evidence = evidence.model_copy(update={
+            "posting_host": posting_host,
+            "apply_target_host": _host_of(apply_url) if apply_url else "",
+        })
+
         try:
-            self._navigate(job.url)
+            self._navigate(start_url)
         except Exception as exc:
             logger.warning(
                 "ApplicationsWorkflow: navigation failed | url=%s error=%s",
-                job.url,
+                start_url,
                 exc,
             )
             return evidence.model_copy(update={
@@ -525,53 +580,390 @@ class ApplicationsWorkflow:
                 **self._run_statistics(),
             })
 
-        try:
-            descriptor = self._ats_registry.match(job.url)
-            if descriptor is not None and hasattr(job, "metadata"):
-                job.metadata["ats"] = descriptor.name
-                evidence = evidence.model_copy(update={
-                    "ats_platform": descriptor.name,
-                })
-        except Exception:
-            pass
+        visited: set[str] = {job.url, start_url}
+        current = self._current_url(default=start_url)
+        visited.add(current)
+        max_hops = self._cfg("applications.max_apply_hops", 3)
+        hops = 0
+        clicks = 0
 
-        try:
-            page_source = getattr(self._browser, "page_source", "") or ""
-            if "<form" not in page_source.lower():
-                apply_labels = [
-                    "apply now", "apply", "easy apply", "quick apply",
-                ]
-                buttons = self._get_clickable_elements()
-                for button in buttons:
-                    label = getattr(button, "text", "") or ""
-                    _, score = self._text_matcher.find_best_match(
-                        label.lower(), apply_labels
+        while True:
+            url, title, html = self._page_snapshot(fallback_url=current)
+
+            # ── Part A verdicts at every landing ─────────────────────────
+            terminal = self._check_route_landing(job, url, title, html, evidence)
+            if terminal is not None:
+                return terminal
+
+            # ── ATS on the LANDED page, not on job.url ───────────────────
+            evidence, ats_matched = self._match_landed_ats(job, url, evidence)
+
+            # ── An off-host apply href OUTRANKS any on-page form ─────────
+            # It is the posting's own statement of where applying happens.
+            # Form-first ordering stopped on the one measured off-host
+            # route and filled the posting's alert form, because that form
+            # crossed the fillable bar (probe_item12, 2026-09).
+            href = self._find_apply_href(url, html, visited)
+            if href is not None:
+                if hops >= max_hops:
+                    return self._route_failed(
+                        evidence,
+                        url,
+                        f"apply route exceeded the hop bound ({max_hops})",
                     )
-                    if score > 0.7:
-                        self._interaction_port.click(button)
-                        self._wait_for_dom_stable()
-                        if self._context_manager:
-                            self._context_manager.switch_to_new_tab()
-                        break
+                hops += 1
+                visited.add(href)
+                try:
+                    self._navigate(href)
+                except Exception as exc:
+                    return self._route_failed(evidence, href, str(exc)[:200])
+                current = self._current_url(default=href)
+                visited.add(current)
+                if not evidence.apply_target_host:
+                    evidence = evidence.model_copy(update={
+                        "apply_target_host": _host_of(href),
+                    })
+                continue
+
+            # A substantial form means this page IS the application. It is
+            # checked after the href on purpose: a form page's own submit
+            # has no off-host href, so a real form page never reaches this
+            # line via the route.
+            if page_has_fillable_form(html) or ats_matched:
+                break
+
+            # ── Then a target-less apply control: click, as a person would ─
+            if clicks == 0 and self._click_apply_control(job):
+                clicks += 1
+                if self._context_manager is not None:
+                    try:
+                        self._context_manager.switch_to_new_tab()
+                    except Exception:
+                        pass
+                after_url, _after_title, after_html = self._page_snapshot(
+                    fallback_url=url
+                )
+                if after_url != url:
+                    hops += 1
+                    visited.add(after_url)
+                    current = after_url
+                if self._auth_dialog_blocking(
+                    before_html=html, after_html=after_html
+                ):
+                    logger.info(
+                        "ApplicationsWorkflow: apply control opened an "
+                        "authentication dialog | job=%s",
+                        job.title,
+                    )
+                    return evidence.model_copy(update={
+                        "outcome": "ACCOUNT_REQUIRED",
+                        "confidence": 0.90,
+                        "login_wall_encountered": True,
+                        "error_message": (
+                            "the apply flow requires an account on this site "
+                            "(an authentication dialog opened; nothing was filled)"
+                        ),
+                        "landed_host": _host_of(after_url),
+                        **self._run_statistics(),
+                    })
+                continue
+
+            # ── Nothing left to follow ───────────────────────────────────
+            if hops > 0 or clicks > 0:
+                # A route was attempted and ended on a page with no form.
+                # Filling whatever this page is would be the pre-12B defect,
+                # so the route fails honestly instead.
+                return self._route_failed(
+                    evidence,
+                    url,
+                    "apply route ended on a page with no application form "
+                    "and no further apply control",
+                )
+            # No route was ever found: preserve the pre-12B behaviour of
+            # attempting the page as-is (it may be a weak-markup form page).
+            break
+
+        final_url = self._current_url(default=start_url)
+        return evidence.model_copy(update={
+            "landed_host": _host_of(final_url),
+            "apply_route_hops": hops,
+        })
+
+    def _current_url(self, default: str) -> str:
+        """The browser's current URL as a plain string, or ``default``."""
+        url = getattr(self._browser, "current_url", "") or ""
+        if not isinstance(url, str) or not url:
+            return default
+        return url
+
+    def _route_failed(
+        self, evidence: ApplicationEvidence, url: str, reason: str
+    ) -> ApplicationEvidence:
+        """Terminal route failure with the reason recorded, never a hang."""
+        logger.warning(
+            "ApplicationsWorkflow: apply route failed | url=%s reason=%s",
+            url,
+            reason,
+        )
+        return evidence.model_copy(update={
+            "outcome": "FAILED_NAVIGATION",
+            "confidence": 0.90,
+            "error_message": reason[:200],
+            "landed_host": _host_of(url),
+            **self._run_statistics(),
+        })
+
+    def _check_route_landing(
+        self,
+        job: Job,
+        url: str,
+        title: str,
+        html: str,
+        evidence: ApplicationEvidence,
+    ) -> ApplicationEvidence | None:
+        """Part A's two verdicts for one route landing. None means proceed.
+
+        A presented challenge pauses IN PLACE (ruling A): a solve continues
+        the route on the now-clear page; anything else ends the route as
+        CAPTCHA_BLOCKED. A whole-page login wall before any form was reached
+        ends the route as ACCOUNT_REQUIRED — the site demands an account
+        before it will even show a form.
+        """
+        page = assess_page(url=url, title=title, html=html)
+        if page.challenge == "gated":
+            self._captcha_encountered = True
+            self._challenge_signals = list(page.signals)
+            logger.info(
+                "ApplicationsWorkflow: challenge presented on apply route | "
+                "url=%s signals=%s",
+                url,
+                ",".join(page.signals),
+            )
+            try:
+                self._event_bus.publish(
+                    Event.CAPTCHA_DETECTED,
+                    {
+                        "job_url": job.url,
+                        "url": url,
+                        "signals": list(page.signals),
+                        "detail": page.detail,
+                    },
+                )
+            except Exception:
+                pass
+            if not self._pause_for_challenge(job, url, page):
+                return evidence.model_copy(update={
+                    "outcome": "CAPTCHA_BLOCKED",
+                    "confidence": 0.90,
+                    "captcha_encountered": True,
+                    "error_message": self._challenge_note or None,
+                    "landed_host": _host_of(url),
+                    **self._run_statistics(),
+                })
+            return None
+        if page.challenge == "embedded":
+            self._challenge_signals = list(page.signals)
+        if page.kind is PageType.LOGIN_REQUIRED:
+            logger.info(
+                "ApplicationsWorkflow: apply route reached a login wall "
+                "before any form | url=%s",
+                url,
+            )
+            return evidence.model_copy(update={
+                "outcome": "ACCOUNT_REQUIRED",
+                "confidence": 0.90,
+                "login_wall_encountered": True,
+                "error_message": (
+                    "an account is required before this site will show an "
+                    "application form"
+                ),
+                "landed_host": _host_of(url),
+                **self._run_statistics(),
+            })
+        return None
+
+    def _match_landed_ats(
+        self, job: Job, url: str, evidence: ApplicationEvidence
+    ) -> tuple[ApplicationEvidence, bool]:
+        """Match ATSRegistry against the LANDED URL and record it.
+
+        Returns (evidence, matched). A matched ATS page is also a route stop
+        signal: a known application host is a destination even when its form
+        markup is unusual.
+        """
+        descriptor = None
+        try:
+            if self._ats_registry is not None:
+                descriptor = self._ats_registry.match(url)
+        except Exception:
+            descriptor = None
+        if descriptor is None:
+            return evidence, False
+        if hasattr(job, "metadata"):
+            job.metadata["ats"] = descriptor.name
+        return evidence.model_copy(update={"ats_platform": descriptor.name}), True
+
+    def _find_apply_href(
+        self, page_url: str, html: str, visited: set[str]
+    ) -> str | None:
+        """The first off-host apply href on this page that is not yet visited.
+
+        Read from the page's markup by the SAME pure parser vetting learns
+        from, so the target learned and the target followed cannot be two
+        different answers.
+        """
+        try:
+            controls = find_apply_controls(url=page_url, html=html)
         except Exception as exc:
             logger.debug(
-                "ApplicationsWorkflow: apply CTA search failed: %s", exc
+                "ApplicationsWorkflow: apply-control parse failed: %s", exc
             )
+            return None
+        for control in controls:
+            if control.href and control.off_host and control.href not in visited:
+                return control.href
+        return None
 
-        return evidence
+    def _click_apply_control(self, job: Job) -> bool:
+        """Click the first apply-intent control that has no navigable href.
+
+        Navigable controls (an <a> with a real href) are followed by
+        navigation, never clicked — a click invites pop-ups and new tabs
+        where a navigation is deterministic and recorded.
+        """
+        if self._interaction_port is None:
+            return False
+        try:
+            for el in self._get_clickable_elements():
+                if not self._is_apply_control(el):
+                    continue
+                href = self._control_href(el)
+                if href and not href.startswith(("#", "javascript:")):
+                    continue
+                label = self._control_label(el)
+                self._interaction_port.click(el)
+                self._wait_for_dom_stable()
+                logger.info(
+                    "ApplicationsWorkflow: apply control clicked | job=%s label=%s",
+                    job.title,
+                    label[:40],
+                )
+                return True
+        except Exception as exc:
+            logger.debug(
+                "ApplicationsWorkflow: apply control click failed: %s", exc
+            )
+        return False
+
+    def _auth_dialog_blocking(self, *, before_html: str, after_html: str) -> bool:
+        """Did the apply click leave an authentication dialog BLOCKING the page?
+
+        "A dialog is in the markup" is not "the click opened a dialog":
+        measured job-board postings carry a hidden sign-in modal at all
+        times (2-8 password inputs on the PRE-click page, probe_item12).
+        The verdict asks, in order:
+
+        1. Is there a password-bearing dialog in the after-click markup at
+           all? (pure parse — no dialog, no account requirement.)
+        2. Is such a dialog VISIBLE? The browser answers through a JS probe
+           (getClientRects), which sees CSS display:none; the HTML parser
+           provably cannot.
+        3. When the probe is unavailable (a driver that cannot run JS),
+           fall back to the transition: a dialog absent before the click
+           and present after. On a JS-less driver a pre-hidden modal then
+           answers False — the conservative answer, disclosed: an
+           account-gated site reads as a route failure there, never as a
+           filled sign-in form.
+        """
+        if not auth_dialog_present(after_html):
+            return False
+        visible = self._visible_password_dialogs()
+        if visible is not None:
+            return visible > 0
+        return not auth_dialog_present(before_html)
+
+    def _visible_password_dialogs(self) -> int | None:
+        """Password inputs inside VISIBLE dialogs, or None when the browser
+        cannot answer. Only a real integer is a verdict — a MagicMock or an
+        exception is "unavailable", never zero."""
+        try:
+            result = self._browser.execute_script(
+                'var ds = document.querySelectorAll('
+                '\'[role="dialog"], [aria-modal="true"]\');'
+                'var n = 0;'
+                'ds.forEach(function(d) {'
+                '  if (d.getClientRects().length === 0) { return; }'
+                '  n += d.querySelectorAll(\'input[type="password"]\').length;'
+                '});'
+                'return n;'
+            )
+        except Exception:
+            return None
+        if isinstance(result, bool) or not isinstance(result, int):
+            return None
+        return result
+
+    def _is_apply_control(self, el) -> bool:
+        """Apply intent by accessible name — the same predicate the parser uses."""
+        return is_apply_label(self._control_label(el))
 
     def _get_clickable_elements(self) -> list:
-        """Return a best-effort list of button/link elements from the current page."""
+        """All actionable controls on the current page.
+
+        The ONE source for the Apply, Next and Submit searches, covering the
+        four shapes an actionable control actually takes: ``<a>``,
+        ``<button>``, ``<input type=submit|button>`` and ``[role=button]``.
+        The buttons-only search this replaces could not see an offsite apply
+        link, a submit input, or an ARIA button at all (measured 2026-09-10).
+        """
         try:
             if hasattr(self._browser, "find_elements"):
                 from auto_apply.domain.types import Locator  # noqa: PLC0415
 
                 return (
-                    self._browser.find_elements(Locator.TAG_NAME, "button") or []
+                    self._browser.find_elements(
+                        Locator.CSS_SELECTOR,
+                        "a, button, input[type='submit'], "
+                        "input[type='button'], [role='button']",
+                    )
+                    or []
                 )
         except Exception:
             pass
         return []
+
+    @staticmethod
+    def _control_label(el) -> str:
+        """The control's accessible name: rendered text, then value,
+        aria-label, title. An <input>'s label lives in its value — its
+        ``.text`` is always empty, which is why submit inputs were invisible
+        to the old label reader. Priority mirrors the pure parser's, so a
+        control the parser sees and a control the browser sees agree."""
+        text = getattr(el, "text", "") or ""
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        getter = getattr(el, "get_attribute", None)
+        if callable(getter):
+            for name in ("value", "aria-label", "title"):
+                try:
+                    value = getter(name)
+                except Exception:
+                    value = None
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    @staticmethod
+    def _control_href(el) -> str:
+        """The control's href (resolved by the driver), or "" when it has none."""
+        getter = getattr(el, "get_attribute", None)
+        if not callable(getter):
+            return ""
+        try:
+            value = getter("href")
+        except Exception:
+            return ""
+        return value if isinstance(value, str) else ""
 
     def _wait_for_dom_stable(self, timeout: float | None = None) -> None:
         """Wait for DOM to stabilize, with graceful degradation."""
@@ -1332,14 +1724,10 @@ class ApplicationsWorkflow:
             return False
 
         try:
-            buttons = self._get_clickable_elements()
             next_button = None
-            for btn in buttons:
-                btn_text = getattr(btn, "text", "") or ""
-                _, score = self._text_matcher.find_best_match(
-                    btn_text.lower(), self._NEXT_BUTTON_LABELS
-                )
-                if score > 0.7:
+            for btn in self._get_clickable_elements():
+                btn_text = self._control_label(btn)
+                if _label_matches(btn_text, self._NEXT_BUTTON_LABELS):
                     next_button = btn
                     break
 
@@ -1393,73 +1781,62 @@ class ApplicationsWorkflow:
                     f"{type(exc).__name__}: {exc}"
                 )
 
+        # ── Challenge assessment: the ONE predicate (item 12A) ──────────
+        # gated/embedded/clear comes from the ONE page verdict
+        # (domain/services/page_assessment.py, delegating to
+        # challenge_assessment.py for the challenge answer). On "gated" the
+        # human is asked IN PLACE — before
+        # any outcome is recorded, while the browser is still on the
+        # challenge page (ruling A). A solve re-checks the page and continues
+        # the SAME attempt. No hand-off task is enqueued: the late, wrong-page
+        # escalation that task produced is the defect this replaces.
+        current_url, page_title, page_source = job.url, "", ""
+        page: PageAssessment | None = None
         try:
-            page_source = getattr(self._browser, "page_source", "") or ""
-            captcha_indicators = [
-                "recaptcha", "hcaptcha", "cf-turnstile", "captcha",
-                "i am not a robot", "verify you are human",
-            ]
-            if any(ind in page_source.lower() for ind in captcha_indicators):
-                matched_indicator = next(
-                    ind for ind in captcha_indicators if ind in page_source.lower()
-                )
-                current_url = getattr(self._browser, "current_url", job.url)
-                # ── TEMPORARY DIAGNOSTIC (predicate 12, 2026-09-09) ─────
-                # Measure both block verdicts for this page; the behavior
-                # below is unchanged. Delete with the helpers at the bottom
-                # of _handle_interruptions when the weighted detector is
-                # wired in via a port.
-                try:
-                    weighted_verdict = self._p12_weighted_verdict()
-                    self._p12_log_block_comparison(
-                        verdict_context="captcha-substring",
-                        matched=matched_indicator,
-                        current_url=current_url,
-                        page_source=page_source,
-                        weighted=weighted_verdict,
-                    )
-                except Exception as exc:
-                    logger.debug(
-                        "ApplicationsWorkflow: captcha block-comparison "
-                        "failed (non-fatal): %s",
-                        exc,
-                    )
-                # ── END TEMPORARY DIAGNOSTIC ─────────────────────────────
-                logger.info(
-                    "ApplicationsWorkflow: CAPTCHA detected | url=%s",
-                    current_url,
-                )
-                try:
-                    self._event_bus.publish(
-                        Event.CAPTCHA_DETECTED, {"job_url": job.url}
-                    )
-                    self._task_queue.queue_task(
-                        WorkUnit(
-                            priority=1,
-                            task_type=TaskType.HANDLE_CAPTCHA,
-                            payload=CaptchaResolutionPayload(
-                                challenge_url=current_url,
-                                challenge_type=matched_indicator,
-                                context={"job_url": job.url},
-                            ),
-                            source="applications_workflow",
-                            context_data={
-                                "return_state": "applying",
-                                "return_url": current_url,
-                            },
-                        )
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "ApplicationsWorkflow: failed to enqueue HANDLE_CAPTCHA "
-                        "task after detecting a CAPTCHA | url=%s error=%s",
-                        current_url,
-                        exc,
-                    )
-                return False
+            current_url, page_title, page_source = self._page_snapshot(
+                fallback_url=job.url
+            )
+            page = assess_page(
+                url=current_url, title=page_title, html=page_source
+            )
         except Exception as exc:
             logger.debug(
-                "ApplicationsWorkflow: interruption check failed: %s", exc
+                "ApplicationsWorkflow: challenge assessment failed: %s", exc
+            )
+
+        if page is not None and page.challenge == "gated":
+            self._captcha_encountered = True
+            self._challenge_signals = list(page.signals)
+            logger.info(
+                "ApplicationsWorkflow: challenge presented | url=%s signals=%s",
+                current_url,
+                ",".join(page.signals),
+            )
+            try:
+                self._event_bus.publish(
+                    Event.CAPTCHA_DETECTED,
+                    {
+                        "job_url": job.url,
+                        "url": current_url,
+                        "signals": list(page.signals),
+                        "detail": page.detail,
+                    },
+                )
+            except Exception:
+                pass
+            if not self._pause_for_challenge(job, current_url, page):
+                return False
+        elif page is not None and page.challenge == "embedded":
+            # A challenge element inside a usable page (a reCAPTCHA widget
+            # in a sign-in modal, say): the page can be worked. Record the
+            # signals and proceed; the element only matters if a later step
+            # trips on it.
+            self._challenge_signals = list(page.signals)
+            logger.info(
+                "ApplicationsWorkflow: embedded challenge element on a "
+                "usable page — proceeding | url=%s signals=%s",
+                current_url,
+                ",".join(page.signals),
             )
 
         try:
@@ -1469,23 +1846,6 @@ class ApplicationsWorkflow:
 
             if form_count == 0 and job_link_count > 5:
                 current_url = getattr(self._browser, "current_url", "")
-                # ── TEMPORARY DIAGNOSTIC (predicate 12, 2026-09-09) ─────
-                try:
-                    weighted_redirect_verdict = self._p12_weighted_verdict()
-                    self._p12_log_block_comparison(
-                        verdict_context="suspicious-redirect",
-                        matched="redirect-heuristic",
-                        current_url=current_url,
-                        page_source=page_source,
-                        weighted=weighted_redirect_verdict,
-                    )
-                except Exception as exc:
-                    logger.debug(
-                        "ApplicationsWorkflow: redirect block-comparison "
-                        "failed (non-fatal): %s",
-                        exc,
-                    )
-                # ── END TEMPORARY DIAGNOSTIC ─────────────────────────────
                 logger.info(
                     "ApplicationsWorkflow: suspicious redirect detected | url=%s",
                     current_url,
@@ -1509,7 +1869,7 @@ class ApplicationsWorkflow:
                             choice = self._approval_gate(
                                 "Suspicious redirect detected. Continue?",
                                 ["continue", "skip"],
-                                f"redirect_{job.url}",
+                                checkpoint="ON_SUSPICIOUS_REDIRECT",
                             )
                             if choice == "skip":
                                 return False
@@ -1524,235 +1884,111 @@ class ApplicationsWorkflow:
 
         return True
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # TEMPORARY DIAGNOSTIC — predicate 12 (added 2026-09-09)
-    #
-    # Measurement scaffolding, not a feature. It answers one question for one
-    # live run: how often does the raw substring scan in _handle_interruptions()
-    # call a page "blocked" when a stricter, multi-signal check says it is not?
-    # It changes nothing: same return values, same events, same queued tasks,
-    # same outcomes. It is written to be deleted in one edit.
-    #
-    # Why this mirrors instead of importing: DefaultDetectionStrategy
-    # (adapters/secondary/evasion/detection.py:74) is the canonical weighted
-    # detector, but the hexagonal boundary pins —
-    # tests/test_architecture.py::test_hexagonal_import_boundaries and the
-    # violation-count pin in tests/adapters/test_extraction_observer.py — are
-    # asserted at exactly ZERO application→adapters imports, and "zero red
-    # pins" is release criterion 3. Importing the strategy here would break
-    # the suite to add scaffolding. So the weighted verdict below is a 1:1
-    # inline mirror of that strategy's algorithm (keyword lists and weights
-    # from detection_config.json's "default" strategy: url 30, title 30,
-    # iframe 40, text 40, threshold 60). This is a bounded third instance of
-    # the block-detection predicate; it must be deleted and the call sites
-    # switched to the injected strategy when DefaultDetectionStrategy is
-    # wired in through a port (a later prompt owns composition_root.py). If
-    # detection_config.json's keywords change before that wiring lands, this
-    # mirror drifts — it is correct as of 2026-09-09.
-    # ──────────────────────────────────────────────────────────────────────────
-
-    _P12_URL_KEYWORDS: tuple = (
-        "/sorry/", "/challenge/", "/verify/", "/human-challenge/",
-        "/cdn-cgi/", "/checkpoint/", "blocked", "denied",
-    )
-    _P12_TITLE_KEYWORDS: tuple = (
-        "verify you are human", "are you a robot", "checking your browser",
-        "attention required", "access denied", "bot verification",
-        "security check",
-    )
-    _P12_IFRAME_KEYWORDS: tuple = (
-        "recaptcha", "hcaptcha", "turnstile", "funcaptcha", "arkose",
-    )
-    _P12_TEXT_KEYWORDS: tuple = (
-        "i'm not a robot", "i am not a robot", "unusual traffic",
-        "prove you're human", "verify that you are not a robot",
-        "complete the security check", "cloudflare",
-        "your ip has been flagged",
-    )
-    _P12_CONFIDENCE_THRESHOLD: int = 60
-    _P12_DUMP_CAP: int = 20
-    _P12_DUMP_DIR_NAME: str = "detector_samples"
-
-    def _p12_weighted_verdict(self) -> bool | None:
-        """TEMPORARY (predicate 12): mirror of DefaultDetectionStrategy.
-
-        Computes the same weighted multi-signal verdict as
-        DefaultDetectionStrategy.is_challenge_present()
-        (adapters/secondary/evasion/detection.py:74) using the same
-        keywords and weights. Returns True/False, or None when the verdict
-        cannot be computed. Never raises.
-        """
-        try:
-            browser = self._browser
-            if browser is None:
-                return None
-            from auto_apply.domain.types import Locator  # noqa: PLC0415
-
-            confidence = 0
-
-            # URL keywords — weight 30.
-            try:
-                current_url = (getattr(browser, "current_url", "") or "").lower()
-                if any(k in current_url for k in self._P12_URL_KEYWORDS):
-                    confidence += 30
-            except Exception:
-                pass
-
-            # Title keywords — weight 30.
-            try:
-                title = (getattr(browser, "title", "") or "").lower()
-                if any(k in title for k in self._P12_TITLE_KEYWORDS):
-                    confidence += 30
-            except Exception:
-                pass
-
-            # Challenge iframe — weight 40. A merely-loaded vendor library
-            # is a <script>, not an <iframe>; this is the check that
-            # separates "presented" from "loaded", the false positive under
-            # measurement.
-            try:
-                for keyword in self._P12_IFRAME_KEYWORDS:
-                    if browser.find_elements(
-                        Locator.XPATH,
-                        f"//iframe[contains(@src, '{keyword}')]",
-                    ):
-                        confidence += 40
-                        break
-            except Exception:
-                pass
-
-            # Challenge text on the page — weight 40.
-            try:
-                text_conditions = " or ".join(
-                    f"contains(., '{kw}')" for kw in self._P12_TEXT_KEYWORDS
-                )
-                deep_scan_xpath = (
-                    "//body//*[not(self::script or self::style)]"
-                    f"[text()[{text_conditions}]]"
-                )
-                if browser.find_elements(Locator.XPATH, deep_scan_xpath):
-                    confidence += 40
-            except Exception:
-                pass
-
-            return confidence >= self._P12_CONFIDENCE_THRESHOLD
-        except Exception as exc:
-            logger.debug(
-                "ApplicationsWorkflow: weighted block verdict unavailable "
-                "(non-fatal): %s",
-                exc,
-            )
-            return None
-
-    def _p12_log_block_comparison(
+    def _pause_for_challenge(
         self,
-        *,
-        verdict_context: str,
-        matched: str,
-        current_url: str,
-        page_source: str,
-        weighted: bool | None,
-    ) -> None:
-        """TEMPORARY (predicate 12): log both verdicts; dump on disagreement.
+        job: Job,
+        challenge_url: str,
+        assessment: PageAssessment,
+    ) -> bool:
+        """Ask the human, in place, while the browser is still on the challenge.
 
-        Never raises. ``weighted`` is the multi-signal verdict (None when it
-        could not be computed). The substring/heuristic verdict is True by
-        construction of both call sites, so ``agree=yes`` means both agree
-        the page is a challenge and ``agree=no`` means only the raw scan
-        flagged it — exactly the population this run exists to measure.
+        Ruling A (2026-09-09): pause synchronously at the moment of
+        detection, record no terminal outcome before asking, and never
+        navigate away. The approval gate blocks the agent thread; nothing
+        here touches the browser, so it stays on *challenge_url* and the
+        human solves the challenge in the window that is actually showing
+        it. No hand-off task is enqueued — the late, wrong-page escalation
+        that path produced is the defect this replaces.
+
+        Returns:
+            True only when the human reports the challenge solved AND the
+            in-place re-check agrees the page is no longer gated — the SAME
+            attempt then continues. False for skip, stop, timeout, a raised
+            gate, a missing gate, or a page still gated after a reported
+            solve; the caller records CAPTCHA_BLOCKED with
+            ``self._challenge_note`` saying exactly why.
         """
+        self._challenge_pauses += 1
+        if self._challenge_pauses > 3:
+            self._challenge_note = (
+                "challenge kept returning after repeated human solves"
+            )
+            logger.error(
+                "ApplicationsWorkflow: challenge pause budget exhausted — "
+                "the challenge returned after %d reported solves | url=%s",
+                self._challenge_pauses - 1,
+                challenge_url,
+            )
+            return False
+        if self._approval_gate is None:
+            self._challenge_note = (
+                "a human-verification challenge is presented and no "
+                "human-review gate is wired"
+            )
+            logger.warning(
+                "ApplicationsWorkflow: challenge presented but no HITL gate "
+                "is wired — recording CAPTCHA_BLOCKED without pausing | "
+                "url=%s signals=%s",
+                challenge_url,
+                ",".join(assessment.signals),
+            )
+            return False
+
         try:
-            form_count = page_source.lower().count("<form")
-            iframe_count = page_source.lower().count("<iframe")
-            page_bytes = len(page_source)
-            if weighted is None:
-                weighted_str = "unavailable"
-                agree = "unknown"
-            else:
-                weighted_str = str(weighted).lower()
-                agree = "yes" if weighted else "no"
-            logger.info(
-                "ApplicationsWorkflow: block-detector comparison | url=%s "
-                "context=%s substring=%s weighted=%s agree=%s "
-                "forms=%d iframes=%d page_bytes=%d",
-                current_url,
-                verdict_context,
-                matched,
-                weighted_str,
-                agree,
-                form_count,
-                iframe_count,
-                page_bytes,
-            )
-            if weighted is False:
-                # Raw scan said blocked; weighted says it is not a
-                # challenge. Persist the page for triage.
-                self._p12_dump_sample(current_url, page_source, verdict_context)
-        except Exception as exc:
-            logger.debug(
-                "ApplicationsWorkflow: block-detector comparison failed "
-                "(non-fatal): %s",
-                exc,
-            )
-
-    def _p12_dump_sample(
-        self, current_url: str, page_source: str, verdict_context: str
-    ) -> None:
-        """TEMPORARY (predicate 12): persist a disagreement page for triage.
-
-        Bounded to _P12_DUMP_CAP files in the sample directory total (not
-        merely per session — accumulation across sessions is what actually
-        fills a USB stick). Logs once per session when the cap is reached.
-        Never raises.
-        """
-        try:
-            from auto_apply.domain.config import USER_DATA_DIR  # noqa: PLC0415
-
-            dump_dir = USER_DATA_DIR / self._P12_DUMP_DIR_NAME
-            try:
-                existing = (
-                    len(list(dump_dir.glob("*.html"))) if dump_dir.is_dir() else 0
-                )
-            except Exception:
-                existing = 0
-            if existing >= self._P12_DUMP_CAP:
-                if not self._p12_dump_cap_logged:
-                    self._p12_dump_cap_logged = True
-                    logger.warning(
-                        "ApplicationsWorkflow: detector sample cap (%d files) "
-                        "reached in %s — further disagreements are logged "
-                        "but not dumped.",
-                        self._P12_DUMP_CAP,
-                        dump_dir,
-                    )
-                return
-            dump_dir.mkdir(parents=True, exist_ok=True)
-            url_hash = hashlib.sha256(
-                (current_url or "unknown").encode("utf-8", errors="replace")
-            ).hexdigest()[:12]
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            sample_path = dump_dir / f"{stamp}_{url_hash}.html"
-            header = (
-                f"<!-- detector-sample | url: {current_url}\n"
-                f"     context: {verdict_context} | substring/heuristic: "
-                f"blocked | weighted: not-blocked\n"
-                f"     captured: {stamp} | predicate 12 temporary diagnostic\n"
-                f"-->\n"
-            )
-            sample_path.write_text(
-                header + page_source, encoding="utf-8", errors="replace"
-            )
-            logger.info(
-                "ApplicationsWorkflow: block-detector disagreement — page "
-                "dumped for triage | path=%s",
-                sample_path,
+            choice = self._approval_gate(
+                "A human-verification challenge is blocking the current "
+                "page. Solve it in the browser window, then choose how to "
+                "continue.",
+                ["solved", "skip", "stop"],
+                checkpoint="CAPTCHA_PRESENTED",
             )
         except Exception as exc:
-            logger.debug(
-                "ApplicationsWorkflow: detector sample dump failed "
-                "(non-fatal): %s",
+            self._challenge_note = f"approval gate raised: {exc}"[:200]
+            logger.error(
+                "ApplicationsWorkflow: HITL gate raised during challenge "
+                "pause | url=%s error=%s",
+                challenge_url,
                 exc,
+                exc_info=True,
             )
+            return False
+
+        if choice != "solved":
+            self._challenge_note = (
+                f"challenge not solved (gate answer: {choice!r})"
+            )
+            return False
+
+        # Re-check in place: the browser never left the page, so a real
+        # solve shows up as a non-gated assessment of the same URL.
+        recheck: PageAssessment | None = None
+        try:
+            url_now, title_now, html_now = self._page_snapshot(
+                fallback_url=challenge_url
+            )
+            recheck = assess_page(url=url_now, title=title_now, html=html_now)
+        except Exception as exc:
+            logger.debug(
+                "ApplicationsWorkflow: post-solve re-check failed: %s", exc
+            )
+
+        if recheck is None or recheck.challenge != "gated":
+            logger.info(
+                "ApplicationsWorkflow: challenge cleared after human solve "
+                "— continuing the same attempt | url=%s",
+                challenge_url,
+            )
+            return True
+
+        self._challenge_note = (
+            "challenge still presented after a reported solve"
+        )
+        logger.warning(
+            "ApplicationsWorkflow: page still gated after a reported solve "
+            "| url=%s",
+            challenge_url,
+        )
+        return False
 
     # ------------------------------------------------------------------
     # Submission gate
@@ -1852,6 +2088,8 @@ class ApplicationsWorkflow:
             "fields_classified": self._fields_classified,
             "required_fields_filled": self._required_fields_filled,
             "used_gpt4all": self._gpt4all_invoked,
+            "captcha_encountered": self._captcha_encountered,
+            "challenge_signals": list(self._challenge_signals),
         }
 
     def _authorize_submission(self, job: Job) -> tuple[bool, str, str]:
@@ -1908,7 +2146,7 @@ class ApplicationsWorkflow:
             choice = self._approval_gate(
                 "Submit application?",
                 ["submit", "skip"],
-                f"submit_{job.url}",
+                checkpoint="BEFORE_FORM_SUBMIT",
             )
         except Exception as exc:
             return (
@@ -1967,9 +2205,10 @@ class ApplicationsWorkflow:
         """Perform pre-submit HITL check, find submit button, click, and scan
         confirmation.
 
-        Uses ATS-specific confirmation patterns (ATS_CONFIRMATION_PATTERNS) to
-        detect platform-specific success pages, falling back to generic patterns
-        when the ATS platform is unknown.
+        Uses the ONE page verdict: a confirmation is SUCCESS_PAGE, decided by
+        a strong phrase in VISIBLE text or a confirmation URL marker, and the
+        verdict's signals name which one decided. The outcome ladder
+        (SUBMITTED / PROBABLY_SUBMITTED / AMBIGUOUS) is unchanged.
 
         Args:
             job: The job being applied to.
@@ -2011,13 +2250,9 @@ class ApplicationsWorkflow:
         submit_button = None
         submit_text = ""
         try:
-            buttons = self._get_clickable_elements()
-            for btn in buttons:
-                btn_text = getattr(btn, "text", "") or ""
-                _, score = self._text_matcher.find_best_match(
-                    btn_text.lower(), self._SUBMIT_KEYWORDS
-                )
-                if score > 0.7:
+            for btn in self._get_clickable_elements():
+                btn_text = self._control_label(btn)
+                if _label_matches(btn_text, self._SUBMIT_KEYWORDS):
                     submit_button = btn
                     submit_text = btn_text[:50]
                     break
@@ -2045,10 +2280,9 @@ class ApplicationsWorkflow:
         })
 
         try:
-            self._interaction_port.click(submit_button)
-            evidence = evidence.model_copy(update={
-                "submit_clicked": True,
-            })
+            submit_result = self._interaction_port.click(
+                submit_button, irreversible=True
+            )
         except Exception as exc:
             return evidence.model_copy(update={
                 "submit_clicked": False,
@@ -2057,6 +2291,29 @@ class ApplicationsWorkflow:
                 "confidence": 0.90,
                 **self._run_statistics(),
             })
+
+        # A returned (non-raised) ladder failure is a failed submit too. None
+        # means the port reports no detail (older contract) — preserved as
+        # before. Anything falsy-but-not-None (an ActionResult that exhausted
+        # every rung) previously recorded submit_clicked=True and scanned for
+        # a confirmation that could not exist; it now records the failure.
+        if submit_result is not None and not submit_result:
+            reason = str(
+                getattr(submit_result, "reason", "all click rungs exhausted")
+            )
+            return evidence.model_copy(update={
+                "submit_clicked": False,
+                "outcome": "ERROR",
+                "error_message": f"submit click did not complete: {reason}"[:200],
+                "confidence": 0.90,
+                **self._run_statistics(),
+            })
+
+        evidence = evidence.model_copy(update={
+            "submit_clicked": True,
+            "submit_rung": str(getattr(submit_result, "rung", "") or ""),
+            "submit_effect": str(getattr(submit_result, "effect", "") or ""),
+        })
 
         # ── Wait for post-submit page to settle ───────────────────────────
         try:
@@ -2076,38 +2333,41 @@ class ApplicationsWorkflow:
         try:
             post_url = getattr(self._browser, "current_url", "") or ""
             post_title = getattr(self._browser, "title", "") or ""
-            page_source = (
-                getattr(self._browser, "page_source", "") or ""
-            ).lower()
+            page_source = getattr(self._browser, "page_source", "") or ""
         except Exception:
             pass
+        if not isinstance(post_url, str):
+            post_url = ""
+        if not isinstance(post_title, str):
+            post_title = ""
+        if not isinstance(page_source, str):
+            page_source = ""
 
         url_changed = bool(post_url and post_url != job.url)
 
-        # ── Check for ATS-specific confirmation phrases ───────────────────
-        ats_name = (
-            job.metadata.get("ats")
-            if hasattr(job, "metadata")
-            else None
-        )
-        patterns_to_check: list[str] = list(
-            ATS_CONFIRMATION_PATTERNS.get(ats_name or "", [])
-        )
-        patterns_to_check += ATS_CONFIRMATION_PATTERNS.get("generic", [])
-
-        found_phrases: list[str] = []
-        for phrase in patterns_to_check:
-            if (
-                phrase.lower() in page_source
-                or phrase.lower() in post_url.lower()
-            ):
-                found_phrases.append(phrase)
+        # ── Confirmation via the ONE page verdict ─────────────────────────
+        # A confirmation is SUCCESS_PAGE: a strong phrase in VISIBLE text
+        # (never raw page source) or a confirmation URL marker, with the
+        # deciding phrase or marker carried in the verdict's signals. The
+        # outcome ladder is unchanged; only the source of "was a
+        # confirmation seen?" changes.
+        try:
+            post_page = assess_page(url=post_url, title=post_title, html=page_source)
+            confirmation_seen = post_page.kind is PageType.SUCCESS_PAGE
+            found_phrases = [
+                signal.split(":", 1)[1]
+                for signal in post_page.signals
+                if signal.startswith("confirmation-")
+            ]
+        except Exception:
+            confirmation_seen = False
+            found_phrases = []
 
         # ── Classify the outcome ──────────────────────────────────────────
-        if found_phrases and url_changed:
+        if confirmation_seen and url_changed:
             outcome = "SUBMITTED"
             confidence = 0.95
-        elif found_phrases:
+        elif confirmation_seen:
             outcome = "SUBMITTED"
             confidence = 0.85
         elif url_changed:
@@ -2151,6 +2411,8 @@ class ApplicationsWorkflow:
             "fields_classified": self._fields_classified,
             "pages_navigated": self._pages_navigated,
             "used_gpt4all": self._gpt4all_invoked,
+            "captcha_encountered": self._captcha_encountered,
+            "challenge_signals": list(self._challenge_signals),
         })
 
         # ── Persist to job repository ─────────────────────────────────────
@@ -2245,6 +2507,7 @@ class ApplicationsWorkflow:
             "used_gpt4all": self._gpt4all_invoked,
             "evidence_outcome": evidence.outcome,
             "evidence_confidence": evidence.confidence,
+            "challenge_signals": list(self._challenge_signals),
         }
         try:
             self._event_bus.publish(event, payload)
@@ -2283,25 +2546,26 @@ class ApplicationsWorkflow:
                 )
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Lazy scroll-up — simulate a person reviewing the form before filling
+    # Form reveal — render lazy sections before analysis (tool cadence)
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _lazy_scroll_to_top(self) -> None:
-        """Scroll smoothly to the top of the page.
+    def _reveal_form_content(self) -> None:
+        """Wheel-scan the page with the tool's cadence, then return to the top.
 
-        Simulates a person who has scrolled down to read the job description,
-        then lazily scrolls back up before starting to fill out the form.
-        Called once per form page, after analysis and before filling.
+        The raw smooth scroll-to-top this replaces could not render
+        lazy sections below the fold, so the analysis never saw them. The
+        reveal runs in the tool (seeded, measured, bounded by
+        ``applications.form_reveal_max_scrolls``); a failure here must never
+        abort an application, so it degrades to a debug log.
         """
+        if self._navigation is None:
+            return
         try:
-            if self._browser is not None:
-                self._browser.execute_script(
-                    "window.scrollTo({top: 0, behavior: 'smooth'})"
-                )
-            # Brief pause to simulate the person orienting at the top of the form.
-            time.sleep(self._rng.uniform(0.8, 1.5))
-        except Exception:
-            pass  # Degrade gracefully — scroll is cosmetic, not critical.
+            self._navigation.reveal_page(
+                max_steps=self._cfg("applications.form_reveal_max_scrolls", 8)
+            )
+        except Exception as exc:
+            logger.debug("ApplicationsWorkflow: form reveal failed: %s", exc)
 
     def run(
         self, job: Job, session_id: str | None = None
@@ -2328,6 +2592,10 @@ class ApplicationsWorkflow:
         self._required_fields_filled = 0
         self._failed_required_fields = []
         self._gpt4all_invoked = False
+        self._captcha_encountered = False
+        self._challenge_signals = []
+        self._challenge_note = ""
+        self._challenge_pauses = 0
         self._session_id = session_id
 
         logger.info(
@@ -2365,7 +2633,11 @@ class ApplicationsWorkflow:
     ) -> ApplicationEvidence:
         """Core of a single application attempt; called under lease when provided."""
         evidence = self._navigate_to_application(job, evidence)
-        if evidence.outcome == "FAILED_NAVIGATION":
+        if evidence.outcome in (
+            "FAILED_NAVIGATION",
+            "CAPTCHA_BLOCKED",
+            "ACCOUNT_REQUIRED",
+        ):
             self._record_application_outcome(evidence)
             return evidence
 
@@ -2388,6 +2660,7 @@ class ApplicationsWorkflow:
                 "outcome": "CAPTCHA_BLOCKED",
                 "confidence": 0.90,
                 "captcha_encountered": True,
+                "error_message": self._challenge_note or None,
                             **self._run_statistics(),
             })
             self._record_application_outcome(evidence)
@@ -2395,6 +2668,8 @@ class ApplicationsWorkflow:
 
         try:
             while True:
+                # ── Reveal lazy content before analysis (tool cadence) ──
+                self._reveal_form_content()
                 # ── iFrame + Shadow DOM fallback (Wave K1) ──────────────
                 structure = self._get_form_structure_with_iframe_fallback(job)
                 # One research record per wizard step, page-indexed.
@@ -2403,9 +2678,6 @@ class ApplicationsWorkflow:
                 )
                 classifications = self._classify_all_fields(structure)
                 self._fields_classified += len(classifications)
-
-                # ── Lazy scroll to top before filling ────────────────────
-                self._lazy_scroll_to_top()
 
                 self._fields_filled += self._fill_standard_fields(
                     classifications
@@ -2421,6 +2693,7 @@ class ApplicationsWorkflow:
                         "outcome": "CAPTCHA_BLOCKED",
                         "confidence": 0.90,
                         "captcha_encountered": True,
+                        "error_message": self._challenge_note or None,
                         **self._run_statistics(),
                     })
                     self._record_application_outcome(evidence)
@@ -2644,6 +2917,25 @@ class ApplicationsWorkflow:
 # --------------------------------------------------------------------------
 # Module‑level helper
 # --------------------------------------------------------------------------
+
+def _label_matches(label: str, keywords: list[str]) -> bool:
+    """Deterministic label match: any keyword as a substring, case-insensitive.
+
+    Replaces the fuzzy 0.7-threshold matcher at the Apply/Next/Submit
+    searches: for fixed short English label lists the fuzzy layer added only
+    nondeterminism (and an un-mockable dependency in tests).
+    """
+    text = (label or "").lower()
+    return any(keyword in text for keyword in keywords)
+
+
+def _host_of(url: str) -> str:
+    """The lowercase host of a URL, or "" when it cannot be parsed."""
+    try:
+        return urlparse(url or "").netloc.lower()
+    except Exception:
+        return ""
+
 
 def _map_ui_element_type(ui_type: UIElementType) -> str:
     """Map a UIElementType to a simple form field type string."""

@@ -61,10 +61,21 @@ class CardActivator:
         settle_seconds: Fixed wait when no readiness port is available.
     """
 
-    def __init__(self, browser, readiness=None, settle_seconds: float = 2.0) -> None:
+    def __init__(
+        self,
+        browser,
+        readiness=None,
+        settle_seconds: float = 2.0,
+        page_action=None,
+    ) -> None:
         self._browser = browser
         self._readiness = readiness
         self._settle_seconds = float(settle_seconds)
+        # The interaction tool is required for activation (call 3 wired it
+        # through PageUnderstandingExtractor): with it, clicks travel the
+        # ladder and carry an observed effect; without it, activate()
+        # returns an honest error instead of a raw click.
+        self._page_action = page_action
 
     def activate(
         self,
@@ -80,13 +91,26 @@ class CardActivator:
         if element is None:
             return ActivationOutcome(error=error)
 
+        if self._page_action is None:
+            # The raw-click fallback is retired (call 3): production always
+            # wires the tool through the extractor, and a second click
+            # implementation is exactly the duplication the tool removed.
+            # No tool is an honest error, not an untrusted click.
+            return ActivationOutcome(error="no interaction tool wired")
         before = self._anchor_snapshot()
-        try:
-            element.click()
-        except Exception as exc:
-            return ActivationOutcome(error=f"click failed: {exc}")
+        # Through the tool: trusted pointer, occlusion/challenge guard, and
+        # an observed effect. RULING: the effect is ADVISORY telemetry only —
+        # the measured URL diff and anchor diff below remain the verdict,
+        # because effect is a floor, not a verdict (a silent XHR leaves no
+        # trace on any of its channels).
+        result = self._page_action.click(element)
+        if not result:
+            return ActivationOutcome(error=f"click failed: {result.reason}")
+        effect = result.effect
 
         self._wait_for_settle()
+        if effect:
+            logger.debug("Card activation effect (advisory): %s", effect)
         after = self._anchor_snapshot()
 
         current_url = self._current_url()

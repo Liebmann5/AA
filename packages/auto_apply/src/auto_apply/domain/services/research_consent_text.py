@@ -103,6 +103,12 @@ Your rights:
   private key that signed your rows
 - You can export a copy of everything collected from your sessions before
   deleting it
+- If you uninstall AutoApply, research participation is withdrawn for you.
+  Your research records are kept by default — moved or exported to a
+  location you confirm — and are deleted only if you explicitly choose
+  deletion during uninstall. If a researcher has placed a retention hold on
+  this device's research data, uninstall will not destroy research records
+  while the hold is active, and will say so
 
 Separately, AutoApply can also keep cleaned copies of the job pages it
 reads, on this device only. That is a second, optional choice with its own
@@ -188,7 +194,10 @@ Your rights:
 - You can turn page copies off at any time in Settings → Research;
   turning them off deletes every kept copy unless you choose otherwise.
 - Withdrawing from research deletes all copies along with everything
-  else."""
+  else. Uninstalling AutoApply withdraws from research, so kept copies are
+  deleted the same way — unless a researcher has placed a retention hold on
+  this device's research data: while a hold is active, uninstall destroys
+  nothing research-related, page copies included."""
 
 PAGE_COPIES_AGREE_LABEL = "Keep Cleaned Page Copies on This Device"
 

@@ -74,3 +74,14 @@ toolbar:
             value: "span[aria-label*='Past year']"
         fallback:
           text_contains: ["past year", "last year"]
+
+# ── Pagination ───────────────────────────────────────────────────────────────
+# No verified URL page parameter is shipped for Bing Jobs: inventing one
+# would be a vendor "fact" nobody measured. Structural rungs (rel=next,
+# numbered, arrows) handle paging. To add a verified parameter — here or in
+# the user override, without a release — see google.yaml for the shape:
+# pagination:
+#   url_template:
+#     param: first
+#     first: 1
+#     step: 10

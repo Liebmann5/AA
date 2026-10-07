@@ -29,6 +29,7 @@ from auto_apply.adapters.primary.cli.labeller import CliLabeller
 from auto_apply.adapters.secondary.annotation.detector_sample_source import (
     DetectorSampleSource,
     safe_view_html,
+    write_detector_sample,
 )
 from auto_apply.adapters.secondary.annotation.jsonl_store import JsonlAnnotationStore
 from auto_apply.application.services.labelling import LabellingService
@@ -59,30 +60,22 @@ JOB_PAGE = (
 )
 
 
-def _dump(tmp: Path, url: str, html: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Save a page with AA's OWN dump code, so the source reads the real format."""
-    from auto_apply.application.workflows.applications_workflow import (
-        ApplicationsWorkflow,
-    )
-    from auto_apply.domain import config
-
-    monkeypatch.setattr(config, "USER_DATA_DIR", tmp)
-    wf = object.__new__(ApplicationsWorkflow)
-    wf._p12_dump_cap_logged = False
-    wf._p12_dump_sample(url, html, "apply-page")
+def _dump(tmp: Path, url: str, html: str) -> None:
+    """Save a page with the ONE writer of the detector-sample format, so the
+    source reads the real format. The writer lives beside the reader, so the
+    two can never drift — the previous producer (a temporary workflow
+    diagnostic) was deleted, which is what errored every test in this file."""
+    write_detector_sample(tmp / "detector_samples", url, html, "apply-page")
 
 
 @pytest.fixture
-def world(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[tuple[LabellingService, Path]]:
+def world(tmp_path: Path) -> Iterator[tuple[LabellingService, Path]]:
     _dump(
         tmp_path,
         "https://boards.example-ats.com/acme/jobs/1",
         CAPTCHA_PAGE,
-        monkeypatch,
     )
-    _dump(tmp_path, "https://careers.globex.example/jobs/42", JOB_PAGE, monkeypatch)
+    _dump(tmp_path, "https://careers.globex.example/jobs/42", JOB_PAGE)
     store = JsonlAnnotationStore(tmp_path / "annotations")
     source = DetectorSampleSource(
         tmp_path / "detector_samples", tmp_path / "annotations" / "_view"
