@@ -79,7 +79,28 @@ pretending to run without one.
 
 ## Install
 
-AA is **not yet on PyPI**. Install from a source checkout:
+The easiest way. Nothing needs to be installed first, and no administrator
+rights are needed:
+
+1. On this page, click the green **Code** button, then **Download ZIP**.
+2. Unzip it (on Windows: right-click the ZIP, then **Extract All…**).
+3. Open the unzipped folder and run the installer for your computer:
+
+| Your computer | What to do |
+| --- | --- |
+| **Windows** | Double-click `INSTALL-WINDOWS.bat`. If a blue "Windows protected your PC" box appears, click **More info**, then **Run anyway**. |
+| **macOS** | Double-click `INSTALL-MAC.command`. If macOS says it cannot be opened, open **System Settings → Privacy & Security** and click **Open Anyway**. Or open Terminal, type `sh ` (with a space), drag the file into the window and press Return. |
+| **Linux** | Open a terminal in the folder and run `sh INSTALL-LINUX.sh` |
+
+4. The installer shows what it will download (up to about 125 MB) and where it
+   goes (one folder, `.auto_apply`, in your home folder), then asks. Type `y`
+   and press Enter. When it finishes it offers to start AutoApply.
+
+Afterwards the downloaded folder is no longer needed and can be deleted.
+To remove AutoApply completely, see
+[Uninstalling](packages/auto_apply/docs/user_guide/uninstalling.md).
+
+For development, AA is **not yet on PyPI**. Work from a source checkout:
 
 ```bash
 git clone https://github.com/Liebmann5/AA.git

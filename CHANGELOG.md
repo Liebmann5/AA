@@ -22,6 +22,13 @@ from its first tag onward.
 
 ### Added
 
+- **Download-and-double-click install.** `INSTALL-WINDOWS.bat`,
+  `INSTALL-MAC.command` and `INSTALL-LINUX.sh` at the top of the repository
+  run the bootstrap from an extracted ZIP, with a plain-language plan, a
+  shortcut, and an offer to start AutoApply. Run from an extracted download,
+  `install.ps1` and `install.sh` now copy that tree instead of requiring a
+  release asset that does not yet exist.
+
 - **The challenge verdict and the apply route (item 12).** Whether a page is
   a human-verification challenge or a login wall is now decided by one
   structural predicate (`domain/services/challenge_assessment.py`) — never by
@@ -204,6 +211,39 @@ from its first tag onward.
   other jurisdictions; it names the generic good-faith range standard.
 
 ### Fixed
+
+- **`install.ps1` failed to parse on every stock Windows PC.** Windows
+  PowerShell 5.1 reads a BOM-less script as ANSI, and the script's em dashes
+  became curly quotes that ended strings early. All installer files are now
+  pure ASCII, pinned by `tests/architecture/test_installer_portability.py`,
+  and CI runs the real install, a start and an uninstall on all three
+  operating systems, using Windows PowerShell 5.1 on Windows.
+- **Which Python AA runs on is now decided, not left to chance.** uv used
+  whatever Python it met first (on Linux, a system Python without tkinter, so
+  the window could not open). `python_choice.py` probes every Python on the
+  computer and uses a suitable one as found (recorded pre-existing, never
+  touched by uninstall); AA downloads its own only when none fits, and never
+  at run time without the install's consent. On a Mac without Apple's
+  Command Line Tools, /usr/bin/python3 is never run (it opens Apple's
+  install dialog). A repair keeps the Python the install chose.
+- **End users received the developer tools.** Every sync installed the dev
+  group (pytest, mypy, ruff, mkdocs); and each optional extra's sync removed
+  the one before it. Syncs are now `--no-dev --inexact`.
+- **Windows uninstall left AA's Python and environment behind on an ordinary
+  PC.** The finisher ran on an interpreter inside the folder it was deleting,
+  and Windows never deletes a running program; the reboot fallback needs
+  administrator rights. The Windows finisher is now Windows PowerShell,
+  outside every AA root. The uninstall report also waits for Enter when run
+  interactively, and the .bat launcher no longer prints "The batch file
+  cannot be found" after uninstalling itself.
+- **Re-running a newer download's installer kept the old files.** Installing
+  from a download or `--archive` now replaces the previous AutoApply files
+  (keeping and repairing the environment); the installer refuses while
+  AutoApply is running.
+- **The installer's capability report described the installer's own Python**,
+  not AA's environment; it now runs through AA's launcher.
+- **Slow or refused downloads on older Windows.** The bootstrap turns off the
+  per-chunk progress bar and enables TLS 1.2.
 
 - **The CAPTCHA verdict was wrong on most of the pages it flagged.** A
   substring search recorded any page containing the text `recaptcha` —

@@ -9,3 +9,5 @@
 # Explicitly declare files that will always have CRLF endings.
 # This is crucial for batch scripts to work on Windows.
 *.bat text eol=crlf
+# Double-click installers. .command and .sh must be LF to run at all.
+*.command text eol=lf

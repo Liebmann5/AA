@@ -1,8 +1,8 @@
 #!/bin/sh
-# install.sh — AutoApply bootstrap for macOS and Linux.
+# install.sh - AutoApply bootstrap for macOS and Linux.
 #
 # One command, no prerequisites beyond what the OS ships (curl, tar, a sha256
-# tool). No git, no compiler (wheels only — macOS never needs the Command
+# tool). No git, no compiler (wheels only - macOS never needs the Command
 # Line Tools for this path), no admin rights, nothing system-wide.
 #
 # What it does, in order:
@@ -10,16 +10,22 @@
 #   2. downloads the pinned uv binary, verifies its SHA-256 against
 #      install_pins.txt, extracts it into <root>/uv
 #   3. points UV_PYTHON_INSTALL_DIR / UV_CACHE_DIR into the root
-#   4. fetches the AA source archive (release asset, or --archive for
-#      offline/USB) and extracts it into <root>/app
+#   4. gets the AA source into <root>/app: --archive FILE_OR_URL first; else
+#      the folder this script sits in, when it is inside an AA download or
+#      checkout (someone extracted the ZIP and double-clicked INSTALL-MAC.command
+#      or ran INSTALL-LINUX.sh) - copied, no download; else the latest release
+#      asset, verified against SHA256SUMS.txt
 #   5. hands over to AA's own --install (all further logic lives in Python)
 #
 # Everything it downloads is shown with sizes and confirmed first. The uv and
 # Python executables are checksum-verified; the source archive is verified
-# against the release's SHA256SUMS.txt when available — that detects
+# against the release's SHA256SUMS.txt when available - that detects
 # corruption, not compromise, and this script says so rather than implying
 # otherwise. Read this script and install_pins.txt before piping it; that is
 # the trust model, stated plainly.
+#
+# This file is kept pure ASCII so it reads the same in every locale and
+# terminal (tests/architecture/test_installer_portability.py).
 #
 # Offline / USB: install.sh --root /media/usb/AutoApply --archive AA-src.tar.gz --offline
 # One prepared copy per OS: uv binaries and Python builds are per-platform.
@@ -32,10 +38,11 @@ ALLOW_UNVERIFIED_SOURCE=0
 ARCHIVE=""
 EXTRAS=""
 SHORTCUT=0
+PYTHON_CHOICE=""
 PINS_REF="main"   # release process pins this to the tag being released
 
 usage() {
-    echo "usage: install.sh [--root DIR] [--yes] [--offline] [--archive FILE_OR_URL] [--extra NAME]... [--shortcut]"
+    echo "usage: install.sh [--root DIR] [--yes] [--offline] [--archive FILE_OR_URL] [--extra NAME]... [--shortcut] [--python managed|PATH]"
 }
 
 while [ $# -gt 0 ]; do
@@ -47,6 +54,7 @@ while [ $# -gt 0 ]; do
         --extra) EXTRAS="$EXTRAS $2"; shift 2 ;;
         --shortcut) SHORTCUT=1; shift ;;
         --allow-unverified-source) ALLOW_UNVERIFIED_SOURCE=1; shift ;;
+        --python) PYTHON_CHOICE="$2"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -54,9 +62,18 @@ done
 
 die() { echo "install: $*" >&2; exit 1; }
 
-# ── pins ────────────────────────────────────────────────────────────────────
+# -- pins --------------------------------------------------------------------
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || echo ".")
 PINS_FILE="$SCRIPT_DIR/install_pins.txt"
+
+# A local AA tree is used only when this script runs from a file inside one.
+LOCAL_REPO=""
+if [ -z "$ARCHIVE" ] && [ -f "$SCRIPT_DIR/src/auto_apply/__main__.py" ] && [ -f "$SCRIPT_DIR/../../pyproject.toml" ]; then
+    LOCAL_REPO=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+    case "$ROOT/" in
+        "$LOCAL_REPO"/*) echo "install: the install folder ($ROOT) is inside the downloaded AutoApply folder ($LOCAL_REPO). Choose --root outside it." >&2; exit 1 ;;
+    esac
+fi
 
 fetch() {
     # fetch URL DEST
@@ -65,7 +82,7 @@ fetch() {
     elif command -v wget >/dev/null 2>&1; then
         wget -q -O "$2" "$1"
     else
-        die "neither curl nor wget found — one of them is required (both ship with macOS and virtually all Linux)"
+        die "neither curl nor wget found - one of them is required (both ship with macOS and virtually all Linux)"
     fi
 }
 
@@ -90,7 +107,7 @@ SIZE_ARCHIVE_MB=$(pin SIZE_ARCHIVE_MB)
 SIZE_DEPS_CORE_MB=$(pin SIZE_DEPS_CORE_MB)
 [ -n "$UV_VERSION" ] && [ -n "$PYTHON_VERSION" ] || die "install_pins.txt is missing UV_VERSION or PYTHON_VERSION"
 
-# ── platform detection ──────────────────────────────────────────────────────
+# -- platform detection ------------------------------------------------------
 OS=$(uname -s)
 ARCH=$(uname -m)
 case "$OS" in
@@ -111,7 +128,7 @@ esac
 CHECKSUM_KEY="UV_SHA256_$(printf '%s' "$TARGET" | tr 'a-z-' 'A-Z_')"
 EXPECTED=$(pin "$CHECKSUM_KEY")
 
-# ── the plan, then consent ─────────────────────────────────────────────────
+# -- the plan, then consent -------------------------------------------------
 cat <<EOF
 
 AutoApply will be installed into: $ROOT
@@ -120,18 +137,32 @@ Nothing is installed system-wide; no administrator rights are used.
 Downloads needed:
   uv $UV_VERSION (the installer/runtime)        ~${SIZE_UV_MB} MB
   Python $PYTHON_VERSION (via uv, into the root)   ~${SIZE_PYTHON_MB} MB
-  AutoApply source archive                      ~${SIZE_ARCHIVE_MB} MB
-  Core dependencies (resolved by uv)            ~${SIZE_DEPS_CORE_MB} MB
-Your browser is detected later, never installed.
-
+    - only if this computer has no suitable Python; one already installed is
+      used as it is, and AutoApply never changes or removes it.
 EOF
+if [ -n "$LOCAL_REPO" ]; then
+    echo "  AutoApply source                              none - copied from $LOCAL_REPO"
+else
+    echo "  AutoApply source archive                      ~${SIZE_ARCHIVE_MB} MB"
+fi
+echo "  Core dependencies (resolved by uv)            ~${SIZE_DEPS_CORE_MB} MB"
+echo "Your browser is detected later, never installed."
+echo "If AutoApply is already installed and running, close it first."
+if [ "$SHORTCUT" = 1 ]; then
+    if [ "$OS" = Darwin ]; then
+        echo "A shortcut named AutoApply is added to your Desktop (uninstall removes it)."
+    else
+        echo "An AutoApply entry is added to your applications menu (uninstall removes it)."
+    fi
+fi
+echo
 if [ "$OFFLINE" = 1 ]; then
-    echo "Offline mode: no downloads — the root must be pre-populated."
+    echo "Offline mode: no downloads - the root must be pre-populated."
 fi
 if [ "$YES" != 1 ]; then
     printf "Proceed? [y/N] "
     if ! read -r answer < /dev/tty 2>/dev/null; then
-        die "no terminal to ask for confirmation — re-run with --yes"
+        die "no terminal to ask for confirmation - re-run with --yes"
     fi
     case "$answer" in
         y|Y|yes|YES) ;;
@@ -141,15 +172,15 @@ fi
 
 mkdir -p "$ROOT/uv" "$ROOT/tmp" "$ROOT/app"
 
-# ── uv, checksum-verified ──────────────────────────────────────────────────
+# -- uv, checksum-verified --------------------------------------------------
 UV_BIN="$ROOT/uv/uv"
 if [ -x "$UV_BIN" ] && "$UV_BIN" --version 2>/dev/null | grep -q "$UV_VERSION"; then
-    echo "uv $UV_VERSION already present — skipping."
+    echo "uv $UV_VERSION already present - skipping."
 else
-    [ "$OFFLINE" = 1 ] && die "offline mode but no usable uv at $UV_BIN — pre-populate the root or re-run online"
+    [ "$OFFLINE" = 1 ] && die "offline mode but no usable uv at $UV_BIN - pre-populate the root or re-run online"
     case "$EXPECTED" in
         REPLACE_*|"")
-            die "uv's SHA-256 is not pinned in install_pins.txt ($CHECKSUM_KEY) — the release process fills this from the published uv release. Refusing to run an unverifiable binary." ;;
+            die "uv's SHA-256 is not pinned in install_pins.txt ($CHECKSUM_KEY) - the release process fills this from the published uv release. Refusing to run an unverifiable binary." ;;
     esac
     ARCHIVE_FILE="$ROOT/tmp/uv-${TARGET}.tar.gz"
     echo "Downloading uv $UV_VERSION..."
@@ -163,7 +194,7 @@ else
     fi
     if [ "$ACTUAL" != "$EXPECTED" ]; then
         rm -f "$ARCHIVE_FILE"
-        die "checksum mismatch for uv $UV_VERSION (expected $EXPECTED, got $ACTUAL). The download was deleted; nothing was installed. This is the safety property working — do not bypass it."
+        die "checksum mismatch for uv $UV_VERSION (expected $EXPECTED, got $ACTUAL). The download was deleted; nothing was installed. This is the safety property working - do not bypass it."
     fi
     tar -xzf "$ARCHIVE_FILE" -C "$ROOT/uv"
     if [ ! -f "$UV_BIN" ]; then
@@ -176,17 +207,72 @@ else
 fi
 
 if ! "$UV_BIN" --version >/dev/null 2>&1; then
-    die "cannot execute $UV_BIN — is this filesystem mounted noexec (common on USB drives)? Try --root on a normal filesystem."
+    die "cannot execute $UV_BIN - is this filesystem mounted noexec (common on USB drives)? Try --root on a normal filesystem."
 fi
 
 export UV_PYTHON_INSTALL_DIR="$ROOT/python"
 export UV_CACHE_DIR="$ROOT/uv-cache"
 export UV_NO_MODIFY_PATH=1
 export UV_UNMANAGED_INSTALL="$ROOT/uv"
+# The installer itself runs from a throwaway environment in the root's tmp
+# folder, so AA's own environment (app/.venv) can be built on whichever
+# Python AA chooses (python_choice.py) without replacing the interpreter
+# that is running the installer. Inherited settings that would redirect it
+# are cleared.
+export UV_PROJECT_ENVIRONMENT="$ROOT/tmp/bootstrap-env"
+unset UV_PYTHON UV_PYTHON_PREFERENCE VIRTUAL_ENV
+# macOS: /usr/bin/python3 is a stub until Apple's Command Line Tools are
+# installed, and running it opens Apple's install dialog. Without the tools,
+# look only at Pythons uv manages, so that dialog never appears.
+if [ "$OS" = Darwin ] && ! xcode-select -p >/dev/null 2>&1; then
+    export UV_PYTHON_PREFERENCE=only-managed
+fi
+# Any Python 3.10+ already on the computer can run the installer. Only when
+# there is none does uv download one - the pinned version, so the same
+# download also serves as AA's own Python and is never fetched twice.
+if ! "$UV_BIN" python find ">=3.10" >/dev/null 2>&1; then
+    [ "$OFFLINE" = 1 ] && die "offline mode and no Python 3.10+ on this computer or in $ROOT/python"
+    export UV_PYTHON="$PYTHON_VERSION"
+fi
 
-# ── the source archive ─────────────────────────────────────────────────────
+# -- the source archive -----------------------------------------------------
+# Installing from a download or an archive you passed means "this version":
+# the previous AutoApply files are replaced (its environment, .venv, is kept
+# and repaired), so running a newer download's installer upgrades.
+if { [ -n "$LOCAL_REPO" ] || [ -n "$ARCHIVE" ]; } && [ -f "$ROOT/app/pyproject.toml" ]; then
+    echo "Replacing the previous AutoApply files with this version..."
+    find "$ROOT/app" -mindepth 1 -maxdepth 1 ! -name .venv -exec rm -rf {} +
+fi
 if [ -f "$ROOT/app/pyproject.toml" ]; then
-    echo "AA source already present — skipping."
+    echo "AA source already present - skipping."
+elif [ -n "$LOCAL_REPO" ]; then
+    echo "Copying AutoApply from $LOCAL_REPO..."
+    # A git checkout: copy exactly what git tracks plus new files it does not
+    # ignore - never ignored local data (dev_data profiles, logs, caches,
+    # .venv). A ZIP download has no .git and holds only repository files.
+    # git is used only if it really works: on a Mac without the Command Line
+    # Tools, /usr/bin/git is the same install-dialog stub as python3.
+    GIT_OK=0
+    if [ -d "$LOCAL_REPO/.git" ] && command -v git >/dev/null 2>&1; then
+        if [ "$OS" != Darwin ] || xcode-select -p >/dev/null 2>&1; then
+            git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 && GIT_OK=1
+        fi
+    fi
+    if [ "$GIT_OK" = 1 ]; then
+        # Files deleted but not yet committed are still listed; tar skips
+        # them (its complaint is silenced, the copy is checked below).
+        (cd "$LOCAL_REPO" && git ls-files -z --cached --others --exclude-standard \
+            | tar --null -T - -cf - 2>/dev/null) | tar -xf - -C "$ROOT/app" \
+            || die "could not copy the AutoApply files into $ROOT/app"
+    else
+        (cd "$LOCAL_REPO" && tar --exclude=.git --exclude=.venv --exclude=__pycache__ \
+            --exclude=.mypy_cache --exclude=.pytest_cache --exclude=.ruff_cache \
+            --exclude=.hypothesis --exclude=node_modules --exclude=dev_data -cf - .) \
+            | tar -xf - -C "$ROOT/app" \
+            || die "could not copy the AutoApply files into $ROOT/app"
+    fi
+    [ -f "$ROOT/app/packages/auto_apply/src/auto_apply/__main__.py" ] \
+        || die "the copy into $ROOT/app is incomplete"
 elif [ -n "$ARCHIVE" ]; then
     case "$ARCHIVE" in
         http://*|https://*)
@@ -199,39 +285,40 @@ elif [ -n "$ARCHIVE" ]; then
     tar -xzf "$ROOT/tmp/aa-src.tar.gz" -C "$ROOT/app" --strip-components=1
     rm -f "$ROOT/tmp/aa-src.tar.gz"
 else
-    [ "$OFFLINE" = 1 ] && die "offline mode but no source at $ROOT/app — pass --archive AA-src.tar.gz"
+    [ "$OFFLINE" = 1 ] && die "offline mode but no source at $ROOT/app - pass --archive AA-src.tar.gz"
     ASSET_URL="https://github.com/${AA_RELEASE_REPO}/releases/latest/download/${AA_ARCHIVE_ASSET}"
     echo "Downloading AutoApply source (release asset)..."
     if ! fetch "$ASSET_URL" "$ROOT/tmp/aa-src.tar.gz"; then
-        die "no source archive at $ASSET_URL (is there a release yet?). Use --archive AA-src.tar.gz for a local copy."
+        die "no source archive at $ASSET_URL (is there a release yet?). Download the ZIP from https://github.com/${AA_RELEASE_REPO}, extract it and run INSTALL-MAC.command or INSTALL-LINUX.sh, or use --archive AA-src.tar.gz."
     fi
     # Verify against the release's checksum file. Ruled (D16): an
-    # unverified source archive is NOT acceptable by default — this
+    # unverified source archive is NOT acceptable by default - this
     # installer refuses an unverified uv, and the source is no different.
     if fetch "https://github.com/${AA_RELEASE_REPO}/releases/latest/download/${AA_SUMS_ASSET}" "$ROOT/tmp/${AA_SUMS_ASSET}" 2>/dev/null; then
         SUM=$(grep " ${AA_ARCHIVE_ASSET}\$" "$ROOT/tmp/${AA_SUMS_ASSET}" | awk '{print $1}')
         if [ -n "$SUM" ]; then
             if command -v sha256sum >/dev/null 2>&1; then GOT=$(sha256sum "$ROOT/tmp/aa-src.tar.gz" | awk '{print $1}'); else GOT=$(shasum -a 256 "$ROOT/tmp/aa-src.tar.gz" | awk '{print $1}'); fi
-            [ "$GOT" = "$SUM" ] || { rm -f "$ROOT/tmp/aa-src.tar.gz"; die "source archive checksum mismatch — deleted, nothing installed."; }
+            [ "$GOT" = "$SUM" ] || { rm -f "$ROOT/tmp/aa-src.tar.gz"; die "source archive checksum mismatch - deleted, nothing installed."; }
             echo "Source archive checksum verified."
         fi
     elif [ "$ALLOW_UNVERIFIED_SOURCE" = 1 ]; then
-        echo "WARNING: no ${AA_SUMS_ASSET} in the release — the archive is authenticated by HTTPS only (uv and Python ARE checksum-verified)."
+        echo "WARNING: no ${AA_SUMS_ASSET} in the release - the archive is authenticated by HTTPS only (uv and Python ARE checksum-verified)."
     else
         rm -f "$ROOT/tmp/aa-src.tar.gz"
-        die "the release offers no ${AA_SUMS_ASSET} — refusing an unverifiable source archive. Re-run with --allow-unverified-source to accept HTTPS-only verification, or use --archive AA-src.tar.gz for a local copy."
+        die "the release offers no ${AA_SUMS_ASSET} - refusing an unverifiable source archive. Re-run with --allow-unverified-source to accept HTTPS-only verification, or use --archive AA-src.tar.gz for a local copy."
     fi
     tar -xzf "$ROOT/tmp/aa-src.tar.gz" -C "$ROOT/app" --strip-components=1
     rm -f "$ROOT/tmp/aa-src.tar.gz" "$ROOT/tmp/SHA256SUMS.txt"
 fi
 
-# ── hand over to AA's own installer (all further logic lives in Python) ────
+# -- hand over to AA's own installer (all further logic lives in Python) ----
 export AA_MANAGED_ROOT="$ROOT"
 export AA_DATA_DIR="$ROOT/data"
 
 set -- --root "$ROOT" --yes
 [ "$OFFLINE" = 1 ] && set -- "$@" --offline
 [ "$SHORTCUT" = 1 ] && set -- "$@" --shortcut
+[ -n "$PYTHON_CHOICE" ] && set -- "$@" --python "$PYTHON_CHOICE"
 for extra in $EXTRAS; do
     set -- "$@" --extra "$extra"
 done
@@ -241,16 +328,21 @@ UV_RUN_ARGS=""
 # The bootstrap asked for consent above and it covers this whole flow, so
 # --yes is passed on deliberately (see the plan printed before the download).
 # Arguments are built with set -- (D14, measured): a root containing spaces
-# — /Users/Jane Doe/.auto_apply — split into two arguments before.
+# - /Users/Jane Doe/.auto_apply - split into two arguments before.
 # shellcheck disable=SC2086
-"$UV_BIN" run $UV_RUN_ARGS --project "$ROOT/app" --package auto_apply \
+"$UV_BIN" run --no-dev $UV_RUN_ARGS --project "$ROOT/app" --package auto_apply \
     python -m auto_apply --install "$@"
 
 cat <<EOF
 
 AutoApply is installed.
+EOF
+if [ -n "$LOCAL_REPO" ]; then
+    echo "You can now delete the downloaded folder ($LOCAL_REPO) - AutoApply no longer needs it."
+fi
+cat <<EOF
 Start it with: $ROOT/bin/auto-apply        (GUI)
                $ROOT/bin/auto-apply --cli  (terminal)
-Add $ROOT/bin to your PATH if you like — nothing requires it.
+Add $ROOT/bin to your PATH if you like - nothing requires it.
 To remove everything: $ROOT/bin/auto-apply --uninstall
 EOF

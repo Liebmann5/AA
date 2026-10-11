@@ -36,6 +36,7 @@ LIFECYCLE_FILES: tuple[str, ...] = (
     "application/services/install/bootstrap_pins.py",
     "application/services/install/manifest.py",
     "application/services/install/engine.py",
+    "application/services/install/python_choice.py",
     "application/services/lifecycle_wording.py",
     "adapters/primary/cli/lifecycle_screen.py",
     "adapters/primary/gui/lifecycle_window.py",
