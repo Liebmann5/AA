@@ -109,6 +109,9 @@ def _pre_import_parse() -> None:
         # a verify-after-delete find it again. This is the only suppression
         # point that runs before any auto_apply import.
         os.environ["AA_NO_CREATE_DIRS"] = "1"
+        # Nor write bytecode: with PYTHONPYCACHEPREFIX inside the data home,
+        # any module imported after the delete would recreate the folder.
+        sys.dont_write_bytecode = True
 
     if pre_args.portable:
         portable_data = Path.cwd() / "data"

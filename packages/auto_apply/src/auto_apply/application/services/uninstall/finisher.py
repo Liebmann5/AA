@@ -291,7 +291,12 @@ def launch_detached(paths: list[Path], allowed_roots: tuple[Path, ...]) -> Path:
         )
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen(cmd, cwd=str(staging), **kwargs)
+    # The finisher must write nothing into the folders it is deleting: no
+    # bytecode (the launcher's PYTHONPYCACHEPREFIX points inside the root).
+    child_env = dict(os.environ)
+    child_env.pop("PYTHONPYCACHEPREFIX", None)
+    child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    subprocess.Popen(cmd, cwd=str(staging), env=child_env, **kwargs)
     return staging
 
 

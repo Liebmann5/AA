@@ -517,3 +517,49 @@ def test_bat_launcher_ends_on_its_run_line(tmp_path: Path) -> None:
     bat = (env.root / "bin" / "auto-apply.bat").read_bytes().decode("ascii")
     run_line = next(line for line in bat.split("\r\n") if "uv.exe" in line and " run " in line)
     assert run_line.endswith("%* & exit /b")
+
+
+def test_a_data_folder_windows_cannot_remove_yet_is_left_to_the_finisher(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """TEETH (measured on windows-latest, 2026-10-11): every file in the data
+    folder was deleted, but the empty folder itself could not be removed at
+    that instant, and the uninstall failed - although the detached finisher
+    deletes the whole root, data included, once AA exits. A data folder
+    inside a finisher-owned root is now reported as handed over, not failed."""
+    import auto_apply.application.services.uninstall.engine as uninstall_engine
+
+    payload = _uv_archive_bytes()
+    env = _make_env(tmp_path, payload)
+    InstallEngine(env).execute(InstallEngine(env).build_plan())
+    data = env.root / "data"
+    real_rmdir = Path.rmdir
+
+    def stubborn(self: Path) -> None:
+        if self == data:
+            raise PermissionError(13, "The directory is not empty (delete pending)")
+        real_rmdir(self)
+
+    monkeypatch.setattr(Path, "rmdir", stubborn)
+    monkeypatch.setattr(uninstall_engine, "_RMDIR_PAUSE_S", 0.0)
+    launched: list[tuple] = []
+    monkeypatch.setattr(
+        "auto_apply.application.services.uninstall.engine.launch_detached",
+        _record_launch(launched, tmp_path / "staging"),
+    )
+    uninstall_env = _uninstall_env(env.root, tmp_path)
+    report = UninstallEngine(uninstall_env).execute(
+        UninstallEngine(uninstall_env).build_plan(), UninstallDecision(confirm=True)
+    )
+    assert report.clean, (report.failed, report.leftovers)
+    assert any(str(data) == k.path and "finisher" in k.reason for k in report.kept)
+    assert launched and env.root in launched[0][0]
+
+
+def test_bat_launcher_resolves_its_root(tmp_path: Path) -> None:
+    """GUARD: %~dp0.. left "bin\\.." in every path the uninstall report showed."""
+    payload = _uv_archive_bytes()
+    env = _make_env(tmp_path, payload)
+    InstallEngine(env).execute(InstallEngine(env).build_plan())
+    bat = (env.root / "bin" / "auto-apply.bat").read_bytes().decode("ascii")
+    assert 'for %%I in ("%~dp0..") do set "AA_ROOT=%%~fI"' in bat

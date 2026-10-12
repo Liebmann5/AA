@@ -9,7 +9,10 @@ properties; CI's installers job runs it for real on windows-latest.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from auto_apply.application.services.uninstall.finisher import windows_finisher_script
 
@@ -75,3 +78,23 @@ def test_a_result_file_is_written_only_when_something_remains() -> None:
     assert "if ($left.Count -gt 0)" in script
     assert "aa_uninstall_result.json" in script
     assert "Remove-Item -LiteralPath $staging" in script
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the Python finisher is the non-Windows one")
+def test_the_python_finisher_writes_no_bytecode(tmp_path: Path, monkeypatch) -> None:
+    """GUARD: the finisher deletes the root that PYTHONPYCACHEPREFIX points
+    into; bytecode written mid-delete would recreate it."""
+    from auto_apply.application.services.uninstall import finisher
+
+    seen: dict = {}
+
+    def fake_popen(cmd, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(tmp_path / "root" / "data" / "cache" / "pycache"))
+    monkeypatch.setattr(finisher.subprocess, "Popen", fake_popen)
+    staging = finisher.launch_detached([tmp_path / "root"], (tmp_path / "root",))
+    env = seen["env"]
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert "PYTHONPYCACHEPREFIX" not in env
+    assert seen["cwd"] == str(staging)

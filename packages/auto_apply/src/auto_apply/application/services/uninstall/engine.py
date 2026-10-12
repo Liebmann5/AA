@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -91,6 +92,11 @@ DATA_ROOT_KNOWN_ENTRIES: frozenset[str] = frozenset(
 #: data-root rules, not this set). The folder or drive the exe sits in is
 #: NEVER AA-created and never a deletion target (D1).
 FROZEN_KNOWN_ENTRIES: frozenset[str] = frozenset({"AutoApply.exe", "_internal"})
+
+
+#: The data home's final, empty-folder removal: attempts x pause (seconds).
+_RMDIR_ATTEMPTS = 20
+_RMDIR_PAUSE_S = 0.25
 
 
 @dataclass
@@ -454,6 +460,7 @@ class UninstallEngine:
                 and (item.path / "install.json").exists()
             ):
                 install_targets.append(item.path)  # last: removes the emptied root too
+        self._finisher_targets = list(install_targets)
         if install_targets:
             staging = launch_detached(install_targets, tuple(install_targets))
             report.kept.append(
@@ -803,14 +810,29 @@ class UninstallEngine:
             return
         if any(c.name != CREATION_MARKER_NAME for c in root.iterdir()):
             return  # kept or failed items remain; the marker stays for the next run
-        try:
-            (root / CREATION_MARKER_NAME).unlink(missing_ok=True)
-            root.rmdir()
-            report.removed.append(str(root))
-        except OSError:
-            pass  # verify reports what is still there
+        (root / CREATION_MARKER_NAME).unlink(missing_ok=True)
+        # Windows: a just-deleted file another program still has open (the
+        # antivirus scanning it, the search indexer) stays listed until that
+        # program lets go, so the empty folder cannot be removed for a moment.
+        # Retry briefly; verify reports anything that is still there after.
+        for attempt in range(_RMDIR_ATTEMPTS):
+            try:
+                root.rmdir()
+                report.removed.append(str(root))
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                if attempt + 1 < _RMDIR_ATTEMPTS:
+                    time.sleep(_RMDIR_PAUSE_S)
 
     # ── verify ───────────────────────────────────────────────────────────
+
+    def _finisher_owns(self, path: Path) -> bool:
+        return any(
+            self._same(path, t) or is_within(path, t, realpath=self.env.realpath)
+            for t in getattr(self, "_finisher_targets", [])
+        )
 
     def _verify(self, plan: UninstallPlan, report: UninstallReport) -> None:
         """Re-scan everything the plan named. Anything still present that was
@@ -824,6 +846,14 @@ class UninstallEngine:
             if not path.exists() and not path.is_symlink():
                 continue
             if str(path) in intentional:
+                continue
+            if self._finisher_owns(path):
+                # Inside a folder the detached finisher deletes after AA
+                # exits: whatever AA could not remove while running is
+                # removed then (CI's installer job proves it).
+                report.kept.append(
+                    Leftover(str(path), "removed after AutoApply exits, by the detached finisher")
+                )
                 continue
             if self._same(path, self.env.data_root) and (
                 report.research_action == "keep-in-place" or report.failed
