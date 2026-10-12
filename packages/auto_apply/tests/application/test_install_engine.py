@@ -190,6 +190,8 @@ def test_launcher_sets_every_containment_variable(tmp_path: Path) -> None:
         "SE_AVOID_STATS",
         "PLAYWRIGHT_BROWSERS_PATH",
         "HF_HOME",
+        "PYTHONPYCACHEPREFIX",
+        "UV_PYTHON_DOWNLOADS",
     ):
         assert f"export {var}=" in sh, var
         assert f'set "{var}=' in bat, var
@@ -426,3 +428,138 @@ def _uninstall_env(root: Path, tmp_path: Path) -> UninstallEnvironment:
         browser_profile_dir=data / "cache" / "chromium_profile",
         home=tmp_path / "nowhere",
     )
+
+
+# ── the Python AA builds on (python_choice.py) ──────────────────────────────
+
+
+class HostPythonRunner(FakeRunner):
+    """uv sees one host Python, which passes the probe (with tkinter)."""
+
+    def __init__(self, host: Path) -> None:
+        super().__init__()
+        self.host = host
+
+    def __call__(self, cmd: list[str], **kwargs):
+        if "python" in cmd and "list" in cmd:
+            self.calls.append((list(cmd), dict(kwargs)))
+            row = {"path": str(self.host), "implementation": "cpython", "variant": "default"}
+            return SimpleNamespace(returncode=0, stdout=json.dumps([row]), stderr="")
+        if cmd and cmd[0] == str(self.host):
+            self.calls.append((list(cmd), dict(kwargs)))
+            probe = {"v": [3, 12, 7], "impl": "CPython", "bits": 64, "ssl": True, "sqlite3": True, "tkinter": True}
+            return SimpleNamespace(returncode=0, stdout=json.dumps(probe), stderr="")
+        return super().__call__(cmd, **kwargs)
+
+
+def test_a_host_python_is_used_as_found_and_survives_uninstall(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """TEETH: with a suitable Python on the computer, AA downloads none,
+    builds on it, records it pre-existing, and a full uninstall leaves it
+    untouched. RED before: every install downloaded and used AA's own."""
+    payload = _uv_archive_bytes()
+    host = tmp_path / "system" / "bin" / "python3.12"
+    host.parent.mkdir(parents=True)
+    host.write_text("the person's own Python", encoding="utf-8")
+    env = _make_env(tmp_path, payload, runner=HostPythonRunner(host))
+    engine = InstallEngine(env)
+    plan = engine.build_plan()
+    # uv is not there yet, so the plan can only promise "if needed" ...
+    assert all("only if" in d.what for d in plan.downloads if "Python" in d.what)
+    engine.execute(plan)
+    # ... and nothing was fetched: once uv could look, the host Python fitted.
+    assert not any(c[1:3] == ["python", "install"] for c, _ in env.runner.calls)
+    assert not any("Python" in d.what for d in engine.build_plan().downloads)
+    sync_envs = [kw.get("env") or {} for c, kw in env.runner.calls if "sync" in c]
+    assert sync_envs and all(e.get("UV_PYTHON") == str(host) for e in sync_envs)
+    sh = (env.root / "bin" / "auto-apply").read_text(encoding="utf-8")
+    bat = (env.root / "bin" / "auto-apply.bat").read_bytes().decode("utf-8")
+    assert str(host) in sh and "longer on this computer" in sh
+    assert "goto aa_python_gone" in bat
+    manifest = load_manifest(env.root)
+    assert manifest is not None and manifest.components["python"] == "preexisting"
+
+    launched: list[tuple] = []
+    monkeypatch.setattr(
+        "auto_apply.application.services.uninstall.engine.launch_detached",
+        _record_launch(launched, tmp_path / "staging"),
+    )
+    uninstall_env = _uninstall_env(env.root, tmp_path)
+    UninstallEngine(uninstall_env).execute(
+        UninstallEngine(uninstall_env).build_plan(), UninstallDecision(confirm=True)
+    )
+    targets = [p for paths, _ in launched for p in paths]
+    assert targets and all(str(host) != str(p) and host.parent not in p.parents for p in targets)
+    assert host.read_text(encoding="utf-8") == "the person's own Python"
+
+
+def test_syncs_never_install_developer_tools_or_drop_extras(tmp_path: Path) -> None:
+    """TEETH: pytest/mypy/ruff/mkdocs (the dev group) never reach a user's
+    computer, and syncing extra B no longer removes extra A (an exact sync
+    per extra kept only the last)."""
+    payload = _uv_archive_bytes()
+    env = _make_env(tmp_path, payload, extras=("nlp", "research"))
+    InstallEngine(env).execute(InstallEngine(env).build_plan())
+    syncs = [c for c, _ in env.runner.calls if "sync" in c]
+    assert len(syncs) == 3
+    assert all("--no-dev" in c and "--inexact" in c for c in syncs)
+    sh = (env.root / "bin" / "auto-apply").read_text(encoding="utf-8")
+    assert " run --no-dev " in sh
+
+
+def test_bat_launcher_ends_on_its_run_line(tmp_path: Path) -> None:
+    """GUARD: uninstall deletes the running .bat; cmd.exe would then print
+    "The batch file cannot be found." unless the run line exits itself."""
+    payload = _uv_archive_bytes()
+    env = _make_env(tmp_path, payload)
+    InstallEngine(env).execute(InstallEngine(env).build_plan())
+    bat = (env.root / "bin" / "auto-apply.bat").read_bytes().decode("ascii")
+    run_line = next(line for line in bat.split("\r\n") if "uv.exe" in line and " run " in line)
+    assert run_line.endswith("%* & exit /b")
+
+
+def test_a_data_folder_windows_cannot_remove_yet_is_left_to_the_finisher(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """TEETH (measured on windows-latest, 2026-10-11): every file in the data
+    folder was deleted, but the empty folder itself could not be removed at
+    that instant, and the uninstall failed - although the detached finisher
+    deletes the whole root, data included, once AA exits. A data folder
+    inside a finisher-owned root is now reported as handed over, not failed."""
+    import auto_apply.application.services.uninstall.engine as uninstall_engine
+
+    payload = _uv_archive_bytes()
+    env = _make_env(tmp_path, payload)
+    InstallEngine(env).execute(InstallEngine(env).build_plan())
+    data = env.root / "data"
+    real_rmdir = Path.rmdir
+
+    def stubborn(self: Path) -> None:
+        if self == data:
+            raise PermissionError(13, "The directory is not empty (delete pending)")
+        real_rmdir(self)
+
+    monkeypatch.setattr(Path, "rmdir", stubborn)
+    monkeypatch.setattr(uninstall_engine, "_RMDIR_PAUSE_S", 0.0)
+    launched: list[tuple] = []
+    monkeypatch.setattr(
+        "auto_apply.application.services.uninstall.engine.launch_detached",
+        _record_launch(launched, tmp_path / "staging"),
+    )
+    uninstall_env = _uninstall_env(env.root, tmp_path)
+    report = UninstallEngine(uninstall_env).execute(
+        UninstallEngine(uninstall_env).build_plan(), UninstallDecision(confirm=True)
+    )
+    assert report.clean, (report.failed, report.leftovers)
+    assert any(str(data) == k.path and "finisher" in k.reason for k in report.kept)
+    assert launched and env.root in launched[0][0]
+
+
+def test_bat_launcher_resolves_its_root(tmp_path: Path) -> None:
+    """GUARD: %~dp0.. left "bin\\.." in every path the uninstall report showed."""
+    payload = _uv_archive_bytes()
+    env = _make_env(tmp_path, payload)
+    InstallEngine(env).execute(InstallEngine(env).build_plan())
+    bat = (env.root / "bin" / "auto-apply.bat").read_bytes().decode("ascii")
+    assert 'for %%I in ("%~dp0..") do set "AA_ROOT=%%~fI"' in bat

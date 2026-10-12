@@ -1,7 +1,7 @@
 ---
 title: Uninstalling AutoApply
 status: reviewed
-last_verified: 2026-10-06
+last_verified: 2026-10-10
 verified_against: "application/services/uninstall/engine.py + lifecycle surfaces"
 audience: users
 ---
@@ -16,8 +16,16 @@ twice.
 
 === "Windows"
 
-    ```powershell
+    Press the Windows key + R, paste this line and press Enter:
+
+    ```text
     %USERPROFILE%\.auto_apply\bin\auto-apply.bat --uninstall
+    ```
+
+    Or, in PowerShell:
+
+    ```powershell
+    & "$HOME\.auto_apply\bin\auto-apply.bat" --uninstall
     ```
 
 === "macOS / Linux"
@@ -73,4 +81,6 @@ Useful flags: `--dry-run` (show the plan, change nothing), `--yes`
 It cannot remove copies made by backups, OS-level records, or caches other
 programs share (it reports the ones it finds — Selenium, Playwright,
 Hugging Face — and never removes them). A source checkout you installed
-*from* is reported and left alone.
+*from* is reported and left alone. The folder you downloaded and ran
+INSTALL-WINDOWS.bat, INSTALL-MAC.command or INSTALL-LINUX.sh from was
+never part of the install: delete it like any other download.

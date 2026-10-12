@@ -1,10 +1,12 @@
 """The --install engine: create or repair a managed AA install.
 
-One root, everything inside it (the turn-1 ruling): uv, the uv-managed
-Python, the source tree, the environment uv maintains, the launchers, and
-AA's data home. A component that predates AA — the interpreter running this
-installer, a checkout passed via --source — is recorded as pre-existing and
-is never touched by uninstall.
+One root, everything inside it (the turn-1 ruling): uv, the source tree,
+the environment uv maintains, the launchers, AA's data home and - when the
+computer has no suitable Python - AA's own uv-managed Python. A component
+that predates AA - a host Python the environment is built on
+(python_choice.py), the interpreter running this installer, a checkout
+passed via --source - is recorded as pre-existing and is never touched by
+uninstall.
 
 Three structural properties, not conventions:
 
@@ -43,7 +45,16 @@ from auto_apply.application.services.install.bootstrap_pins import (
 from auto_apply.application.services.install.manifest import (
     MANAGED_RECEIPT_ENTRIES,
     RECEIPT_NAME,
+    load_manifest,
     write_manifest,
+)
+from auto_apply.application.services.instance_registry import InstanceRegistry
+from auto_apply.application.services.install.python_choice import (
+    PythonChoice,
+    PythonChoiceError,
+    choose,
+    discover,
+    macos_tools_present,
 )
 from auto_apply.domain.config import ensure_creation_marker
 from auto_apply.application.services.uninstall.scoping import is_within
@@ -124,6 +135,28 @@ class InstallReport:
     notes: list[str] = field(default_factory=list)
 
 
+def _bat_path(path: Path | None) -> str:
+    """A path for a .bat line, written through %LOCALAPPDATA% / %USERPROFILE%
+    when it lives there, so a non-ASCII user name never reaches the file."""
+    text = str(path)
+    for var in ("LOCALAPPDATA", "USERPROFILE"):
+        base = os.environ.get(var)
+        if base and text.lower().startswith(base.lower() + "\\"):
+            return f"%{var}%" + text[len(base):]
+    return text
+
+
+def _bat_bytes(text: str) -> bytes:
+    """cmd.exe reads a .bat in the console code page, not UTF-8."""
+    try:
+        return text.encode("ascii")
+    except UnicodeEncodeError:
+        try:
+            return text.encode("oem")
+        except (LookupError, UnicodeEncodeError):
+            return text.encode("utf-8")
+
+
 def _default_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
@@ -160,6 +193,8 @@ class InstallEnvironment:
     data_root: Path | None = None  # default <root>/data
     runner_python: Path = field(default_factory=lambda: Path(sys.executable))
     progress: Callable[[str], None] | None = None
+    #: --python: "managed", or the path of a Python already on the computer.
+    python_request: str | None = None
 
     @classmethod
     def default_root(cls) -> Path:
@@ -180,6 +215,7 @@ class InstallEngine:
 
     def __init__(self, env: InstallEnvironment) -> None:
         self.env = env
+        self._python: PythonChoice | None = None
 
     # ── plan ─────────────────────────────────────────────────────────────
 
@@ -199,11 +235,16 @@ class InstallEngine:
                 )
             )
         python_dir = env.root / "python"
-        python_present = python_dir.exists() and any(python_dir.iterdir())
-        if not python_present:
+        if not self._uv_ok():
+            needs_python = True  # unknown until uv exists: say "if needed"
+            label = f"Python {pins['PYTHON_VERSION']} (via uv, into the root) - only if this computer has no suitable Python"
+        else:
+            needs_python = self.python_choice().download
+            label = f"Python {pins['PYTHON_VERSION']} (via uv, into the root)"
+        if needs_python:
             downloads.append(
                 DownloadItem(
-                    what=f"Python {pins['PYTHON_VERSION']} (via uv, into the root)",
+                    what=label,
                     url="resolved by uv (python-build-standalone, checksum-verified by uv)",
                     size_text=f"~{pins.get('SIZE_PYTHON_MB', '?')} MB",
                     dest=python_dir,
@@ -267,7 +308,7 @@ class InstallEngine:
         self._preflight()
         self._note("checking uv")
         self._ensure_uv(plan, report)
-        self._note("installing Python")
+        self._note("choosing Python")
         self._ensure_python(report)
         source = self._source()
         self._note("resolving dependencies")
@@ -298,6 +339,18 @@ class InstallEngine:
 
     def _preflight(self) -> None:
         root = self.env.root
+        running = [
+            rec.pid
+            for rec in InstanceRegistry(self.env.resolved_data_root / "instances").alive()
+            if rec.pid != os.getpid()
+        ]
+        if running:
+            raise InstallError(
+                "AutoApply is running (process "
+                + ", ".join(str(p) for p in running)
+                + "). Close it, then run the installer again - its files cannot "
+                "be replaced while it runs."
+            )
         root.mkdir(parents=True, exist_ok=True)
         (root / "tmp").mkdir(exist_ok=True)
         probe = root / ".write_probe"
@@ -406,12 +459,104 @@ class InstallEngine:
 
     # ── python and the environment ───────────────────────────────────────
 
-    def _uv_env(self) -> dict[str, str]:
+    def _uv_base_env(self) -> dict[str, str]:
+        """uv's containment, with no interpreter selection. Settings that
+        could be inherited from the bootstrap or the person's shell and that
+        would redirect AA's environment are removed, never trusted."""
         env = dict(os.environ)
+        for inherited in ("UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_PYTHON_PREFERENCE", "VIRTUAL_ENV"):
+            env.pop(inherited, None)
         env["UV_PYTHON_INSTALL_DIR"] = str(self.env.root / "python")
         env["UV_CACHE_DIR"] = str(self.env.root / "uv-cache")
         env["UV_NO_MODIFY_PATH"] = "1"
         return env
+
+    def _uv_env(self) -> dict[str, str]:
+        """uv's containment plus the chosen interpreter (python_choice.py)."""
+        env = self._uv_base_env()
+        env.update(self._python_env(self.python_choice()))
+        return env
+
+    @staticmethod
+    def _python_env(choice: PythonChoice) -> dict[str, str]:
+        if choice.kind == "managed":
+            return {"UV_PYTHON": choice.version, "UV_PYTHON_PREFERENCE": "only-managed"}
+        return {"UV_PYTHON": str(choice.path), "UV_PYTHON_DOWNLOADS": "never"}
+
+    def python_choice(self) -> PythonChoice:
+        """Which Python the environment is built on. Decided once per run."""
+        if self._python is not None:
+            return self._python
+        env = self.env
+        host_discovery = True
+        if env.system == "darwin":
+            host_discovery = macos_tools_present(env.runner)
+        candidates = discover(
+            uv=self._uv_binary(),
+            uv_env=self._uv_base_env(),
+            runner=env.runner,
+            managed_dir=env.root / "python",
+            host_discovery=host_discovery,
+        )
+        previous: str | None = None
+        current = self._running_base_python()
+        if current is not None:
+            # Running from the very environment being repaired: rebuilding it
+            # on another interpreter would delete the running one (Windows
+            # refuses outright). Keep it; a switch goes through the
+            # installer, which runs from its own bootstrap environment.
+            previous = str(current)
+        else:
+            manifest = load_manifest(env.root)
+            if manifest is not None:
+                previous = manifest.components.get("python_path") or (
+                    "managed" if manifest.components.get("python") == "aa" else None
+                )
+        try:
+            python_dir = env.root / "python"
+            managed_present = python_dir.is_dir() and any(
+                env.pins["PYTHON_VERSION"] in child.name for child in python_dir.iterdir()
+            )
+            choice = choose(
+                candidates,
+                managed_present=managed_present,
+                pinned_version=env.pins["PYTHON_VERSION"],
+                requested=env.python_request,
+                previous=previous,
+                offline=env.offline,
+                host_discovery=host_discovery,
+            )
+        except PythonChoiceError as exc:
+            raise InstallError(str(exc)) from exc
+        if current is not None and env.python_request:
+            same = choice.path is not None and os.path.normcase(
+                os.path.realpath(choice.path)
+            ) == os.path.normcase(os.path.realpath(current))
+            if not same and not (choice.kind == "managed" and self._is_managed(current)):
+                raise InstallError(
+                    "AutoApply cannot switch the Python it runs on from inside "
+                    "itself. Run the installer again (INSTALL-WINDOWS.bat, "
+                    "INSTALL-MAC.command or INSTALL-LINUX.sh) with your choice."
+                )
+        self._python = choice
+        return choice
+
+    def _is_managed(self, path: Path) -> bool:
+        return is_within(path, self.env.root / "python")
+
+    def _running_base_python(self) -> Path | None:
+        """The base interpreter of AA's own environment, when THIS process
+        runs from it; None otherwise (the bootstrap runs from its own)."""
+        venv = self.env.resolved_source / ".venv"
+        try:
+            here = os.path.normcase(os.path.realpath(sys.prefix))
+            target = os.path.normcase(os.path.realpath(venv))
+        except OSError:
+            return None
+        if here != target:
+            return None
+        base = getattr(sys, "_base_executable", None) or sys.executable
+        return Path(base)
 
     def _run_uv(self, args: list[str], *, cwd: Path | None = None) -> Any:
         result = self.env.runner(
@@ -427,6 +572,14 @@ class InstallEngine:
         return out[-400:] if out else "(no output)"
 
     def _ensure_python(self, report: InstallReport) -> None:
+        choice = self.python_choice()
+        report.notes.extend(choice.notes)
+        if choice.kind == "host":
+            report.existing.append(
+                f"Python {choice.version} at {choice.path} (already on this computer - "
+                "used as found, never changed or removed by AutoApply)"
+            )
+            return
         version = self.env.pins["PYTHON_VERSION"]
         args = ["python", "install", version]
         if self.env.offline:
@@ -449,7 +602,12 @@ class InstallEngine:
         self, source: Path, extra_args: list[str], report: InstallReport
     ) -> None:
         lock = (source / "uv.lock").exists()
-        args = ["sync"]
+        # --no-dev: the developer tools (pytest, mypy, ruff, mkdocs, ...)
+        # are not AutoApply and never reach a user's computer.
+        # --inexact: a repair or a later extra never removes an extra the
+        # person installed before (an exact sync per extra kept only the
+        # last one).
+        args = ["sync", "--no-dev", "--inexact"]
         if lock:
             args.append("--frozen")  # verify against uv.lock's hashes
         if self.env.offline:
@@ -467,7 +625,7 @@ class InstallEngine:
         the core environment already succeeded."""
         for name in plan.extras_supported:
             lock = (source / "uv.lock").exists()
-            args = ["sync"] + (["--frozen"] if lock else [])
+            args = ["sync", "--no-dev", "--inexact"] + (["--frozen"] if lock else [])
             if self.env.offline:
                 args.append("--offline")
             args.extend(["--extra", name])
@@ -485,6 +643,32 @@ class InstallEngine:
         bin_dir = self.env.root / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         frozen = "--frozen " if (source / "uv.lock").exists() else ""
+        choice = self.python_choice()
+        if choice.kind == "managed":
+            sh_py = (
+                f'export UV_PYTHON="{choice.version}"\n'
+                "export UV_PYTHON_PREFERENCE=only-managed\n"
+            )
+            bat_py = (
+                f'set "UV_PYTHON={choice.version}"\r\n'
+                'set "UV_PYTHON_PREFERENCE=only-managed"\r\n'
+            )
+        else:
+            quoted = "'" + str(choice.path).replace("'", "'\\''") + "'"
+            sh_py = (
+                f"export UV_PYTHON={quoted}\n"
+                "unset UV_PYTHON_PREFERENCE\n"
+                'if [ ! -x "$UV_PYTHON" ]; then\n'
+                '    echo "AutoApply was set up with the Python at $UV_PYTHON, which is no" >&2\n'
+                '    echo "longer on this computer. Run the AutoApply installer again to repair." >&2\n'
+                "    exit 1\n"
+                "fi\n"
+            )
+            bat_py = (
+                f'set "UV_PYTHON={_bat_path(choice.path)}"\r\n'
+                'set "UV_PYTHON_PREFERENCE="\r\n'
+                'if not exist "%UV_PYTHON%" goto aa_python_gone\r\n'
+            )
         sh = bin_dir / "auto-apply"
         sh.write_text(
             "#!/bin/sh\n"
@@ -501,7 +685,11 @@ class InstallEngine:
             "export SE_AVOID_STATS=1\n"
             'export PLAYWRIGHT_BROWSERS_PATH="$AA_ROOT/data/cache/pw-browsers"\n'
             'export HF_HOME="$AA_ROOT/data/cache/huggingface"\n'
-            f'exec "$AA_ROOT/uv/uv" run {frozen}--project "$AA_ROOT/app" '
+            'export PYTHONPYCACHEPREFIX="$AA_ROOT/data/cache/pycache"\n'
+            "export UV_PYTHON_DOWNLOADS=never\n"
+            "unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV\n"
+            + sh_py
+            + f'exec "$AA_ROOT/uv/uv" run --no-dev {frozen}--project "$AA_ROOT/app" '
             '--package auto_apply python -m auto_apply "$@"\n',
             encoding="utf-8",
             newline="\n",
@@ -511,7 +699,8 @@ class InstallEngine:
         bat = bin_dir / "auto-apply.bat"
         bat.write_bytes(
             b"@echo off\r\nrem Generated by auto_apply --install.\r\n"
-            b"set \"AA_ROOT=%~dp0..\"\r\n"
+            # %%~fI resolves "bin\.." to the real folder, so reports show it.
+            b"for %%I in (\"%~dp0..\") do set \"AA_ROOT=%%~fI\"\r\n"
             b"set \"AA_DATA_DIR=%AA_ROOT%\\data\"\r\n"
             b"set \"AA_MANAGED_ROOT=%AA_ROOT%\"\r\n"
             b"set \"UV_PYTHON_INSTALL_DIR=%AA_ROOT%\\python\"\r\n"
@@ -522,7 +711,20 @@ class InstallEngine:
             b"set \"SE_AVOID_STATS=1\"\r\n"
             b"set \"PLAYWRIGHT_BROWSERS_PATH=%AA_ROOT%\\data\\cache\\pw-browsers\"\r\n"
             b"set \"HF_HOME=%AA_ROOT%\\data\\cache\\huggingface\"\r\n"
-            + f"\"%AA_ROOT%\\uv\\uv.exe\" run {frozen}--project \"%AA_ROOT%\\app\" --package auto_apply python -m auto_apply %*\r\n".encode()
+            b"set \"PYTHONPYCACHEPREFIX=%AA_ROOT%\\data\\cache\\pycache\"\r\n"
+            b"set \"UV_PYTHON_DOWNLOADS=never\"\r\n"
+            b"set \"UV_PROJECT_ENVIRONMENT=\"\r\n"
+            b"set \"VIRTUAL_ENV=\"\r\n"
+            + _bat_bytes(bat_py)
+            # One line, "& exit /b": cmd.exe re-reads a running .bat line by
+            # line, and uninstall deletes this file while it runs - without
+            # the exit, cmd prints "The batch file cannot be found."
+            # exit /b with no code keeps uv's exit code.
+            + f"\"%AA_ROOT%\\uv\\uv.exe\" run --no-dev {frozen}--project \"%AA_ROOT%\\app\" --package auto_apply python -m auto_apply %* & exit /b\r\n".encode()
+            + b":aa_python_gone\r\n"
+            b"echo AutoApply was set up with the Python at %UV_PYTHON%, which is no 1>&2\r\n"
+            b"echo longer on this computer. Run the AutoApply installer again to repair. 1>&2\r\n"
+            b"exit /b 1\r\n"
         )
         report.launcher = sh
         report.created.append("launcher (bin/auto-apply + .bat)")
@@ -553,12 +755,13 @@ class InstallEngine:
         write_manifest(
             root,
             uv_version=env.pins["UV_VERSION"],
-            python_version=env.pins["PYTHON_VERSION"],
+            python_version=self.python_choice().version,
             project_dir=source,
             project_origin=env.project_origin,
             components={
                 "uv": "aa",
-                "python": "aa",
+                "python": self.python_choice().origin,
+                "python_path": str(self.python_choice().path or ""),
                 "environment": "aa",
                 "launcher": "aa",
                 "source": env.project_origin,

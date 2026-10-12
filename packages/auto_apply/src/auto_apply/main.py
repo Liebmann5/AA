@@ -109,6 +109,9 @@ def _pre_import_parse() -> None:
         # a verify-after-delete find it again. This is the only suppression
         # point that runs before any auto_apply import.
         os.environ["AA_NO_CREATE_DIRS"] = "1"
+        # Nor write bytecode: with PYTHONPYCACHEPREFIX inside the data home,
+        # any module imported after the delete would recreate the folder.
+        sys.dont_write_bytecode = True
 
     if pre_args.portable:
         portable_data = Path.cwd() / "data"
@@ -731,13 +734,25 @@ def _handle_install(args) -> None:
             offline=args.offline,
             shortcut=args.shortcut,
             extras=tuple(args.extra or ()),
+            python_request=args.python,
         )
 
     def _no_profile(_name: str) -> None:
         return None
 
     def _capability_report() -> None:
-        _print_check_config(SimpleNamespace(load_profile=_no_profile))
+        # Report on AA's OWN environment, through its launcher - not on the
+        # interpreter running this installer, which may be a different Python
+        # (measured: the report said "Tkinter MISSING" for an environment
+        # that has it).
+        import subprocess  # noqa: PLC0415
+
+        root = _expand(args.root) if args.root else InstallEnvironment.default_root()
+        launcher = root / "bin" / ("auto-apply.bat" if os.name == "nt" else "auto-apply")
+        if launcher.exists():
+            subprocess.run([str(launcher), "--check-config"], check=False)
+        else:
+            _print_check_config(SimpleNamespace(load_profile=_no_profile))
 
     # Frozen handling, pins errors, the plan, consent and the capability
     # block all print from inside the screen (the CLI adapter): main.py's
@@ -996,6 +1011,17 @@ def main() -> None:
         "--shortcut",
         action="store_true",
         help="With --install: create a desktop/start-menu shortcut (recorded in the footprint ledger).",
+    )
+    parser.add_argument(
+        "--python",
+        metavar="managed|PATH",
+        default=None,
+        help=(
+            "With --install: the Python AA's environment is built on. Default: "
+            "a suitable Python already on this computer (used as found, never "
+            "changed or removed), else AA's own, downloaded into the AA root. "
+            "'managed' always uses AA's own; a PATH names a Python to use."
+        ),
     )
     parser.add_argument(
         "--offline",

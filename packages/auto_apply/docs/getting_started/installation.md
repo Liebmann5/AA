@@ -1,8 +1,8 @@
 ---
 title: Installation
 status: reviewed
-last_verified: 2026-09-19
-verified_against: "packages/auto_apply/pyproject.toml extras; CI matrix"
+last_verified: 2026-10-10
+verified_against: "packages/auto_apply/pyproject.toml extras; CI matrix; INSTALL-WINDOWS.bat / INSTALL-MAC.command / INSTALL-LINUX.sh"
 audience: users
 ---
 
@@ -40,6 +40,35 @@ python --version
 ```
 
 If that prints 3.9 or lower, or "command not found", try `python3 --version`.
+
+---
+
+## The easiest way — download and double-click
+
+No Python, no developer tools, no admin rights, no typing commands.
+
+1. On [the AA repository page](https://github.com/Liebmann5/AA), click the
+   green **Code** button, then **Download ZIP**.
+2. Unzip it (on Windows: right-click the ZIP, then **Extract All…**).
+   Running the installer from inside the ZIP does not work; it says so.
+3. Open the unzipped folder and run the installer for your computer:
+
+| Your computer | What to do |
+| --- | --- |
+| **Windows** | Double-click `INSTALL-WINDOWS.bat`. If a blue "Windows protected your PC" box appears, click **More info**, then **Run anyway**. |
+| **macOS** | Double-click `INSTALL-MAC.command`. If macOS says it cannot be opened, open **System Settings → Privacy & Security** and click **Open Anyway**. Or open Terminal, type `sh ` (with a space), drag the file into the window and press Return. |
+| **Linux** | Open a terminal in the folder and run `sh INSTALL-LINUX.sh` |
+
+4. Read the plan it shows, type `y` and press Enter.
+
+The installer copies AutoApply out of the folder you downloaded (no second
+download of the source), installs uv into `~/.auto_apply`, builds the
+environment on a suitable Python already on the computer (used as found,
+never changed or removed) or, when there is none, on its own Python
+downloaded into the same folder, adds a shortcut (macOS: Desktop;
+Linux: applications menu; Windows: Start-menu Programs folder), and offers to
+start AutoApply. The downloaded folder can then be deleted. Re-running the
+installer is safe: it repairs what is missing and never duplicates.
 
 ---
 
@@ -83,7 +112,8 @@ operating system — uv and Python builds are per-platform).
     REFUSE — an unverified source archive is not acceptable for an
     installer that refuses an unverified uv. The explicit, printed opt-out
     is `--allow-unverified-source`. Until the first GitHub release exists,
-    pass `--archive <path-to-a-source-tar.gz>` or use Method 1. Piping a
+    use the download-and-double-click route above, pass
+    `--archive <path-to-a-source-tar.gz>`, or use Method 1. Piping a
     script from the internet is a trust decision: the script and the pins
     file are in the repository to read first, and the executables it runs
     are checksum-verified rather than channel-trusted.

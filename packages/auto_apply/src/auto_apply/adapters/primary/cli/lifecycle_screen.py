@@ -148,6 +148,11 @@ def run_uninstall(
     print()  # noqa: T201 — the report is the command's output: stdout.
     for line in _w.format_report_lines(report):
         print(line)  # noqa: T201
+    if interactive:
+        # Started from Windows' Run box or a shortcut, the window closes the
+        # moment AA exits - the person must be able to read the report.
+        out.flush()
+        _ask("\nPress Enter to close.", err=err)
     return 0 if report.clean else 1
 
 

@@ -84,3 +84,70 @@ jobs:
         if: always()
         working-directory: packages/auto_apply
         run: uv run mypy --config-file ../../pyproject.toml --explicit-package-bases tests
+  # The path a non-technical person takes, run for real on every push:
+  # install from this checkout, start AA, uninstall. On Windows it runs under
+  # powershell.exe (Windows PowerShell 5.1, what every stock PC has), not
+  # pwsh -- 5.1 is the interpreter that broke on non-ASCII on 2026-10-07.
+  # Not one of the four gates; tests/infrastructure/test_ci_workflow.py reads
+  # the gates job only.
+  installers:
+    name: installer - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install from this checkout (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File packages\auto_apply\install.ps1 -Yes -Shortcut -Root "%RUNNER_TEMP%\aa"
+
+      - name: Start AutoApply (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: call "%RUNNER_TEMP%\aa\bin\auto-apply.bat" --check-config
+
+      - name: Uninstall (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: call "%RUNNER_TEMP%\aa\bin\auto-apply.bat" --uninstall --yes
+
+      # The detached finisher removes AA's own runtime after AA exits. On
+      # Windows that includes the running interpreter - the case that used to
+      # survive on a non-admin PC. Proven here, not assumed.
+      - name: Verify nothing is left (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'aa'
+          for ($i = 0; $i -lt 90 -and (Test-Path $root); $i++) { Start-Sleep 1 }
+          if (Test-Path $root) {
+            Get-ChildItem -Recurse -Force $root | Select-Object -First 40 FullName
+            Get-ChildItem (Join-Path $env:TEMP 'aa_uninstall_*') -Recurse -ErrorAction SilentlyContinue | Get-Content -ErrorAction SilentlyContinue
+            throw "uninstall left $root behind"
+          }
+
+      - name: Install from this checkout (sh)
+        if: runner.os != 'Windows'
+        run: sh packages/auto_apply/install.sh --yes --shortcut --root "$RUNNER_TEMP/aa"
+
+      - name: Start AutoApply (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: '"$RUNNER_TEMP/aa/bin/auto-apply" --check-config'
+
+      - name: Uninstall (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: '"$RUNNER_TEMP/aa/bin/auto-apply" --uninstall --yes'
+
+      - name: Verify nothing is left (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: |
+          for i in $(seq 1 90); do [ -e "$RUNNER_TEMP/aa" ] || exit 0; sleep 1; done
+          find "$RUNNER_TEMP/aa" | head -40
+          echo "uninstall left $RUNNER_TEMP/aa behind" >&2
+          exit 1
