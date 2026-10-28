@@ -121,8 +121,8 @@ def _compose_bar(
     ops: dict[str, OperatorSpec],
 ) -> tuple[str | None, list[QueryNote], bool]:
     """Returns (bar_text, notes, hard_stop). hard_stop means the URL must not
-    be built either (a length refusal). A content refusal stops the bar but
-    lets the link carry what the surface honestly can."""
+    be built either: a length refusal, or a restriction the surface cannot
+    express — a link without it would be a different search."""
     tq = spec.text_query
     notes: list[QueryNote] = []
 
@@ -130,27 +130,27 @@ def _compose_bar(
         return None, [_refused(
             "site",
             f"{spec.display_name} has no way to limit a typed search to one "
-            "site, so no search text was written — writing one without the "
-            "site limit would not be the search you asked for.",
-        )], False
+            "site, so no search text or link was written — one without the "
+            "site limit would be a different search.",
+        )], True
     if request.any_of and ("any_of" not in ops or not tq.or_token):
         return None, [_refused(
             "any_of",
             f"{spec.display_name} has no way to say 'any of these' in its "
-            "search bar, so no search text was written.",
-        )], False
+            "search bar, so no search text or link was written.",
+        )], True
     if request.exclude and "exclude" not in ops:
         return None, [_refused(
             "exclude",
             f"{spec.display_name} has no way to exclude words in its search "
-            "bar, so no search text was written.",
-        )], False
+            "bar, so no search text or link was written.",
+        )], True
     if request.in_title and "intitle" not in ops:
         return None, [_refused(
             "intitle",
             f"{spec.display_name} has no title filter in its search bar, so "
-            "no search text was written.",
-        )], False
+            "no search text or link was written.",
+        )], True
 
     quote = tq.phrase_quote
     subject_bits: list[str] = []
@@ -217,7 +217,16 @@ def _compose_url(
     offered_options: dict[str, UrlOptionSpec],
 ) -> tuple[str | None, list[QueryNote]]:
     notes: list[QueryNote] = []
-    template_name = request.template or spec.default_url or next(iter(spec.urls), None)
+    # A site: restriction is a web search, not a vertical search: when the
+    # request carries one, the surface's site template (Bing: web, not the
+    # jobs vertical) wins over the surface default. Automation reads only
+    # automation_url and never reaches this path.
+    template_name = (
+        request.template
+        or (spec.site_template if request.site else None)
+        or spec.default_url
+        or next(iter(spec.urls), None)
+    )
     if template_name is None:
         return None, notes
     template = spec.urls.get(template_name)
@@ -231,30 +240,16 @@ def _compose_url(
     if bar is not None:
         query_value = bar
     else:
-        # No bar (refused or never writable): the link carries the best form
-        # the surface honestly offers, and every dropped part is named.
+        # No bar because the surface has no typed form: the link carries the
+        # terms in the plain form the surface accepts.
         bits: list[str] = []
         quote = spec.text_query.phrase_quote
         for phrase in request.phrases:
             content = _clean_content(phrase)
             bits.append(f"{quote}{content}{quote}" if "phrase" in ops else content)
         bits.extend(normalize_confusables(t) for t in request.required)
-        dropped: list[str] = []
-        if request.any_of:
-            dropped.append("the 'any of these' part")
-        if request.site:
-            dropped.append("the site limit")
-        if request.exclude:
-            dropped.append("the exclusions")
-        if request.in_title:
-            dropped.append("the title filter")
-        if dropped:
-            notes.append(_info(
-                "dropped",
-                f"Only some of your search has a form on {spec.display_name}; "
-                f"{', '.join(dropped)} "
-                f"{'was' if len(dropped) == 1 else 'were'} left out of the link.",
-            ))
+        # Every restriction a surface cannot carry stops the link in
+        # compose() (refusal-both), so nothing is ever dropped here.
         query_value = " ".join(bits)
 
     if not query_value:
@@ -268,7 +263,14 @@ def _compose_url(
             notes.append(_info("empty", "Nothing to build yet — add at least one term."))
         return None, notes
 
-    params = _template_params(template, query_value, request.location)
+    # Empty parameters are never written (an empty "l=" claims a location
+    # criterion that does not exist). Automation keeps its own byte-identical
+    # builder and never reaches this filter.
+    params = [
+        (name, value)
+        for name, value in _template_params(template, query_value, request.location)
+        if value != ""
+    ]
 
     for key, value in request.options:
         opt = offered_options.get(key)
@@ -353,21 +355,34 @@ def compose(request: QueryRequest, spec: SearchSurfaceSpec) -> QueryResult:
     if ops:
         bar, bar_notes, hard_stop = _compose_bar(request, spec, ops)
         notes.extend(bar_notes)
-    elif any(
-        (
-            request.phrases,
-            request.any_of,
-            request.required,
-            request.exclude,
-            request.in_title,
-            request.site,
-        )
-    ):
-        notes.append(_info(
-            "bar",
-            f"{spec.display_name} has no typed search form AA can write for "
-            "you — the link below is the way to use it.",
-        ))
+    else:
+        # No typed form at all (e.g. LinkedIn). Refusal-both applies here too:
+        # a restriction this surface cannot carry means no link either - a
+        # link without it would be a different search.
+        unexpressible = [
+            label
+            for wanted, label in (
+                (request.any_of, "the 'any of these' part"),
+                (request.site, "the site limit"),
+                (request.exclude, "the exclusions"),
+                (request.in_title, "the title filter"),
+            )
+            if wanted
+        ]
+        if unexpressible:
+            notes.append(_refused(
+                "unexpressible",
+                f"{spec.display_name} has no way to carry "
+                f"{', '.join(unexpressible)}, so no search text or link was "
+                "written — one without it would be a different search.",
+            ))
+            hard_stop = True
+        elif request.phrases or request.required:
+            notes.append(_info(
+                "bar",
+                f"{spec.display_name} has no typed search form AA can write for "
+                "you — the link below is the way to use it.",
+            ))
 
     url: str | None = None
     if not hard_stop and spec.urls:

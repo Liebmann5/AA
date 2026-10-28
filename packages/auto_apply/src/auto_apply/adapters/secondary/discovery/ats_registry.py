@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from auto_apply.domain.ports.ats_port import ATSDescriptor
@@ -57,6 +57,7 @@ class _CompiledEntry:
 
     descriptor: ATSDescriptor
     patterns: list[re.Pattern[str]]
+    terminal_patterns: list[re.Pattern[str]] = field(default_factory=list)
 
 
 class ATSRegistry:
@@ -127,6 +128,21 @@ class ATSRegistry:
     def all_descriptors(self) -> list[ATSDescriptor]:
         """Returns every loaded ATSDescriptor, in load order."""
         return [e.descriptor for e in self._entries]
+
+    def is_terminal_page(self, url: str) -> bool:
+        """True when *url* matches any descriptor's terminal_patterns.
+
+        Terminal pages (success / confirm / closed) are never apply-route
+        destinations and never builder suggestions. Classification via
+        match() is unaffected — a terminal page still belongs to its platform
+        for metadata and research grouping.
+        """
+        normalised = _strip_scheme(url)
+        for entry in self._entries:
+            for pat in entry.terminal_patterns:
+                if pat.search(normalised):
+                    return True
+        return False
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -202,12 +218,16 @@ class ATSRegistry:
             )
             return None
 
+        terminal = _compile_patterns(descriptor.terminal_patterns)
         logger.debug(
-            "ATSRegistry: loaded ats=%s patterns=%d",
+            "ATSRegistry: loaded ats=%s patterns=%d terminal=%d",
             descriptor.name,
             len(patterns),
+            len(terminal),
         )
-        return _CompiledEntry(descriptor=descriptor, patterns=patterns)
+        return _CompiledEntry(
+            descriptor=descriptor, patterns=patterns, terminal_patterns=terminal
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,6 +251,8 @@ def _build_descriptor(data: dict, filename: str) -> ATSDescriptor:
     submit_selector = _normalise_selector(data.get("submit_button_selector", ""))
     form_selector = _normalise_selector(data.get("form_root_selector", ""))
 
+    raw_terminal = data.get("terminal_patterns") or []
+
     return ATSDescriptor(
         name=name,
         url_patterns=tuple(str(p).strip() for p in raw_patterns if p),
@@ -242,6 +264,18 @@ def _build_descriptor(data: dict, filename: str) -> ATSDescriptor:
         hosts=tuple(
             str(h).strip().lower().strip(".") for h in raw_hosts if str(h).strip(" .")
         ),
+        tenancy=str(data.get("tenancy") or "none").strip().lower(),
+        search_restriction=str(data.get("search_restriction") or "").strip(),
+        search_restriction_status=str(
+            data.get("search_restriction_status") or "unverified"
+        ).strip(),
+        search_restriction_verified_on=str(
+            data.get("search_restriction_verified_on") or ""
+        ).strip(),
+        search_restriction_source=str(
+            data.get("search_restriction_source") or ""
+        ).strip(),
+        terminal_patterns=tuple(str(p).strip() for p in raw_terminal if p),
     )
 
 

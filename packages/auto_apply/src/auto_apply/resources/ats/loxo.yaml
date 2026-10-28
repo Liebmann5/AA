@@ -1,0 +1,16 @@
+name: loxo
+description: >
+  Loxo — opaque addressing (app.loxo.co/job/<base64 id>); the slug is an
+  opaque ID, not a company name.
+  Sample: https://app.loxo.co/job/MjM3NDctamdyZzRnMGRrbmM5OGtraA==
+url_patterns:
+  - "app.loxo.co/job/*"
+hosts:
+  - "loxo.co"
+multi_step: false
+tenancy: opaque
+search_restriction: "app.loxo.co"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

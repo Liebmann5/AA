@@ -88,7 +88,13 @@ class DiscoveryWorkflow:
             dedup: DeduplicationManager — URL fingerprinting and seen-URL tracking.
             text_matcher: TextMatcher — entity extraction for pre-filtering.
             ats_registry: ATSRegistry | None — ATS platform detection.
-            company_page_miner: Callable | None — direct company page scraper.
+            company_page_miner: Deprecated and unused. The previous mining
+                call passed a URL into a parameter that composition_root filled
+                with a function expecting a browser, and failed on every
+                ATS-matched job; mining now goes through company_page_scraper
+                under the SessionPlan.enable_company_page_mining gate. The
+                parameter remains accepted for one release; the automated-
+                search chain removes it.
             company_page_scraper: Callable[[str], list[Job]] | None — given a
                 single careers‑page URL, returns the jobs found on it.  Used by
                 :meth:`discover_company_page` to service DISCOVER_COMPANY tasks.
@@ -314,7 +320,18 @@ class DiscoveryWorkflow:
         return all_jobs
 
     def _scrape_company_pages(self, discovered_jobs: list[Job]) -> list[Job]:
-        if self._company_page_miner is None:
+        """Optionally mine company careers pages for ATS-matched discoveries.
+
+        Off by default: SessionPlan.enable_company_page_mining is False
+        unless a plan sets it, and no config currently sets it. The previous
+        path called a composition-root helper that treated the job URL as a
+        browser object — a measured AttributeError on every ATS-matched job
+        that mined nothing, ever. When enabled, mining goes through the
+        careers-page scraper, which actually navigates to the URL.
+        """
+        if not self._plan.enable_company_page_mining:
+            return []
+        if self._company_page_scraper is None:
             return []
         extra: list[Job] = []
         for job in discovered_jobs:
@@ -324,7 +341,7 @@ class DiscoveryWorkflow:
                 descriptor = self._ats_registry.match(job.url)
                 if descriptor is None:
                     continue
-                mined = self._company_page_miner(job.url)
+                mined = self._company_page_scraper(job.url)
                 if mined:
                     extra.extend(mined)
             except Exception as exc:

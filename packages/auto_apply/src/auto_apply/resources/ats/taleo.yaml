@@ -44,6 +44,13 @@ submit_button_selector: >
   button[id*='next']
 multi_step: true
 
+tenancy: subdomain
+search_restriction: "taleo.net"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host declared in this descriptor; not yet hand-measured (docs/developer_guide/verifying_platform_search.md)"
+terminal_patterns: []
+
 notes: >
   Taleo uses a wizard pattern with "Next" buttons on each step.
   The final step has a "Submit" action. Session timeouts are aggressive

@@ -46,7 +46,7 @@ automation_url: jobs
 operators:
   - name: site
     label: "Only this site"
-    explanation: "Shows results only from the site you name. A folder works too, for example site:jobs.gusto.com/boards."
+    explanation: "Shows results only from the site you name. A folder works too, for example site:example.com/jobs."
     syntax: "site:{value}"
     channel: typed
     accepts: domain_or_path

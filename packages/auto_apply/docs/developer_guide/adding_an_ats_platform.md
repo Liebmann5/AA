@@ -77,6 +77,13 @@ submit_button_selector: >                    # CSS selector for the submit / nex
   input[type='submit']
 
 multi_step: false                     # true if the platform uses a multi‑page wizard
+
+tenancy: subdomain                    # how tenants are addressed (see the table above)
+search_restriction: "example.com/jobs"   # the site: restriction for engine searches
+search_restriction_status: unverified # upgrade per docs/developer_guide/verifying_platform_search.md
+search_restriction_verified_on: ""
+search_restriction_source: "Host from a sample posting URL; not yet hand-measured"
+terminal_patterns: []                 # e.g. ["*.example.com/*/apply/success*"]
 ```
 
 ### Field details
@@ -91,6 +98,12 @@ multi_step: false                     # true if the platform uses a multi‑page
 | `form_root_selector` | No | CSS selector for the form container. Defaults to `"form"`. Used to scope field searches. |
 | `submit_button_selector` | No | CSS selector for the submit or next button. Defaults to `"button[type='submit']"`. |
 | `multi_step` | No | Set to `true` if the platform splits the application across multiple pages (like Workday or Taleo). |
+| `tenancy` | No | How tenants are addressed: `subdomain` (`acme.platform.com`), `path` (`platform.com/acme`), `opaque` (a path slug that is an ID, not a company name), `enterprise` (client identified by query/deep path only), or `none`. Used by the query builder to scope company searches. |
+| `search_restriction` | No | The `site:` restriction that scopes an engine search to this platform — a host, or host/path when the path is shared by every tenant (e.g. `bamboohr.com/careers`). |
+| `search_restriction_status` | No | Evidence for the restriction: `vendor`, `measured`, `third_party`, or `unverified` (the default). |
+| `search_restriction_verified_on` | No | Date the restriction was hand-measured. Required when the status is `measured`. |
+| `search_restriction_source` | No | One line saying where the restriction came from (a sample URL, a hand-run query). |
+| `terminal_patterns` | No | Glob patterns for terminal pages (success / confirm / closed). A matched terminal page is never treated as an application destination. See `docs/developer_guide/verifying_platform_search.md` for how these get verified. |
 
 ---
 

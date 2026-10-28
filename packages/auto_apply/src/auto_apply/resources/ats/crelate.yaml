@@ -1,0 +1,15 @@
+name: crelate
+description: >
+  Crelate — path tenancy (jobs.crelate.com/portal/<company>/).
+  Sample: https://jobs.crelate.com/portal/strategicemployment/
+url_patterns:
+  - "jobs.crelate.com/portal/*"
+hosts:
+  - "crelate.com"
+multi_step: false
+tenancy: path
+search_restriction: "jobs.crelate.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

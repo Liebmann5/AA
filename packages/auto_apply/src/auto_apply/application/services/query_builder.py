@@ -48,10 +48,12 @@ from auto_apply.domain.models.search_query import (
     BuilderDefaults,
     OfferedCapability,
     OfferedChoice,
+    QueryNote,
     QueryRequest,
     QueryResult,
     SurfaceOffer,
 )
+from auto_apply.domain.ports.ats_port import ATSDescriptor, ATSRegistryPort
 from auto_apply.domain.models.search_surface import (
     OFFERED_STATUSES,
     SearchSurfaceSpec,
@@ -77,12 +79,14 @@ class QueryBuilderService:
         profile=None,
         load_spec: Callable[[str], SearchSurfaceSpec] | None = None,
         list_names: Callable[[], list[str]] | None = None,
+        ats_registry: ATSRegistryPort | None = None,
         recent_path: Path = DEFAULT_RECENT_PATH,
         max_recent: int = DEFAULT_MAX_RECENT,
     ) -> None:
         self._profile = profile
         self._load_spec = load_spec
         self._list_names = list_names
+        self._ats_registry = ats_registry
         self._recent_path = recent_path
         self._max_recent = max(1, int(max_recent))
 
@@ -170,6 +174,91 @@ class QueryBuilderService:
             )
         spec = self._load_spec(request.surface)
         return compose(request, spec)
+
+    # ------------------------------------------------------------------
+    # Platform searches — platform identity comes from the injected ATS
+    # registry; the engine's site: syntax comes from the catalog. Nothing
+    # here imports the registry adapter.
+    # ------------------------------------------------------------------
+
+    def platforms(self) -> tuple[ATSDescriptor, ...]:
+        """The hiring platforms the builder can target: every descriptor
+        with at least one host. Search reliability is descriptor data
+        (search_restriction_status), shown by the surfaces — not an offer
+        gate: the capability being offered is the engine's vendor-documented
+        site: operator applied to a host that demonstrably exists."""
+        if self._ats_registry is None:
+            return ()
+        return tuple(d for d in self._ats_registry.all_descriptors() if d.hosts)
+
+    def build_platform_search(
+        self, platform: str, request: QueryRequest
+    ) -> QueryResult:
+        """A domain-restricted engine search for one platform.
+
+        The restriction is composed through the normal composer, so the
+        same refusals, notes and length limits apply. Writes nothing.
+        """
+        descriptor = self._descriptor_for(platform)
+        if request.site:
+            raise QueryBuilderError(
+                "the request already carries a site restriction"
+            )
+        restricted = request.model_copy(
+            update={"site": descriptor.search_restriction_for()}
+        )
+        return self.build(restricted)
+
+    def build_company_search(self, url: str, request: QueryRequest) -> QueryResult:
+        """A company-scoped engine search from a pasted tenant URL.
+
+        The URL's platform is matched and its tenant slug narrows the
+        restriction (holisticai.bamboohr.com, jobs.lever.co/acme,
+        recruiterflow.com/db_<id>). A URL on no known platform gets a refusal
+        note, never a guess. Writes nothing.
+        """
+        if self._ats_registry is None:
+            raise QueryBuilderError(
+                "no ATS registry is wired into the query builder"
+            )
+        descriptor = self._ats_registry.match(url)
+        if descriptor is None:
+            return QueryResult(
+                surface=request.surface,
+                display_name=request.surface,
+                bar_text=None,
+                url=None,
+                notes=(
+                    QueryNote(
+                        severity="refused",
+                        topic="platform",
+                        message=(
+                            "that address is not on a hiring platform AA "
+                            "knows, so no search was built."
+                        ),
+                    ),
+                ),
+            )
+        if request.site:
+            raise QueryBuilderError(
+                "the request already carries a site restriction"
+            )
+        restricted = request.model_copy(
+            update={"site": descriptor.search_restriction_for(url)}
+        )
+        return self.build(restricted)
+
+    def _descriptor_for(self, platform: str) -> ATSDescriptor:
+        """One descriptor by name, or a loud error — a quiet empty result
+        for an unknown platform would be a different-search lie."""
+        if self._ats_registry is None:
+            raise QueryBuilderError(
+                "no ATS registry is wired into the query builder"
+            )
+        for descriptor in self._ats_registry.all_descriptors():
+            if descriptor.name == platform:
+                return descriptor
+        raise QueryBuilderError(f"unknown platform {platform!r}")
 
     def remember(self, request: QueryRequest) -> None:
         """Record a query as one of the recent few.

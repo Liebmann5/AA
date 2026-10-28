@@ -1,0 +1,16 @@
+name: recruiterflow
+description: >
+  Recruiterflow — opaque path tenancy (recruiterflow.com/db_<id>/jobs/<id>);
+  the slug is an opaque ID, not a company name.
+  Sample: https://recruiterflow.com/db_cae6aa6c42ee795815955c2dab38824c/jobs/241
+url_patterns:
+  - "recruiterflow.com/db_*/jobs/*"
+hosts:
+  - "recruiterflow.com"
+multi_step: false
+tenancy: opaque
+search_restriction: "recruiterflow.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

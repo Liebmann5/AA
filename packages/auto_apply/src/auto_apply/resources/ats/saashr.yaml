@@ -1,0 +1,15 @@
+name: saashr
+description: >
+  UKG / SaaShr — subdomain + enterprise addressing (secure6.saashr.com/ta/<id>.careers).
+  Sample: https://secure6.saashr.com/ta/6189920.careers?CareersSearch
+url_patterns:
+  - "*.saashr.com/ta/*"
+hosts:
+  - "saashr.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "saashr.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

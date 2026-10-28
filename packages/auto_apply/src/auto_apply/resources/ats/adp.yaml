@@ -1,0 +1,16 @@
+name: adp
+description: >
+  ADP Workforce Now — enterprise addressing (client identified by query
+  parameters, not the host).
+  Sample: https://workforcenow.adp.com/mascsr/default/mdf/recruitment/postLogin.html?client=...&jobId=472846
+url_patterns:
+  - "workforcenow.adp.com/*"
+hosts:
+  - "adp.com"
+multi_step: false
+tenancy: enterprise
+search_restriction: "workforcenow.adp.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

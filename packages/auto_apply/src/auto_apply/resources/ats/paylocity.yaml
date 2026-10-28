@@ -1,0 +1,15 @@
+name: paylocity
+description: >
+  Paylocity — recruiting.paylocity.com/Recruiting/Jobs/... (path/enterprise).
+  Sample: https://recruiting.paylocity.com/Recruiting/Jobs/Apply/2213197
+url_patterns:
+  - "recruiting.paylocity.com/Recruiting/Jobs/*"
+hosts:
+  - "paylocity.com"
+multi_step: false
+tenancy: path
+search_restriction: "recruiting.paylocity.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

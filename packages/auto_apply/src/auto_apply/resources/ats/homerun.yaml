@@ -1,0 +1,15 @@
+name: homerun
+description: >
+  Homerun — subdomain tenancy (<company>.homerun.co/<slug>/en/apply).
+  Sample: https://designfiles.homerun.co/full-stack-ruby-on-rails-developer/en/apply
+url_patterns:
+  - "*.homerun.co/*"
+hosts:
+  - "homerun.co"
+multi_step: false
+tenancy: subdomain
+search_restriction: "homerun.co"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

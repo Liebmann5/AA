@@ -1,0 +1,15 @@
+name: careers-page
+description: >
+  careers-page.com — path tenancy (www.careers-page.com/<company>).
+  Sample: https://www.careers-page.com/amorservllc
+url_patterns:
+  - "www.careers-page.com/*"
+hosts:
+  - "careers-page.com"
+multi_step: false
+tenancy: path
+search_restriction: "careers-page.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

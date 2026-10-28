@@ -26,6 +26,10 @@ urls:
     date_parameter: filters
 default_url: jobs
 automation_url: jobs
+# A site: restriction is a web search, not a jobs-vertical search: the
+# composer uses this template whenever the request carries one. Automation
+# never reads this (it uses automation_url).
+site_template: web
 
 operators:
   - name: site

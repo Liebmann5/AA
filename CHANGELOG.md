@@ -22,6 +22,41 @@ from its first tag onward.
 
 ### Added
 
+- **ATS platform registry expansion + builder platform search.** 28 new
+  platform descriptors (BambooHR, Rippling, Workable, SmartRecruiters,
+  Jobvite, Recruitee, Gusto, PinpointHQ, Eightfold, Keka, Dover, Zoho
+  Recruit, JazzHR — covering theresumator.com and applytojob.com — GoHire,
+  Recruiterflow, Comeet, UKG/SaaShr, CATSone, ADP, Freshteam,
+  careers-page.com, Paylocity, Oasis Recruit, JobScore, Crelate, Homerun,
+  Loxo, Dayforce) join the existing six. Every descriptor records its
+  tenancy, a `site:` search restriction with an evidence status
+  (vendor / measured / third_party / unverified, source and date), and
+  terminal-page patterns where a sample proves them. The query builder can
+  now target a platform (`build_platform_search`) or a pasted company URL
+  (`build_company_search`) with a correct domain-restricted engine query,
+  and terminal pages are never treated as application destinations.
+- **A verification checklist for platform search data**
+  (`docs/developer_guide/verifying_platform_search.md`): the exact query to
+  paste per platform, what a correct result looks like, and how to record
+  the outcome so the descriptor's status upgrades.
+
+### Changed
+
+- **Builder correctness.** A domain-restricted Bing search now composes
+  against web results, not the jobs vertical; empty parameters (`l=`) are
+  no longer emitted; refusal notes say when no link was written.
+- **Company-page mining is gated off by default** on
+  `SessionPlan.enable_company_page_mining`. The old path failed on every
+  ATS-matched job (a URL was passed where a browser was expected) and mined
+  nothing; when enabled, mining uses the navigating careers-page scraper.
+
+### Fixed
+
+- **A restriction the surface cannot express no longer produces a link that
+  silently drops it.** The composer refuses the link as well as the search
+  text, with an explanatory note (was: link returned with the restriction
+  dropped). Automation URLs are unchanged.
+
 - **Download-and-double-click install.** `INSTALL-WINDOWS.bat`,
   `INSTALL-MAC.command` and `INSTALL-LINUX.sh` at the top of the repository
   run the bootstrap from an extracted ZIP, with a plain-language plan, a

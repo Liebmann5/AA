@@ -23,6 +23,11 @@ audience: contributors
 >
 > Chains A–E landed between 2026-09-15 and 2026-09-16. Stage U5 was planned as
 > a deletion and is **cancelled** — see the note in §34.3.
+>
+> **1.2 (2026-10-28)** — §15 rewritten for the platform expansion: 28
+> platforms added to the ATS registry, each descriptor now carrying tenancy,
+> a search restriction with evidence status, and terminal-page patterns; the
+> registry is the single source of platform identity for the query builder.
 
 > This document is the single authoritative reference for every architectural decision,
 > layer boundary, subsystem contract, control flow, and integration rule in AA.
@@ -1335,43 +1340,74 @@ in `resources/ats/`.
 | iCIMS | `icims.yaml` | `careers.icims.com` | Multi-step, legacy |
 | Taleo | `taleo.yaml` | `*.taleo.net` | Very legacy, complex |
 | Ashby | `ashby.yaml` | `jobs.ashbyhq.com` | Modern, clean |
+| BambooHR | `bamboohr.yaml` | `*.bamboohr.com/careers` | Unverified selectors |
+| Rippling | `rippling.yaml` | `ats.rippling.com/*/jobs/*` | Unverified selectors |
+| Workable | `workable.yaml` | `apply.workable.com/*` | Unverified selectors |
+| SmartRecruiters | `smartrecruiters.yaml` | `jobs.smartrecruiters.com/*/*` | Unverified selectors |
+| Jobvite | `jobvite.yaml` | `jobs.jobvite.com/*/job/*` | Unverified selectors |
+| Recruitee | `recruitee.yaml` | `*.recruitee.com/o/*` | Unverified selectors |
+| Gusto | `gusto.yaml` | `jobs.gusto.com/boards/*` | Unverified selectors |
+| PinpointHQ | `pinpointhq.yaml` | `*.pinpointhq.com/postings/*` | Unverified selectors |
+| Eightfold | `eightfold.yaml` | `*.eightfold.ai/careers*` | Unverified selectors |
+| Keka | `keka.yaml` | `*.keka.com/careers*` | Unverified selectors |
+| Dover | `dover.yaml` | `app.dover.io/apply/*` | Unverified selectors |
+| Zoho Recruit | `zohorecruit.yaml` | `*.zohorecruit.com/jobs/*` | Unverified selectors |
+| JazzHR | `jazzhr.yaml` | `*.applytojob.com/*`, `*.theresumator.com/*` | Unverified selectors |
+| GoHire | `gohire.yaml` | `jobs.gohire.io/*/*` | Unverified selectors |
+| Recruiterflow | `recruiterflow.yaml` | `recruiterflow.com/db_*/jobs/*` | Unverified selectors |
+| Comeet | `comeet.yaml` | `www.comeet.com/jobs/*` | Unverified selectors |
+| UKG / SaaShr | `saashr.yaml` | `*.saashr.com/ta/*` | Unverified selectors |
+| CATSone | `catsone.yaml` | `*.catsone.com/careers*` | Unverified selectors |
+| ADP | `adp.yaml` | `workforcenow.adp.com/*` | Unverified selectors |
+| Freshteam | `freshteam.yaml` | `*.freshteam.com/jobs/*` | Unverified selectors |
+| careers-page.com | `careers_page.yaml` | `www.careers-page.com/*` | Unverified selectors |
+| Paylocity | `paylocity.yaml` | `recruiting.paylocity.com/Recruiting/Jobs/*` | Unverified selectors |
+| Oasis Recruit | `oasisrecruit.yaml` | `*.oasisrecruit.com/job/*` | Unverified selectors |
+| JobScore | `jobscore.yaml` | `careers.jobscore.com/careers/*` | Unverified selectors |
+| Crelate | `crelate.yaml` | `jobs.crelate.com/portal/*` | Unverified selectors |
+| Homerun | `homerun.yaml` | `*.homerun.co/*` | Unverified selectors |
+| Loxo | `loxo.yaml` | `app.loxo.co/job/*` | Unverified selectors |
+| Dayforce | `dayforce.yaml` | `jobs.dayforcehcm.com/*` | Unverified selectors |
 
-### 15.3 Platforms To Add (From Job Websites Table)
+New-platform descriptors ship with empty form selectors, so they classify
+pages for discovery, routing and research grouping but never receive the
+`KNOWN_PLATFORM` analysis tier (that tier requires a `submit_button_selector`,
+which is only written after a hand-verified apply run — see
+`docs/developer_guide/verifying_platform_search.md`).
 
-Based on the user's job website table, these need YAML files and adapters:
+### 15.3 Platforms Added (2026-10-28)
 
-| Platform | Domain | Priority |
-|---|---|---|
-| BambooHR | `bamboohr.com/careers` | High |
-| Rippling | `ats.rippling.com` | High |
-| Workable | `apply.workable.com` | High |
-| SmartRecruiters | `jobs.smartrecruiters.com` | High |
-| Jobvite | `jobs.jobvite.com` | High |
-| Recruitee | `*.recruitee.com` | Medium |
-| Gusto | `jobs.gusto.com` | Medium |
-| PinpointHQ | `*.pinpointhq.com` | Medium |
-| Eightfold | `*.eightfold.ai/careers` | Medium |
-| Keka | `*.keka.com/careers` | Low |
-| Dover | `app.dover.io/apply` | Low |
-| ZohoRecruit | `*.zohorecruit.com/jobs` | Low |
+The twelve platforms above that this section once listed as "to add" are now
+registered — see §15.2. Sixteen more from the job-website table joined them
+(JazzHR covering both theresumator.com and applytojob.com, GoHire,
+Recruiterflow, Comeet, UKG/SaaShr, CATSone, ADP, Freshteam, careers-page.com,
+Paylocity, Oasis Recruit, JobScore, Crelate, Homerun, Loxo, Dayforce). Every
+descriptor records its tenancy, its `site:` search restriction with an
+evidence status (`unverified` until hand-measured), and terminal-page
+patterns where a sample URL proves them. New platforms are verified by hand
+per `docs/developer_guide/verifying_platform_search.md`, not by assumption.
 
 ### 15.4 How to Add a New ATS Platform
 
-1. Create `resources/ats/platform_name.yaml`:
+1. Create `resources/ats/platform_name.yaml` (the real, current schema):
 ```yaml
 name: bamboohr
-display_name: BambooHR
+description: "BambooHR — subdomain tenancy (<company>.bamboohr.com/careers)."
 url_patterns:
-  - "*.bamboohr.com/careers/*"
-  - "*.bamboohr.com/jobs/*"
-site_search_domain: "bamboohr.com/careers"
-form_strategy: "single_page_iframe"
-known_challenges:
-  - type: "file_upload"
-    selector: "input[type=file][name=resume]"
-  - type: "cover_letter"
-    selector: "textarea[name=coverLetter]"
-pagination: null
+  - "*.bamboohr.com/careers*"
+hosts:
+  - "bamboohr.com"
+login_wall_signals: []
+success_signals: []
+form_root_selector: ""
+submit_button_selector: ""
+multi_step: false
+tenancy: subdomain
+search_restriction: "bamboohr.com/careers"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from a sample posting URL; not yet hand-measured"
+terminal_patterns: []
 ```
 
 2. ATSRegistry automatically loads it at startup — no code changes needed.

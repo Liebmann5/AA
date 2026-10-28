@@ -1,0 +1,15 @@
+name: eightfold
+description: >
+  Eightfold — subdomain tenancy (<company>.eightfold.ai/careers/job/<id>).
+  Sample: https://symetra.eightfold.ai/careers/job/446696479895
+url_patterns:
+  - "*.eightfold.ai/careers*"
+hosts:
+  - "eightfold.ai"
+multi_step: false
+tenancy: subdomain
+search_restriction: "eightfold.ai"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

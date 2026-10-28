@@ -37,6 +37,13 @@ submit_button_selector: >
   button[aria-label*='apply']
 multi_step: false
 
+tenancy: path
+search_restriction: "jobs.ashbyhq.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host declared in this descriptor; not yet hand-measured (docs/developer_guide/verifying_platform_search.md)"
+terminal_patterns: []
+
 notes: >
   Ashby forms are typically one page with all fields visible. Resume upload
   uses input[type=file] or a drag-and-drop zone. LinkedIn profile URL field

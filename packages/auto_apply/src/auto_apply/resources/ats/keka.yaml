@@ -1,0 +1,16 @@
+name: keka
+description: >
+  Keka — subdomain tenancy (<company>.keka.com/careers/...). Region: EU per
+  Nick's job-website table (metadata only; filters nothing).
+  Samples: https://cubet.keka.com/careers/jobdetails/48781 , https://zuddl.keka.com/careers/
+url_patterns:
+  - "*.keka.com/careers*"
+hosts:
+  - "keka.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "keka.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URLs; not yet hand-measured"
+terminal_patterns: []

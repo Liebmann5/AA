@@ -128,6 +128,25 @@ logger = logging.getLogger(__name__)
 _MAX_LEASES_PER_SHARED_DRIVER = 1
 
 
+def _build_ats_registry():
+    """Load the ATS descriptor registry once per build site.
+
+    Called by build_orchestrator (for the workflows) and by
+    build_session_controller (for the query builder), so platform identity
+    stays single-sourced in resources/ats/*.yaml and neither site constructs
+    its own list. Returns None when the descriptors cannot be loaded — every
+    consumer degrades on None already.
+    """
+    try:
+        from auto_apply.adapters.secondary.discovery.ats_registry import (  # noqa: PLC0415
+            ATSRegistry,
+        )
+        return ATSRegistry()
+    except Exception as _exc:
+        logger.debug("composition_root: ATSRegistry unavailable: %s", _exc)
+        return None
+
+
 def _warn_if_legacy_research_db() -> None:
     """Warn when a pre-relocation research database exists.
 
@@ -816,14 +835,7 @@ def build_orchestrator(  # noqa: PLR0914
     _configured_checkpoints = getattr(app_config, "human_review_checkpoints", None)
     interrupt_policy = ProfileBasedInterruptPolicy(_configured_checkpoints)
 
-    _ats_registry = None
-    try:
-        from auto_apply.adapters.secondary.discovery.ats_registry import (  # noqa: PLC0415
-            ATSRegistry,
-        )
-        _ats_registry = ATSRegistry()
-    except Exception as _exc:
-        logger.debug("build_orchestrator: ATSRegistry unavailable: %s", _exc)
+    _ats_registry = _build_ats_registry()
 
     from auto_apply.domain.ports.page_understanding_port import PageUnderstandingPort  # noqa: PLC0415
 
@@ -1120,28 +1132,6 @@ def build_orchestrator(  # noqa: PLR0914
             ),
         ]
 
-    from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (  # noqa: PLC0415
-        GenericSERPStrategy,
-    )
-
-    search_prefs_for_miner = profile.search_preferences if hasattr(profile, "search_preferences") else None
-
-    def _company_page_miner(browser: BrowserInterface) -> list:
-        return GenericSERPStrategy(
-            browser=browser,
-            search_prefs=search_prefs_for_miner,
-            source_tag="CompanyDirect",
-            scroller=_page_scroller,
-            advancer=(
-                _advancer_factory("")() if _advancer_factory is not None else None
-            ),
-            max_pages=_max_pages_per_query,
-            observer=_extraction_observer,
-            reporter=_audit_reporter,
-            forced_tier=_forced_tier,
-            page_action=page_action_tool,
-        ).execute()
-
     # Single-URL careers-page scraper for DISCOVER_COMPANY tasks: navigate the
     # live browser to the URL and extract listings via the math subsystem.
     # Omitted (None) without a browser — DiscoveryWorkflow degrades gracefully.
@@ -1227,7 +1217,6 @@ def build_orchestrator(  # noqa: PLR0914
         dedup=dedup,
         text_matcher=text_matcher,
         ats_registry=_ats_registry,
-        company_page_miner=_company_page_miner,
         company_page_scraper=_company_page_scraper,
         plan=plan,
         browser_lease=browser_lease,
@@ -1645,6 +1634,7 @@ def build_session_controller(
         profile=profile,
         load_spec=load_surface,
         list_names=list_surface_names,
+        ats_registry=_build_ats_registry(),
     )
 
     # 3. Assemble the controller (all deps injected). If assembly fails after

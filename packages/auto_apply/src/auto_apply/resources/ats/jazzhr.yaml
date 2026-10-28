@@ -1,0 +1,21 @@
+name: jazzhr
+description: >
+  JazzHR — one platform, two hosts: applytojob.com (current) and
+  theresumator.com (legacy name). Subdomain tenancy on both.
+  Samples: https://openplay.applytojob.com/apply/ ,
+  https://dealeron.theresumator.com/apply/confirm/G3gue6dy4D
+url_patterns:
+  - "*.applytojob.com/apply*"
+  - "*.theresumator.com/apply*"
+hosts:
+  - "applytojob.com"
+  - "theresumator.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "applytojob.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Hosts from Nick's sample URLs; not yet hand-measured"
+terminal_patterns:
+  - "*.theresumator.com/apply/confirm/*"
+  - "*.applytojob.com/apply/confirm/*"

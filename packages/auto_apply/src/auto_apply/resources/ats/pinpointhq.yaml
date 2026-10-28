@@ -1,0 +1,15 @@
+name: pinpointhq
+description: >
+  PinpointHQ — subdomain tenancy (<company>.pinpointhq.com/postings/<id>).
+  Sample: https://sparkadvisors.pinpointhq.com/postings/b97e5f0b-6a74-4b2d-806f-779561b26685/applications/new
+url_patterns:
+  - "*.pinpointhq.com/postings/*"
+hosts:
+  - "pinpointhq.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "pinpointhq.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

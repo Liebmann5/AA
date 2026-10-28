@@ -97,6 +97,7 @@ nav:
       - Running Tests: developer_guide/running_tests.md
       - Contribution Workflow: developer_guide/contribution_workflow.md
       - Adding an ATS Platform: developer_guide/adding_an_ats_platform.md
+      - Verifying Platform Search: developer_guide/verifying_platform_search.md
       - Documentation Standards: DOCUMENTATION_STANDARDS.md
       - Releasing: developer_guide/releasing.md
 

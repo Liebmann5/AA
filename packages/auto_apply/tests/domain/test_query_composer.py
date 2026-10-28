@@ -133,15 +133,16 @@ def test_an_option_the_surface_lacks_is_refused_with_a_note():
 
 
 def test_a_site_limit_on_linkedin_is_refused_not_silently_dropped():
-    """GUARD. Mutation caught: composing LinkedIn text with site:, or
-    dropping the note that says the site limit went nowhere."""
+    """GUARD. Mutation caught: composing LinkedIn text with site:, dropping
+    the note that says the site limit went nowhere, or building a LINK that
+    silently drops it (the refusal-both rule: a link without the restriction
+    is a different search)."""
     result = compose(
         QueryRequest(surface="linkedin", site="example.com", phrases=("Software Engineer",)),
         _spec("linkedin"),
     )
     assert result.bar_text is None
-    assert result.url is not None
-    assert "keywords=Software+Engineer" in result.url
+    assert result.url is None
     text = " ".join(n.message for n in result.notes)
     assert "site" in text.lower()
 
@@ -159,9 +160,7 @@ def test_any_of_on_duckduckgo_is_refused_not_rewritten():
         _spec("duckduckgo"),
     )
     assert result.bar_text is None
-    assert result.url is not None
-    assert "Alpha" not in result.url
-    assert "%22Software+Engineer%22" in result.url
+    assert result.url is None
     assert any(n.severity == "refused" and "any of these" in n.message for n in result.notes)
 
 

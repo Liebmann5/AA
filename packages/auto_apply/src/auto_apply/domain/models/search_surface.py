@@ -159,6 +159,10 @@ class SearchSurfaceSpec(_Frozen):
     urls: dict[str, UrlTemplateSpec] = Field(default_factory=dict)
     default_url: str | None = None
     automation_url: str | None = None
+    # The template to use when a request carries a site: restriction. A
+    # domain-restricted search is a web search, not a vertical search (Bing:
+    # web, not jobs). Automation never reads this — it uses automation_url.
+    site_template: str | None = None
     operators: tuple[OperatorSpec, ...] = ()
     url_options: tuple[UrlOptionSpec, ...] = ()
 
@@ -168,6 +172,8 @@ class SearchSurfaceSpec(_Frozen):
             raise ValueError(f"{self.name}: default_url {self.default_url!r} is not a url template")
         if self.automation_url is not None and self.automation_url not in self.urls:
             raise ValueError(f"{self.name}: automation_url {self.automation_url!r} is not a url template")
+        if self.site_template is not None and self.site_template not in self.urls:
+            raise ValueError(f"{self.name}: site_template {self.site_template!r} is not a url template")
         for key, template in self.urls.items():
             if template.date_parameter is not None and not any(
                 o.name == template.date_parameter and o.option == "date"
