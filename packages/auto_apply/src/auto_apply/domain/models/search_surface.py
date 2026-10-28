@@ -2,8 +2,8 @@
 
 This model is the single source of truth for "what can this search bar or
 search URL do", shared by AA's automated engine strategies
-(engine_strategies.py) and the user-facing query builder (turns 1-3 of the
-query-builder chain). It used to live as three hardcoded maps in
+(engine_strategies.py) and the user-facing query builder
+(application/services/query_builder.py). It used to live as three hardcoded maps in
 engine_strategies.py; the byte-identity pin in
 tests/adapters/test_engine_url_byte_identity.py proves the move changed no
 automation output.

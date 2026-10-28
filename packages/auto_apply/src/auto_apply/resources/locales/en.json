@@ -180,5 +180,41 @@
     "stats_section_title": "Session Metrics",
     "log_section_title": "Live Activity Feed",
     "status_idle": "Ready to start..."
+  },
+  "builder": {
+    "title": "Search builder",
+    "surface_prompt": "Search with:",
+    "target_prompt": "Search:",
+    "target_surface": "The search site itself",
+    "target_platform": "One hiring platform",
+    "target_company": "A company careers page (paste its link)",
+    "platform_prompt": "Hiring platform:",
+    "company_prompt": "Company careers link:",
+    "terms_prompt": "Exact words or phrases (comma separated)",
+    "location_prompt": "Location",
+    "any_of_prompt": "Any of these (comma separated)",
+    "exclude_prompt": "Without these (comma separated)",
+    "in_title_prompt": "In the title only (comma separated)",
+    "saved_note": "Saved:",
+    "actions_line": "[c] copy   [o] open   [k] keep   [r] rebuild   [q] quit",
+    "choose": "Choose:",
+    "not_on_list": "Not on the list:",
+    "kept": "Kept in your recent searches.",
+    "opened": "Opened in your browser — kept in your recent searches.",
+    "no_link": "This surface has no link to open — paste the search bar text yourself.",
+    "nothing_built": "Nothing was built — nothing to copy, open or keep.",
+    "recent_title": "Recent searches",
+    "recent_empty": "No recent searches yet.",
+    "recent_cleared": "Recent searches cleared.",
+    "error": "Could not build that search",
+    "bad_option": "Not a KEY=VALUE option, skipped:",
+    "result": {
+      "bar": "Search bar text",
+      "link": "Link"
+    },
+    "platform": {
+      "unverified": "Unverified: the search mechanism is documented, but how much of this platform it reaches is not yet known. Open the link yourself and check that results come from the platform; the user guide shows how to report the outcome.",
+      "third_party": "Reported by others; AA has not checked it."
+    }
   }
 }

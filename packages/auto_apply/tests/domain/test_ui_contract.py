@@ -42,6 +42,11 @@ from auto_apply.domain.ports.ui_port import UIPort
 
 _UI_CONTRACT_MODULE = "auto_apply.domain.models.ui_contract"
 
+#: The data-only rule admits a named, pinned set of frozen DTO modules.
+_ALLOWED_DTO_MODULES = frozenset(
+    {_UI_CONTRACT_MODULE, "auto_apply.domain.models.search_query"}
+)
+
 _EXPECTED_PORT_METHODS = {
     "initialize_session", "start", "stop", "pause", "resume",
     "provide_approval", "snapshot", "summary", "queue_snapshot",
@@ -59,6 +64,12 @@ _EXPECTED_PORT_METHODS = {
     #   set_autonomy — the write: the control both surfaces use to change the
     #                  choice, guarded by two acknowledgements.
     "autonomy", "set_autonomy",
+    # The query builder grew the port from 17 to 26: surfaces, platforms and
+    # defaults queries; the three build calls; the three recent-queries
+    # commands. Each returns data only.
+    "query_surfaces", "query_platforms", "query_defaults",
+    "build_query", "build_platform_query", "build_company_query",
+    "remember_query", "recent_queries", "clear_recent_queries",
 }
 
 
@@ -97,7 +108,7 @@ def _is_data_type(t: object) -> bool:
     if isinstance(t, type):
         if issubclass(t, Enum):
             return True
-        if issubclass(t, BaseModel) and t.__module__ == _UI_CONTRACT_MODULE:
+        if issubclass(t, BaseModel) and t.__module__ in _ALLOWED_DTO_MODULES:
             return True
         return False
     return False
@@ -166,9 +177,9 @@ def test_session_request_is_frozen() -> None:
 
 
 def test_ui_port_type_hints_are_data_only() -> None:
-    """TEETH: every method on UIPort resolves to frozen DTOs from
-    ui_contract, enums, Path, or builtins — no live objects. The
-    discrimination proof that this check has teeth is in
+    """TEETH: every method on UIPort resolves to frozen DTOs from the named
+    DTO modules (_ALLOWED_DTO_MODULES), enums, Path, or builtins — no live
+    objects. The discrimination proof that this check has teeth is in
     test_type_checker_rejects_session_controller_today."""
     methods = _port_methods(UIPort)
     assert set(methods) == _EXPECTED_PORT_METHODS, (

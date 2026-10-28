@@ -89,6 +89,7 @@ if TYPE_CHECKING:
         VerifyResult,
     )
     from auto_apply.domain.models.replay import ReplayReport
+    from auto_apply.application.services.query_builder import QueryBuilderService
 
 # Re-export so existing callers don't break.
 __all__ = [
@@ -104,6 +105,7 @@ __all__ = [
     "UninstallReport",
     "build_orchestrator",
     "build_page_copier",
+    "build_query_builder",
     "build_research_consent",
     "build_session",
     "build_session_controller",
@@ -1532,6 +1534,33 @@ def _refuse_no_browser(registry: CapabilitiesRegistry, cascade: BrowserCascade) 
     raise BrowserSetupError(message)
 
 
+def build_query_builder(profile: "UserProfile | None" = None) -> "QueryBuilderService":
+    """Build the query-builder service — the surfaces' one route to it.
+
+    Session path: build_session_controller passes the session's profile.
+    Pre-session path (the CLI search screen): called with profile=None.
+
+    configure_locale(language=None) auto-detects the OS locale and is a
+    no-op once any caller configured one, so the builder's labels render as
+    text, never as raw keys, whether or not a session is running. It logs
+    one INFO line ("Locale configured") the first time it runs.
+    """
+    from auto_apply.application.services.i18n import configure_locale  # noqa: PLC0415
+    from auto_apply.application.services.query_builder import QueryBuilderService  # noqa: PLC0415
+    from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+        list_surface_names,
+        load_surface,
+    )
+
+    configure_locale(language=None)
+    return QueryBuilderService(
+        profile=profile,
+        load_spec=load_surface,
+        list_names=list_surface_names,
+        ats_registry=_build_ats_registry(),
+    )
+
+
 def _register_exit_shutdown(
     controller: "SessionController",
     instances: "InstanceRegistry | None" = None,
@@ -1622,20 +1651,9 @@ def build_session_controller(
     research_consent = build_research_consent(registry)
     orchestrator = build_orchestrator(registry, research_consent=research_consent)
 
-    # The query builder serves the user-facing surfaces (turn 3); it reads
-    # the profile only as one-click defaults and never writes to it.
-    from auto_apply.application.services.query_builder import QueryBuilderService  # noqa: PLC0415
-    from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
-        list_surface_names,
-        load_surface,
-    )
-
-    query_builder = QueryBuilderService(
-        profile=profile,
-        load_spec=load_surface,
-        list_names=list_surface_names,
-        ats_registry=_build_ats_registry(),
-    )
+    # The query builder serves the user-facing surfaces; it reads the
+    # profile only as one-click defaults and never writes to it.
+    query_builder = build_query_builder(profile)
 
     # 3. Assemble the controller (all deps injected). If assembly fails after
     # the orchestrator exists, its browser has no owner yet — release it here

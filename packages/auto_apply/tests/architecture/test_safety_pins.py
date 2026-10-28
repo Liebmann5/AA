@@ -210,6 +210,15 @@ EXPECTED_REACHES: dict[str, set[str]] = {
         # import the secondary verifier itself.
         "auto_apply.infrastructure.composition_root",
     },
+    "cli/search_builder_screen.py": {
+        # The search screen reaches the wiring layer for the pre-session
+        # builder factory (composition_root.build_query_builder) — the
+        # consent-screen precedent — and application.services.i18n for its
+        # locale path: the first CLI screen with translated chrome (the
+        # consent screen's text is untranslatable by design).
+        "auto_apply.infrastructure.composition_root",
+        "auto_apply.application.services.i18n",
+    },
     "cli/lifecycle_screen.py": {
         # The install/uninstall screen reaches the wiring layer for the
         # lifecycle engines and wording (composition_root) — the same

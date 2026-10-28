@@ -19,8 +19,8 @@ Two read paths, on purpose:
   * ``load_surface_bundled`` (bundled only) — the automation path. AA's
     automated discovery must send the same URL bytes no matter what a user
     has overridden for their own manual searches, so engine_strategies reads
-    only the bundled catalog until chain 2's provenance records a catalog
-    digest on every job.
+    only the bundled catalog until job provenance records a catalog digest
+    on every job (planned; not yet built).
 """
 
 from __future__ import annotations

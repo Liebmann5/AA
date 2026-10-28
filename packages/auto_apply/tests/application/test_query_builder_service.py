@@ -1,4 +1,4 @@
-"""Pins for the query-builder service (turn 1 of the query-builder chain).
+"""Pins for the query-builder service.
 
 Label honesty:
   GUARD (new surface) — the service did not exist before this change, so no
@@ -73,8 +73,8 @@ def test_unverified_and_uncomposable_capabilities_are_never_offered(tmp_path):
 
 
 def test_build_leaves_the_recent_file_untouched(tmp_path):
-    """GUARD (the preview rule): building writes nothing — turn 3's surfaces
-    may rebuild a preview on every keystroke, so recording on build would
+    """GUARD (the preview rule): building writes nothing — the GUI and CLI
+    surfaces may rebuild a preview on every keystroke, so recording on build would
     store half-typed queries. Mutation caught: build() calling _record_recent."""
     service = _service(tmp_path)
     service.build(QueryRequest(surface="google", phrases=("x",)))
@@ -165,7 +165,7 @@ def test_the_builder_modules_import_no_network_browser_or_research_code():
 
 
 def test_the_session_controller_exposes_the_builder():
-    """GUARD (turn-3 seam): the controller holds the injected service.
+    """GUARD: the controller holds the injected builder service.
     Mutation caught: dropping the dependency or the property."""
     from auto_apply.application.services.session_controller import SessionController
 

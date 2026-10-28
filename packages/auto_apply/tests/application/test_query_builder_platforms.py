@@ -1,9 +1,9 @@
-"""Pins for the builder's platform search (query-builder chain, call 2).
+"""Pins for the builder's platform search.
 
 Label honesty per pin: TEETH fail on the pre-change tree (no platform
 methods, no registry injection, no site_template, no refusal-both); GUARDs
-hold call-1 behaviour the expansion must not break. I have not executed
-these; each names the mutation it catches.
+hold the surface-level behaviour the platform expansion must not break.
+I have not executed these; each names the mutation it catches.
 """
 from __future__ import annotations
 

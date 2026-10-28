@@ -1,4 +1,4 @@
-"""Pins for the query composer (turn 1 of the query-builder chain).
+"""Pins for the query composer (domain/services/query_composer.py).
 
 Label honesty:
   GUARD (new surface) — every pin here covers behaviour that did not exist

@@ -142,5 +142,41 @@
     "stats_section_title": "Métricas de Sesión",
     "log_section_title": "Actividad en Vivo",
     "status_idle": "Listo para comenzar..."
+  },
+  "builder": {
+    "title": "Constructor de búsquedas",
+    "surface_prompt": "Buscar con:",
+    "target_prompt": "Buscar en:",
+    "target_surface": "El propio sitio de búsqueda",
+    "target_platform": "Una plataforma de contratación",
+    "target_company": "La página de empleo de una empresa (pegue su enlace)",
+    "platform_prompt": "Plataforma de contratación:",
+    "company_prompt": "Enlace de la página de empleo de la empresa:",
+    "terms_prompt": "Palabras o frases exactas (separadas por comas)",
+    "location_prompt": "Ubicación",
+    "any_of_prompt": "Cualquiera de estas (separadas por comas)",
+    "exclude_prompt": "Sin estas (separadas por comas)",
+    "in_title_prompt": "Solo en el título (separadas por comas)",
+    "saved_note": "Guardado:",
+    "actions_line": "[c] copiar   [o] abrir   [k] guardar   [r] reconstruir   [q] salir",
+    "choose": "Elija:",
+    "not_on_list": "No está en la lista:",
+    "kept": "Guardada en sus búsquedas recientes.",
+    "opened": "Abierta en su navegador — guardada en sus búsquedas recientes.",
+    "no_link": "Esta superficie no tiene enlace para abrir — pegue usted mismo el texto de búsqueda.",
+    "nothing_built": "No se construyó nada — no hay nada que copiar, abrir o guardar.",
+    "recent_title": "Búsquedas recientes",
+    "recent_empty": "Aún no hay búsquedas recientes.",
+    "recent_cleared": "Búsquedas recientes borradas.",
+    "error": "No se pudo construir esa búsqueda",
+    "bad_option": "No es una opción CLAVE=VALOR, omitida:",
+    "result": {
+      "bar": "Texto de la barra de búsqueda",
+      "link": "Enlace"
+    },
+    "platform": {
+      "unverified": "Sin verificar: el mecanismo de búsqueda está documentado, pero aún no se sabe qué parte de esta plataforma alcanza. Abra el enlace usted mismo y compruebe que los resultados provienen de la plataforma; la guía del usuario muestra cómo informar del resultado.",
+      "third_party": "Reportado por otros; AA no lo ha comprobado."
+    }
   }
 }

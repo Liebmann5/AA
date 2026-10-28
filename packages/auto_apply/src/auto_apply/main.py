@@ -546,6 +546,30 @@ def _handle_verify_research(args) -> None:
     sys.exit(run_verify_research(Path(args.verify_research).expanduser()))
 
 
+def _handle_search(args, profile_repo) -> None:
+    """Build a search query (interactive or scripted), then exit.
+
+    Composition only, mirroring --label: every print and every input lives
+    in the CLI adapter, so this file's pinned print-site count does not
+    move. Pre-session: no orchestrator and no browser. The builder reads the
+    first user profile (else the template) for one-click defaults only, and
+    never writes to it.
+    """
+    from auto_apply.adapters.primary.cli.search_builder_screen import (  # noqa: PLC0415
+        run_search,
+    )
+
+    profile = None
+    if profile_repo is not None:
+        try:
+            names = [n for n in profile_repo.list_profiles() if n != "default_profile"]
+            chosen = names[0] if names else "default_profile"
+            profile = profile_repo.load_profile(chosen)
+        except Exception:
+            profile = None
+    sys.exit(run_search(args, profile=profile))
+
+
 def _handle_label() -> None:
     """Run the labelling tool (item 5), then exit.
 
@@ -918,6 +942,91 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--search",
+        action="store_true",
+        help=(
+            "Open the interactive search builder (compose a verified engine, "
+            "platform or company search), then exit. No session, no "
+            "automation. Scripted flags below take precedence over the "
+            "interactive screen."
+        ),
+    )
+    parser.add_argument(
+        "--search-surface",
+        metavar="NAME",
+        default=None,
+        help="Scripted builder: search surface (google, bing, duckduckgo, indeed, linkedin; default google).",
+    )
+    parser.add_argument(
+        "--search-platform",
+        metavar="NAME",
+        default=None,
+        help="Scripted builder: a hiring platform — builds a site:-restricted engine search.",
+    )
+    parser.add_argument(
+        "--search-company",
+        metavar="URL",
+        default=None,
+        help="Scripted builder: a company careers-page URL — scopes the search to that tenant.",
+    )
+    parser.add_argument(
+        "--search-terms",
+        metavar="TEXT",
+        default=None,
+        help="Exact words or phrases, comma separated.",
+    )
+    parser.add_argument(
+        "--search-any-of",
+        metavar="TEXT",
+        default=None,
+        help="Alternatives, comma separated (where the surface supports them).",
+    )
+    parser.add_argument(
+        "--search-exclude",
+        metavar="TEXT",
+        default=None,
+        help="Words to exclude, comma separated.",
+    )
+    parser.add_argument(
+        "--search-in-title",
+        metavar="TEXT",
+        default=None,
+        help="Words that must appear in the title.",
+    )
+    parser.add_argument(
+        "--search-location",
+        metavar="TEXT",
+        default=None,
+        help="Location, for surfaces that take one.",
+    )
+    parser.add_argument(
+        "--search-option",
+        action="append",
+        metavar="KEY=VALUE",
+        default=None,
+        help="A surface option (repeatable), e.g. --search-option date=day.",
+    )
+    parser.add_argument(
+        "--search-open",
+        action="store_true",
+        help="Open the built link in your browser (remembers the query).",
+    )
+    parser.add_argument(
+        "--search-keep",
+        action="store_true",
+        help="Remember the built query without opening it.",
+    )
+    parser.add_argument(
+        "--search-recent",
+        action="store_true",
+        help="List your recent built searches, then exit.",
+    )
+    parser.add_argument(
+        "--search-clear-recent",
+        action="store_true",
+        help="Forget every remembered search, then exit.",
+    )
+    parser.add_argument(
         "--uninstall",
         action="store_true",
         help=(
@@ -1105,6 +1214,25 @@ def main() -> None:
     # 4f. Research bundle verification (exits when done — no session started)
     if args.verify_research:
         _handle_verify_research(args)
+
+    # 4g. Search builder (exits after building — no session started)
+    if (
+        args.search
+        or args.search_recent
+        or args.search_clear_recent
+        or args.search_surface
+        or args.search_platform
+        or args.search_company
+        or args.search_terms
+        or args.search_any_of
+        or args.search_exclude
+        or args.search_in_title
+        or args.search_location
+        or args.search_option
+        or args.search_open
+        or args.search_keep
+    ):
+        _handle_search(args, profile_repo)
 
     # 5. Profile encryption mode (exits after encryption)
     if args.encrypt_profile:

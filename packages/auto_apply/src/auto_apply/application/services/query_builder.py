@@ -1,4 +1,4 @@
-"""The query builder service — the application seam the surfaces call (turn 3).
+"""The query builder service — the application seam the surfaces call.
 
 What this service owns:
 
@@ -43,11 +43,14 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
+from auto_apply.application.services.i18n import get_text
 from auto_apply.domain.config import USER_DATA_DIR
+from auto_apply.domain.exceptions import QueryBuilderError
 from auto_apply.domain.models.search_query import (
     BuilderDefaults,
     OfferedCapability,
     OfferedChoice,
+    PlatformOffer,
     QueryNote,
     QueryRequest,
     QueryResult,
@@ -66,8 +69,8 @@ DEFAULT_RECENT_PATH = USER_DATA_DIR / "query_builder_recent.json"
 DEFAULT_MAX_RECENT = 5
 
 
-class QueryBuilderError(RuntimeError):
-    """The builder could not complete the request."""
+# QueryBuilderError lives in domain.exceptions (imported above); existing
+# imports from this module keep working through that re-export.
 
 
 class QueryBuilderService:
@@ -163,10 +166,9 @@ class QueryBuilderService:
     def build(self, request: QueryRequest) -> QueryResult:
         """Compose the bar text and URL. Writes NOTHING.
 
-        Turn 3's surfaces may rebuild the preview as the user types, so
-        building must not touch the disk. Recording is the surfaces' explicit
-        choice via remember(), called only when the user copies or opens a
-        result.
+        The surfaces may rebuild the preview as the user types, so building
+        must not touch the disk. Recording is the surfaces' explicit choice
+        via remember(), called only when the user copies or opens a result.
         """
         if self._load_spec is None:
             raise QueryBuilderError(
@@ -191,6 +193,59 @@ class QueryBuilderService:
             return ()
         return tuple(d for d in self._ats_registry.all_descriptors() if d.hosts)
 
+    def platform_offers(self) -> tuple[PlatformOffer, ...]:
+        """Every targetable platform with its verification label.
+
+        The label is computed here — once, from the shared locale strings —
+        so every surface renders the same words and carries no status
+        vocabulary of its own. Measured and vendor-verified platforms carry
+        no badge.
+        """
+        offers: list[PlatformOffer] = []
+        for descriptor in self.platforms():
+            status = descriptor.search_restriction_status
+            if status == "unverified":
+                label = get_text("builder.platform.unverified")
+            elif status == "third_party":
+                label = get_text("builder.platform.third_party")
+            else:
+                label = ""
+            offers.append(
+                PlatformOffer(name=descriptor.name, status=status, label=label)
+            )
+        return tuple(offers)
+
+    def platform_restriction_for(
+        self, platform: str | None = None, url: str | None = None
+    ) -> str:
+        """The resolved site: restriction — for a platform name, optionally
+        narrowed to a tenant URL, or for a tenant URL alone (the platform is
+        matched from the URL).
+
+        This is the one definition of what a platform or company query
+        resolves to, so a remembered query replays identically.
+        """
+        if url is not None:
+            if self._ats_registry is None:
+                raise QueryBuilderError(
+                    "no ATS registry is wired into the query builder"
+                )
+            descriptor = self._ats_registry.match(url)
+            if descriptor is None:
+                raise QueryBuilderError(
+                    f"no hiring platform is known for {url!r}"
+                )
+            if platform is not None and descriptor.name != platform:
+                raise QueryBuilderError(
+                    f"{url!r} is on {descriptor.name!r}, not {platform!r}"
+                )
+            return descriptor.search_restriction_for(url)
+        if platform is None:
+            raise QueryBuilderError(
+                "platform_restriction_for needs a platform or a URL"
+            )
+        return self._descriptor_for(platform).search_restriction_for()
+
     def build_platform_search(
         self, platform: str, request: QueryRequest
     ) -> QueryResult:
@@ -199,13 +254,12 @@ class QueryBuilderService:
         The restriction is composed through the normal composer, so the
         same refusals, notes and length limits apply. Writes nothing.
         """
-        descriptor = self._descriptor_for(platform)
         if request.site:
             raise QueryBuilderError(
                 "the request already carries a site restriction"
             )
         restricted = request.model_copy(
-            update={"site": descriptor.search_restriction_for()}
+            update={"site": self.platform_restriction_for(platform)}
         )
         return self.build(restricted)
 
@@ -244,7 +298,7 @@ class QueryBuilderService:
                 "the request already carries a site restriction"
             )
         restricted = request.model_copy(
-            update={"site": descriptor.search_restriction_for(url)}
+            update={"site": self.platform_restriction_for(url=url)}
         )
         return self.build(restricted)
 

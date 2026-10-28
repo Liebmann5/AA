@@ -144,9 +144,17 @@ from auto_apply.application.services.autonomy import (
 )
 from auto_apply.domain.config import USER_DATA_DIR
 from auto_apply.domain.events import Event
+from auto_apply.domain.exceptions import QueryBuilderError
 from auto_apply.domain.models.application_evidence import ApplicationEvidence
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import UserProfile
+from auto_apply.domain.models.search_query import (
+    BuilderDefaults,
+    PlatformOffer,
+    QueryRequest,
+    QueryResult,
+    SurfaceOffer,
+)
 from auto_apply.domain.models.session_plan import SessionExecutionMode, SessionPlan
 from auto_apply.domain.models.session_report import SessionReport
 from auto_apply.domain.models.task_priority import TaskPriority
@@ -432,10 +440,10 @@ class SessionController:
            session's research observer registered with, so a mid-session
            withdrawal stops collection immediately. shutdown() stops the
            observer (flushing its queue) whether or not a run is active.
-        11. Query builder (turn 1 of the query-builder chain): the injected
-           QueryBuilderService is exposed as the query_builder property for
-           the surfaces (turn 3). It composes user-authored searches from
-           the search-surface catalog; nothing about it is automated.
+        11. Query builder: the injected QueryBuilderService is exposed as
+           the query_builder property and through the builder port methods.
+           It composes user-authored searches from the search-surface
+           catalog; nothing about it is automated.
 
     The controller is stateful — one instance per session. When the session
     ends, call shutdown() — it releases the browser whether or not a run is
@@ -1692,10 +1700,67 @@ class SessionController:
         """The query-builder service, if one was injected.
 
         Built by the composition root from the search-surface catalog; the
-        builder surfaces (turn 3) read it through here. None in tests and
-        legacy constructions — those surfaces degrade to no builder.
+        builder surfaces read it through here. None in tests and legacy
+        constructions — the port methods below then degrade to empty
+        answers, and the build calls raise.
         """
         return self._query_builder
+
+    # ── Query builder (the port's builder surface) ───────────────────────────
+
+    def query_surfaces(self) -> tuple[SurfaceOffer, ...]:
+        """Every search surface the builder may offer, verification applied."""
+        builder = self._query_builder
+        return builder.surfaces() if builder is not None else ()
+
+    def query_platforms(self) -> tuple[PlatformOffer, ...]:
+        """Every targetable hiring platform, with its verification label."""
+        builder = self._query_builder
+        return builder.platform_offers() if builder is not None else ()
+
+    def query_defaults(self) -> BuilderDefaults:
+        """The profile's saved search values as one-click choices."""
+        builder = self._query_builder
+        return builder.defaults() if builder is not None else BuilderDefaults()
+
+    def build_query(self, request: QueryRequest) -> QueryResult:
+        """Compose bar text and/or a URL for one surface."""
+        return self._require_builder().build(request)
+
+    def build_platform_query(self, platform: str, request: QueryRequest) -> QueryResult:
+        """A domain-restricted engine search for one hiring platform."""
+        return self._require_builder().build_platform_search(platform, request)
+
+    def build_company_query(self, url: str, request: QueryRequest) -> QueryResult:
+        """A company-scoped engine search from a pasted tenant URL."""
+        return self._require_builder().build_company_search(url, request)
+
+    def remember_query(self, request: QueryRequest) -> None:
+        """Record a built query as one of the recent few (explicit only)."""
+        builder = self._query_builder
+        if builder is not None:
+            builder.remember(request)
+
+    def recent_queries(self) -> tuple[QueryRequest, ...]:
+        """The remembered queries, newest first."""
+        builder = self._query_builder
+        return builder.recent() if builder is not None else ()
+
+    def clear_recent_queries(self) -> None:
+        """Forget every remembered query."""
+        builder = self._query_builder
+        if builder is not None:
+            builder.clear_recent()
+
+    def _require_builder(self) -> "QueryBuilderService":
+        """The builder or a clear error — a build with no builder is a bug."""
+        builder = self._query_builder
+        if builder is None:
+            raise QueryBuilderError(
+                "no query builder is wired to this controller — build the "
+                "controller via build_session_controller, which injects one."
+            )
+        return builder
 
     def get_queue_stats(self) -> dict[str, int]:
         """Returns work queue status counts from the database.

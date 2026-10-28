@@ -39,6 +39,21 @@ from its first tag onward.
   (`docs/developer_guide/verifying_platform_search.md`): the exact query to
   paste per platform, what a correct result looks like, and how to record
   the outcome so the descriptor's status upgrades.
+- **Query builder on the CLI.** `--search` opens an interactive screen; the
+  scripted flags (`--search-surface`, `--search-platform`, `--search-company`,
+  `--search-terms`, `--search-any-of`, `--search-exclude`, `--search-in-title`,
+  `--search-location`, `--search-option KEY=VALUE`, `--search-open`,
+  `--search-keep`, `--search-recent`, `--search-clear-recent`) build the same
+  verified queries — engine searches, `site:`-restricted platform searches and
+  tenant-scoped company searches. A query the surface cannot express is
+  refused in plain words with a non-zero exit, never a blank result. Copy,
+  open and keep are the only actions that remember a query, and a remembered
+  platform or company query is stored resolved and replays identically.
+- **`UIPort` grows from 17 to 26 methods** for the query builder, and its
+  data-only rule now names two frozen DTO modules (`ui_contract`,
+  `search_query`). `QueryBuilderError` moved to `domain/exceptions.py` and is
+  re-exported from `application/services/query_builder.py`, so existing
+  imports keep working.
 
 ### Changed
 
