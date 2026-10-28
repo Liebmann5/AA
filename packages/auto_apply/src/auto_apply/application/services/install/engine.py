@@ -65,6 +65,28 @@ class InstallError(RuntimeError):
     whenever possible."""
 
 
+def _extract_tar_safely(tf: tarfile.TarFile, dest: Path) -> None:
+    """Extract a tar archive under the rules of PEP 706's "data" filter.
+
+    Nothing may land outside *dest*: no absolute paths, no "..", no device
+    files, no links pointing out, no setuid bits. Python 3.14 makes this the
+    default and 3.12+ warns without it. Pythons older than 3.10.12 / 3.11.4
+    have no filters, so there the members are checked by hand first (links
+    and devices refused outright; AA's archives carry neither).
+    """
+    if hasattr(tarfile, "data_filter"):
+        tf.extractall(dest, filter="data")
+        return
+    root = dest.resolve()
+    for member in tf.getmembers():
+        target = (dest / member.name).resolve()
+        if target != root and root not in target.parents:
+            raise InstallError(f"Refusing an archive entry outside {dest}: {member.name!r}")
+        if member.issym() or member.islnk() or member.isdev():
+            raise InstallError(f"Refusing an archive entry that is a link or device: {member.name!r}")
+    tf.extractall(dest)
+
+
 #: Optional extras and whether they can install on a given machine.
 #: Measured 2026-10 against uv.lock (the prompt's census): torch's only
 #: macOS wheels are arm64/macOS 14+; vosk has no macOS wheel;
@@ -444,7 +466,7 @@ class InstallEngine:
                 zf.extractall(dest)
         else:
             with tarfile.open(archive) as tf:
-                tf.extractall(dest)
+                _extract_tar_safely(tf, dest)
         binary = self._uv_binary()
         if not binary.exists():
             for child in sorted(dest.iterdir()):
