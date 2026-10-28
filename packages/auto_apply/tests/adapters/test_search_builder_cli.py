@@ -196,6 +196,72 @@ def test_format_result_lines_renders_refusal_notes_when_nothing_built__teeth() -
     assert lines == ["  no site limit exists"]
 
 
+def test_format_result_lines_translates_notes_and_falls_back__teeth() -> None:
+    """TEETH: a note with a message_key is translated using the injected
+    translator, substituting its parameters. A missing key falls back to the
+    English message. Mutation caught: ignoring message_key, failing to pass
+    kwargs, or failing to fall back."""
+    result = QueryResult(
+        surface="google", display_name="Google", bar_text=None, url=None,
+        notes=(
+            QueryNote(
+                severity="info",
+                topic="location",
+                message="Fallback Paris",
+                message_key="builder.note.location",
+                message_params=(("location", "Paris"),),
+            ),
+            QueryNote(
+                severity="info",
+                topic="other",
+                message="Fallback Other",
+                message_key="builder.note.missing",
+                message_params=(),
+            ),
+        ),
+    )
+    def fake_translate(key):
+        if key == "builder.note.location":
+            return "Translated {location}"
+        return key
+
+    lines = format_result_lines(result, translate=fake_translate)
+    assert lines == ["  Translated Paris", "  Fallback Other"]
+
+
+def test_a_note_renders_in_spanish_through_the_real_locale__teeth(tmp_path) -> None:
+    """TEETH: the location note renders in Spanish through the real locale
+    and the shared helper - what a person sees in the CLI. Mutation caught:
+    format_result_lines printing note.message again (the English sentence),
+    or the es.json template missing."""
+    from auto_apply.application.services.i18n import configure_locale  # noqa: PLC0415
+
+    result = _service(tmp_path).build_query(
+        build_request(surface="google", terms="Software Engineer", location="Seattle, WA")
+    )
+    try:
+        configure_locale(language="es")
+        text = "\n".join(format_result_lines(result, translate=get_text))
+    finally:
+        configure_locale(language="en")  # restore default for other tests
+    assert "no tiene lugar para una ubicación" in text
+    assert "Seattle, WA" in text
+    assert "has no place for a location" not in text
+
+
+def test_a_template_that_cannot_be_filled_falls_back_to_english__teeth() -> None:
+    """TEETH (never a raw key, never a crash): a locale template naming a
+    value the note does not carry falls back to the English sentence.
+    Mutation caught: the KeyError guard in note_text removed."""
+    result = QueryResult(
+        surface="google", display_name="Google", bar_text=None, url=None,
+        notes=(QueryNote(severity="info", topic="location", message="English sentence",
+                         message_key="builder.note.x", message_params=(("a", "1"),)),),
+    )
+    lines = format_result_lines(result, translate=lambda key: "Needs {b}")
+    assert lines == ["  English sentence"]
+
+
 def test_resolved_remember_request_folds_site_only__teeth() -> None:
     """TEETH (remembered platform/company queries are stored resolved).
     Mutation caught: folding anything but `site`, or folding an empty

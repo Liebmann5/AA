@@ -91,7 +91,7 @@ from auto_apply.adapters.primary.gui.dashboard import Dashboard as GUIDashboard
 from auto_apply.adapters.primary.gui.research_window import ResearchWindow
 from auto_apply.adapters.primary.gui.search_window import SearchBuilderWindow
 from auto_apply.adapters.primary.gui.settings_editor import SettingsEditor
-from auto_apply.adapters.primary.gui.strings import get_strings
+from auto_apply.adapters.primary.gui.strings import get_strings, locale_text
 from auto_apply.adapters.primary.gui.wizard import SessionConfigWizard as GUIWizard
 from auto_apply.application.services.profile_validator import TEMPLATE_PROFILE_NAME
 from auto_apply.application.services.ui_schema import UIField, build_ui_schema
@@ -765,7 +765,9 @@ class AutoApplyApp(tk.Tk):
         if builder is None:
             builder = build_query_builder(self.profile)
         strings = get_strings()
-        SearchBuilderWindow(self, builder, translate=lambda key: strings.get(key, key))
+        SearchBuilderWindow(
+            self, builder, translate=lambda key: strings.get(key) or locale_text(key)
+        )
 
     # =====================================================================
     # LIFECYCLE (Install / Repair…, Uninstall…)

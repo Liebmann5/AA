@@ -174,6 +174,28 @@
       "bar": "Texto de la barra de búsqueda",
       "link": "Enlace"
     },
+    "note": {
+      "site_no_typed": "{surface} no tiene forma de limitar una búsqueda escrita a un solo sitio, por lo que no se escribió texto de búsqueda ni enlace — una sin el límite del sitio sería una búsqueda diferente.",
+      "any_of_no_typed": "{surface} no tiene forma de decir 'cualquiera de estos' en su barra de búsqueda, por lo que no se escribió texto de búsqueda ni enlace.",
+      "exclude_no_typed": "{surface} no tiene forma de excluir palabras en su barra de búsqueda, por lo que no se escribió texto de búsqueda ni enlace.",
+      "intitle_no_typed": "{surface} no tiene filtro de título en su barra de búsqueda, por lo que no se escribió texto de búsqueda ni enlace.",
+      "phrase_no_quotes": "{surface} no tiene uso de comillas para frases exactas; su frase se escribió sin comillas.",
+      "length": "Esa búsqueda tiene {count} palabras; se reporta que {surface} deja de leer después de {limit}{source}. No se escribió nada — reducirla no sería la búsqueda que usted pidió.",
+      "template_missing": "{surface} no tiene un formulario de enlace llamado '{template}'. Opciones: {choices}.",
+      "phrase_url_unverified": "{surface} no tiene uso de comillas para frases exactas que AA pueda verificar, por lo que sus palabras se incluyeron en el enlace sin comillas.",
+      "options_empty": "La configuración sin ningún término de búsqueda no genera un enlace, por lo que no se aplicó.",
+      "empty": "No hay nada que construir todavía — agregue al menos un término.",
+      "location_unsupported": "{surface} no tiene lugar para una ubicación, por lo que '{location}' se omitió de la búsqueda. Agregue el lugar a sus palabras de búsqueda, o elija una superficie que acepte ubicación.",
+      "option_not_offered": "La configuración '{option}' de {surface} no se ofrece: {explanation}",
+      "option_missing": "{surface} no tiene configuración '{option}', por lo que se omitió.",
+      "option_invalid_value": "'{value}' no es un valor que la configuración '{option}' de {surface} pueda llevar.",
+      "option_invalid_choice": "'{value}' no es una opción para {label}. Opciones: {choices}.",
+      "option_url_only_with_note": "{label} no se puede escribir en la barra de búsqueda de {surface} — el enlace lo lleva. {note}",
+      "option_url_only": "{label} no se puede escribir en la barra de búsqueda de {surface} — el enlace lo lleva.",
+      "unexpressible": "{surface} no tiene forma de llevar {unexpressible}, por lo que no se escribió texto de búsqueda ni enlace — una sin esto sería una búsqueda diferente.",
+      "no_typed_form": "{surface} no tiene un formulario de búsqueda escrito que AA pueda escribir por usted — el enlace a continuación es la forma de usarlo.",
+      "company_unknown_platform": "Esa dirección no pertenece a una plataforma de contratación que AA conozca, por lo que no se construyó ninguna búsqueda."
+    },
     "platform": {
       "unverified": "Sin verificar: el mecanismo de búsqueda está documentado, pero aún no se sabe qué parte de esta plataforma alcanza. Abra el enlace usted mismo y compruebe que los resultados provienen de la plataforma; la guía del usuario muestra cómo informar del resultado.",
       "third_party": "Reportado por otros; AA no lo ha comprobado."

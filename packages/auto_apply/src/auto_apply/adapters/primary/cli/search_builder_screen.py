@@ -58,8 +58,8 @@ def _parse_options(raw: list[str] | None) -> tuple[tuple[str, str], ...]:
 
 
 def _render(result) -> None:
-    """Print the result: labels through the locale, notes verbatim (they are
-    the composer's plain-language sentences)."""
+    """Print the result: labels and notes through the locale, with English
+    sentences as fallbacks."""
     for line in format_result_lines(result, translate=get_text):
         print(line)  # noqa: T201
 

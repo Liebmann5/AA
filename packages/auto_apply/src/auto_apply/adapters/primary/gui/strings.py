@@ -27,6 +27,15 @@ def _tr(key: str, default: str) -> str:
     return value if value and value != key else default
 
 
+def locale_text(key: str) -> str:
+    """The active locale's text for *key*, or *key* itself when it has none.
+
+    For text the window does not list in get_strings(), such as the query
+    builder's note templates: the caller falls back when it gets the key back.
+    """
+    return _tr(key, key)
+
+
 def get_strings(lang_code: str | None = None) -> dict[str, str]:
     """Returns a flat dict of UI labels for the given locale.
 

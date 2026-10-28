@@ -309,9 +309,10 @@ class QueryBuilderService:
                         severity="refused",
                         topic="platform",
                         message=(
-                            "that address is not on a hiring platform AA "
+                            "That address is not on a hiring platform AA "
                             "knows, so no search was built."
                         ),
+                        message_key="builder.note.company_unknown_platform",
                     ),
                 ),
             )

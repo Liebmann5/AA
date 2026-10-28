@@ -43,6 +43,8 @@ class QueryNote(_Frozen):
     severity: Literal["info", "refused"]
     topic: str
     message: str
+    message_key: str = ""
+    message_params: tuple[tuple[str, str], ...] = ()
 
 
 class QueryResult(_Frozen):
@@ -174,9 +176,12 @@ def format_result_lines(
 ) -> list[str]:
     """The result as display lines.
 
-    Notes render verbatim: they are the composer's plain-language sentences
-    and carry their own wording. The two labels are locale-dependent, so the
-    caller injects its translator; the default returns keys unchanged.
+    The translator takes one key and returns the locale's text for it (or
+    the key itself when the locale lacks it). Labels render through it
+    directly. A note with a message_key renders from its locale template,
+    filled with the note's own values; a missing key, or a template that
+    cannot be filled, falls back to the note's English sentence, so a note
+    is never blank and never a raw key.
     """
     lines: list[str] = []
     if result.bar_text is not None:
@@ -184,8 +189,20 @@ def format_result_lines(
     if result.url is not None:
         lines.append(f"{translate('builder.result.link')}: {result.url}")
     for note in result.notes:
-        lines.append(f"  {note.message}")
+        lines.append(f"  {note_text(note, translate)}")
     return lines
+
+
+def note_text(note: QueryNote, translate: Callable[[str], str]) -> str:
+    """One note in the active locale, or its English sentence."""
+    if note.message_key:
+        template = translate(note.message_key)
+        if template and template != note.message_key:
+            try:
+                return template.format(**dict(note.message_params))
+            except (KeyError, IndexError, ValueError):
+                pass
+    return note.message
 
 
 def resolved_remember_request(
