@@ -22,6 +22,14 @@ from its first tag onward.
 
 ### Added
 
+- **The query builder's notes follow the user's language.** Every note the
+  composer or the builder service writes now carries a locale key and its
+  values (`QueryNote.message_key`, `message_params`); both surfaces render it
+  from `en.json` / `es.json` through the shared `format_result_lines`, and
+  fall back to the English sentence (still in `message`) when a key is
+  missing. Still English for now: the item names inside the "cannot carry"
+  refusal, `QueryBuilderError` messages, and the catalog's own labels and
+  explanations.
 - **The query builder is finished: the GUI window, one vocabulary on both
   surfaces, and the last silent drops said aloud.** File → Build a Search…
   offers everything the CLI offers (engine, platform and company searches,

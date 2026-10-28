@@ -212,6 +212,28 @@
       "bar": "Search bar text",
       "link": "Link"
     },
+    "note": {
+      "site_no_typed": "{surface} has no way to limit a typed search to one site, so no search text or link was written — one without the site limit would be a different search.",
+      "any_of_no_typed": "{surface} has no way to say 'any of these' in its search bar, so no search text or link was written.",
+      "exclude_no_typed": "{surface} has no way to exclude words in its search bar, so no search text or link was written.",
+      "intitle_no_typed": "{surface} has no title filter in its search bar, so no search text or link was written.",
+      "phrase_no_quotes": "{surface} has no exact-phrase quoting; your phrase was written without quotes.",
+      "length": "That search is {count} words; {surface} is reported to stop reading after {limit}{source}. Nothing was written — cutting it down would not be the search you asked for.",
+      "template_missing": "{surface} has no link form called '{template}'. Choices: {choices}.",
+      "phrase_url_unverified": "{surface} has no exact-phrase quoting AA can verify, so your words went into the link without quotes.",
+      "options_empty": "Settings without any search terms make no link, so they were not applied.",
+      "empty": "Nothing to build yet — add at least one term.",
+      "location_unsupported": "{surface} has no place for a location, so '{location}' was left out of the search. Add the place to your search words, or pick a surface that takes a location.",
+      "option_not_offered": "{surface}'s '{option}' setting is not offered: {explanation}",
+      "option_missing": "{surface} has no '{option}' setting, so it was left out.",
+      "option_invalid_value": "'{value}' is not a value {surface}'s '{option}' setting can carry.",
+      "option_invalid_choice": "'{value}' is not a choice for {label}. Choices: {choices}.",
+      "option_url_only_with_note": "{label} cannot be typed into {surface}'s search bar — the link carries it. {note}",
+      "option_url_only": "{label} cannot be typed into {surface}'s search bar — the link carries it.",
+      "unexpressible": "{surface} has no way to carry {unexpressible}, so no search text or link was written — one without it would be a different search.",
+      "no_typed_form": "{surface} has no typed search form AA can write for you — the link below is the way to use it.",
+      "company_unknown_platform": "That address is not on a hiring platform AA knows, so no search was built."
+    },
     "platform": {
       "unverified": "Unverified: the search mechanism is documented, but how much of this platform it reaches is not yet known. Open the link yourself and check that results come from the platform; the user guide shows how to report the outcome.",
       "third_party": "Reported by others; AA has not checked it."

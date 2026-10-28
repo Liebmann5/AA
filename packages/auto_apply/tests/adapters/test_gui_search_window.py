@@ -160,3 +160,26 @@ def test_window_announces_and_closes_accessibly():
     assert "WM_DELETE_WINDOW" in source
     assert "takefocus=True" in source
     assert "_status_var.set" in source
+
+
+def test_gui_notes_follow_the_locale_and_never_crash__teeth(tmp_path):
+    """TEETH: the GUI's translator path (window labels first, then the
+    locale) renders a note with values in Spanish, without raising. Mutation
+    caught: a translator contract that passes values the GUI's one-argument
+    translator cannot take (it raised TypeError), or notes left in English
+    because the GUI translator only knew the window's labels."""
+    from auto_apply.adapters.primary.gui.strings import locale_text  # noqa: PLC0415
+    from auto_apply.application.services.i18n import configure_locale  # noqa: PLC0415
+
+    result = _service(tmp_path / "recent.json").build_query(
+        build_request(surface="google", terms="Software Engineer", location="Seattle, WA")
+    )
+    labels = {"builder.result.bar": "Texto", "builder.result.link": "Enlace"}
+    try:
+        configure_locale(language="es")
+        lines = gw.result_lines(result, lambda key: labels.get(key) or locale_text(key))
+    finally:
+        configure_locale(language="en")  # restore default for other tests
+    text = "\n".join(lines)
+    assert "no tiene lugar para una ubicación" in text
+    assert "Seattle, WA" in text

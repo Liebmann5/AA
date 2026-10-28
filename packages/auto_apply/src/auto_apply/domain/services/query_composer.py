@@ -73,12 +73,24 @@ def _clean_site(text: str) -> str:
     return site.strip().rstrip("/")
 
 
-def _info(topic: str, message: str) -> QueryNote:
-    return QueryNote(severity="info", topic=topic, message=message)
+def _info(topic: str, message: str, message_key: str = "", **kwargs: str) -> QueryNote:
+    return QueryNote(
+        severity="info",
+        topic=topic,
+        message=message,
+        message_key=message_key,
+        message_params=tuple(kwargs.items()),
+    )
 
 
-def _refused(topic: str, message: str) -> QueryNote:
-    return QueryNote(severity="refused", topic=topic, message=message)
+def _refused(topic: str, message: str, message_key: str = "", **kwargs: str) -> QueryNote:
+    return QueryNote(
+        severity="refused",
+        topic=topic,
+        message=message,
+        message_key=message_key,
+        message_params=tuple(kwargs.items()),
+    )
 
 
 def _offered_operators(spec: SearchSurfaceSpec) -> dict[str, OperatorSpec]:
@@ -132,24 +144,32 @@ def _compose_bar(
             f"{spec.display_name} has no way to limit a typed search to one "
             "site, so no search text or link was written — one without the "
             "site limit would be a different search.",
+            message_key="builder.note.site_no_typed",
+            surface=spec.display_name,
         )], True
     if request.any_of and ("any_of" not in ops or not tq.or_token):
         return None, [_refused(
             "any_of",
             f"{spec.display_name} has no way to say 'any of these' in its "
             "search bar, so no search text or link was written.",
+            message_key="builder.note.any_of_no_typed",
+            surface=spec.display_name,
         )], True
     if request.exclude and "exclude" not in ops:
         return None, [_refused(
             "exclude",
             f"{spec.display_name} has no way to exclude words in its search "
             "bar, so no search text or link was written.",
+            message_key="builder.note.exclude_no_typed",
+            surface=spec.display_name,
         )], True
     if request.in_title and "intitle" not in ops:
         return None, [_refused(
             "intitle",
             f"{spec.display_name} has no title filter in its search bar, so "
             "no search text or link was written.",
+            message_key="builder.note.intitle_no_typed",
+            surface=spec.display_name,
         )], True
 
     quote = tq.phrase_quote
@@ -159,6 +179,8 @@ def _compose_bar(
             "phrase",
             f"{spec.display_name} has no exact-phrase quoting; your phrase "
             "was written without quotes.",
+            message_key="builder.note.phrase_no_quotes",
+            surface=spec.display_name,
         ))
     for phrase in request.phrases:
         content = _clean_content(phrase)
@@ -204,6 +226,11 @@ def _compose_bar(
             f"is reported to stop reading after {tq.max_words}{source}. "
             "Nothing was written — cutting it down would not be the search "
             "you asked for.",
+            message_key="builder.note.length",
+            count=str(len(bar.split())),
+            surface=spec.display_name,
+            limit=str(tq.max_words),
+            source=source,
         ))
         return None, notes, True
     return bar, notes, False
@@ -235,6 +262,10 @@ def _compose_url(
             "template",
             f"{spec.display_name} has no link form called '{template_name}'. "
             f"Choices: {', '.join(spec.urls)}.",
+            message_key="builder.note.template_missing",
+            surface=spec.display_name,
+            template=template_name,
+            choices=", ".join(spec.urls),
         )]
 
     if bar is not None:
@@ -255,6 +286,8 @@ def _compose_url(
                 "phrase",
                 f"{spec.display_name} has no exact-phrase quoting AA can "
                 "verify, so your words went into the link without quotes.",
+                message_key="builder.note.phrase_url_unverified",
+                surface=spec.display_name,
             ))
         bits.extend(normalize_confusables(t) for t in request.required)
         # Every restriction a surface cannot carry stops the link in
@@ -267,9 +300,14 @@ def _compose_url(
                 "options",
                 "Settings without any search terms make no link, so they were "
                 "not applied.",
+                message_key="builder.note.options_empty",
             ))
         else:
-            notes.append(_info("empty", "Nothing to build yet — add at least one term."))
+            notes.append(_info(
+                "empty",
+                "Nothing to build yet — add at least one term.",
+                message_key="builder.note.empty",
+            ))
         return None, notes
 
     # Empty parameters are never written (an empty "l=" claims a location
@@ -294,6 +332,9 @@ def _compose_url(
             f"{request.location!r} was left out of the search. "
             "Add the place to your search words, or pick a surface that "
             "takes a location.",
+            message_key="builder.note.location_unsupported",
+            surface=spec.display_name,
+            location=request.location,
         ))
 
     for key, value in request.options:
@@ -305,11 +346,18 @@ def _compose_url(
                     key,
                     f"{spec.display_name}'s '{key}' setting is not offered: "
                     f"{known.explanation}",
+                    message_key="builder.note.option_not_offered",
+                    surface=spec.display_name,
+                    option=key,
+                    explanation=known.explanation,
                 ))
             else:
                 notes.append(_refused(
                     key,
                     f"{spec.display_name} has no '{key}' setting, so it was left out.",
+                    message_key="builder.note.option_missing",
+                    surface=spec.display_name,
+                    option=key,
                 ))
             continue
         if opt.free_form:
@@ -319,6 +367,10 @@ def _compose_url(
                     key,
                     f"'{value}' is not a value {spec.display_name}'s '{key}' "
                     "setting can carry.",
+                    message_key="builder.note.option_invalid_value",
+                    surface=spec.display_name,
+                    option=key,
+                    value=value,
                 ))
                 continue
             code = cleaned
@@ -328,6 +380,10 @@ def _compose_url(
                 notes.append(_refused(
                     key,
                     f"'{value}' is not offered for {opt.label}. Choices: {choices}.",
+                    message_key="builder.note.option_invalid_choice",
+                    label=opt.label,
+                    value=value,
+                    choices=choices,
                 ))
                 continue
             looked_up = opt.codes.get(value)
@@ -338,6 +394,10 @@ def _compose_url(
                 notes.append(_refused(
                     key,
                     f"'{value}' is not a choice for {opt.label}. Choices: {choices}.",
+                    message_key="builder.note.option_invalid_choice",
+                    label=opt.label,
+                    value=value,
+                    choices=choices,
                 ))
                 continue
             code = looked_up
@@ -356,12 +416,19 @@ def _compose_url(
                 key,
                 f"{opt.label} cannot be typed into {spec.display_name}'s "
                 f"search bar — the link carries it. {opt.typed_equivalent_note}",
+                message_key="builder.note.option_url_only_with_note",
+                label=opt.label,
+                surface=spec.display_name,
+                note=opt.typed_equivalent_note,
             ))
         elif opt.channel == "url":
             notes.append(_info(
                 key,
                 f"{opt.label} cannot be typed into {spec.display_name}'s "
                 "search bar — the link carries it.",
+                message_key="builder.note.option_url_only",
+                label=opt.label,
+                surface=spec.display_name,
             ))
 
     return f"{template.base}?{urlencode(params)}", notes
@@ -399,6 +466,9 @@ def compose(request: QueryRequest, spec: SearchSurfaceSpec) -> QueryResult:
                 f"{spec.display_name} has no way to carry "
                 f"{', '.join(unexpressible)}, so no search text or link was "
                 "written — one without it would be a different search.",
+                message_key="builder.note.unexpressible",
+                surface=spec.display_name,
+                unexpressible=", ".join(unexpressible),
             ))
             hard_stop = True
         elif request.phrases or request.required:
@@ -406,6 +476,8 @@ def compose(request: QueryRequest, spec: SearchSurfaceSpec) -> QueryResult:
                 "bar",
                 f"{spec.display_name} has no typed search form AA can write for "
                 "you — the link below is the way to use it.",
+                message_key="builder.note.no_typed_form",
+                surface=spec.display_name,
             ))
 
     url: str | None = None
@@ -414,7 +486,11 @@ def compose(request: QueryRequest, spec: SearchSurfaceSpec) -> QueryResult:
         notes.extend(url_notes)
 
     if bar is None and url is None and not notes:
-        notes.append(_info("empty", "Nothing to build yet — add at least one term."))
+        notes.append(_info(
+            "empty",
+            "Nothing to build yet — add at least one term.",
+            message_key="builder.note.empty",
+        ))
 
     return QueryResult(
         surface=spec.name,
