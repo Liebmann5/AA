@@ -123,7 +123,8 @@ def _tool(driver):
 @pytest.mark.browser
 class TestProbeOnRealChrome:
     @pytest.fixture(scope="class")
-    def driver(self):
+    @classmethod
+    def driver(cls):
         try:
             from selenium import webdriver
             from selenium.webdriver.chrome.options import Options
@@ -210,7 +211,8 @@ class TestAdvancerOnRealChrome:
     """
 
     @pytest.fixture(scope="class")
-    def driver(self):
+    @classmethod
+    def driver(cls):
         try:
             from selenium import webdriver
             from selenium.webdriver.chrome.options import Options

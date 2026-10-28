@@ -330,7 +330,8 @@ class TestMultiPageLiveRun:
     """
 
     @pytest.fixture(scope="class")
-    def driver(self):
+    @classmethod
+    def driver(cls):
         try:
             from selenium import webdriver
             from selenium.webdriver.chrome.options import Options

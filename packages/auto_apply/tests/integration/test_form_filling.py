@@ -208,7 +208,8 @@ class TestBrowserFormFilling:
     """
 
     @pytest.fixture(scope="class")
-    def driver(self):
+    @classmethod
+    def driver(cls):
         """Create a Selenium Chrome driver pointing at the mock fixture."""
         try:
             from selenium import webdriver

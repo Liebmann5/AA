@@ -23,6 +23,7 @@ from auto_apply.application.services.install.bootstrap_pins import (
     uv_download_url,
     uv_target,
 )
+from auto_apply.application.services.install import engine as install_engine
 from auto_apply.application.services.install.engine import (
     InstallEngine,
     InstallEnvironment,
@@ -563,3 +564,43 @@ def test_bat_launcher_resolves_its_root(tmp_path: Path) -> None:
     InstallEngine(env).execute(InstallEngine(env).build_plan())
     bat = (env.root / "bin" / "auto-apply.bat").read_bytes().decode("ascii")
     assert 'for %%I in ("%~dp0..") do set "AA_ROOT=%%~fI"' in bat
+
+
+def test_tar_extraction_refuses_an_entry_outside_the_destination__teeth(tmp_path: Path) -> None:
+    """TEETH: an archive entry named "../escaped.txt" is refused and nothing
+    lands outside the destination. Mutation caught: _extract_tar_safely back
+    to a bare tf.extractall(dest), which writes the file one level up on
+    Pythons before 3.14."""
+    archive = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        data = b"x"
+        info = tarfile.TarInfo("../escaped.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with tarfile.open(archive) as tf, pytest.raises((tarfile.TarError, InstallError)):
+        install_engine._extract_tar_safely(tf, dest)
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_tar_extraction_names_its_filter__guard(tmp_path: Path) -> None:
+    """GUARD: extracting an ordinary archive raises no DeprecationWarning (3.12+
+    warns when no extraction filter is named). Mutation caught on 3.12+: the
+    filter argument dropped."""
+    import warnings  # noqa: PLC0415
+
+    archive = tmp_path / "ok.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        data = b"uv"
+        info = tarfile.TarInfo("uv-dir/uv")
+        info.size = len(data)
+        info.mode = 0o755
+        tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        with tarfile.open(archive) as tf:
+            install_engine._extract_tar_safely(tf, dest)
+    assert (dest / "uv-dir" / "uv").read_bytes() == b"uv"

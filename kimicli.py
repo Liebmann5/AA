@@ -2919,6 +2919,10 @@ class StageSummary:
     changed_lines: int = 0
     philosophy_check: bool = True
     reply_shape: List[str] = field(default_factory=list)
+    # True when this turn's blocks fail on their own but the session applies
+    # cleanly as a whole (latest emission per file across every turn) - the
+    # way --apply-fixes <session> applies it. None: no earlier turns to merge.
+    merged_ok: Optional[bool] = None
 
 
 PHILOSOPHY_CHECK_RE = re.compile(r"^[#>*\s_\d.)]*PHILOSOPHY CHECK\b", re.I | re.M)
@@ -3228,12 +3232,52 @@ def stage_turn(session: "Session", turn: int, reply: str, finish_reason: Optiona
         summary.preview_path = session.dir / f"preview_turn{turn}.diff"
         summary.changed_lines = trial.write_preview(plans, summary.preview_path)
     errors = [p for p in all_parse if p.severity == "error"]
-    if errors or any(pl.problems for pl in plans):
+    if any(pl.problems for pl in plans) and not errors:
+        summary.merged_ok = session_applies_cleanly(session, turn)
+    if errors or (any(pl.problems for pl in plans) and not summary.merged_ok):
         body = build_repair_prompt([pl for pl in plans if pl.problems], errors, turn)
         if body:
             summary.repair_path = session.dir / f"repair_turn{turn}.md"
             atomic_write(summary.repair_path, body + f"\n[kimicli-repair-of-turn: {turn}]\n")
     return summary
+
+
+def session_applies_cleanly(session: "Session", turn: int) -> Optional[bool]:
+    """Whether the whole session - latest emission per file across every turn,
+    exactly what --apply-fixes <session> applies - resolves against the tree.
+
+    A turn judged alone fails when it relies on an earlier turn of the same
+    session: an import of a name an earlier turn added, an edit to a file an
+    earlier turn created. None when there is no earlier turn to merge with."""
+    if not any(int(r.get("turn", 0)) < turn for r in session.rows()):
+        return None
+    try:
+        props, blocking, _info = load_session_proposals(session)
+        trial = Applier(PROJECT_ROOT, BACKUP_DIR,
+                        ApplyOptions(allow_new_files=True, allow_new_dirs=True))
+        return not blocking and not any(pl.problems for pl in trial.validate(props))
+    except Exception as exc:                       # never let the check itself block staging
+        logger.warning("merged-session check failed: %s", exc)
+        return None
+
+
+def free_skip_command(s: StageSummary, session_id: str) -> Optional[str]:
+    """The no-cost way forward when only some files fail: apply the rest now
+    with --skip and fix the failing files by hand. None when skipping cannot
+    help - a parse error (a cut-off reply, a malformed block) or no file that
+    applies."""
+    pr = s.parse
+    if any(p.severity == "error" for p in pr.problems + s.group_problems):
+        return None
+    failing = [pl for pl in s.plans if pl.problems]
+    fine = [pl for pl in s.plans if not pl.problems and pl.action != "identical"]
+    if not failing or not fine:
+        return None
+    flag = " --allow-new-files" if any(pl.action == "create" for pl in fine) else ""
+    if any(pl.dirs_to_create for pl in fine if pl.action == "create"):
+        flag += " --allow-new-dirs"
+    skips = " ".join(f"--skip {pl.rel or pl.proposal.raw_path}" for pl in failing)
+    return f"python kimicli.py --apply-fixes {session_id} --dry-run{flag} {skips}"
 
 
 def _key_or_none(path: Optional[str]) -> Optional[str]:
@@ -3311,10 +3355,24 @@ def print_stage_summary(s: StageSummary, session: "Session") -> None:
     if s.preview_path:
         print(f"\n  preview diff: {_rel_display(s.preview_path)}   ({s.changed_lines} changed lines)")
     news = [pl for pl in s.plans if pl.action == "create" and not pl.problems]
-    if s.repair_path:
+    if s.merged_ok and not s.repair_path:
+        print("\n  These blocks fail on their own but the session applies cleanly as a whole:")
+        print("  they rely on an earlier turn of this session, and --apply-fixes <session>")
+        print("  applies every turn together (latest emission per file). Next:")
+        print(f"\n    python kimicli.py --apply-fixes {session.id} --dry-run --allow-new-files")
+    elif s.repair_path:
         print("\n  NOT APPLICABLE AS-IS. Nothing will be written until this is fixed.")
-        print("  Send the ready-made repair NOW, while the cache is warm (a resume within minutes")
-        print("  is ~95% cached):")
+        free = free_skip_command(s, session.id)
+        if free:
+            n_fail = sum(1 for pl in s.plans if pl.problems)
+            print(f"  Free: apply everything else now, and fix the {n_fail} failing file(s) by hand")
+            print("  (or with a small script):")
+            print(f"\n    {free}")
+            print("\n  Or paid: send the ready-made repair NOW, while the cache is warm (a resume")
+            print("  within minutes is ~95% cached, but still billed):")
+        else:
+            print("  Send the ready-made repair NOW, while the cache is warm (a resume within minutes")
+            print("  is ~95% cached):")
         print(f"\n    python kimicli.py --resume {session.id} --prompt "
               f"{_rel_display(s.repair_path)} --request-code")
     elif s.plans and any(pl.changes for pl in s.plans):
@@ -5100,6 +5158,43 @@ def absent_function():
             check("thinking.md carries one TURN separator per call, matching transcript.md",
                   tr_marks == ["1", "2"] and "- YOU" not in th
                   and th.index("reasoning 1") < th.index("== TURN 2"), str(tr_marks))
+
+            # g) a turn that relies on an earlier turn is judged with it: it
+            # fails alone, the session applies as a whole, and no paid repair
+            # is offered
+            s = Session("selftest_g")
+            s.messages, s.turn = sys_msgs + [{"role": "user", "content": "q"}], 2
+            s.save()
+            with contextlib.redirect_stdout(quiet):
+                stage_turn(s, 1, "### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n"
+                           "    return 42\n\n\ndef added():\n    return 1\n>>>>>>> REPLACE\n\n"
+                           "### END CHANGES\n", "stop")
+                sg = stage_turn(s, 2, "### FILE: pkg/uses_added.py\n```python\n"
+                                "from pkg.lib import added\n\nVALUE = added()\n```\n\n"
+                                "### END CHANGES\n", "stop")
+            alone_fails = any(pl.problems for pl in sg.plans)
+            check("a turn relying on an earlier turn of the session is judged with it, not alone: "
+                  "no paid repair is offered when the session applies as a whole",
+                  alone_fails and sg.merged_ok is True and sg.repair_path is None,
+                  f"alone_fails={alone_fails} merged_ok={sg.merged_ok} repair={sg.repair_path}")
+
+            # h) when only some files fail, the free route (--skip) is offered
+            # before the paid repair; never when the reply itself is broken
+            s = Session("selftest_h")
+            s.messages, s.turn = sys_msgs + [{"role": "user", "content": "q"}], 1
+            s.save()
+            with contextlib.redirect_stdout(quiet):
+                sh = stage_turn(s, 1, "### EDIT: pkg/lib.py\n<<<<<<< SEARCH\n    return 42\n=======\n"
+                                "    return 43\n>>>>>>> REPLACE\n\n### EDIT: notes.md\n<<<<<<< SEARCH\n"
+                                "No such line\n=======\nNew\n>>>>>>> REPLACE\n\n### END CHANGES\n", "stop")
+            free = free_skip_command(sh, "selftest_h")
+            broken = StageSummary(turn=1, parse=ParseResult(), group_problems=[
+                ParseProblem(0, "cut off", severity="error")], plans=sh.plans)
+            check("when only some files fail, the free --skip route is offered before a paid repair; "
+                  "never when the reply itself is broken",
+                  sh.repair_path is not None and free is not None and "--skip notes.md" in free
+                  and "pkg/lib.py" not in free.split("--dry-run", 1)[1]
+                  and free_skip_command(broken, "x") is None, str(free))
         finally:
             g.update(saved_paths)
 
