@@ -222,8 +222,8 @@ class GoogleProvider(BaseSearchProvider):
             The URL of the career page, or None if not found.
         """
         site_filters = _ats_site_filters(self._ats_registry)
-        site_query = " OR ".join(f"site:{d}" for d in site_filters)
-        query = f"{company_name} careers ({site_query} OR site:{company_name}.com)"
+        parts = [f"site:{d}" for d in site_filters] + [f"site:{company_name}.com"]
+        query = f"{company_name} careers ({' OR '.join(parts)})"
         encoded_query = urllib.parse.quote_plus(query)
         search_url = (
             f"https://www.google.com/search?q={encoded_query}&hl=en&gl=us"
@@ -263,21 +263,29 @@ class GoogleProvider(BaseSearchProvider):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _ats_site_filters(registry) -> list[str]:
-    """Returns root domains for all loaded ATS descriptors.
+    """Returns the site: search domains for all loaded ATS descriptors.
 
-    Extracts the last two dot‑separated parts of each descriptor's first URL
-    pattern hostname (e.g. ``*.greenhouse.io/jobs/*`` → ``greenhouse.io``).
-    Falls back to a hardcoded list when no registry is provided or when
-    domain extraction yields no results.
+    Reads each descriptor's declared ``hosts`` field — the platform's own
+    domains, written deliberately in the YAML. When a descriptor declares no
+    hosts, the root domain is derived from its URL patterns as a fallback.
+
+    There is deliberately NO fabricated fallback list: the old code named
+    ``workday.com`` while the workday descriptor's hosts say
+    ``myworkdayjobs.com`` — an invented answer where a real one exists. No
+    registry means no filters (an empty list), never an invented one.
     """
-    _FALLBACK = ["greenhouse.io", "lever.co", "workday.com", "ashbyhq.com"]
-
     if registry is None:
-        return _FALLBACK
+        return []
 
     domains: list[str] = []
     seen: set[str] = set()
     for descriptor in registry.all_descriptors():
+        for host in descriptor.hosts:
+            if host not in seen:
+                seen.add(host)
+                domains.append(host)
+        if descriptor.hosts:
+            continue
         for pattern in descriptor.url_patterns:
             host = pattern.split("/")[0].lstrip("*").lstrip(".")
             parts = host.split(".")
@@ -286,6 +294,6 @@ def _ats_site_filters(registry) -> list[str]:
                 if root not in seen:
                     seen.add(root)
                     domains.append(root)
-                    break  # one root domain per descriptor is enough
+                break  # one derived root per descriptor is enough
 
-    return domains or _FALLBACK
+    return domains

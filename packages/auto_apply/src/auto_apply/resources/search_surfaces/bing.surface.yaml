@@ -1,0 +1,131 @@
+# Bing — what this search surface accepts. See google.surface.yaml for the
+# verification levels.
+name: bing
+display_name: Bing
+kind: engine
+homepage: "https://www.bing.com"
+summary: "Microsoft's search engine. Typed operators are vendor documented; the date filter is not."
+usage_note: ""
+
+text_query:
+  or_token: "OR"
+  or_uppercase: true
+  phrase_quote: '"'
+  subject_group: "({content})"
+  exclude_prefix: "-"
+
+urls:
+  web:
+    base: "https://www.bing.com/search"
+    parameters:
+      - {name: q, source: query}
+  jobs:
+    base: "https://www.bing.com/jobs"
+    parameters:
+      - {name: q, source: query}
+    date_parameter: filters
+default_url: jobs
+automation_url: jobs
+
+operators:
+  - name: site
+    label: "Only this site"
+    explanation: "Shows results only from the site you name. A folder works up to two levels deep, for example site:example.com/careers."
+    syntax: "site:{value}"
+    channel: typed
+    accepts: domain_or_path
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+  - name: phrase
+    label: "Exact words"
+    explanation: "Results must contain these words in exactly this order."
+    syntax: '"{value}"'
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+  - name: exclude
+    label: "Without this"
+    explanation: "Results must not contain this word or phrase."
+    syntax: "-{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+  - name: any_of
+    label: "Any of these"
+    explanation: "Results can match any one of these. Written as (A OR B); OR must be capital letters."
+    syntax: "({content})"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+    caveats:
+      - "OR must be capital letters; a lower-case 'or' is read as an ordinary word."
+  - name: intitle
+    label: "Word in the title"
+    explanation: "Results whose page title contains this word. One word per operator; chain them for several."
+    syntax: "intitle:{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+  # Recorded, not offered: AA's composer cannot write these yet.
+  - name: inbody
+    label: "Word in the page"
+    explanation: "Results whose page text contains this word. Not yet offered by AA's builder."
+    syntax: "inbody:{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+    composable: false
+  - name: inanchor
+    label: "Word in link text"
+    explanation: "Results whose incoming links contain this word. Not yet offered by AA's builder."
+    syntax: "inanchor:{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+    composable: false
+  - name: filetype
+    label: "Only this file type"
+    explanation: "Results that are files of the type you name. Not yet offered by AA's builder."
+    syntax: "filetype:{value}"
+    channel: typed
+    accepts: file_type
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+    composable: false
+  - name: language
+    label: "Only this language"
+    explanation: "Results in the language you name. Not yet offered by AA's builder."
+    syntax: "language:{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+    composable: false
+  - name: loc
+    label: "Only this region"
+    explanation: "Results for the region you name. Not yet offered by AA's builder."
+    syntax: "loc:{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Microsoft 'Advanced search keywords' page"
+    composable: false
+
+url_options:
+  - name: filters
+    option: date
+    label: "Newer than"
+    explanation: "Limits results to the past day, week or month. This lives only in the web address — there is nothing to type for it."
+    channel: url
+    value_format: 'ex1:"{code}"'
+    codes: {hour: h, day: d, week: w, month: m, year: y}
+    option_labels: {day: "Past 24 hours", week: "Past week", month: "Past month"}
+    status: third_party
+    source: "Reported; AA's automation sends these letter codes. Third parties also report ez1/ez2/ez3 forms and a day-count custom range."
+    merge: comma

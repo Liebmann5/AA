@@ -1,0 +1,84 @@
+# DuckDuckGo — what this search surface accepts. Not automated by AA.
+# See google.surface.yaml for the verification levels.
+name: duckduckgo
+display_name: DuckDuckGo
+kind: engine
+homepage: "https://duckduckgo.com"
+summary: "A privacy-focused search engine. Not automated by AA."
+usage_note: "DuckDuckGo cautions that advanced syntax does not work correctly on every query, and that a search with no matches can silently show related results instead."
+
+text_query:
+  or_token: null
+  phrase_quote: '"'
+  subject_group: "({content})"
+  exclude_prefix: "-"
+
+urls:
+  web:
+    base: "https://duckduckgo.com/"
+    parameters:
+      - {name: q, source: query}
+default_url: web
+
+operators:
+  - name: phrase
+    label: "Exact words"
+    explanation: "Results must contain these words in exactly this order."
+    syntax: '"{value}"'
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "DuckDuckGo help pages"
+  - name: exclude
+    label: "Without this"
+    explanation: "Results must not contain this word or phrase."
+    syntax: "-{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "DuckDuckGo help pages"
+  - name: site
+    label: "Only this site"
+    explanation: "Shows results only from the site you name."
+    syntax: "site:{value}"
+    channel: typed
+    accepts: domain_or_path
+    status: vendor
+    source: "DuckDuckGo help pages"
+  - name: intitle
+    label: "Word in the title"
+    explanation: "Results whose page title contains this word or phrase."
+    syntax: "intitle:{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "DuckDuckGo help pages"
+  - name: any_of
+    label: "Any of these"
+    explanation: "DuckDuckGo documents no 'any of these' operator, so it is not offered."
+    syntax: "({content})"
+    channel: typed
+    accepts: text
+    status: unverified
+    source: "Absent from DuckDuckGo's help pages"
+    composable: false
+
+url_options:
+  - name: kl
+    option: region
+    label: "Results region"
+    explanation: "Asks for results from a region, written like us-en or uk-en. This lives only in the link — there is nothing to type for it."
+    channel: url
+    value_format: "{code}"
+    free_form: true
+    status: vendor
+    source: "DuckDuckGo help pages"
+  - name: df
+    option: date
+    label: "Newer than"
+    explanation: "A date filter is reported to exist, but it is not on DuckDuckGo's documented parameter list — so it is not offered until verified."
+    channel: url
+    value_format: "{code}"
+    codes: {day: d, week: w, month: m}
+    status: unverified
+    source: "Reported, not on the documented list"

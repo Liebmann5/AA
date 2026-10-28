@@ -1,0 +1,55 @@
+# LinkedIn Jobs — what this search surface accepts. Not automated by AA.
+# See google.surface.yaml for the verification levels.
+name: linkedin
+display_name: LinkedIn Jobs
+kind: job_board
+homepage: "https://www.linkedin.com/jobs/"
+summary: "LinkedIn's job board. Not automated by AA."
+usage_note: "LinkedIn's terms restrict automated access. A link you build here and open yourself, in your own browser, is ordinary use."
+
+text_query:
+  or_token: null
+  phrase_quote: '"'
+  subject_group: "({content})"
+  exclude_prefix: "-"
+
+urls:
+  jobs:
+    base: "https://www.linkedin.com/jobs/search/"
+    parameters:
+      - {name: keywords, source: query}
+default_url: jobs
+
+operators:
+  - name: phrase
+    label: "Exact words"
+    explanation: "Reported to work in LinkedIn's keywords box, but not verified — so it is not offered, and your terms go into the link without quotes."
+    syntax: '"{value}"'
+    channel: typed
+    accepts: text
+    status: unverified
+    source: "Third-party reports"
+
+url_options:
+  - name: f_TPR
+    option: date
+    label: "Posted within"
+    explanation: "Limits results to the past day, week or month. This lives only in the link — there is nothing to type for it."
+    channel: url
+    value_format: "r{code}"
+    codes: {day: "86400", week: "604800", month: "2592000"}
+    option_labels: {day: "Past 24 hours", week: "Past week", month: "Past month"}
+    status: third_party
+    source: "Third-party reports"
+    merge: append
+  - name: f_WT
+    option: workplace
+    label: "Workplace"
+    explanation: "On-site, remote or hybrid. This lives only in the link."
+    channel: url
+    value_format: "{code}"
+    codes: {on_site: "1", remote: "2", hybrid: "3"}
+    option_labels: {on_site: "On-site", remote: "Remote", hybrid: "Hybrid"}
+    status: third_party
+    source: "Third-party reports"
+    merge: append

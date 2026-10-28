@@ -121,8 +121,13 @@ toolbar:
 
 pagination:
   # The one page parameter the codebase already proves real: the search
-  # strategy builds URLs with "start": 0 (engine_strategies.py). Page N is
-  # value = first + step * (N - 1), so page 2 is start=10.
+  # strategy sends "start" (now via the catalog —
+  # resources/search_surfaces/google.surface.yaml, which ALSO carries
+  # start=0 in its automation template). Two sites, one fact, by design for
+  # now: this file owns the live pagination contract (composition_root
+  # builds UrlPageTemplate from it); the catalog copy exists so a built
+  # URL names its first page. Follow-up: make one read the other.
+  # Page N is value = first + step * (N - 1), so page 2 is start=10.
   url_template:
     param: start
     first: 0

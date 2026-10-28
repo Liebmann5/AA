@@ -174,6 +174,7 @@ from auto_apply.domain.ports.registry_port import RegistryPort
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
 
 if TYPE_CHECKING:
+    from auto_apply.application.services.query_builder import QueryBuilderService
     from auto_apply.application.services.research_consent import ResearchConsentManager
 
 logger = logging.getLogger(__name__)
@@ -431,6 +432,10 @@ class SessionController:
            session's research observer registered with, so a mid-session
            withdrawal stops collection immediately. shutdown() stops the
            observer (flushing its queue) whether or not a run is active.
+        11. Query builder (turn 1 of the query-builder chain): the injected
+           QueryBuilderService is exposed as the query_builder property for
+           the surfaces (turn 3). It composes user-authored searches from
+           the search-surface catalog; nothing about it is automated.
 
     The controller is stateful — one instance per session. When the session
     ends, call shutdown() — it releases the browser whether or not a run is
@@ -450,6 +455,7 @@ class SessionController:
         orchestrator: AgentOrchestrator,
         profile_repo: ProfileRepositoryPort | None = None,
         research_consent: "ResearchConsentManager | None" = None,
+        query_builder: "QueryBuilderService | None" = None,
     ) -> None:
         """Stores pre-built dependencies and starts the event-fed projections.
 
@@ -468,12 +474,16 @@ class SessionController:
                 registered with it, so withdrawal and shutdown stop
                 collection. None only for tests and legacy construction —
                 shutdown then has no observer to stop.
+            query_builder: The query-builder service, built by
+                composition_root. None in tests and legacy constructions —
+                surfaces then degrade to no builder.
         """
         self.registry = registry
         self.db = db
         self.orchestrator = orchestrator
         self._profile_repo = profile_repo
         self._research_consent = research_consent
+        self._query_builder = query_builder
         self._agent_thread: threading.Thread | None = None
         # HITL: maps context_id → (gate_event, chosen_value_holder, payload).
         self._pending_approvals: dict[
@@ -1676,6 +1686,16 @@ class SessionController:
         controller was built without one (tests, legacy construction).
         """
         return self._research_consent
+
+    @property
+    def query_builder(self) -> "QueryBuilderService | None":
+        """The query-builder service, if one was injected.
+
+        Built by the composition root from the search-surface catalog; the
+        builder surfaces (turn 3) read it through here. None in tests and
+        legacy constructions — those surfaces degrade to no builder.
+        """
+        return self._query_builder
 
     def get_queue_stats(self) -> dict[str, int]:
         """Returns work queue status counts from the database.

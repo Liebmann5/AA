@@ -1633,6 +1633,20 @@ def build_session_controller(
     research_consent = build_research_consent(registry)
     orchestrator = build_orchestrator(registry, research_consent=research_consent)
 
+    # The query builder serves the user-facing surfaces (turn 3); it reads
+    # the profile only as one-click defaults and never writes to it.
+    from auto_apply.application.services.query_builder import QueryBuilderService  # noqa: PLC0415
+    from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+        list_surface_names,
+        load_surface,
+    )
+
+    query_builder = QueryBuilderService(
+        profile=profile,
+        load_spec=load_surface,
+        list_names=list_surface_names,
+    )
+
     # 3. Assemble the controller (all deps injected). If assembly fails after
     # the orchestrator exists, its browser has no owner yet — release it here
     # rather than stranding it against the shared profile directory.
@@ -1643,6 +1657,7 @@ def build_session_controller(
             orchestrator=orchestrator,
             profile_repo=profile_repo,
             research_consent=research_consent,
+            query_builder=query_builder,
         )
     except Exception:
         orchestrator.shutdown()
