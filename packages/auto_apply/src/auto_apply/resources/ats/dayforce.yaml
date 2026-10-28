@@ -1,0 +1,15 @@
+name: dayforce
+description: >
+  Dayforce (Ceridian) — jobs.dayforcehcm.com/<locale>/<company>/... .
+  Sample: https://jobs.dayforcehcm.com/en-US/isone/CANDIDATEPORTAL
+url_patterns:
+  - "jobs.dayforcehcm.com/*"
+hosts:
+  - "dayforcehcm.com"
+multi_step: false
+tenancy: path
+search_restriction: "jobs.dayforcehcm.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

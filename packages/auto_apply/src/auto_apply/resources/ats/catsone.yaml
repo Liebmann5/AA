@@ -1,0 +1,16 @@
+name: catsone
+description: >
+  CATSone — subdomain tenancy (<company>.catsone.com/careers/...).
+  Sample: https://cerecore.catsone.com/careers/56866-General/jobs/16364730-System-Analyst/apply/success
+url_patterns:
+  - "*.catsone.com/careers*"
+hosts:
+  - "catsone.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "catsone.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns:
+  - "*.catsone.com/*/apply/success*"

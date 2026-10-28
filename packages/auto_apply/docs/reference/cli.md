@@ -1,7 +1,7 @@
 ---
 title: Command-Line Reference
 status: reviewed
-last_verified: 2026-09-19
+last_verified: 2026-10-28
 verified_against: "src/auto_apply/main.py argument parser"
 audience: everyone
 ---
@@ -32,7 +32,36 @@ auto-apply                # console script, available after install
 | `--replay-out` | folder | Where `--replay` writes. Default: `reports/replay_<corpus digest>` in AA's data folder |
 | `--research` | — | Open the interactive research screen (see whether research is on, read the consent text, agree, withdraw with optional export-then-delete, page copies, export), then exit. Needs no profile; starts no session |
 | `--label` | — | Label saved pages and log the applications you make by hand. See [Labelling](../user_guide/labelling.md) |
+| `--search` | — | Open the interactive search builder (compose a verified engine, platform or company search), then exit. No session, no automation. Scripted flags take precedence |
+| `--search-surface` | `NAME` | Scripted builder: search surface (`google`, `bing`, `duckduckgo`, `indeed`, `linkedin`; default `google`) |
+| `--search-platform` | `NAME` | Scripted builder: a hiring platform — builds a `site:`-restricted engine search |
+| `--search-company` | `URL` | Scripted builder: a company careers-page URL — scopes the search to that tenant |
+| `--search-terms` | `TEXT` | Exact words or phrases, comma separated |
+| `--search-any-of` | `TEXT` | Alternatives, comma separated (where the surface supports them) |
+| `--search-exclude` | `TEXT` | Words to exclude, comma separated |
+| `--search-in-title` | `TEXT` | Words that must appear in the title |
+| `--search-location` | `TEXT` | Location, for surfaces that take one |
+| `--search-option` | `KEY=VALUE` | A surface option (repeatable), e.g. `date=day` |
+| `--search-open` | — | Open the built link in your browser (remembers the query) |
+| `--search-keep` | — | Remember the built query without opening it |
+| `--search-recent` | — | List your recent built searches, then exit |
+| `--search-clear-recent` | — | Forget every remembered search, then exit |
 | `--encrypt-profile` | — | Encrypt the current plaintext profile into a `.vault` file behind a master password |
+
+## Building a search
+
+```bash
+python -m auto_apply --search
+python -m auto_apply --search-platform workday --search-terms "Software Engineer"
+python -m auto_apply --search-company "https://holisticai.bamboohr.com/careers/59" --search-open
+python -m auto_apply --search-recent
+```
+
+Composes verified engine, platform (`site:`-restricted) and tenant-scoped
+company searches. What a surface cannot express is refused in plain words —
+never silently dropped. Copy, open and keep are the only actions that remember
+a query (five, deduplicated, in your data home; `--search-clear-recent` forgets
+them).
 
 ## Flags parsed before anything else
 
@@ -111,9 +140,10 @@ you forget the password — that is a property of the encryption, not an oversig
 
 AA is a long-running interactive agent rather than a batch tool, and **does not
 yet publish a stable exit-code contract**. `--check-config`,
-`--export-research`, `--research-summary`, `--research`, `--replay`, `--label` and
-`--encrypt-profile` exit after their work; the others run until you stop the
-session.
+`--export-research`, `--research-summary`, `--research`, `--replay`, `--label`,
+`--encrypt-profile` and the `--search*` builder flags exit after their work
+(a builder refusal prints a plain-language note and exits non-zero); the
+others run until you stop the session.
 
 `[PLANNED]` — a documented exit-code table. Do not script against exit codes
 until it exists.

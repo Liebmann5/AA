@@ -53,6 +53,7 @@ class ATSDescriptor:
     form_root_selector: str                # CSS selector for the form root
     submit_button_selector: str            # CSS selector for the submit / next button
     multi_step: bool                       # True if the ATS uses a wizard pattern
+    hosts: tuple[str, ...] = ()            # the platform's own domains (e.g. "myworkdayjobs.com"); empty = none declared
 ```
 
 ### YAML File Format
@@ -82,7 +83,7 @@ The glob‑style patterns (`*.greenhouse.io/jobs/*`) are converted to case‑ins
 
 ### How Providers Use the Registry
 
-`GoogleProvider.find_company_career_page()` no longer uses a hardcoded site‑filter list. Instead, it calls `_ats_site_filters(registry)`, which extracts root domains (e.g. `"greenhouse.io"`) from every loaded descriptor’s URL patterns. Adding a new ATS descriptor automatically includes its domain in company career‑page searches — zero code changes required.
+`GoogleProvider.find_company_career_page()` calls `_ats_site_filters(registry)`, which reads each descriptor's declared `hosts` — the platform's own domains, written deliberately in the YAML — and derives a root domain from URL patterns only when a descriptor declares none. There is no fabricated fallback list: the earlier code named `workday.com` while the workday descriptor's hosts say `myworkdayjobs.com`. Adding a new ATS descriptor automatically includes its declared domains in company career-page searches — zero code changes required.
 
 ---
 

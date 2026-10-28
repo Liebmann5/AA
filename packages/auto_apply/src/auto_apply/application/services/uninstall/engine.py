@@ -80,6 +80,7 @@ DATA_ROOT_KNOWN_ENTRIES: frozenset[str] = frozenset(
         "tmp",
         "annotations",
         "detector_samples",
+        "query_builder_recent.json",
         "page_feedback.db",
         "harvest_baselines.db",
         "selector_confidence.json",

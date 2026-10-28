@@ -1,0 +1,15 @@
+name: gusto
+description: >
+  Gusto — path tenancy with a shared prefix (jobs.gusto.com/boards/<company>).
+  Sample: https://jobs.gusto.com/boards/possip-9d7e6ab2-bfc6-4b25-8517-fa812738ec56
+url_patterns:
+  - "jobs.gusto.com/boards/*"
+hosts:
+  - "gusto.com"
+multi_step: false
+tenancy: path
+search_restriction: "jobs.gusto.com/boards"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Query from Nick's Job Websites table; not hand-measured yet"
+terminal_patterns: []

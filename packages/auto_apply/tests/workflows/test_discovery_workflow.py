@@ -159,3 +159,58 @@ def test_handles_missing_optional_dependency_gracefully(
     count = wf.run()
 
     assert count == 0
+
+
+def test_company_page_mining_is_gated_off_by_default(
+    mock_profile, mock_event_bus, mock_task_queue, mock_text_matcher
+):
+    """TEETH — before the gate, the mining loop called the (broken) miner
+    for every ATS-matched job and failed each time. Mutation caught: the
+    plan gate ignored, or the scraper called with the gate off."""
+    ats_registry = MagicMock()
+    ats_registry.match.return_value = MagicMock()  # every URL matches
+    scraper = MagicMock()
+    wf = DiscoveryWorkflow(
+        profile=mock_profile,
+        providers=[],
+        task_queue=mock_task_queue,
+        event_bus=mock_event_bus,
+        dedup=MagicMock(),
+        text_matcher=mock_text_matcher,
+        ats_registry=ats_registry,
+        company_page_scraper=scraper,
+    )
+    jobs = [
+        Job(title="SWE", company="Acme", url="https://boards.greenhouse.io/acme/jobs/1", source="test"),
+    ]
+    assert wf._scrape_company_pages(jobs) == []
+    scraper.assert_not_called()
+
+
+def test_company_page_mining_when_enabled_uses_the_navigating_scraper(
+    mock_profile, mock_event_bus, mock_task_queue, mock_text_matcher
+):
+    """TEETH — when enabled, mining calls the careers-page scraper with the
+    job URL, which is the measured URL-as-browser AttributeError being fixed.
+    Mutation caught: calling the deprecated miner param, or passing anything
+    but the URL."""
+    from auto_apply.domain.models.session_plan import SessionPlan
+
+    ats_registry = MagicMock()
+    ats_registry.match.return_value = MagicMock()
+    scraper = MagicMock(return_value=[])
+    plan = SessionPlan(session_id="t", enable_company_page_mining=True)
+    wf = DiscoveryWorkflow(
+        profile=mock_profile,
+        providers=[],
+        task_queue=mock_task_queue,
+        event_bus=mock_event_bus,
+        dedup=MagicMock(),
+        text_matcher=mock_text_matcher,
+        ats_registry=ats_registry,
+        company_page_scraper=scraper,
+        plan=plan,
+    )
+    job = Job(title="SWE", company="Acme", url="https://boards.greenhouse.io/acme/jobs/1", source="test")
+    wf._scrape_company_pages([job])
+    scraper.assert_called_once_with("https://boards.greenhouse.io/acme/jobs/1")

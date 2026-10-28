@@ -7,7 +7,9 @@ means "probe unavailable" (the fallback path), an int is a verdict.
 """
 from unittest.mock import MagicMock
 
+from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
 from auto_apply.application.workflows.applications_workflow import ApplicationsWorkflow
+from auto_apply.domain.models.application_evidence import ApplicationEvidence
 from auto_apply.domain.models.session_plan import SessionPlan
 
 
@@ -528,6 +530,36 @@ def test_hop_bound_ends_with_honest_outcome(
     assert result.outcome == "FAILED_NAVIGATION"
     assert "hop bound" in (result.error_message or "")
     assert len(browser.get_calls) == 4  # initial load + 3 hops, then refusal
+
+
+def test_a_terminal_page_is_never_a_route_destination():
+    """TEETH — before the registry's terminal patterns, a landed URL that
+    matched a descriptor by host was a route stop even when the page was a
+    success/confirm page with no form. Mutation caught: is_terminal_page
+    ignored, or truthiness (a mock's MagicMock return) treated as terminal."""
+    registry = ATSRegistry()
+    wf = object.__new__(ApplicationsWorkflow)
+    wf._ats_registry = registry
+
+    job = MagicMock()
+    job.metadata = {}
+
+    terminal_url = (
+        "https://cerecore.catsone.com/careers/56866-General/"
+        "jobs/16364730-System-Analyst/apply/success"
+    )
+    posting_url = (
+        "https://cerecore.catsone.com/careers/56866-General/"
+        "jobs/16364730-System-Analyst"
+    )
+
+    _ev, matched = wf._match_landed_ats(job, terminal_url, ApplicationEvidence())
+    assert matched is False
+    assert job.metadata.get("ats") is None
+
+    _ev, matched = wf._match_landed_ats(job, posting_url, ApplicationEvidence())
+    assert matched is True
+    assert job.metadata.get("ats") == "catsone"
 
 
 def test_jsless_fallback_needs_a_dialog_to_appear():

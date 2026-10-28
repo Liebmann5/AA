@@ -34,7 +34,6 @@ from auto_apply.adapters.secondary.discovery.strategies.engine_strategies import
     BingSearchStrategy,
     IndeedSearchStrategy,
     SearchEngineStrategy,
-    _GOOGLE_DATE_RANGE_MAP,
 )
 from auto_apply.adapters.secondary.discovery.strategies.selector_loader import (
     SelectorLoader,
@@ -62,7 +61,7 @@ def _mock_browser() -> MagicMock:
     return b
 
 
-def _descriptor(name: str, *patterns: str) -> ATSDescriptor:
+def _descriptor(name: str, *patterns: str, hosts: tuple[str, ...] = ()) -> ATSDescriptor:
     return ATSDescriptor(
         name=name,
         url_patterns=patterns,
@@ -71,6 +70,7 @@ def _descriptor(name: str, *patterns: str) -> ATSDescriptor:
         form_root_selector="",
         submit_button_selector="",
         multi_step=False,
+        hosts=hosts,
     )
 
 
@@ -253,8 +253,20 @@ class TestSearchEngineStrategyProtocol:
             assert len(strat.search_bar_selectors) > 0
 
     def test_google_date_range_map_coverage(self):
+        """The Google catalog covers every date_range the instruction allows."""
+        from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+            load_surface_bundled,
+        )
+
+        spec = load_surface_bundled("google")
+        template = spec.urls[spec.automation_url]
+        option = next(
+            o
+            for o in spec.url_options
+            if o.name == template.date_parameter and o.option == "date"
+        )
         expected = {"hour", "day", "week", "month", "year"}
-        assert set(_GOOGLE_DATE_RANGE_MAP.keys()) == expected
+        assert set(option.codes.keys()) == expected
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -432,8 +444,8 @@ class TestFindCompanyCareerPage:
 
     def test_uses_registry_domains(self):
         reg = _mock_registry(
-            _descriptor("greenhouse", "*.greenhouse.io/jobs/*"),
-            _descriptor("lever", "jobs.lever.co/*"),
+            _descriptor("greenhouse", "*.greenhouse.io/jobs/*", hosts=("greenhouse.io",)),
+            _descriptor("lever", "jobs.lever.co/*", hosts=("lever.co",)),
         )
         browser = _mock_browser()
         browser.find_element.return_value = None
@@ -443,13 +455,16 @@ class TestFindCompanyCareerPage:
         assert "greenhouse.io" in called_url
         assert "lever.co" in called_url
 
-    def test_fallback_without_registry(self):
+    def test_no_registry_queries_only_the_company_domain(self):
+        """No fabricated ATS list: with no registry the query names only the company."""
         browser = _mock_browser()
         browser.find_element.return_value = None
         provider = GoogleProvider(browser)
         provider.find_company_career_page("Acme")
         called_url: str = browser.get.call_args[0][0]
-        assert "greenhouse.io" in called_url
+        assert "greenhouse.io" not in called_url
+        assert "workday.com" not in called_url
+        assert "Acme.com" in called_url
 
     def test_returns_none_when_no_result(self):
         browser = _mock_browser()
@@ -470,11 +485,24 @@ class TestFindCompanyCareerPage:
 
 class TestAtsSiteFilters:
 
-    def test_returns_fallback_when_no_registry(self):
-        result = _ats_site_filters(None)
-        assert "greenhouse.io" in result
+    def test_returns_empty_when_no_registry(self):
+        """No fabricated list: no registry means no filters at all."""
+        assert _ats_site_filters(None) == []
 
-    def test_extracts_root_domain_from_wildcard(self):
+    def test_reads_declared_hosts_first(self):
+        """The YAML hosts field wins — a descriptor's own domains, never a guess."""
+        reg = _mock_registry(
+            _descriptor(
+                "workday",
+                "*.myworkdayjobs.com/*/job/*",
+                hosts=("myworkdayjobs.com", "myworkday.com"),
+            ),
+        )
+        result = _ats_site_filters(reg)
+        assert result == ["myworkdayjobs.com", "myworkday.com"]
+        assert "workday.com" not in result
+
+    def test_derives_root_domain_from_patterns_when_no_hosts(self):
         reg = _mock_registry(_descriptor("greenhouse", "*.greenhouse.io/jobs/*"))
         result = _ats_site_filters(reg)
         assert "greenhouse.io" in result
@@ -486,10 +514,8 @@ class TestAtsSiteFilters:
         result = _ats_site_filters(reg)
         assert result.count("greenhouse.io") == 1
 
-    def test_returns_fallback_when_registry_empty(self):
-        reg = _mock_registry()
-        result = _ats_site_filters(reg)
-        assert "greenhouse.io" in result
+    def test_returns_empty_when_registry_empty(self):
+        assert _ats_site_filters(_mock_registry()) == []
 
 
 # ═════════════════════════════════════════════════════════════════════════════

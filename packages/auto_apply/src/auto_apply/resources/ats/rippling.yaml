@@ -1,0 +1,15 @@
+name: rippling
+description: >
+  Rippling — path tenancy (ats.rippling.com/<company>/jobs/<id>).
+  Sample: https://ats.rippling.com/botbuilt/jobs/682ecaab-80d2-4f06-824d-2e4678cbb312
+url_patterns:
+  - "ats.rippling.com/*/jobs/*"
+hosts:
+  - "rippling.com"
+multi_step: false
+tenancy: path
+search_restriction: "ats.rippling.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

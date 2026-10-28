@@ -1,0 +1,15 @@
+name: oasisrecruit
+description: >
+  Oasis Recruit — subdomain tenancy (<company>.oasisrecruit.com/job/<id>/...).
+  Sample: https://team-outsider.oasisrecruit.com/job/688537/security-night-host
+url_patterns:
+  - "*.oasisrecruit.com/job/*"
+hosts:
+  - "oasisrecruit.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "oasisrecruit.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

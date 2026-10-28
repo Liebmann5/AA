@@ -129,7 +129,7 @@ import `SessionController` directly, so the port carries WIRE-LATER exemptions.
 
 | Gap | Consequence |
 | --- | --- |
-| `UIPort` is 17 methods and session-shaped | Identity and custody parity cannot be pinned until it widens |
+| `UIPort` is 27 methods — and ten of them are the query builder, which answers *before* any session exists | The builder is part of the layer, so "session-shaped" no longer describes the whole port; identity and custody parity remain unpinned |
 | `UIPort` has no typed consumer | Two WIRE-LATER exemptions, two raised ceilings |
 | `approval_evidence()` is in-memory only | Authorisation stamps exist during a run and not after it — a research-durability gap |
 | Five print sites sit outside the primary adapters | Four are the Profile Check advisory, which goes to stdout, so **a GUI user never sees it** |

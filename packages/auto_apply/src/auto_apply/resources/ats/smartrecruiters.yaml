@@ -1,0 +1,15 @@
+name: smartrecruiters
+description: >
+  SmartRecruiters — path tenancy (jobs.smartrecruiters.com/<company>/<id>).
+  Sample: https://jobs.smartrecruiters.com/Jitterbit/743999952832064-web-developer
+url_patterns:
+  - "jobs.smartrecruiters.com/*/*"
+hosts:
+  - "smartrecruiters.com"
+multi_step: false
+tenancy: path
+search_restriction: "jobs.smartrecruiters.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

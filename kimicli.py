@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-kimicli.py - Kimi K3 workbench (v3)
+kimicli.py - Kimi workbench (v3): K3 (default), K3.1 Pro, K3.1 Pro Highspeed
 
 Design rules, in priority order:
 
@@ -37,7 +37,8 @@ Design rules, in priority order:
 
 Verified against the Kimi platform docs on 2026-08-05:
   - context caching is automatic; prefix must be byte-identical  -> codebase first
-  - usage.cached_tokens is TOP-LEVEL in usage (not prompt_tokens_details)
+  - usage.cached_tokens is TOP-LEVEL in usage (2026-10: now documented under
+    prompt_tokens_details instead; both places are read)
   - prompt_cache_key improves hit rate across separate invocations
   - 504 after 900s on long non-streaming requests            -> stream=True always
   - reasoning_effort is top-level: low | high | max (default max)
@@ -45,8 +46,28 @@ Verified against the Kimi platform docs on 2026-08-05:
   - max_completion_tokens (max_tokens is deprecated)
   - K3 uses Preserved Thinking -> keep reasoning_content in history
 
+Re-verified for Kimi K3.1 Pro on 2026-10-28 (platform.kimi.ai quickstart,
+context-caching guide, pricing):
+  - kimi-k3.1-pro / kimi-k3.1-pro-highspeed keep every K3 constraint above;
+    1,048,576 context, max_completion_tokens default 131,072, thinking always on
+  - cached_tokens and cache_write_tokens are now documented under
+    usage.prompt_tokens_details (both locations are read)
+  - cache writes bill separately at a 5m or 1h tier, on K3 and K3.1 Pro alike;
+    prompt_cache_options {"mode": "implicit", "ttl": "1h"} selects 1h. The
+    tier is locked by the first write; a hit renews it.          -> --cache-ttl
+  - the API echoes the serving model in every chunk           -> mismatch warned
+
+Models: K3 stays the default. K3.1 Pro is a third cheaper per token but, in
+independent coding tests, reasons about twice as long, so its bills and its
+risk of a cut-off reply are not a third lower. Use it per run (--model pro)
+and make it the default only when it has earned it (--default-model pro).
+
 Quick start:
     python kimicli.py --selftest                      # prove apply/undo on THIS machine
+    python kimicli.py --models                        # what this key can call, with prices
+    python kimicli.py --model pro --prompt task.md    # one run on K3.1 Pro
+    python kimicli.py --default-model                 # show the default model
+    python kimicli.py --default-model pro             # make K3.1 Pro the default (k3 = back)
     python kimicli.py --prompt task.md --request-code
     python kimicli.py --apply-fixes last --dry-run
     python kimicli.py --apply-fixes last
@@ -110,8 +131,6 @@ if _alt_env.exists():
 
 API_KEY = os.getenv("MOONSHOT_API_KEY") or os.getenv("KIMI_API_KEY") or ""
 BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
-MODEL = os.getenv("KIMI_MODEL", "kimi-k3")
-
 DEFAULT_CODEBASE = Path(os.getenv("KIMI_CODEBASE", r"D:\Downloads\AA-kimi.txt"))
 
 # AA's engineering philosophy rides along with EVERY call (Nick's standing rule,
@@ -130,18 +149,151 @@ OUT_DIR = PROJECT_ROOT / ".kimi_out"          # sessions, transcripts, staged fi
 BACKUP_DIR = PROJECT_ROOT / ".kimi_backups"   # backups + manifests
 LEDGER = OUT_DIR / "ledger.jsonl"
 
-# Kimi K3 pricing, USD per 1M tokens (docs/pricing/chat-k3)
-PRICE_IN_CACHED = 0.30
-PRICE_IN_FRESH = 3.00
-PRICE_OUT = 15.00
+# --------------------------------------------------------------------------
+# Models
+#
+# Every price, window and cache rule is looked up per model, so switching
+# model can never leave the preflight, the spend cap or the ledger quoting the
+# wrong model's prices. Prices are USD per 1M tokens, from Moonshot's pricing
+# page (platform.kimi.ai/docs/pricing/chat) as of PRICES_CHECKED. They are a
+# hand-kept table - Moonshot publishes no pricing endpoint - so the preflight
+# prints the date beside every quote. Re-check the page when it is old.
+#
+# Cache billing since 2026-09: a prefix WRITTEN to the cache is billed as a
+# separate item, at the 5m or 1h tier. The 5m write rate equals the normal
+# input rate, so a 5m write costs nothing extra; a 1h write costs 2x input,
+# once, and every hit inside the hour is billed at the cached rate and resets
+# the hour. The TTL is fixed by the FIRST write of a prefix; asking for 1h on
+# a prefix already cached at 5m does not upgrade it.
+# --------------------------------------------------------------------------
 
-CONTEXT_WINDOW = 1_048_576
+PRICES_CHECKED = "2026-10-28"
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    id: str
+    label: str
+    hit: float                 # input, served from the cache
+    miss: float                # input, not cached
+    write_5m: float            # input written to the cache, 5-minute tier
+    write_1h: Optional[float]  # input written to the cache, 1-hour tier; None = no 1h tier
+    out: float                 # output, reasoning included
+    context: int = 1_048_576
+    note: str = ""
+
+
+MODEL_INFO: Dict[str, ModelInfo] = {m.id: m for m in (
+    ModelInfo("kimi-k3", "Kimi K3", 0.30, 3.00, 3.00, 6.00, 15.00,
+              note="the default: the model this workflow's prompts are tuned and measured on"),
+    ModelInfo("kimi-k3.1-pro", "Kimi K3.1 Pro", 0.20, 2.00, 2.00, 4.00, 10.00,
+              note="post-trained K3 (2026-10-23): a third cheaper per token, but reasons ~2x "
+                   "as long in independent tests - use --effort high"),
+    ModelInfo("kimi-k3.1-pro-highspeed", "Kimi K3.1 Pro Highspeed", 0.20, 4.00, 4.00, 8.00, 20.00,
+              note="same model as K3.1 Pro, 2-3x faster output, twice the price"),
+)}
+
+#: Short names accepted anywhere a model is named (--model, --default-model).
+MODEL_ALIASES: Dict[str, str] = {
+    "k3": "kimi-k3",
+    "pro": "kimi-k3.1-pro", "k3.1": "kimi-k3.1-pro", "k3.1-pro": "kimi-k3.1-pro",
+    "highspeed": "kimi-k3.1-pro-highspeed", "fast": "kimi-k3.1-pro-highspeed",
+    "hs": "kimi-k3.1-pro-highspeed",
+}
+
+#: The model a run uses when nothing else names one. Change the default with
+#: --default-model, not here: that survives updates to this file.
+BUILTIN_DEFAULT_MODEL = "kimi-k3"
+#: Every session made before models were recorded per session ran on this.
+LEGACY_SESSION_MODEL = "kimi-k3"
+SETTINGS_FILE = OUT_DIR / "settings.json"
+
+
+def resolve_model_name(name: str) -> str:
+    """'highspeed' -> 'kimi-k3.1-pro-highspeed'. Anything not an alias is
+    returned as written (trimmed), never guessed at."""
+    s = (name or "").strip()
+    return MODEL_ALIASES.get(s.casefold(), s)
+
+
+def _read_settings() -> Dict[str, Any]:
+    try:
+        blob = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        return blob if isinstance(blob, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def configured_model() -> Tuple[str, str]:
+    """(model, where it came from) when --model is not given.
+
+    Order: the default saved with --default-model, then KIMI_MODEL in the
+    environment/.env (the older way to pick one), then the built-in default.
+    The saved default wins because it is the newer, deliberate choice: the
+    one command that changes it is the one that is obeyed."""
+    saved = str(_read_settings().get("model") or "").strip()
+    if saved:
+        return resolve_model_name(saved), f"--default-model ({SETTINGS_FILE.name})"
+    env = (os.getenv("KIMI_MODEL") or "").strip()
+    if env:
+        return resolve_model_name(env), "KIMI_MODEL in .env"
+    return BUILTIN_DEFAULT_MODEL, "built-in default"
+
+
+def pricing_for(model: Optional[str]) -> Tuple[ModelInfo, bool]:
+    """(prices, known). An unknown model is priced at the HIGHEST rate on file
+    for every item, so the spend cap errs toward refusing, never toward an
+    unexpected bill."""
+    m = MODEL_INFO.get(resolve_model_name(model or ""))
+    if m:
+        return m, True
+    allm = list(MODEL_INFO.values())
+    return ModelInfo(
+        id=model or "?", label=f"{model} (no prices on file - worst case assumed)",
+        hit=max(x.hit for x in allm), miss=max(x.miss for x in allm),
+        write_5m=max(x.write_5m for x in allm),
+        write_1h=max((x.write_1h or 0) for x in allm),
+        out=max(x.out for x in allm), context=1_048_576), False
+
+
+def supports_cache_ttl(model: str) -> bool:
+    m = MODEL_INFO.get(model)
+    return bool(m and m.write_1h is not None)
+
+
+def served_differs(asked: str, served: Optional[str]) -> bool:
+    """True when the model that answered is not the one asked for. A dated
+    snapshot of the same model ('kimi-k3-0715') is not a difference; another
+    model on file is, even when its name starts the same ('kimi-k3.1-pro'
+    answering for 'kimi-k3')."""
+    if not served or served == asked:
+        return False
+    return served in MODEL_INFO or not served.startswith(asked)
+
+
+def alternative_model(model: str) -> Optional[str]:
+    """The model the preflight prices beside this one: K3 against K3.1 Pro
+    and back, so the cost of switching is always one glance away."""
+    if model == "kimi-k3":
+        return "kimi-k3.1-pro"
+    if model in MODEL_INFO:
+        return "kimi-k3"
+    return None
+
+
+def short_name(model: str) -> str:
+    """The shortest alias for a model ('kimi-k3.1-pro' -> 'pro'), else the id."""
+    names = [a for a, m in MODEL_ALIASES.items() if m == model]
+    return min(names, key=len) if names else model
+
+
+CONTEXT_WINDOW = 1_048_576   # fallback for a model with no entry above
 # Your organisation's tokens-per-minute ceiling, from
 # platform.kimi.ai/console/limits. Override with KIMI_TPM in .env when the
 # tier changes. The preflight warns only when a request exceeds THIS, not a
 # hardcoded guess at someone else's tier.
 ACCOUNT_TPM = int(os.getenv("KIMI_TPM", "3000000"))
-DEFAULT_MAX_COMPLETION = 131_072      # K3's own default
+DEFAULT_MAX_COMPLETION = 131_072      # K3's and K3.1 Pro's own default
 REQUEST_TIMEOUT_S = float(os.getenv("KIMI_TIMEOUT", "2400"))
 
 # Files the model is never allowed to touch, even with --apply-fixes.
@@ -225,9 +377,39 @@ def money(x: float) -> str:
     return f"${x:,.4f}" if x < 1 else f"${x:,.2f}"
 
 
-def cost_of(prompt: int, cached: int, completion: int) -> float:
-    fresh = max(prompt - cached, 0)
-    return (cached * PRICE_IN_CACHED + fresh * PRICE_IN_FRESH + completion * PRICE_OUT) / 1e6
+def cost_of(prompt: int, cached: int, completion: int, model: Optional[str],
+            cache_write: Optional[int] = None, ttl: str = "5m") -> float:
+    """USD for one call on `model`. prompt counts ALL input tokens (cache
+    reads and writes included, as Moonshot reports it). cache_write=None means
+    the response did not say how much was written: at the 5m tier that changes
+    nothing (write rate == input rate); at the 1h tier every uncached token is
+    assumed written, so the figure is an upper bound, never an under-count."""
+    p, _ = pricing_for(model)
+    write_rate = p.write_1h if (ttl == "1h" and p.write_1h is not None) else p.write_5m
+    uncached = max(prompt - cached, 0)
+    if cache_write is None:
+        writes = uncached if ttl == "1h" else 0
+    else:
+        writes = min(max(int(cache_write), 0), uncached)
+    fresh = uncached - writes
+    return (cached * p.hit + fresh * p.miss + writes * write_rate + completion * p.out) / 1e6
+
+
+def usage_numbers(u: Dict[str, Any]) -> Tuple[int, int, int, Optional[int]]:
+    """(prompt, cached, completion, cache_write) from a usage dict.
+
+    Moonshot documents cache reads and writes under prompt_tokens_details;
+    earlier responses put cached_tokens at the top level. Both are read, so
+    neither number is ever silently zero. cache_write is None when absent."""
+    details = u.get("prompt_tokens_details") or {}
+    cached = u.get("cached_tokens")
+    if cached is None:
+        cached = details.get("cached_tokens")
+    write = details.get("cache_write_tokens")
+    if write is None:
+        write = u.get("cache_write_tokens")
+    return (int(u.get("prompt_tokens") or 0), int(cached or 0),
+            int(u.get("completion_tokens") or 0), None if write is None else int(write))
 
 
 def _attach_label(p: Path) -> str:
@@ -308,7 +490,7 @@ def split_dump(dump: str) -> Tuple[List[Tuple[str, str]], str]:
     return out, best_pat
 
 
-def filter_dump(dump: str, excludes: Sequence[str]) -> Tuple[str, str]:
+def filter_dump(dump: str, excludes: Sequence[str], model: Optional[str] = None) -> Tuple[str, str]:
     """Drop sections whose path matches any exclude prefix/substring.
     Returns (new_dump, human_report)."""
     if not excludes:
@@ -329,7 +511,7 @@ def filter_dump(dump: str, excludes: Sequence[str]) -> Tuple[str, str]:
     new_dump = preamble + "".join(kept)
     report = (f"  -  filtered out {dropped} of {len(sections)} files "
               f"(~{est_tokens('x' * dropped_chars):,} tokens, "
-              f"~{money(est_tokens('x' * dropped_chars) / 1e6 * PRICE_IN_FRESH)} per uncached call)\n"
+              f"~{money(est_tokens('x' * dropped_chars) / 1e6 * pricing_for(model)[0].miss)} per uncached call)\n"
               f"     keep the same --exclude flags every run: changing them changes the "
               f"prefix, which costs you the cache once.")
     return new_dump, report
@@ -346,21 +528,26 @@ class Usage:
     cached: int = 0
     completion: int = 0
     calls: int = 0
+    cache_write: int = 0
+    # Dollars accumulated call by call, each priced on the model and cache
+    # tier THAT call used - a session can change model, so the token totals
+    # alone cannot be priced afterwards.
+    cost_usd: float = 0.0
 
-    def add(self, u: Dict[str, Any]) -> None:
-        self.prompt += int(u.get("prompt_tokens") or 0)
-        self.completion += int(u.get("completion_tokens") or 0)
-        # Kimi returns cached_tokens at the top level of usage. Older/other
-        # gateways nest it; accept both so the number is never silently zero.
-        cached = u.get("cached_tokens")
-        if cached is None:
-            cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens")
-        self.cached += int(cached or 0)
+    def add(self, u: Dict[str, Any], model: Optional[str], ttl: str = "5m") -> float:
+        p, c, o, w = usage_numbers(u)
+        self.prompt += p
+        self.cached += c
+        self.completion += o
+        self.cache_write += w or 0
         self.calls += 1
+        this = cost_of(p, c, o, model, w, ttl)
+        self.cost_usd += this
+        return this
 
     @property
     def cost(self) -> float:
-        return cost_of(self.prompt, self.cached, self.completion)
+        return self.cost_usd
 
 
 class Session:
@@ -381,6 +568,13 @@ class Session:
         # --resume sends the SAME key as turn 1: a different key is a
         # different cache bucket, and the prefix you already paid for misses.
         self.cache_key: Optional[str] = None
+        # The model, reasoning effort and cache TTL the conversation runs on,
+        # kept for the same reason as the cache key: a resume that silently
+        # changed any of them would re-pay for the whole prefix. None = a
+        # session made before these were recorded (it ran on kimi-k3).
+        self.model: Optional[str] = None
+        self.effort: Optional[str] = None
+        self.cache_ttl: Optional[str] = None
         self.printed_stage_summary = False
         self.load_error: Optional[str] = None
         self._load()
@@ -393,8 +587,17 @@ class Session:
                 self.messages = blob["messages"]
                 self.turn = blob.get("turn", 0)
                 self.cache_key = blob.get("cache_key")
+                self.model = blob.get("model")
+                self.effort = blob.get("effort")
+                self.cache_ttl = blob.get("cache_ttl")
                 u = blob.get("usage", {})
-                self.usage = Usage(**{k: u.get(k, 0) for k in ("prompt", "cached", "completion", "calls")})
+                self.usage = Usage(**{k: u.get(k, 0) for k in
+                                      ("prompt", "cached", "completion", "calls", "cache_write")})
+                if "cost_usd" in u:
+                    self.usage.cost_usd = float(u["cost_usd"])
+                else:   # recorded before per-call pricing: it ran on kimi-k3
+                    self.usage.cost_usd = cost_of(self.usage.prompt, self.usage.cached,
+                                                  self.usage.completion, LEGACY_SESSION_MODEL)
             except Exception as exc:
                 # Recorded, not just logged: resuming a session that failed to
                 # load would send the new prompt with NO codebase and NO history.
@@ -420,6 +623,9 @@ class Session:
             "session": self.id,
             "turn": self.turn,
             "cache_key": self.cache_key,
+            "model": self.model,
+            "effort": self.effort,
+            "cache_ttl": self.cache_ttl,
             "usage": self.usage.__dict__,
             "messages": self.messages,
         }
@@ -519,17 +725,21 @@ class Session:
                 out.append(int(m.group(1)))
         return sorted(out)
 
-    def ledger_entry(self, u: Dict[str, Any], effort: str, note: str = "", estimated: bool = False) -> None:
-        cached = u.get("cached_tokens") or (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+    def ledger_entry(self, u: Dict[str, Any], effort: str, note: str = "", estimated: bool = False,
+                     model: Optional[str] = None, ttl: str = "5m") -> None:
+        prompt, cached, completion, write = usage_numbers(u)
         row = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "session": self.id,
             "turn": self.turn,
+            "model": model,
             "effort": effort,
-            "prompt": u.get("prompt_tokens", 0),
+            "cache_ttl": ttl,
+            "prompt": prompt,
             "cached": cached,
-            "completion": u.get("completion_tokens", 0),
-            "cost_usd": round(cost_of(u.get("prompt_tokens", 0), cached, u.get("completion_tokens", 0)), 5),
+            "cache_write": write,
+            "completion": completion,
+            "cost_usd": round(cost_of(prompt, cached, completion, model, write, ttl), 5),
             "note": note,
         }
         if estimated:
@@ -2886,7 +3096,13 @@ def reply_shape_problems(order: List[Tuple[int, str]], reply: str) -> List[str]:
     out: List[str] = []
     found: List[Tuple[int, int, str]] = []         # (index into heads, number, name)
     last = -1
+    # The change blocks are their own proof: a section asking for "the blocks,
+    # then ### END CHANGES" is present when the reply has blocks or the END
+    # marker, whatever heading (if any) introduces them.
+    has_changes = any(HEADER_RE.match(ln) or END_RE.match(ln) for ln in lines)
     for n, name in order:
+        if has_changes and ("END CHANGES" in name.upper() or "blocks" in name.lower()):
+            continue
         key = _shape_words(name)[:3]
         hits = [j for j, (_i, num, label, _r, _md) in enumerate(heads)
                 if set(key) <= set(_shape_words(label))
@@ -2908,7 +3124,9 @@ def reply_shape_problems(order: List[Tuple[int, str]], reply: str) -> List[str]:
                        if j == final and not later else
                        f"section {n}. {name} has nothing under it")
     # Any reply, REPLY ORDER or not: one that ends on a heading was cut short.
-    tail = [i for i, ln in enumerate(lines) if ln.strip() and not _RULE_RE.match(ln)]
+    # '### END CHANGES' is the contract's own last line, not a cut-off heading.
+    tail = [i for i, ln in enumerate(lines)
+            if ln.strip() and not _RULE_RE.match(ln) and not END_RE.match(ln)]
     end_head = next((h for h in heads if tail and h[0] == tail[-1] and h[4]), None)
     if end_head and not any("stops at its last heading" in p for p in out):
         out.append(f"the reply stops at a heading ('{lines[end_head[0]].strip()}') "
@@ -3792,7 +4010,7 @@ def build_context(args: argparse.Namespace) -> Context:
         if cb.is_file():
             dump = read_text(cb)
             if args.exclude:
-                dump, report = filter_dump(dump, args.exclude)
+                dump, report = filter_dump(dump, args.exclude, args.model)
                 if report:
                     print(report)
             dump_text = dump
@@ -3872,6 +4090,25 @@ class Kimi:
             logger.warning("balance check failed: %s", exc)
             return None
 
+    def list_models(self) -> Optional[List[Dict[str, Any]]]:
+        """The models this key can call, live from GET /v1/models (free: no
+        tokens, no billing). None when the endpoint cannot be reached. Fetched
+        once per run."""
+        if hasattr(self, "_models"):
+            return self._models
+        try:
+            import httpx
+            r = httpx.get(f"{self.base_url}/models",
+                          headers={"Authorization": f"Bearer {self.api_key}"}, timeout=30)
+            r.raise_for_status()
+            data = r.json().get("data")
+            self._models: Optional[List[Dict[str, Any]]] = (
+                [d for d in data if isinstance(d, dict) and d.get("id")] if isinstance(data, list) else None)
+        except Exception as exc:
+            logger.warning("could not list models: %s", exc)
+            self._models = None
+        return self._models
+
     def count_tokens(self, messages: List[Dict[str, Any]], model: str) -> Optional[int]:
         """Exact prompt size from Moonshot's tokenizer, cached by content hash
         so a 3 MB dump is only ever uploaded once per version."""
@@ -3903,7 +4140,8 @@ class Kimi:
     # -- the call -----------------------------------------------------
     def stream(self, messages: List[Dict[str, Any]], session: Session, *,
                model: str, effort: str, max_completion: int, cache_key: str,
-               show_thinking: bool, prediction: Optional[str] = None) -> Dict[str, Any]:
+               show_thinking: bool, prediction: Optional[str] = None,
+               cache_ttl: str = "5m") -> Dict[str, Any]:
         """Stream a completion. Every token is written to disk as it arrives."""
         kwargs: Dict[str, Any] = {
             "model": model,
@@ -3916,7 +4154,11 @@ class Kimi:
         }
         if prediction:
             kwargs["prediction"] = {"type": "content", "content": prediction}
-        # temperature / top_p / n / penalties are fixed on K3 - never send them.
+        # The 5m tier is Moonshot's default when the field is omitted, so it is
+        # sent only for 1h - a model without cache tiers never sees it.
+        if cache_ttl == "1h":
+            kwargs["extra_body"] = {"prompt_cache_options": {"mode": "implicit", "ttl": "1h"}}
+        # temperature / top_p / n / penalties are fixed on K3 and K3.1 - never send them.
 
         content: List[str] = []
         reasoning: List[str] = []
@@ -3925,6 +4167,7 @@ class Kimi:
         started = time.time()
         first_token_at: Optional[float] = None
         printed_thinking_header = False
+        served: Optional[str] = None
 
         try:
             stream = self.client.chat.completions.create(**kwargs)
@@ -3934,6 +4177,8 @@ class Kimi:
 
         try:
             for chunk in stream:
+                if served is None and getattr(chunk, "model", None):
+                    served = str(chunk.model)
                 if getattr(chunk, "usage", None):
                     try:
                         usage = chunk.usage.model_dump()
@@ -3991,6 +4236,7 @@ class Kimi:
             "finish_reason": finish,
             "elapsed": elapsed,
             "ttft": (first_token_at - started) if first_token_at else None,
+            "served_model": served,
         }
 
 
@@ -4008,8 +4254,9 @@ ERROR_HELP = {
                                     "match the base URL.",
     "incorrect_api_key_error": "Key missing or wrong. Check MOONSHOT_API_KEY in your .env.",
     "permission_denied_error": "Not permitted. Often an IP allowlist on the organisation.",
-    "resource_not_found_error": "Model name wrong, or your account cannot access it. K3 unlocks "
-                                "after a top-up of at least $1.",
+    "resource_not_found_error": "Model name wrong, or your account cannot access it. List what "
+                                "this key can call with: python kimicli.py --models. K3 and "
+                                "K3.1 Pro unlock after a top-up of at least $1.",
     "engine_overloaded_error": "Moonshot's side is saturated - this is the 'too many users' one. "
                                "Wait and retry; topping up does not help.",
     "exceeded_current_quota_error": "Balance is empty or the account is disabled. "
@@ -4089,31 +4336,61 @@ def preflight(ctx: Context, kimi: Kimi, args: argparse.Namespace) -> bool:
 
     # Below this there is no room for a useful answer: send nothing rather
     # than pay for the input and get an answer cut off in its first lines.
+    info, known = pricing_for(args.model)
+    window = info.context if known else CONTEXT_WINDOW
     MIN_OUTPUT = 8192
-    if n_in > CONTEXT_WINDOW - MIN_OUTPUT:
+    likely_cut_off = False
+    if n_in > window - MIN_OUTPUT:
         print(f"\n  STOP: {n_in:,} input tokens leaves no room for an answer in the "
-              f"{CONTEXT_WINDOW:,} context window.")
+              f"{window:,} context window.")
         print("  Fresh call: --exclude docs, fewer --attach, or --no-codebase. On a --resume "
               "chain: start a fresh session instead of adding another turn.")
         return False
-    if n_in + args.max_completion > CONTEXT_WINDOW:
+    if n_in + args.max_completion > window:
         asked = args.max_completion
         # Never cap to a figure that still overflows: the old floor of 4096
         # could put input + output past the window.
-        args.max_completion = CONTEXT_WINDOW - n_in - 1024
+        args.max_completion = window - n_in - 1024
         print(f"\n  ! OUTPUT CAPPED at {args.max_completion:,} tokens (asked {asked:,}): the input "
               f"fills the rest of the window.")
         if args.max_completion < 65_536:
+            likely_cut_off = True
             print("    A multi-file code reply this size is likely to be CUT OFF. On a --resume "
                   "chain, a fresh\n    session (not another resume) gets the full output budget back.")
+            print("    Because of this, pressing Enter at the prompt below means NO; type y to send.")
 
-    miss = cost_of(n_in, 0, 0)
-    hit = cost_of(n_in, n_in, 0)
-    out_max = args.max_completion * PRICE_OUT / 1e6
-    print(f"\n  input if cache MISSES : {money(miss)}")
-    print(f"  input if cache HITS   : {money(hit)}   (10x cheaper - identical prefix required)")
-    print(f"  output, worst case    : {money(out_max)}  ({args.max_completion:,} tok @ ${PRICE_OUT}/M)")
+    ttl = getattr(args, "cache_ttl", None) or "5m"
+    miss = cost_of(n_in, 0, 0, args.model, None, ttl)
+    hit = cost_of(n_in, n_in, 0, args.model)
+    out_max = args.max_completion * info.out / 1e6
+    print(f"\n  model                 : {args.model}   ({info.label}; "
+          f"${info.miss:g} in / ${info.out:g} out / ${info.hit:g} cached per 1M, "
+          f"prices as of {PRICES_CHECKED})")
+    if not known:
+        print("  ! no prices on file for this model: every figure below assumes the highest "
+              "rate on file,\n    and the context window is assumed to be "
+              f"{window:,}. Add it to MODEL_INFO if you keep using it.")
+    print(f"  input if cache MISSES : {money(miss)}   (and writes the cache, {ttl} tier)")
+    print(f"  input if cache HITS   : {money(hit)}   (identical prefix, within the cache lifetime)")
+    is_resume = getattr(args, "is_resume", False)
+    if ttl == "5m" and supports_cache_ttl(args.model) and not is_resume:
+        miss_1h = cost_of(n_in, 0, 0, args.model, None, "1h")
+        print(f"  1h cache tier         : {money(miss_1h)} on a miss instead. Worth it only if this "
+              f"prefix is reused\n                          at least twice, each within an hour of "
+              f"the last (--cache-ttl 1h)")
+    print(f"  output, worst case    : {money(out_max)}  ({args.max_completion:,} tok @ ${info.out:g}/M)")
     print(f"  reasoning effort      : {args.effort}   (reasoning bills as output)")
+    other = alternative_model(args.model)
+    if other and not is_resume:
+        o_info, _k = pricing_for(other)
+        o_miss = cost_of(n_in, 0, 0, other, None, ttl)
+        o_out = args.max_completion * o_info.out / 1e6
+        print(f"  on {other:<18}: {money(o_miss)} input if it misses, {money(o_out)} output "
+              f"worst case   (--model {short_name(other)})")
+    if args.model.startswith("kimi-k3.1") and args.effort == "max" and getattr(args, "request_code", False):
+        print("  note: independent tests found K3.1 Pro reasons about twice as long as K3. At effort "
+              "max a\n        large code reply is more likely to be cut off; --effort high is the "
+              "safer choice.")
 
     if n_in > ACCOUNT_TPM:
         print(f"\n  ! {n_in:,} tokens in one request exceeds this account's "
@@ -4139,7 +4416,7 @@ def preflight(ctx: Context, kimi: Kimi, args: argparse.Namespace) -> bool:
 
     if args.yes:
         return True
-    return confirm("Send this request?", default_no=False)
+    return confirm("Send this request?", default_no=likely_cut_off)
 
 
 # ==========================================================================
@@ -4153,7 +4430,8 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
     if last_user:
         text = last_user["content"]
         session.write(text if len(text) < 8000 else text[:8000] + "\n[... prompt truncated in transcript ...]\n")
-    session.banner("KIMI", f"effort={args.effort}", also_thinking=True)
+    ttl = getattr(args, "cache_ttl", None) or "5m"
+    session.banner("KIMI", f"{args.model} - effort={args.effort} - cache={ttl}", also_thinking=True)
 
     print()
     # The input this request carries: preflight's exact count for the first
@@ -4165,7 +4443,7 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
             session.messages, session,
             model=args.model, effort=args.effort, max_completion=args.max_completion,
             cache_key=args.cache_key_resolved, show_thinking=args.show_thinking,
-            prediction=args.prediction_text,
+            prediction=args.prediction_text, cache_ttl=ttl,
         )
     except BaseException:
         session.turn -= 1          # nothing was answered; keep turn numbers contiguous
@@ -4178,22 +4456,30 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
         assistant["reasoning_content"] = result["reasoning"]
     session.messages.append(assistant)
 
+    # Bill on the model that ANSWERED. Moonshot echoes it in every chunk; if it
+    # differs from the one asked for, the reply came from somewhere else and
+    # both the cost and the answer need a second look.
+    served = result.get("served_model")
+    billed = served if served in MODEL_INFO else args.model
+    if served_differs(args.model, served):
+        result["model_mismatch"] = served
     usage = result["usage"] or {}
     if usage:
-        session.usage.add(usage)
-        session.ledger_entry(usage, args.effort, note=label)
+        result["cost"] = session.usage.add(usage, billed, ttl)
+        session.ledger_entry(usage, args.effort, note=label, model=billed, ttl=ttl)
     elif result.get("ttft") is not None:
         # The stream died after tokens arrived, so usage never came - but
         # Moonshot still bills it (measured 2026-09-15: ~$7 across two died
         # streams that recorded nothing). Ledger it as an estimate, assuming
         # 0% cached, so lifetime spend is an upper bound rather than a gap.
         est_out = est_tokens(result["content"] or "") + est_tokens(result["reasoning"] or "")
-        result["estimated_cost"] = cost_of(input_hint, 0, est_out)
+        result["estimated_cost"] = cost_of(input_hint, 0, est_out, billed, None, ttl)
         session.ledger_entry({"prompt_tokens": input_hint, "completion_tokens": est_out,
                               "cached_tokens": 0}, args.effort,
                              note=(label + " " if label else "") + "ESTIMATE: usage not reported "
                                   f"(finish_reason={result['finish_reason']})",
-                             estimated=True)
+                             estimated=True, model=billed, ttl=ttl)
+    session.write(call_record(result, args, ttl))
     session.save()
 
     summary: Optional[StageSummary] = None
@@ -4214,19 +4500,39 @@ def do_turn(kimi: Kimi, session: Session, args: argparse.Namespace, label: str =
     return result
 
 
+def call_record(result: Dict[str, Any], args: argparse.Namespace, ttl: str) -> str:
+    """One line closing each Kimi turn in transcript.md: which model answered,
+    how, and what it cost. Whoever reviews the transcript sees it without the
+    terminal. It follows the reply, so it is never inside a change block."""
+    p, c, o, w = usage_numbers(result.get("usage") or {})
+    served = result.get("served_model") or "not reported"
+    if p:
+        money_part = f"in {p:,} tok ({c:,} cached) | out {o:,} tok | {money(result.get('cost') or 0)}"
+    elif result.get("estimated_cost") is not None:
+        money_part = f"usage not reported | up to {money(result['estimated_cost'])} (estimate)"
+    else:
+        money_part = "usage not reported"
+    return (f"\n\n[kimicli call record] asked {args.model} | answered by {served} | "
+            f"effort {args.effort} | cache {ttl} | finish {result.get('finish_reason')} | "
+            f"{money_part}\n")
+
+
 def print_turn_summary(result: Dict[str, Any], session: Session) -> None:
     u = result["usage"] or {}
-    p = int(u.get("prompt_tokens") or 0)
-    c = int(u.get("cached_tokens") or (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
-    o = int(u.get("completion_tokens") or 0)
+    p, c, o, w = usage_numbers(u)
     print("\n" + "-" * 70)
+    if result.get("model_mismatch"):
+        print(f"  ! ANSWERED BY {result['model_mismatch']}, not {session.model}. Moonshot served a "
+              f"different model than\n    the one requested; read this reply with that in mind. "
+              f"Check the name with --models.")
     if result["finish_reason"] == "length":
         print("  ! finish_reason=length - the answer hit max_completion_tokens and is CUT OFF.")
         print("    Raise --max-completion, or ask for fewer files per turn.")
     if p:
         pct = (c / p * 100) if p else 0
-        print(f"  input {p:,} tok ({c:,} cached = {pct:.0f}%)   output {o:,} tok"
-              f"   this turn {money(cost_of(p, c, o))}")
+        wrote = f", {w:,} written to cache" if w else ""
+        print(f"  input {p:,} tok ({c:,} cached = {pct:.0f}%{wrote})   output {o:,} tok"
+              f"   this turn {money(result.get('cost') or 0)}")
         print(f"  session total {money(session.usage.cost)} over {session.usage.calls} call(s)")
     elif result.get("estimated_cost") is not None:
         print("  usage not reported (stream ended early) - this call is STILL BILLED.")
@@ -4248,6 +4554,7 @@ CHAT_HELP = """
   /exit            end the session (everything is already saved)
   /cost            spend for this session and lifetime
   /effort low|high|max     change reasoning effort for the next turn
+  /model [name]    show the model, or switch it for the next turn (aliases: pro, highspeed, k3)
   /files           list the change blocks staged this session
   /apply           dry-run the applier on this session (writes nothing)
   /remember <text> append a line to .kimi_out/memory.md for future sessions
@@ -4259,7 +4566,7 @@ CHAT_HELP = """
 
 def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
     print("\n" + "=" * 70)
-    print(f"KIMI K3 - session {session.id}")
+    print(f"KIMI - {args.model} - session {session.id}")
     print(f"Everything is written to {session.dir}")
     print("Type /help for commands.")
     print("=" * 70)
@@ -4288,10 +4595,30 @@ def chat_loop(kimi: Kimi, session: Session, args: argparse.Namespace) -> None:
                 continue
             if cmd == "/effort":
                 if rest.strip() in ("low", "high", "max"):
-                    args.effort = rest.strip()
+                    if rest.strip() != args.effort and session.turn:
+                        print("  note: a different effort can miss the cache on the next turn "
+                              "(that turn's input bills at the full rate).")
+                    args.effort = session.effort = rest.strip()
                     print(f"  reasoning effort -> {args.effort}")
                 else:
                     print("  usage: /effort low|high|max")
+                continue
+            if cmd == "/model":
+                want = resolve_model_name(rest)
+                if not want:
+                    info, _k = pricing_for(args.model)
+                    print(f"  model: {args.model} ({info.label})   list them all: "
+                          f"python kimicli.py --models")
+                elif want != args.model:
+                    info, known = pricing_for(want)
+                    print(f"  model -> {want} ({info.label}). The next turn re-sends the whole "
+                          f"conversation\n  to a model that has never cached it: its input bills "
+                          f"at the full rate. Moonshot\n  recommends a fresh session over "
+                          f"switching mid-conversation.")
+                    if not known:
+                        print("  ! no prices on file for that name - check it with --models; a "
+                              "wrong name is refused by the API.")
+                    args.model = session.model = want
                 continue
             if cmd == "/files":
                 rows = session.rows()
@@ -4411,11 +4738,22 @@ def print_stats() -> None:
         print(f"    of which     : {money(sum(r.get('cost_usd', 0) for r in est_rows))} estimated "
               f"for {len(est_rows)} died stream(s) (upper bound, 0% cached assumed)")
     if prompt:
-        saved = (cached * (PRICE_IN_FRESH - PRICE_IN_CACHED)) / 1e6
+        # Rows from before models were recorded all ran on kimi-k3.
+        saved = sum(r.get("cached", 0) * (pricing_for(r.get("model") or LEGACY_SESSION_MODEL)[0].miss
+                                          - pricing_for(r.get("model") or LEGACY_SESSION_MODEL)[0].hit)
+                    for r in rows) / 1e6
         print(f"  saved by cache : {money(saved)}")
+    by_model: Dict[str, List[float]] = {}
+    for r in rows:
+        k = r.get("model") or f"{LEGACY_SESSION_MODEL} (before models were recorded)"
+        by_model.setdefault(k, []).append(float(r.get("cost_usd", 0)))
+    if len(by_model) > 1 or any(r.get("model") for r in rows):
+        print("\n  by model:")
+        for k, costs in sorted(by_model.items(), key=lambda kv: -sum(kv[1])):
+            print(f"    {k:<46} {len(costs):>4} call(s)  {money(sum(costs))}")
     print("\n  last 5 calls:")
     for r in rows[-5:]:
-        print(f"    {r['ts']}  {r.get('effort', '?'):<4} "
+        print(f"    {r['ts']}  {(r.get('model') or LEGACY_SESSION_MODEL):<24} {r.get('effort', '?'):<4} "
               f"in {r.get('prompt', 0):>9,} ({r.get('cached', 0):>9,} cached) "
               f"out {r.get('completion', 0):>7,}  {money(r.get('cost_usd', 0))}")
     print()
@@ -4905,6 +5243,141 @@ def absent_function():
         check("a window with no room left for an answer stops the call", sent is False)
         check("a resume's size includes the reasoning it sends back",
               est_messages([{"role": "assistant", "content": "", "reasoning_content": "r" * 4450}]) == 1000)
+
+        # ---- 14. models: names, prices, cache tiers, defaults, sessions
+        M = 1_000_000
+        check("model aliases resolve; an unknown name passes through untouched",
+              resolve_model_name(" HighSpeed ") == "kimi-k3.1-pro-highspeed"
+              and resolve_model_name("pro") == "kimi-k3.1-pro" and resolve_model_name("k3") == "kimi-k3"
+              and resolve_model_name("kimi-k9-x") == "kimi-k9-x")
+        c31 = cost_of(M, 0, 0, "kimi-k3.1-pro")
+        c31_1h = cost_of(M, 0, 0, "kimi-k3.1-pro", None, "1h")
+        c31_hit = cost_of(M, M, M, "kimi-k3.1-pro")
+        c31_part = cost_of(M, 400_000, 0, "kimi-k3.1-pro", 500_000, "1h")
+        c3 = cost_of(M, 0, M, "kimi-k3")
+        chs = cost_of(M, 0, M, "kimi-k3.1-pro-highspeed")
+        cunk = cost_of(M, 0, M, "kimi-k9-x")
+        check("each model is priced on its own rates, cache writes and the 1h tier included; an "
+              "unknown model is priced at the worst case",
+              abs(c31 - 2.0) < 1e-9 and abs(c31_1h - 4.0) < 1e-9 and abs(c31_hit - 10.2) < 1e-9
+              and abs(c31_part - (0.4 * 0.2 + 0.5 * 4.0 + 0.1 * 2.0)) < 1e-9
+              and abs(c3 - 18.0) < 1e-9 and abs(chs - 24.0) < 1e-9 and cunk >= chs
+              and not pricing_for("kimi-k9-x")[1],
+              f"{c31} {c31_1h} {c31_hit} {c31_part} {c3} {chs} {cunk}")
+        un = usage_numbers({"prompt_tokens": 10, "completion_tokens": 3,
+                            "prompt_tokens_details": {"cached_tokens": 6, "cache_write_tokens": 4}})
+        un_top = usage_numbers({"prompt_tokens": 10, "cached_tokens": 7})
+        check("cache reads and writes are read from prompt_tokens_details and from the top level",
+              un == (10, 6, 3, 4) and un_top == (10, 7, 0, None), f"{un} {un_top}")
+        check("only K3-class models offer the 1h cache tier",
+              supports_cache_ttl("kimi-k3.1-pro") and supports_cache_ttl("kimi-k3")
+              and not supports_cache_ttl("kimi-k9-x"))
+
+        g3 = globals()
+        saved3 = {k: g3[k] for k in ("OUT_DIR", "SETTINGS_FILE")}
+        saved_env = os.environ.pop("KIMI_MODEL", None)
+        g3["OUT_DIR"] = root / ".kimi_out_models"
+        g3["SETTINGS_FILE"] = g3["OUT_DIR"] / "settings.json"
+        g3["OUT_DIR"].mkdir(parents=True, exist_ok=True)
+        try:
+            d0 = configured_model()
+            os.environ["KIMI_MODEL"] = "pro"
+            d_env = configured_model()
+            with contextlib.redirect_stdout(quiet):
+                rc_set = set_default_model(None, "highspeed")
+                rc_bad = set_default_model(None, "kimi-k9-x")
+                rc_show = show_default_model()
+            d1 = configured_model()
+            del os.environ["KIMI_MODEL"]
+            with contextlib.redirect_stdout(quiet):
+                rc_back = set_default_model(None, "k3")
+            d2 = configured_model()
+            check("default model: kimi-k3 built in; KIMI_MODEL in .env only when nothing is saved; "
+                  "--default-model wins, switches back, and never saves an unknown name",
+                  d0 == ("kimi-k3", "built-in default") and BUILTIN_DEFAULT_MODEL == "kimi-k3"
+                  and d_env == ("kimi-k3.1-pro", "KIMI_MODEL in .env")
+                  and rc_set == 0 and rc_bad == 1 and rc_show == 0 and rc_back == 0
+                  and d1[0] == "kimi-k3.1-pro-highspeed" and d2[0] == "kimi-k3"
+                  and d2[1].startswith("--default-model"),
+                  f"{d0} {d_env} {d1} {d2} {rc_set} {rc_bad}")
+            rec = call_record({"usage": {"prompt_tokens": 1000, "completion_tokens": 10,
+                                         "prompt_tokens_details": {"cached_tokens": 900}},
+                               "served_model": "kimi-k3", "finish_reason": "stop", "cost": 0.0012},
+                              argparse.Namespace(model="kimi-k3", effort="high"), "5m")
+            split = split_transcript_turns("== TURN 1 - KIMI - kimi-k3 - effort=high - cache=5m\n"
+                                           "### END CHANGES" + rec)
+            check("each Kimi turn ends with a call record (model asked/answered, effort, cache, "
+                  "cost) that stays outside the change blocks",
+                  "answered by kimi-k3" in rec and "effort high" in rec and "900 cached" in rec
+                  and split is not None and parse_changes(split[1]).end_marker
+                  and alternative_model("kimi-k3") == "kimi-k3.1-pro"
+                  and alternative_model("kimi-k3.1-pro") == "kimi-k3"
+                  and short_name("kimi-k3.1-pro") == "pro" and short_name("kimi-k3") == "k3",
+                  rec)
+            check("a reply from another model is flagged, even one whose name starts the same; "
+                  "a dated snapshot of the asked model is not",
+                  served_differs("kimi-k3", "kimi-k3.1-pro")
+                  and served_differs("kimi-k3.1-pro", "kimi-k3.1-pro-highspeed")
+                  and served_differs("kimi-k3.1-pro", "kimi-k2.7")
+                  and not served_differs("kimi-k3", "kimi-k3") and not served_differs("kimi-k3", None)
+                  and not served_differs("kimi-k3", "kimi-k3-0715"))
+            check("a reply that ends with '### END CHANGES' is not reported as cut off at a "
+                  "heading; one that ends on a real heading still is",
+                  not reply_shape_problems([], "0. PHILOSOPHY CHECK ok\n\n### END CHANGES\n")
+                  and bool(reply_shape_problems([], "Some text\n\n## 4. BETTER IDEA?\n")))
+            blocks_order = [(4, "BETTER IDEA?"), (5, "The blocks, then ### END CHANGES")]
+            check("a reply whose change blocks sit under another heading still has its blocks "
+                  "section; a reply with none is still told it is missing",
+                  reply_shape_problems(blocks_order, "## 4. BETTER IDEA?\nNone.\n\n## Files\n- a.py\n\n"
+                                       "### EDIT: a.py\n<<<<<<< SEARCH\nx\n=======\ny\n"
+                                       ">>>>>>> REPLACE\n\n### END CHANGES\n") == []
+                  and any("5." in m for m in reply_shape_problems(blocks_order,
+                                                                  "## 4. BETTER IDEA?\nNone.\n")))
+
+            s_models = Session("selftest_models")
+            s_models.messages, s_models.turn = [{"role": "user", "content": "q"}], 1
+            s_models.model, s_models.effort, s_models.cache_ttl = "kimi-k3.1-pro", "high", "1h"
+            s_models.usage.add({"prompt_tokens": M, "completion_tokens": 0,
+                          "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": M}},
+                         "kimi-k3.1-pro", "1h")
+            s_models.save()
+            back = Session("selftest_models")
+            legacy = Session("selftest_legacy")
+            legacy.messages, legacy.turn = [{"role": "user", "content": "q"}], 1
+            legacy.save()
+            blob = json.loads(legacy.messages_path.read_text(encoding="utf-8"))
+            for k in ("model", "effort", "cache_ttl"):
+                blob.pop(k, None)
+            blob["usage"] = {"prompt": M, "cached": 0, "completion": 0, "calls": 1}
+            legacy.messages_path.write_text(json.dumps(blob), encoding="utf-8")
+            old = Session("selftest_legacy")
+            check("a session keeps its model, effort, cache tier and per-call cost; an older "
+                  "session is costed as the kimi-k3 it ran on",
+                  (back.model, back.effort, back.cache_ttl) == ("kimi-k3.1-pro", "high", "1h")
+                  and abs(back.usage.cost - 4.0) < 1e-9 and back.usage.cache_write == M
+                  and old.model is None and abs(old.usage.cost - 3.0) < 1e-9,
+                  f"{back.model} {back.usage.cost} {old.usage.cost}")
+        finally:
+            g3.update(saved3)
+            if saved_env is not None:
+                os.environ["KIMI_MODEL"] = saved_env
+
+        class _Lister:
+            def __init__(self, ids: Optional[List[str]]) -> None:
+                self._models = [{"id": i} for i in ids] if ids is not None else None
+
+            def list_models(self) -> Optional[List[Dict[str, Any]]]:
+                return self._models
+
+        live = _Lister(["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3", "kimi-k2.7-code"])
+        bad_name = model_problem(live, "kimi-k3.1-por", "5m")          # type: ignore[arg-type]
+        check("a misspelled or unavailable model is refused before anything is sent, with the "
+              "near names offered; 1h on a model without the tier is refused; no list, no refusal",
+              model_problem(live, "kimi-k3.1-pro", "1h") is None    # type: ignore[arg-type]
+              and bool(bad_name) and "kimi-k3.1-pro" in (bad_name or "")
+              and bool(model_problem(live, "kimi-k2.7-code", "1h"))  # type: ignore[arg-type]
+              and model_problem(_Lister(None), "kimi-k9-x", "5m") is None,  # type: ignore[arg-type]
+              str(bad_name))
     except Exception as exc:
         check("self-test ran to completion", False, f"{type(exc).__name__}: {exc}")
     finally:
@@ -4926,13 +5399,18 @@ def absent_function():
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="kimicli.py",
-        description="Kimi K3 workbench: streams, saves everything, and never lets the model "
+        description="Kimi workbench: streams, saves everything, and never lets the model "
                     "write to your repo.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
   python kimicli.py --selftest
   python kimicli.py --balance
+  python kimicli.py --models
+  python kimicli.py --default-model
+  python kimicli.py --default-model pro
   python kimicli.py --prompt task.md --request-code
+  python kimicli.py --model pro --prompt task.md --request-code --effort high
+  python kimicli.py --prompt task.md --request-code --cache-ttl 1h
   python kimicli.py --resume last --prompt followup.md --request-code
   python kimicli.py --apply-fixes last --dry-run
   python kimicli.py --apply-fixes last --allow-new-files
@@ -4979,9 +5457,26 @@ def build_parser() -> argparse.ArgumentParser:
                         "shape of the answer. Speeds up whole-file rewrites with small changes.")
 
     g = p.add_argument_group("model")
-    g.add_argument("--model", default=MODEL)
-    g.add_argument("--effort", choices=["low", "high", "max"], default="max",
-                   help="reasoning effort (default max, which is also Kimi's default)")
+    g.add_argument("--model", metavar="NAME",
+                   help="model for this run: a full id or an alias (k3, pro, fast). Default: "
+                        f"the one saved with --default-model, else {BUILTIN_DEFAULT_MODEL}. A "
+                        "--resume keeps its session's model")
+    g.add_argument("--models", action="store_true",
+                   help="list the models this API key can call, with prices, and exit (free)")
+    g.add_argument("--default-model", dest="default_model", metavar="NAME",
+                   nargs="?", const="",
+                   help="with no NAME: show the default model and where it comes from. With "
+                        "NAME (k3, pro, fast or a full id): make it the default for every new "
+                        "run, and exit. Sends nothing, costs nothing")
+    g.add_argument("--effort", choices=["low", "high", "max"], default=None,
+                   help="reasoning effort (default max, Kimi's own default; a --resume keeps "
+                        "its session's effort)")
+    g.add_argument("--cache-ttl", choices=["5m", "1h"], default=None,
+                   help="cache lifetime for this conversation's prefix. 5m (default) costs "
+                        "nothing extra; 1h bills the first write at 2x input but keeps the "
+                        "prefix cached for an hour after every hit - worth it only when the "
+                        "prefix is reused at least twice, each within an hour of the last. A "
+                        "--resume keeps its session's tier")
     g.add_argument("--max-completion", type=int, default=DEFAULT_MAX_COMPLETION,
                    help=f"max output tokens (default {DEFAULT_MAX_COMPLETION:,}, ceiling 1,048,576)")
     g.add_argument("--cache-key", help="prompt_cache_key override (default: hash of the dump)")
@@ -5028,6 +5523,103 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--verbose", action="store_true")
     return p
+
+
+# ==========================================================================
+# Models: list, save a default, check before sending
+# ==========================================================================
+
+def print_models(kimi: Optional["Kimi"]) -> int:
+    """Every model the key can call (live, free), with the prices on file."""
+    current, source = configured_model()
+    live = kimi.list_models() if kimi else None
+    if live is None:
+        why = ("MOONSHOT_API_KEY is not set" if kimi is None
+               else "the model list could not be fetched (see the warning above)")
+        print(f"\n  Live list unavailable: {why}. Showing the models kimicli has prices for.\n")
+        ids = list(MODEL_INFO)
+    else:
+        live_ids = [str(d["id"]) for d in live]
+        ids = [m for m in MODEL_INFO if m in live_ids] + sorted(i for i in live_ids if i not in MODEL_INFO)
+        print(f"\n  Models this API key can call ({len(live_ids)}, live from {BASE_URL}/models):\n")
+    width = max(len(i) for i in ids) if ids else 10
+    for mid in ids:
+        info = MODEL_INFO.get(mid)
+        mark = "*" if mid == current else " "
+        if info:
+            price = (f"${info.miss:g} in / ${info.out:g} out / ${info.hit:g} cached"
+                     + (f" / 1h cache write ${info.write_1h:g}" if info.write_1h else ""))
+            print(f"  {mark} {mid:<{width}}  {price}   {info.context:,} ctx")
+            if info.note:
+                print(f"    {'':<{width}}  {info.note}")
+        else:
+            extra = live and next((d for d in live if d.get("id") == mid), None) or {}
+            ctx = extra.get("context_length")
+            print(f"  {mark} {mid:<{width}}  (no prices on file - the preflight assumes the worst case)"
+                  + (f"   {int(ctx):,} ctx" if isinstance(ctx, (int, float)) else ""))
+    if live is not None:
+        gone = [m for m in MODEL_INFO if m not in [str(d["id"]) for d in live]]
+        if gone:
+            print(f"\n  ! on file but NOT callable with this key: {', '.join(gone)}")
+    aliases: Dict[str, List[str]] = {}
+    for a, mid in MODEL_ALIASES.items():
+        aliases.setdefault(mid, []).append(a)
+    print("\n  aliases   : " + "; ".join(f"{', '.join(v)} = {k}" for k, v in aliases.items()))
+    print(f"  default   : {current}   (from {source}){'   * marks it' if current in ids else ''}")
+    print(f"  prices    : as of {PRICES_CHECKED}; check platform.kimi.ai/docs/pricing/chat if that is old")
+    print("\n  one run      : python kimicli.py --model pro --prompt task.md --request-code --effort high")
+    print("  make default : python kimicli.py --default-model pro      (back: --default-model k3)\n")
+    return 0
+
+
+def show_default_model() -> int:
+    current, source = configured_model()
+    info, known = pricing_for(current)
+    print(f"Default model: {current} ({info.label if known else 'no prices on file'}), from {source}.")
+    env = (os.getenv("KIMI_MODEL") or "").strip()
+    if env and not source.startswith("KIMI_MODEL"):
+        print(f"  (KIMI_MODEL={env} in your .env is ignored while a saved default exists.)")
+    print("Change it: python kimicli.py --default-model pro   (or k3, fast, a full id)")
+    return 0
+
+
+def set_default_model(kimi: Optional["Kimi"], name: str) -> int:
+    want = resolve_model_name(name)
+    live = kimi.list_models() if kimi else None
+    if live is not None and want not in [str(d["id"]) for d in live]:
+        print(f"'{want}' is not a model this API key can call. Nothing saved. See: "
+              f"python kimicli.py --models")
+        return 1
+    if live is None and want not in MODEL_INFO:
+        print(f"'{want}' is not one kimicli knows and the live list could not be checked. "
+              f"Nothing saved.")
+        return 1
+    before, _src = configured_model()
+    blob = _read_settings()
+    blob["model"] = want
+    atomic_write(SETTINGS_FILE, json.dumps(blob, indent=1))
+    info, _k = pricing_for(want)
+    print(f"Default model: {before} -> {want} ({info.label}).\nEvery new run uses it unless "
+          f"--model says otherwise; a --resume keeps the model its\nsession started with. "
+          f"Saved in {SETTINGS_FILE} (never committed).")
+    if want != BUILTIN_DEFAULT_MODEL:
+        print(f"Switch back any time: python kimicli.py --default-model {short_name(BUILTIN_DEFAULT_MODEL)}")
+    return 0
+
+
+def model_problem(kimi: "Kimi", model: str, ttl: str) -> Optional[str]:
+    """Why this request must not go out on this model, or None. A wrong model
+    name is refused for free here instead of after the codebase is built."""
+    if ttl == "1h" and not supports_cache_ttl(model):
+        return (f"--cache-ttl 1h: {model} has no 1-hour cache tier on file "
+                f"(only {', '.join(m for m in MODEL_INFO if supports_cache_ttl(m))} do).")
+    live = kimi.list_models()
+    if live is not None and model not in [str(d["id"]) for d in live]:
+        close = difflib.get_close_matches(model, [str(d["id"]) for d in live], n=3, cutoff=0.5)
+        return (f"'{model}' is not a model this API key can call"
+                + (f" - did you mean {' or '.join(close)}?" if close else "")
+                + " See: python kimicli.py --models")
+    return None
 
 
 def main() -> int:
@@ -5097,6 +5689,15 @@ def main() -> int:
         return run_apply(props, args, blocking=blocking, preview_source=f,
                          meta={"source": f"file {f.name}"})
 
+    # ---- model listing / default (free: no tokens are sent) -------------
+    if args.models or args.default_model is not None:
+        kimi0 = Kimi(API_KEY, BASE_URL) if API_KEY else None
+        if args.models:
+            return print_models(kimi0)
+        if not args.default_model.strip():
+            return show_default_model()
+        return set_default_model(kimi0, args.default_model)
+
     # ---- API modes -----------------------------------------------------
     if not API_KEY:
         print("MOONSHOT_API_KEY is not set. Put it in .env next to this script.")
@@ -5135,6 +5736,29 @@ def main() -> int:
             return 1
         print(f"Resumed {session.id}: {len(session.messages)} messages, "
               f"{money(session.usage.cost)} spent so far.")
+        # Model, effort and cache tier follow the session unless named. A
+        # change re-sends the whole conversation uncached, so it is said aloud.
+        was_model = session.model or LEGACY_SESSION_MODEL
+        args.model = resolve_model_name(args.model) if args.model else was_model
+        if args.model != was_model:
+            print(f"  ! model {was_model} -> {args.model}: the next turn re-sends the whole "
+                  f"conversation to a model\n    that has never cached it, so its input bills at "
+                  f"the full rate. Moonshot recommends\n    starting a fresh session over "
+                  f"switching models mid-conversation.")
+        else:
+            print(f"  model: {args.model}" + ("" if session.model else
+                                               " (this session predates per-session models; it ran on it)"))
+        was_effort = session.effort or "max"
+        args.effort = args.effort or was_effort
+        if args.effort != was_effort and session.effort:
+            print(f"  note: effort {was_effort} -> {args.effort} can miss the cache on this turn.")
+        was_ttl = session.cache_ttl or "5m"
+        args.cache_ttl = args.cache_ttl or was_ttl
+        if args.cache_ttl != was_ttl:
+            print(f"  note: cache tier {was_ttl} -> {args.cache_ttl} applies to NEW cache writes; a "
+                  f"prefix still cached keeps\n    the tier it was written with.")
+        args.is_resume = True
+        session.model, session.effort, session.cache_ttl = args.model, args.effort, args.cache_ttl
         # Reuse the key this session was opened with. Minting a fresh
         # "aa-resume-<id>" here was the bug that made every resumed turn
         # report 0% cached against a byte-identical prefix.
@@ -5174,6 +5798,13 @@ def main() -> int:
             return 1
         ctx = Context(messages=session.messages, parts=parts, cache_key=args.cache_key_resolved)
     else:
+        if args.model:
+            args.model = resolve_model_name(args.model)
+        else:
+            args.model, source = configured_model()
+            logger.info("model %s (from %s)", args.model, source)
+        args.effort = args.effort or "max"
+        args.cache_ttl = args.cache_ttl or "5m"
         ctx = build_context(args)
         if ctx.errors:
             for e in ctx.errors:
@@ -5189,6 +5820,13 @@ def main() -> int:
     # --resume --chat with no --prompt has nothing new: re-sending the history
     # as it stands was a billed call for an "I'm waiting" reply ($2.30).
     has_new = bool(ctx.messages) and ctx.messages[-1].get("role") == "user"
+
+    problem = model_problem(kimi, args.model, args.cache_ttl)
+    if problem:
+        if session is not None and has_new:
+            session.messages.pop()        # the resume prompt was never sent
+        print(f"  !! {problem}\nNot sent.")
+        return 1
 
     if args.estimate_only:
         args.yes = True          # a cost check should never prompt to send
@@ -5207,6 +5845,7 @@ def main() -> int:
         session = Session()
         session.messages = ctx.messages
         session.cache_key = ctx.cache_key
+        session.model, session.effort, session.cache_ttl = args.model, args.effort, args.cache_ttl
 
     if has_new:
         try:

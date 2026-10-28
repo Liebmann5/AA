@@ -1,0 +1,15 @@
+name: dover
+description: >
+  Dover — path tenancy (app.dover.io/apply/<company>/<id>/).
+  Sample: https://app.dover.io/apply/Roboflow/455c79fd-c2e2-4be8-b9ea-8a1d551dbfa0/
+url_patterns:
+  - "app.dover.io/apply/*"
+hosts:
+  - "dover.io"
+multi_step: false
+tenancy: path
+search_restriction: "app.dover.io"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

@@ -1,0 +1,15 @@
+name: recruitee
+description: >
+  Recruitee — subdomain tenancy (<company>.recruitee.com/o/<slug>).
+  Sample: https://flexrentalsolutionsinc.recruitee.com/o/full-stack-engineer-2/c/new
+url_patterns:
+  - "*.recruitee.com/o/*"
+hosts:
+  - "recruitee.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "recruitee.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

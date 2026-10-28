@@ -1,0 +1,15 @@
+name: zohorecruit
+description: >
+  Zoho Recruit — subdomain tenancy (<company>.zohorecruit.com/jobs/...).
+  Sample: https://vpnforandroid.zohorecruit.com/jobs/Careers/751906000003134273/Junior-Java-developer-US-Only
+url_patterns:
+  - "*.zohorecruit.com/jobs/*"
+hosts:
+  - "zohorecruit.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "zohorecruit.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

@@ -1,0 +1,199 @@
+# Google — what this search surface accepts.
+#
+# Verification levels: vendor (the site's own documentation) / measured (a
+# person observed it, with a date) / third_party (reported or reverse-
+# engineered by others) / unverified (recorded, never offered).
+name: google
+display_name: Google
+kind: engine
+homepage: "https://www.google.com"
+summary: "General web search: typed operators, plus filters that live only in the web address."
+usage_note: "AA's automated job searches ask Google for English/US results (hl=en, gl=us) no matter where you are. A search you build here carries no such setting — your own browser's language and region apply."
+
+text_query:
+  or_token: "OR"
+  or_uppercase: true
+  phrase_quote: '"'
+  subject_group: "({content})"
+  exclude_prefix: "-"
+  max_words: 32
+  max_words_status: third_party
+  max_words_source: "Commonly reported limit; not on Google's operator page"
+
+urls:
+  web:
+    base: "https://www.google.com/search"
+    parameters:
+      - {name: q, source: query}
+  jobs:
+    base: "https://www.google.com/search"
+    parameters:
+      - {name: q, source: query}
+      - {name: ibp, value: "htl;jobs"}
+      - {name: hl, value: "en"}
+      - {name: gl, value: "us"}
+      # NOTE: start=0 is duplicated with resources/engines/google.yaml's
+      # pagination.url_template (param start, first 0, step 10). One fact in
+      # two files, by design for now; the engine YAML owns live pagination
+      # (composition_root builds UrlPageTemplate from it), this copy exists
+      # so a built URL names its first page. Follow-up: make one read the
+      # other.
+      - {name: start, value: "0"}
+    date_parameter: tbs
+default_url: web
+automation_url: jobs
+
+operators:
+  - name: site
+    label: "Only this site"
+    explanation: "Shows results only from the site you name. A folder works too, for example site:example.com/jobs."
+    syntax: "site:{value}"
+    channel: typed
+    accepts: domain_or_path
+    status: vendor
+    source: "Google Search documentation: search operators"
+  - name: phrase
+    label: "Exact words"
+    explanation: "Results must contain these words in exactly this order."
+    syntax: '"{value}"'
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Google Search documentation: search operators"
+  - name: exclude
+    label: "Without this"
+    explanation: "Results must not contain this word or phrase."
+    syntax: "-{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Google Search documentation: search operators"
+  - name: any_of
+    label: "Any of these"
+    explanation: "Results can match any one of these. Written as (A OR B); OR must be capital letters."
+    syntax: "({content})"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Google Search documentation: search operators"
+    caveats:
+      - "OR must be capital letters; a lower-case 'or' is read as an ordinary word."
+  - name: intitle
+    label: "Word in the title"
+    explanation: "Results whose page title contains this word or phrase."
+    syntax: "intitle:{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Google Search documentation: search operators"
+  # Recorded, not offered: AA's composer cannot write these yet.
+  - name: exclude_site
+    label: "Not this site"
+    explanation: "Leaves one site out of the results. Not yet offered by AA's builder."
+    syntax: "-site:{value}"
+    channel: typed
+    accepts: domain_or_path
+    status: vendor
+    source: "Google Search documentation: search operators"
+    composable: false
+  - name: inurl
+    label: "Word in the address"
+    explanation: "Results whose page address contains this word. Not yet offered by AA's builder."
+    syntax: "inurl:{value}"
+    channel: typed
+    accepts: text
+    status: vendor
+    source: "Google Search documentation: search operators"
+    composable: false
+  - name: after
+    label: "Posted after a date"
+    explanation: "Results Google believes were published after a fixed date (YYYY-MM-DD). Not the same filter as 'past 24 hours'. Not yet offered by AA's builder."
+    syntax: "after:{value}"
+    channel: typed
+    accepts: date
+    status: vendor
+    source: "Google Search documentation: search operators"
+    composable: false
+  - name: before
+    label: "Posted before a date"
+    explanation: "Results Google believes were published before a fixed date (YYYY-MM-DD). Not yet offered by AA's builder."
+    syntax: "before:{value}"
+    channel: typed
+    accepts: date
+    status: vendor
+    source: "Google Search documentation: search operators"
+    composable: false
+  - name: filetype
+    label: "Only this file type"
+    explanation: "Results that are files of the type you name, for example filetype:pdf. Not yet offered by AA's builder."
+    syntax: "filetype:{value}"
+    channel: typed
+    accepts: file_type
+    status: vendor
+    source: "Google Search documentation: search operators"
+    composable: false
+  # Recorded, never offered: retired or unreliable.
+  - name: link
+    label: "Pages linking to an address"
+    explanation: "Retired by Google. Recorded so its absence is deliberate, not forgotten."
+    syntax: "link:{value}"
+    channel: typed
+    accepts: domain
+    status: unverified
+    source: "Google retired this operator"
+    composable: false
+  - name: cache
+    label: "Cached copy"
+    explanation: "Scaled back by Google in 2024. Recorded so its absence is deliberate."
+    syntax: "cache:{value}"
+    channel: typed
+    accepts: domain
+    status: unverified
+    source: "Reported scaled back in 2024"
+    composable: false
+  - name: inanchor
+    label: "Word in link text"
+    explanation: "Reported unreliable. Recorded so its absence is deliberate."
+    syntax: "inanchor:{value}"
+    channel: typed
+    accepts: text
+    status: unverified
+    source: "Reported unreliable"
+    composable: false
+
+url_options:
+  - name: tbs
+    option: date
+    label: "Newer than"
+    explanation: "Limits results to the past hour, 24 hours, week, month or year. This lives only in the web address — there is nothing you can type into the search bar that does exactly this."
+    channel: url
+    value_format: "qdr:{code}"
+    codes: {hour: h, day: d, week: w, month: m, year: y}
+    option_labels: {hour: "Past hour", day: "Past 24 hours", week: "Past week", month: "Past month", year: "Past year"}
+    status: third_party
+    source: "Reverse-engineered; Google does not document address parameters. AA's automation sends these codes."
+    typed_equivalent: after
+    typed_equivalent_note: "The nearest thing you can type is after:YYYY-MM-DD — a fixed date, not a rolling window, and Google chooses which date it reads."
+    merge: comma
+  - name: tbs
+    option: sort_date
+    label: "Newest first"
+    explanation: "Sorts results by date instead of relevance. This lives only in the web address."
+    channel: url
+    value_format: "sbd:1"
+    codes: {"on": "1"}
+    option_labels: {"on": "Newest first"}
+    status: third_party
+    source: "Reverse-engineered"
+    merge: comma
+  - name: udm
+    option: plain_web
+    label: "Plain web results"
+    explanation: "Asks for the plain list of web results. This parameter's values are undocumented and could change without notice, so it is not offered."
+    channel: url
+    value_format: "14"
+    codes: {"on": "14"}
+    option_labels: {"on": "Plain web results"}
+    status: unverified
+    source: "Undocumented parameter"
+    merge: comma

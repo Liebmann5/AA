@@ -31,14 +31,31 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
-from urllib.parse import urlencode
 
 from auto_apply.domain.models.search_instruction import SearchInstruction
-from auto_apply.domain.ports.interaction_primitives_port import PageActionPrimitives
+from auto_apply.domain.models.search_surface import SearchSurfaceSpec
 from auto_apply.domain.ports.browser_port import BrowserInterface
+from auto_apply.domain.ports.interaction_primitives_port import PageActionPrimitives
+from auto_apply.domain.services.query_composer import build_automation_url
 from auto_apply.domain.types import Locator
 
 logger = logging.getLogger(__name__)
+
+
+def _surface_spec(name: str) -> SearchSurfaceSpec:
+    """The bundled-only catalog spec for one automated engine.
+
+    Automation reads the bundled catalog ONLY: a user override under
+    <data>/search_surfaces must never change the URLs AA's automation sends
+    (the builder's user-facing path uses load_surface(), which applies
+    overrides). The import is lazy so the catalog is only touched when a
+    search URL is actually built, and so module import stays light.
+    """
+    from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+        load_surface_bundled,
+    )
+
+    return load_surface_bundled(name)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -300,16 +317,6 @@ _DATE_RANGE_TO_OPTION_KEY: dict[str, str] = {
 # Google
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Google's ``tbs=qdr:`` parameter mapping for time‑windowed searches.
-_GOOGLE_DATE_RANGE_MAP: dict[str, str] = {
-    "hour":  "h",
-    "day":   "d",
-    "week":  "w",
-    "month": "m",
-    "year":  "y",
-}
-
-
 class GoogleSearchStrategy(SearchEngineStrategy):
     """Google‑specific search URL construction and toolbar interactions."""
 
@@ -329,19 +336,15 @@ class GoogleSearchStrategy(SearchEngineStrategy):
         return "google"
 
     def build_search_url(self, instruction: SearchInstruction) -> str:
-        query = instruction.effective_query
-        params: dict[str, str | int] = {
-            "q": query,
-            "ibp": "htl;jobs",
-            "hl": "en",
-            "gl": "us",
-            "start": 0,
-        }
-        if instruction.date_range is not None:
-            qdr_code = _GOOGLE_DATE_RANGE_MAP.get(instruction.date_range)
-            if qdr_code is not None:
-                params["tbs"] = f"qdr:{qdr_code}"
-        return f"https://www.google.com/search?{urlencode(params)}"
+        # The catalog (resources/search_surfaces/google.surface.yaml) is the
+        # single source of truth for this URL, bundled-only: automation bytes
+        # cannot be changed by a user override.
+        return build_automation_url(
+            _surface_spec(self.engine_name),
+            query=instruction.effective_query,
+            location=instruction.location,
+            date_range=instruction.date_range,
+        )
 
     # ── Legacy hardcoded selectors (used when no locator is injected) ────
 
@@ -414,15 +417,6 @@ class GoogleSearchStrategy(SearchEngineStrategy):
 # Bing
 # ═════════════════════════════════════════════════════════════════════════════
 
-_BING_DATE_RANGE_MAP: dict[str, str] = {
-    "hour":  "h",
-    "day":   "d",
-    "week":  "w",
-    "month": "m",
-    "year":  "y",
-}
-
-
 class BingSearchStrategy(SearchEngineStrategy):
     """Bing‑specific search URL construction and toolbar interactions."""
 
@@ -442,14 +436,13 @@ class BingSearchStrategy(SearchEngineStrategy):
         return "bing"
 
     def build_search_url(self, instruction: SearchInstruction) -> str:
-        query = instruction.effective_query
-        params = {"q": query}
-        url = f"https://www.bing.com/jobs?{urlencode(params)}"
-        if instruction.date_range is not None:
-            interval_code = _BING_DATE_RANGE_MAP.get(instruction.date_range)
-            if interval_code is not None:
-                url += f"&filters=ex1%3A%22{interval_code}%22"
-        return url
+        # Bundled-only catalog — see GoogleSearchStrategy.build_search_url.
+        return build_automation_url(
+            _surface_spec(self.engine_name),
+            query=instruction.effective_query,
+            location=instruction.location,
+            date_range=instruction.date_range,
+        )
 
     # ── Legacy hardcoded selectors ──────────────────────────────────────
 
@@ -508,15 +501,6 @@ class BingSearchStrategy(SearchEngineStrategy):
 # Indeed
 # ═════════════════════════════════════════════════════════════════════════════
 
-_INDEED_DATE_RANGE_DAYS: dict[str, int] = {
-    "hour":  1,
-    "day":   1,
-    "week":  7,
-    "month": 30,
-    "year":  365,
-}
-
-
 class IndeedSearchStrategy(SearchEngineStrategy):
     """Indeed‑specific search URL construction and toolbar interactions."""
 
@@ -536,20 +520,13 @@ class IndeedSearchStrategy(SearchEngineStrategy):
         return "indeed"
 
     def build_search_url(self, instruction: SearchInstruction) -> str:
-        params: dict[str, str] = {
-            "q": instruction.effective_query,
-            "l": instruction.location,
-        }
-        if instruction.date_range is not None:
-            days = _INDEED_DATE_RANGE_DAYS.get(instruction.date_range)
-            if days is not None:
-                params["fromage"] = str(days)
-                logger.debug(
-                    "IndeedSearchStrategy: date_range=%s → fromage=%d",
-                    instruction.date_range,
-                    days,
-                )
-        return f"https://www.indeed.com/jobs?{urlencode(params)}"
+        # Bundled-only catalog — see GoogleSearchStrategy.build_search_url.
+        return build_automation_url(
+            _surface_spec(self.engine_name),
+            query=instruction.effective_query,
+            location=instruction.location,
+            date_range=instruction.date_range,
+        )
 
     # ── Legacy hardcoded selectors ──────────────────────────────────────
 

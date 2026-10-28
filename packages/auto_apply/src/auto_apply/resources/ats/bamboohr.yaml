@@ -1,0 +1,15 @@
+name: bamboohr
+description: >
+  BambooHR — subdomain tenancy (<company>.bamboohr.com/careers/...).
+  Sample: https://holisticai.bamboohr.com/careers/59
+url_patterns:
+  - "*.bamboohr.com/careers*"
+hosts:
+  - "bamboohr.com"
+multi_step: false
+tenancy: subdomain
+search_restriction: "bamboohr.com/careers"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Query from Nick's Job Websites table; not hand-measured yet"
+terminal_patterns: []

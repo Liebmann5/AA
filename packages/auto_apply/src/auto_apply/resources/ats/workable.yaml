@@ -1,0 +1,15 @@
+name: workable
+description: >
+  Workable — path tenancy (apply.workable.com/<company>/j/<id>/apply/).
+  Sample: https://apply.workable.com/last-call-media/j/FF37BE66C5/apply/
+url_patterns:
+  - "apply.workable.com/*"
+hosts:
+  - "workable.com"
+multi_step: false
+tenancy: path
+search_restriction: "apply.workable.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

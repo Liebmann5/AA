@@ -164,6 +164,16 @@ class LogicError(AutoApplyException):
     pass
 
 
+class QueryBuilderError(AutoApplyException):
+    """The query builder could not complete the request.
+
+    Raised for an unknown surface or platform, a conflicting site
+    restriction, or a missing registry — always with a plain-language
+    message the surfaces can print verbatim.
+    """
+    pass
+
+
 # ── Application runtime (separate root — preserved deliberately) ────────────
 
 

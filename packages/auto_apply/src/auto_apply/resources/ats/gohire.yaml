@@ -1,0 +1,15 @@
+name: gohire
+description: >
+  GoHire — path tenancy (jobs.gohire.io/<company>-<id>/<slug>).
+  Sample: https://jobs.gohire.io/mundiware-9xhfbtvt/software-engineer-153972/
+url_patterns:
+  - "jobs.gohire.io/*/*"
+hosts:
+  - "gohire.io"
+multi_step: false
+tenancy: path
+search_restriction: "jobs.gohire.io"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

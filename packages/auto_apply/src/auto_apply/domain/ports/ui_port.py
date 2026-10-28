@@ -25,17 +25,21 @@ surface structurally. adapters_primary → domain is already a permitted
 import direction (tests/test_architecture.py:119-125), so the port sits
 in domain/ports where both adapters can see it. Verified.
 
-Whole surface, deliberately: 17 methods.
+Whole surface, deliberately: 27 methods.
 -----------------------------------------
 AA's idiom prefers narrow ports, but this port describes a whole surface,
-not a capability, and the ProfileRepositoryPort precedent applies. The 17
+not a capability, and the ProfileRepositoryPort precedent applies. The 26
 methods are measured from the real consumed surface — the 11 legacy calls
 both adapters actually make today (initialize_session, start, stop, pause,
 resume, get_stats, get_current_state, is_running, get_queue_stats,
 get_pending_approvals, provide_approval) plus one new stream query
 (recent_events), plus three custody methods added when the results surface
 landed (export_session_results, export_profile, list_session_history),
-plus the two autonomy methods added at stage E1 (autonomy, set_autonomy).
+plus the two autonomy methods added at stage E1 (autonomy, set_autonomy),
+plus the ten query-builder methods (query_surfaces, query_platforms,
+query_defaults, build_query, build_platform_query, build_company_query,
+resolve_query_target, remember_query, recent_queries, clear_recent_queries) —
+the builder's surfaces plus the resolve-then-remember step.
 tests/domain/test_ui_contract.py and tests/application/test_ui_port_conformance.py
 pin this exact set, so growth is mechanical, not accidental. If the
 consumers only ever take halves, splitting then is cheap — the types do
@@ -58,6 +62,11 @@ Legacy → port mapping (Turn 2 wires these):
                                              frozen answer) ; set_autonomy(enabled,
                                              acknowledgements) → bool  (write: the profile,
                                              persisted, effective next session)
+    (query builder)                        → query_surfaces / query_platforms /
+                                             query_defaults / build_query /
+                                             build_platform_query / build_company_query /
+                                             remember_query / recent_queries /
+                                             clear_recent_queries
 
 Ruling: "there is no session right now" is a VALUE, not None, not an exception.
 --------------------------------------------------------------------------------
@@ -108,8 +117,9 @@ no surface can skip a warning by construction.
 
 Types only
 ----------
-Every parameter and return type in this port is a frozen DTO from
-ui_contract, an Enum, a Path, or a builtin. No UserProfile, no driver, no
+Every parameter and return type in this port is a frozen DTO from the
+named DTO modules (ui_contract, search_query), an Enum, a Path, or a
+builtin. No UserProfile, no driver, no
 repository, no orchestrator, no callback. tests/domain/test_ui_contract.py
 enforces it mechanically against this Protocol, and proves the checker
 discriminates by running it against the CURRENT SessionController, which
@@ -127,6 +137,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from auto_apply.domain.models.search_query import (
+    BuilderDefaults,
+    PlatformOffer,
+    QueryRequest,
+    QueryResult,
+    SurfaceOffer,
+)
 from auto_apply.domain.models.ui_contract import (
     ApprovalRequest,
     QueueSnapshot,
@@ -279,4 +296,55 @@ class UIPort(Protocol):
         The satisfying side maintains a bounded buffer of recent events.
         Empty tuple when no session exists.
         """
+        ...
+
+    # ── Query builder ─────────────────────────────────────────────────────
+
+    def query_surfaces(self) -> tuple[SurfaceOffer, ...]:
+        """Every search surface the builder may offer (verification applied)."""
+        ...
+
+    def query_platforms(self) -> tuple[PlatformOffer, ...]:
+        """Every hiring platform the builder can target, with its label."""
+        ...
+
+    def query_defaults(self) -> BuilderDefaults:
+        """The profile's saved search values as one-click choices."""
+        ...
+
+    def build_query(self, request: QueryRequest) -> QueryResult:
+        """Compose bar text and/or a URL for one surface."""
+        ...
+
+    def build_platform_query(self, platform: str, request: QueryRequest) -> QueryResult:
+        """A domain-restricted engine search for one hiring platform."""
+        ...
+
+    def build_company_query(self, url: str, request: QueryRequest) -> QueryResult:
+        """A company-scoped engine search from a pasted tenant URL."""
+        ...
+
+    def resolve_query_target(
+        self,
+        request: QueryRequest,
+        *,
+        platform: str | None = None,
+        company_url: str | None = None,
+    ) -> QueryRequest:
+        """The request as it should be remembered: a platform or company
+        target folded to its resolved site: restriction, so a remembered
+        query replays identically as an engine search. Plain engine queries
+        are returned unchanged."""
+        ...
+
+    def remember_query(self, request: QueryRequest) -> None:
+        """Record a built query as one of the recent few (explicit only)."""
+        ...
+
+    def recent_queries(self) -> tuple[QueryRequest, ...]:
+        """The remembered queries, newest first."""
+        ...
+
+    def clear_recent_queries(self) -> None:
+        """Forget every remembered query."""
         ...

@@ -89,6 +89,7 @@ if TYPE_CHECKING:
         VerifyResult,
     )
     from auto_apply.domain.models.replay import ReplayReport
+    from auto_apply.application.services.query_builder import QueryBuilderService
 
 # Re-export so existing callers don't break.
 __all__ = [
@@ -104,6 +105,7 @@ __all__ = [
     "UninstallReport",
     "build_orchestrator",
     "build_page_copier",
+    "build_query_builder",
     "build_research_consent",
     "build_session",
     "build_session_controller",
@@ -126,6 +128,25 @@ logger = logging.getLogger(__name__)
 # permits concurrent access to the same instance, which is the exact bug the
 # lease exists to prevent.  Never derive this from config or session plan.
 _MAX_LEASES_PER_SHARED_DRIVER = 1
+
+
+def _build_ats_registry():
+    """Load the ATS descriptor registry once per build site.
+
+    Called by build_orchestrator (for the workflows) and by
+    build_session_controller (for the query builder), so platform identity
+    stays single-sourced in resources/ats/*.yaml and neither site constructs
+    its own list. Returns None when the descriptors cannot be loaded — every
+    consumer degrades on None already.
+    """
+    try:
+        from auto_apply.adapters.secondary.discovery.ats_registry import (  # noqa: PLC0415
+            ATSRegistry,
+        )
+        return ATSRegistry()
+    except Exception as _exc:
+        logger.debug("composition_root: ATSRegistry unavailable: %s", _exc)
+        return None
 
 
 def _warn_if_legacy_research_db() -> None:
@@ -816,14 +837,7 @@ def build_orchestrator(  # noqa: PLR0914
     _configured_checkpoints = getattr(app_config, "human_review_checkpoints", None)
     interrupt_policy = ProfileBasedInterruptPolicy(_configured_checkpoints)
 
-    _ats_registry = None
-    try:
-        from auto_apply.adapters.secondary.discovery.ats_registry import (  # noqa: PLC0415
-            ATSRegistry,
-        )
-        _ats_registry = ATSRegistry()
-    except Exception as _exc:
-        logger.debug("build_orchestrator: ATSRegistry unavailable: %s", _exc)
+    _ats_registry = _build_ats_registry()
 
     from auto_apply.domain.ports.page_understanding_port import PageUnderstandingPort  # noqa: PLC0415
 
@@ -1120,28 +1134,6 @@ def build_orchestrator(  # noqa: PLR0914
             ),
         ]
 
-    from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (  # noqa: PLC0415
-        GenericSERPStrategy,
-    )
-
-    search_prefs_for_miner = profile.search_preferences if hasattr(profile, "search_preferences") else None
-
-    def _company_page_miner(browser: BrowserInterface) -> list:
-        return GenericSERPStrategy(
-            browser=browser,
-            search_prefs=search_prefs_for_miner,
-            source_tag="CompanyDirect",
-            scroller=_page_scroller,
-            advancer=(
-                _advancer_factory("")() if _advancer_factory is not None else None
-            ),
-            max_pages=_max_pages_per_query,
-            observer=_extraction_observer,
-            reporter=_audit_reporter,
-            forced_tier=_forced_tier,
-            page_action=page_action_tool,
-        ).execute()
-
     # Single-URL careers-page scraper for DISCOVER_COMPANY tasks: navigate the
     # live browser to the URL and extract listings via the math subsystem.
     # Omitted (None) without a browser — DiscoveryWorkflow degrades gracefully.
@@ -1227,7 +1219,6 @@ def build_orchestrator(  # noqa: PLR0914
         dedup=dedup,
         text_matcher=text_matcher,
         ats_registry=_ats_registry,
-        company_page_miner=_company_page_miner,
         company_page_scraper=_company_page_scraper,
         plan=plan,
         browser_lease=browser_lease,
@@ -1543,6 +1534,33 @@ def _refuse_no_browser(registry: CapabilitiesRegistry, cascade: BrowserCascade) 
     raise BrowserSetupError(message)
 
 
+def build_query_builder(profile: "UserProfile | None" = None) -> "QueryBuilderService":
+    """Build the query-builder service — the surfaces' one route to it.
+
+    Session path: build_session_controller passes the session's profile.
+    Pre-session path (the CLI search screen): called with profile=None.
+
+    configure_locale(language=None) auto-detects the OS locale and is a
+    no-op once any caller configured one, so the builder's labels render as
+    text, never as raw keys, whether or not a session is running. It logs
+    one INFO line ("Locale configured") the first time it runs.
+    """
+    from auto_apply.application.services.i18n import configure_locale  # noqa: PLC0415
+    from auto_apply.application.services.query_builder import QueryBuilderService  # noqa: PLC0415
+    from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+        list_surface_names,
+        load_surface,
+    )
+
+    configure_locale(language=None)
+    return QueryBuilderService(
+        profile=profile,
+        load_spec=load_surface,
+        list_names=list_surface_names,
+        ats_registry=_build_ats_registry(),
+    )
+
+
 def _register_exit_shutdown(
     controller: "SessionController",
     instances: "InstanceRegistry | None" = None,
@@ -1633,6 +1651,10 @@ def build_session_controller(
     research_consent = build_research_consent(registry)
     orchestrator = build_orchestrator(registry, research_consent=research_consent)
 
+    # The query builder serves the user-facing surfaces; it reads the
+    # profile only as one-click defaults and never writes to it.
+    query_builder = build_query_builder(profile)
+
     # 3. Assemble the controller (all deps injected). If assembly fails after
     # the orchestrator exists, its browser has no owner yet — release it here
     # rather than stranding it against the shared profile directory.
@@ -1643,6 +1665,7 @@ def build_session_controller(
             orchestrator=orchestrator,
             profile_repo=profile_repo,
             research_consent=research_consent,
+            query_builder=query_builder,
         )
     except Exception:
         orchestrator.shutdown()

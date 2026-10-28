@@ -1,0 +1,15 @@
+name: jobscore
+description: >
+  JobScore — path tenancy (careers.jobscore.com/careers/<company>).
+  Sample: https://careers.jobscore.com/careers/xoitechnologies
+url_patterns:
+  - "careers.jobscore.com/careers/*"
+hosts:
+  - "jobscore.com"
+multi_step: false
+tenancy: path
+search_restriction: "careers.jobscore.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []

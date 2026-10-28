@@ -799,6 +799,25 @@ class ApplicationsWorkflow:
             descriptor = None
         if descriptor is None:
             return evidence, False
+        # A terminal page (success / confirm / closed) is never a route
+        # destination: a descriptor can match it by host while the page
+        # carries no form to fill. The route continues to the honest no-form
+        # outcome instead of stopping on a confirmation page. The `is True`
+        # (not truthiness) is deliberate: a mock registry returns a truthy
+        # MagicMock for the method, and only a real terminal verdict may
+        # change routing.
+        try:
+            terminal = self._ats_registry.is_terminal_page(url) is True
+        except AttributeError:
+            terminal = False
+        if terminal:
+            logger.info(
+                "ApplicationsWorkflow: landed URL is a terminal page on %s — "
+                "not a route stop | url=%s",
+                descriptor.name,
+                url,
+            )
+            return evidence, False
         if hasattr(job, "metadata"):
             job.metadata["ats"] = descriptor.name
         return evidence.model_copy(update={"ats_platform": descriptor.name}), True

@@ -88,11 +88,21 @@ class SelectorLoader:
         self._user_override_dir = user_override_dir or _USER_OVERRIDE_DIR
         self._cache: dict[str, dict[str, Any]] = {}
 
+    @property
+    def bundled_dir(self) -> Path:
+        """The bundled YAML directory (read-only)."""
+        return self._bundled_dir
+
+    @property
+    def user_override_dir(self) -> Path:
+        """The user override YAML directory (read-only)."""
+        return self._user_override_dir
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def load(self, engine_name: str) -> dict[str, Any]:
+    def load(self, engine_name: str, suffix: str = ".yaml") -> dict[str, Any]:
         """Return the merged selector configuration for *engine_name*.
 
         On first call the YAML files are read, merged, and cached.  Subsequent
@@ -100,16 +110,19 @@ class SelectorLoader:
 
         Args:
             engine_name: Lowercase engine identifier (e.g. ``"google"``).
+            suffix: File-name suffix, ``.yaml`` for engines and
+                ``.surface.yaml`` for the search-surface catalog.
 
         Returns:
             A dict with the merged configuration.  Returns an empty dict
             when the bundled YAML is missing or unparseable.
         """
-        if engine_name in self._cache:
-            return self._cache[engine_name]
+        key = f"{engine_name}{suffix}"
+        if key in self._cache:
+            return self._cache[key]
 
-        config = self._load_and_merge(engine_name)
-        self._cache[engine_name] = config
+        config = self._load_and_merge(engine_name, suffix)
+        self._cache[key] = config
         return config
 
     def reload(self, engine_name: str) -> dict[str, Any]:
@@ -124,20 +137,32 @@ class SelectorLoader:
         Returns:
             Freshly merged configuration dict.
         """
-        self._cache.pop(engine_name, None)
+        self._cache.pop(f"{engine_name}.yaml", None)
         return self.load(engine_name)
 
     def clear_cache(self) -> None:
         """Drop all cached configurations."""
         self._cache.clear()
 
+    def load_bundled(self, name: str, suffix: str = ".yaml") -> dict[str, Any]:
+        """Return the bundled configuration ONLY — user overrides never apply.
+
+        Automation (engine_strategies' URL construction) reads this so that a
+        user editing the catalog for their own manual searches can never
+        change the queries AA's automation sends. User-facing features use
+        load(). A missing or unreadable file returns an empty dict; whether
+        that is an error is the caller's decision (the search-surface
+        registry raises on it; the engines' toolbar path tolerates it).
+        """
+        return self._read_yaml(self._bundled_dir / f"{name}{suffix}") or {}
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _load_and_merge(self, engine_name: str) -> dict[str, Any]:
+    def _load_and_merge(self, engine_name: str, suffix: str = ".yaml") -> dict[str, Any]:
         """Load bundled and user YAML, then merge."""
-        bundled = self._read_yaml(self._bundled_dir / f"{engine_name}.yaml")
+        bundled = self._read_yaml(self._bundled_dir / f"{engine_name}{suffix}")
         if bundled is None:
             logger.warning(
                 "SelectorLoader: bundled config for %r not found — "
@@ -146,7 +171,7 @@ class SelectorLoader:
             )
             return {}
 
-        user = self._read_yaml(self._user_override_dir / f"{engine_name}.yaml")
+        user = self._read_yaml(self._user_override_dir / f"{engine_name}{suffix}")
         if user is not None:
             logger.info(
                 "SelectorLoader: merging user overrides for engine %r",

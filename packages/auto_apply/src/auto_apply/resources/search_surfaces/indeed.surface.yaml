@@ -1,0 +1,84 @@
+# Indeed — what this search surface accepts. See google.surface.yaml for the
+# verification levels.
+name: indeed
+display_name: Indeed
+kind: job_board
+homepage: "https://www.indeed.com"
+summary: "A job board with its own search. AA automates this surface."
+usage_note: ""
+
+text_query:
+  or_token: "OR"
+  or_uppercase: true
+  phrase_quote: '"'
+  subject_group: "({content})"
+  exclude_prefix: "-"
+
+urls:
+  jobs:
+    base: "https://www.indeed.com/jobs"
+    parameters:
+      - {name: q, source: query}
+      - {name: l, source: location}
+    date_parameter: fromage
+default_url: jobs
+automation_url: jobs
+
+operators:
+  - name: phrase
+    label: "Exact words"
+    explanation: "Results must contain these words in exactly this order."
+    syntax: '"{value}"'
+    channel: typed
+    accepts: text
+    status: third_party
+    source: "Reported by third-party job-search guides"
+  - name: exclude
+    label: "Without this"
+    explanation: "Results must not contain this word or phrase."
+    syntax: "-{value}"
+    channel: typed
+    accepts: text
+    status: third_party
+    source: "Reported by third-party job-search guides"
+  - name: any_of
+    label: "Any of these"
+    explanation: "Results can match any one of these. Written as (A OR B)."
+    syntax: "({content})"
+    channel: typed
+    accepts: text
+    status: third_party
+    source: "Reported by third-party job-search guides"
+    caveats:
+      - "OR is written in capital letters inside parentheses, as the guides describe."
+  - name: title
+    label: "Word in the job title"
+    explanation: "Results whose job title contains this word. Not yet offered by AA's builder."
+    syntax: "title:{value}"
+    channel: typed
+    accepts: text
+    status: third_party
+    source: "Reported by third-party job-search guides"
+    composable: false
+  - name: company
+    label: "From this company"
+    explanation: "Results from the company you name. Not yet offered by AA's builder."
+    syntax: "company:{value}"
+    channel: typed
+    accepts: text
+    status: third_party
+    source: "Reported by third-party job-search guides"
+    composable: false
+
+url_options:
+  - name: fromage
+    option: date
+    label: "Posted within"
+    explanation: "Limits results to the last day, week or month. This lives only in the web address — there is nothing to type for it."
+    channel: url
+    value_format: "{code}"
+    codes: {hour: "1", day: "1", week: "7", month: "30", year: "365"}
+    option_labels: {day: "Past 24 hours", week: "Past week", month: "Past month"}
+    status: third_party
+    source: "Reported; AA's own automation sends this parameter"
+    merge: append

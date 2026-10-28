@@ -1,0 +1,15 @@
+name: comeet
+description: >
+  Comeet — path tenancy (www.comeet.com/jobs/<company>/...).
+  Sample: https://www.comeet.com/jobs/starkware/C6.00E/software-engineer-in-the-product-exploration-team_/2F.739
+url_patterns:
+  - "www.comeet.com/jobs/*"
+hosts:
+  - "comeet.com"
+multi_step: false
+tenancy: path
+search_restriction: "comeet.com"
+search_restriction_status: unverified
+search_restriction_verified_on: ""
+search_restriction_source: "Host from Nick's sample URL; not yet hand-measured"
+terminal_patterns: []
