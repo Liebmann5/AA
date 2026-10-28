@@ -308,3 +308,77 @@ def test_date_and_sort_merge_on_one_parameter():
     )
     assert result.url is not None
     assert "tbs=qdr%3Ad%2Csbd%3A1" in result.url
+
+
+def test_a_location_a_surface_cannot_take_is_noted_not_dropped_silently():
+    """TEETH (new surface): Google has no location field, so a location used to
+    vanish without a word. Now it is noted, and the note names the remedy.
+    Mutation caught: dropping the location note, or refusing instead of noting."""
+    result = compose(
+        QueryRequest(
+            surface="google",
+            phrases=("Software Engineer",),
+            location="Seattle, WA",
+        ),
+        _spec("google"),
+    )
+    assert result.url is not None
+    assert any(n.topic == "location" for n in result.notes)
+    assert any("Seattle, WA" in n.message for n in result.notes)
+
+
+def test_a_location_a_surface_takes_is_carried_without_a_note():
+    """GUARD: Indeed carries the location in l= — no location note, no regression."""
+    result = compose(
+        QueryRequest(
+            surface="indeed",
+            phrases=("Software Engineer",),
+            location="Austin",
+        ),
+        _spec("indeed"),
+    )
+    assert result.url is not None and "l=Austin" in result.url
+    assert not any(n.topic == "location" for n in result.notes)
+
+
+def test_linkedin_unquoting_is_noted():
+    """TEETH (new surface): LinkedIn's quoting is unverified, so exact-phrase
+    terms go in bare — and now that is said. Mutation caught: composing the
+    link without the phrase note, or quoting anyway."""
+    result = compose(
+        QueryRequest(surface="linkedin", phrases=("Software Engineer",)),
+        _spec("linkedin"),
+    )
+    assert result.url is not None
+    assert "%22" not in result.url
+    assert any(n.topic == "phrase" for n in result.notes)
+
+
+def test_google_quoting_carries_no_unquote_note():
+    """GUARD: Google verifies quoting, so quotes are present and no phrase note."""
+    result = compose(
+        QueryRequest(surface="google", phrases=("Software Engineer",)),
+        _spec("google"),
+    )
+    assert result.bar_text == '("Software Engineer")'
+    assert not any(n.topic == "phrase" for n in result.notes)
+
+
+def test_automation_url_is_unaffected_by_the_composer_notes():
+    """GUARD (byte identity): the user-facing notes live only in compose(); the
+    automation builder reads the template directly and its bytes are unchanged."""
+    from auto_apply.adapters.secondary.discovery.search_surface_registry import (
+        load_surface_bundled,
+    )
+    from auto_apply.domain.services.query_composer import build_automation_url
+
+    url = build_automation_url(
+        load_surface_bundled("google"),
+        query="Engineer jobs in Remote",
+        location="Remote",
+        date_range="day",
+    )
+    assert url == (
+        "https://www.google.com/search?q=Engineer+jobs+in+Remote"
+        "&ibp=htl%3Bjobs&hl=en&gl=us&start=0&tbs=qdr%3Ad"
+    )

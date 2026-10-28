@@ -22,6 +22,16 @@ from its first tag onward.
 
 ### Added
 
+- **The query builder is finished: the GUI window, one vocabulary on both
+  surfaces, and the last silent drops said aloud.** File → Build a Search…
+  offers everything the CLI offers (engine, platform and company searches,
+  the profile's saved titles and locations as one-click defaults, copy to the
+  clipboard, open the link, keep / reuse / clear recent queries). Both
+  surfaces now speak the UI port's builder vocabulary — the service's methods
+  were renamed to the port's names, and a new `resolve_query_target` step
+  folds a platform or company target into the remembered query so it replays
+  identically from either surface. Parity is pinned, not intended.
+
 - **ATS platform registry expansion + builder platform search.** 28 new
   platform descriptors (BambooHR, Rippling, Workable, SmartRecruiters,
   Jobvite, Recruitee, Gusto, PinpointHQ, Eightfold, Keka, Dover, Zoho
@@ -49,7 +59,7 @@ from its first tag onward.
   refused in plain words with a non-zero exit, never a blank result. Copy,
   open and keep are the only actions that remember a query, and a remembered
   platform or company query is stored resolved and replays identically.
-- **`UIPort` grows from 17 to 26 methods** for the query builder, and its
+- **`UIPort` grows from 17 to 27 methods** for the query builder, and its
   data-only rule now names two frozen DTO modules (`ui_contract`,
   `search_query`). `QueryBuilderError` moved to `domain/exceptions.py` and is
   re-exported from `application/services/query_builder.py`, so existing
@@ -67,6 +77,11 @@ from its first tag onward.
 
 ### Fixed
 
+- **The builder no longer drops anything silently.** A location a surface
+  cannot carry (Google, Bing, DuckDuckGo, LinkedIn) now produces a
+  plain-language note instead of vanishing, and LinkedIn's unverified
+  exact-phrase terms are noted when they go into a link unquoted. Automated
+  discovery's URLs are byte-identical (the byte-identity pin holds).
 - **A restriction the surface cannot express no longer produces a link that
   silently drops it.** The composer refuses the link as well as the search
   text, with an explanatory note (was: link returned with the restriction

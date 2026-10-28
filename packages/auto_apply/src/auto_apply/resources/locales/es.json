@@ -177,6 +177,45 @@
     "platform": {
       "unverified": "Sin verificar: el mecanismo de búsqueda está documentado, pero aún no se sabe qué parte de esta plataforma alcanza. Abra el enlace usted mismo y compruebe que los resultados provienen de la plataforma; la guía del usuario muestra cómo informar del resultado.",
       "third_party": "Reportado por otros; AA no lo ha comprobado."
+    },
+    "window_title": "Crear una búsqueda",
+    "engine_label": "Buscador:",
+    "target_label": "Buscar en:",
+    "target": {
+      "surface": "Todo lo que encuentre",
+      "platform": "Una plataforma de contratación",
+      "company": "Una sola empresa"
+    },
+    "platform_label": "Plataforma:",
+    "company_label": "Enlace a la página de empleo de la empresa:",
+    "terms_label": "Palabras de búsqueda:",
+    "location_label": "Ubicación:",
+    "any_of_label": "Cualquiera de estas:",
+    "exclude_label": "Sin:",
+    "in_title_label": "En el título:",
+    "defaults_label": "De su perfil:",
+    "pick_one": "Elija una…",
+    "options_label": "Opciones:",
+    "option_not_set": "(sin definir)",
+    "preview_label": "Resultado:",
+    "recent_label": "Búsquedas recientes:",
+    "recent_placeholder": "Elija una para reutilizarla…",
+    "recent_empty_label": "Aún no hay búsquedas recientes",
+    "copy_text": "Copiar texto de búsqueda",
+    "copy_link": "Copiar enlace",
+    "open_link": "Abrir enlace",
+    "keep": "Guardar",
+    "clear_recent": "Borrar recientes",
+    "close": "Cerrar",
+    "status": {
+      "no_result": "Primero cree una búsqueda.",
+      "copied_text": "Texto de búsqueda copiado y guardado.",
+      "copied_link": "Enlace copiado y guardado.",
+      "opened": "Enlace abierto en su navegador; la búsqueda se guardó.",
+      "kept": "Búsqueda guardada.",
+      "cleared": "Búsquedas recientes borradas.",
+      "recent_loaded": "Se muestra una búsqueda guardada. Edite los campos para crear una nueva.",
+      "recent_unavailable": "Esa búsqueda usaba un sitio que no está disponible aquí."
     }
   }
 }

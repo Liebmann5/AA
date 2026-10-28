@@ -214,7 +214,7 @@ def test_platform_offers_labels_unverified_only__teeth(tmp_path) -> None:
     """TEETH: unverified platforms carry the shared label; measured and
     vendor-verified carry none. Mutation caught: badges inverted or absent.
     Label text is compared against the locale lookup, not hardcoded."""
-    offers = {o.name: o for o in _service(tmp_path).platform_offers()}
+    offers = {o.name: o for o in _service(tmp_path).query_platforms()}
     assert offers["workday"].status == "unverified"
     assert offers["workday"].label == get_text("builder.platform.unverified")
     assert offers["workday"].label
@@ -225,7 +225,7 @@ def test_platform_offers_labels_unverified_only__teeth(tmp_path) -> None:
 def test_platform_offers_covers_the_registry__teeth(tmp_path) -> None:
     """TEETH: every registered platform with a host is offered — no second
     list. Mutation caught: a filtered or hardcoded subset."""
-    names = {o.name for o in _service(tmp_path).platform_offers()}
+    names = {o.name for o in _service(tmp_path).query_platforms()}
     expected = {d.name for d in ATSRegistry().all_descriptors() if d.hosts}
     assert names == expected
     assert len(names) >= 30
@@ -271,23 +271,27 @@ def test_controller_delegates_the_builder_methods__teeth() -> None:
     controller = _controller(service)
     request = build_request(surface="google", terms="x")
 
-    assert controller.query_surfaces() is service.surfaces.return_value
-    assert controller.query_platforms() is service.platform_offers.return_value
-    assert controller.query_defaults() is service.defaults.return_value
-    assert controller.build_query(request) is service.build.return_value
+    assert controller.query_surfaces() is service.query_surfaces.return_value
+    assert controller.query_platforms() is service.query_platforms.return_value
+    assert controller.query_defaults() is service.query_defaults.return_value
+    assert controller.build_query(request) is service.build_query.return_value
     assert (
         controller.build_platform_query("workday", request)
-        is service.build_platform_search.return_value
+        is service.build_platform_query.return_value
     )
     assert (
         controller.build_company_query("https://x", request)
-        is service.build_company_search.return_value
+        is service.build_company_query.return_value
+    )
+    assert (
+        controller.resolve_query_target(request, platform="workday")
+        is service.resolve_query_target.return_value
     )
     controller.remember_query(request)
-    service.remember.assert_called_once_with(request)
-    assert controller.recent_queries() is service.recent.return_value
+    service.remember_query.assert_called_once_with(request)
+    assert controller.recent_queries() is service.recent_queries.return_value
     controller.clear_recent_queries()
-    service.clear_recent.assert_called_once_with()
+    service.clear_recent_queries.assert_called_once_with()
 
 
 def test_controller_without_a_builder_defaults_and_raises__teeth() -> None:
@@ -307,6 +311,8 @@ def test_controller_without_a_builder_defaults_and_raises__teeth() -> None:
         controller.build_platform_query("workday", request)
     with pytest.raises(QueryBuilderError):
         controller.build_company_query("https://x", request)
+    with pytest.raises(QueryBuilderError):
+        controller.resolve_query_target(request, platform="workday")
 
 
 # ── Scripted CLI ─────────────────────────────────────────────────────────────
@@ -381,16 +387,16 @@ def test_keep_remembers_resolved_and_replays_identically__teeth(tmp_path) -> Non
         _args(search_platform="jobvite", search_terms="Software Engineer"),
         builder=service,
     ) == 0
-    assert service.recent() == (), "a build with no action remembered something"
+    assert service.recent_queries() == (), "a build with no action remembered something"
 
     assert screen.run_search(
         _args(search_platform="jobvite", search_terms="Software Engineer", search_keep=True),
         builder=service,
     ) == 0
-    remembered = service.recent()
+    remembered = service.recent_queries()
     assert len(remembered) == 1
     assert remembered[0].site == "jobs.jobvite.com"
-    replayed = service.build(remembered[0])
+    replayed = service.build_query(remembered[0])
     assert replayed.bar_text == 'site:jobs.jobvite.com ("Software Engineer")'
 
     assert screen.run_search(
@@ -401,11 +407,11 @@ def test_keep_remembers_resolved_and_replays_identically__teeth(tmp_path) -> Non
         ),
         builder=service,
     ) == 0
-    remembered = service.recent()
+    remembered = service.recent_queries()
     assert len(remembered) == 2
     company_entry = remembered[0]  # newest first
     assert company_entry.site == "holisticai.bamboohr.com/careers"
-    assert service.build(company_entry).bar_text == 'site:holisticai.bamboohr.com/careers ("x")'
+    assert service.build_query(company_entry).bar_text == 'site:holisticai.bamboohr.com/careers ("x")'
 
 
 def test_recent_then_clear__teeth(tmp_path, capsys) -> None:
@@ -421,7 +427,7 @@ def test_recent_then_clear__teeth(tmp_path, capsys) -> None:
     out = capsys.readouterr().out
     assert "jobs.jobvite.com" in out
     assert screen.run_search(_args(search_clear_recent=True), builder=service) == 0
-    assert service.recent() == ()
+    assert service.recent_queries() == ()
 
 
 # ── Interactive CLI ──────────────────────────────────────────────────────────
@@ -447,13 +453,13 @@ def test_preview_never_remembers_and_copy_does__teeth(tmp_path, monkeypatch) -> 
         "google", "1", "x", "", "", "", "", "q",
     ]))
     assert screen.run_search(_args(search=True), builder=service) == 0
-    assert service.recent() == ()
+    assert service.recent_queries() == ()
 
     monkeypatch.setattr("builtins.input", _Script([
         "google", "1", "x", "", "", "", "", "c", "q",
     ]))
     assert screen.run_search(_args(search=True), builder=service) == 0
-    remembered = service.recent()
+    remembered = service.recent_queries()
     assert len(remembered) == 1
     assert remembered[0].phrases == ("x",)
     assert remembered[0].site is None
@@ -465,7 +471,7 @@ def test_interactive_quit_is_clean__teeth(tmp_path, monkeypatch) -> None:
     service = _service(tmp_path)
     monkeypatch.setattr("builtins.input", _Script(["q"]))
     assert screen.run_search(_args(search=True), builder=service) == 0
-    assert service.recent() == ()
+    assert service.recent_queries() == ()
 
 
 # ── Static guarantees ────────────────────────────────────────────────────────

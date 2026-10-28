@@ -21,7 +21,7 @@ from auto_apply.domain.models.search_query import (
     describe_request,
     format_result_lines,
     platform_display_text,
-    resolved_remember_request,
+    resolve_and_remember,
 )
 from auto_apply.infrastructure.composition_root import build_query_builder
 
@@ -68,35 +68,21 @@ def _build(service, request, platform, company_url):
     """Build for the chosen target; returns None after printing the error."""
     try:
         if platform:
-            return service.build_platform_search(platform, request)
+            return service.build_platform_query(platform, request)
         if company_url:
-            return service.build_company_search(company_url, request)
-        return service.build(request)
+            return service.build_company_query(company_url, request)
+        return service.build_query(request)
     except Exception as exc:  # noqa: BLE001 — the builder's message is the user-facing contract
         print(f"  {get_text('builder.error')}: {exc}")  # noqa: T201
         return None
 
 
-def _fold(service, request, platform, company_url):
-    """Resolve a platform or company query to the engine query to remember.
-
-    The restriction comes from the service's one resolver
-    (platform_restriction_for), so the remembered request replays
-    identically.
-    """
-    if platform:
-        return resolved_remember_request(
-            request, service.platform_restriction_for(platform)
-        )
-    if company_url:
-        return resolved_remember_request(
-            request, service.platform_restriction_for(url=company_url)
-        )
-    return request
-
-
 def _remember(service, request, platform, company_url) -> None:
-    service.remember(_fold(service, request, platform, company_url))
+    """Remember via the shared resolve-then-remember step, so a query kept
+    here replays identically to one kept from the GUI."""
+    resolve_and_remember(
+        service, request, platform=platform, company_url=company_url
+    )
 
 
 def _scripted(args, service) -> int:
@@ -144,7 +130,7 @@ def _choose_named(prompt: str, names: list[str], display) -> str | None:
 
 
 def _choose_surface(service) -> str | None:
-    offers = service.surfaces()
+    offers = service.query_surfaces()
     names = [o.name for o in offers]
     display = {o.name: o.display_name for o in offers}
     return _choose_named(
@@ -171,7 +157,7 @@ def _choose_target() -> str | None:
 
 
 def _choose_platform(service) -> str | None:
-    offers = service.platform_offers()
+    offers = service.query_platforms()
     names = [o.name for o in offers]
     display = {o.name: platform_display_text(o) for o in offers}
     return _choose_named(
@@ -180,7 +166,7 @@ def _choose_platform(service) -> str | None:
 
 
 def _collect_inputs(service, surface: str):
-    defaults = service.defaults()
+    defaults = service.query_defaults()
     terms_default = ", ".join(defaults.titles)
     if terms_default:
         print(f"  {get_text('builder.saved_note')} {terms_default}")  # noqa: T201
@@ -274,7 +260,7 @@ def _interactive(service) -> int:
 
 
 def _recent(service) -> int:
-    recent = service.recent()
+    recent = service.recent_queries()
     if not recent:
         print(get_text("builder.recent_empty"))  # noqa: T201
         return 0
@@ -295,7 +281,7 @@ def run_search(args, *, profile=None, builder=None) -> int:
     service = builder if builder is not None else build_query_builder(profile)
     try:
         if args.search_clear_recent:
-            service.clear_recent()
+            service.clear_recent_queries()
             print(get_text("builder.recent_cleared"))  # noqa: T201
             return 0
         if args.search_recent:

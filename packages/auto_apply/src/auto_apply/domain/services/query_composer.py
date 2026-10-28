@@ -247,6 +247,15 @@ def _compose_url(
         for phrase in request.phrases:
             content = _clean_content(phrase)
             bits.append(f"{quote}{content}{quote}" if "phrase" in ops else content)
+        if request.phrases and "phrase" not in ops:
+            # Exact-phrase quoting could not be verified for this surface, so
+            # the words went in bare. Say so: unquoted terms can match more
+            # than the phrase, and silence here would misreport the search.
+            notes.append(_info(
+                "phrase",
+                f"{spec.display_name} has no exact-phrase quoting AA can "
+                "verify, so your words went into the link without quotes.",
+            ))
         bits.extend(normalize_confusables(t) for t in request.required)
         # Every restriction a surface cannot carry stops the link in
         # compose() (refusal-both), so nothing is ever dropped here.
@@ -271,6 +280,21 @@ def _compose_url(
         for name, value in _template_params(template, query_value, request.location)
         if value != ""
     ]
+
+    # A location the surface has no field for is dropped by the template, so
+    # say so. A locationless search is broader, not different — that is a
+    # note, not a refusal. Automation never reaches this note (it reads the
+    # template directly), so automated query bytes cannot change.
+    if request.location and not any(
+        p.source == "location" for p in template.parameters
+    ):
+        notes.append(_info(
+            "location",
+            f"{spec.display_name} has no place for a location, so "
+            f"{request.location!r} was left out of the search. "
+            "Add the place to your search words, or pick a surface that "
+            "takes a location.",
+        ))
 
     for key, value in request.options:
         opt = offered_options.get(key)

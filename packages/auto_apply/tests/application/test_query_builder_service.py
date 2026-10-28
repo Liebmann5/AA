@@ -40,12 +40,12 @@ def _service(tmp_path: Path, profile=None) -> QueryBuilderService:
 def test_defaults_offer_the_profiles_saved_titles(tmp_path, minimal_valid_profile):
     """GUARD. Mutation caught: reading a different field, or none."""
     service = _service(tmp_path, profile=minimal_valid_profile)
-    assert service.defaults().titles == ("Software Engineer",)
+    assert service.query_defaults().titles == ("Software Engineer",)
 
 
 def test_defaults_are_empty_without_a_profile(tmp_path):
     """GUARD. Mutation caught: inventing defaults."""
-    assert _service(tmp_path).defaults().titles == ()
+    assert _service(tmp_path).query_defaults().titles == ()
 
 
 def test_building_a_query_never_writes_to_the_profile(tmp_path, minimal_valid_profile):
@@ -53,14 +53,14 @@ def test_building_a_query_never_writes_to_the_profile(tmp_path, minimal_valid_pr
     caught: any mutation of the profile during build."""
     service = _service(tmp_path, profile=minimal_valid_profile)
     before = minimal_valid_profile.model_dump_json()
-    service.build(QueryRequest(surface="google", phrases=("x",)))
+    service.build_query(QueryRequest(surface="google", phrases=("x",)))
     assert minimal_valid_profile.model_dump_json() == before
 
 
 def test_unverified_and_uncomposable_capabilities_are_never_offered(tmp_path):
     """GUARD (the verification rule). Mutation caught: offering link:/cache:/
     inanchor:/udm, which the catalog records as unverified."""
-    offers = {o.name: o for o in _service(tmp_path).surfaces()}
+    offers = {o.name: o for o in _service(tmp_path).query_surfaces()}
     google = offers["google"]
     operator_keys = {c.key for c in google.operators}
     assert {"site", "phrase", "exclude", "any_of", "intitle"} <= operator_keys
@@ -77,9 +77,9 @@ def test_build_leaves_the_recent_file_untouched(tmp_path):
     surfaces may rebuild a preview on every keystroke, so recording on build would
     store half-typed queries. Mutation caught: build() calling _record_recent."""
     service = _service(tmp_path)
-    service.build(QueryRequest(surface="google", phrases=("x",)))
-    service.build(QueryRequest(surface="google", phrases=("y",)))
-    assert service.recent() == ()
+    service.build_query(QueryRequest(surface="google", phrases=("x",)))
+    service.build_query(QueryRequest(surface="google", phrases=("y",)))
+    assert service.recent_queries() == ()
     assert not (tmp_path / "query_builder_recent.json").exists()
 
 
@@ -87,8 +87,8 @@ def test_remember_caps_at_five(tmp_path):
     """GUARD. Mutation caught: the cap growing or being removed."""
     service = _service(tmp_path)
     for i in range(7):
-        service.remember(QueryRequest(surface="google", phrases=(f"term-{i}",)))
-    recent = service.recent()
+        service.remember_query(QueryRequest(surface="google", phrases=(f"term-{i}",)))
+    recent = service.recent_queries()
     assert len(recent) == 5
     assert recent[0].phrases == ("term-6",)
 
@@ -96,17 +96,17 @@ def test_remember_caps_at_five(tmp_path):
 def test_remember_deduplicates(tmp_path):
     """GUARD. Mutation caught: duplicates accumulating."""
     service = _service(tmp_path)
-    service.remember(QueryRequest(surface="google", phrases=("same",)))
-    service.remember(QueryRequest(surface="google", phrases=("same",)))
-    assert len(service.recent()) == 1
+    service.remember_query(QueryRequest(surface="google", phrases=("same",)))
+    service.remember_query(QueryRequest(surface="google", phrases=("same",)))
+    assert len(service.recent_queries()) == 1
 
 
 def test_clear_recent_removes_the_file(tmp_path):
     """GUARD. Mutation caught: leaving the file (empty or not) behind."""
     service = _service(tmp_path)
-    service.remember(QueryRequest(surface="google", phrases=("x",)))
-    service.clear_recent()
-    assert service.recent() == ()
+    service.remember_query(QueryRequest(surface="google", phrases=("x",)))
+    service.clear_recent_queries()
+    assert service.recent_queries() == ()
     assert not (tmp_path / "query_builder_recent.json").exists()
 
 
@@ -120,7 +120,7 @@ def test_the_recent_file_lives_in_the_data_home_and_uninstall_knows_it():
 
 def test_build_returns_bar_url_and_plain_notes(tmp_path):
     """GUARD. Mutation caught: the service dropping the notes or a form."""
-    result = _service(tmp_path).build(
+    result = _service(tmp_path).build_query(
         QueryRequest(
             surface="google",
             phrases=("Software Engineer",),
@@ -135,7 +135,7 @@ def test_build_returns_bar_url_and_plain_notes(tmp_path):
 def test_an_unknown_surface_fails_loudly(tmp_path):
     """GUARD. Mutation caught: a quiet empty result for an unknown surface."""
     with pytest.raises(SearchSurfaceError):
-        _service(tmp_path).build(QueryRequest(surface="nonsense", phrases=("x",)))
+        _service(tmp_path).build_query(QueryRequest(surface="nonsense", phrases=("x",)))
 
 
 def test_the_builder_modules_import_no_network_browser_or_research_code():

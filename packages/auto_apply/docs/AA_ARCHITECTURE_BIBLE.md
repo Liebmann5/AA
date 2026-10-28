@@ -2595,8 +2595,9 @@ be re-proposed.
 
 ### 34.8 What this layer does not yet do
 
-- The port is 15 methods and session-shaped. Identity and custody parity
-  cannot be pinned until it widens.
+- The port is 27 methods. Ten of them are the query builder — the only part
+  that works before any session exists — so "session-shaped" no longer fits
+  the whole port. Identity and custody parity remain unpinned.
 - The GUI still cannot switch profiles; it loads `user_profiles[0]`.
 - Post-submission outcome tracking is **deferred, not cut**. Three things must
   stay true so it remains possible: the `attempt_id` + `page_index` join key

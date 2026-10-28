@@ -1711,46 +1711,61 @@ class SessionController:
     def query_surfaces(self) -> tuple[SurfaceOffer, ...]:
         """Every search surface the builder may offer, verification applied."""
         builder = self._query_builder
-        return builder.surfaces() if builder is not None else ()
+        return builder.query_surfaces() if builder is not None else ()
 
     def query_platforms(self) -> tuple[PlatformOffer, ...]:
         """Every targetable hiring platform, with its verification label."""
         builder = self._query_builder
-        return builder.platform_offers() if builder is not None else ()
+        return builder.query_platforms() if builder is not None else ()
 
     def query_defaults(self) -> BuilderDefaults:
         """The profile's saved search values as one-click choices."""
         builder = self._query_builder
-        return builder.defaults() if builder is not None else BuilderDefaults()
+        return builder.query_defaults() if builder is not None else BuilderDefaults()
 
     def build_query(self, request: QueryRequest) -> QueryResult:
         """Compose bar text and/or a URL for one surface."""
-        return self._require_builder().build(request)
+        return self._require_builder().build_query(request)
 
     def build_platform_query(self, platform: str, request: QueryRequest) -> QueryResult:
         """A domain-restricted engine search for one hiring platform."""
-        return self._require_builder().build_platform_search(platform, request)
+        return self._require_builder().build_platform_query(platform, request)
 
     def build_company_query(self, url: str, request: QueryRequest) -> QueryResult:
         """A company-scoped engine search from a pasted tenant URL."""
-        return self._require_builder().build_company_search(url, request)
+        return self._require_builder().build_company_query(url, request)
+
+    def resolve_query_target(
+        self,
+        request: QueryRequest,
+        *,
+        platform: str | None = None,
+        company_url: str | None = None,
+    ) -> QueryRequest:
+        """The request as it should be remembered: a platform or company
+        target folded to its resolved site: restriction, so a remembered
+        query replays identically as an engine search. Plain engine queries
+        are returned unchanged."""
+        return self._require_builder().resolve_query_target(
+            request, platform=platform, company_url=company_url
+        )
 
     def remember_query(self, request: QueryRequest) -> None:
         """Record a built query as one of the recent few (explicit only)."""
         builder = self._query_builder
         if builder is not None:
-            builder.remember(request)
+            builder.remember_query(request)
 
     def recent_queries(self) -> tuple[QueryRequest, ...]:
         """The remembered queries, newest first."""
         builder = self._query_builder
-        return builder.recent() if builder is not None else ()
+        return builder.recent_queries() if builder is not None else ()
 
     def clear_recent_queries(self) -> None:
         """Forget every remembered query."""
         builder = self._query_builder
         if builder is not None:
-            builder.clear_recent()
+            builder.clear_recent_queries()
 
     def _require_builder(self) -> "QueryBuilderService":
         """The builder or a clear error — a build with no builder is a bug."""

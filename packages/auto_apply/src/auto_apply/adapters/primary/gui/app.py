@@ -89,6 +89,7 @@ from pydantic import ValidationError
 
 from auto_apply.adapters.primary.gui.dashboard import Dashboard as GUIDashboard
 from auto_apply.adapters.primary.gui.research_window import ResearchWindow
+from auto_apply.adapters.primary.gui.search_window import SearchBuilderWindow
 from auto_apply.adapters.primary.gui.settings_editor import SettingsEditor
 from auto_apply.adapters.primary.gui.strings import get_strings
 from auto_apply.adapters.primary.gui.wizard import SessionConfigWizard as GUIWizard
@@ -101,7 +102,10 @@ from auto_apply.domain.models.ui_contract import (
     SessionSummary,
 )
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
-from auto_apply.infrastructure.composition_root import build_research_consent
+from auto_apply.infrastructure.composition_root import (
+    build_query_builder,
+    build_research_consent,
+)
 
 if TYPE_CHECKING:
     from auto_apply.application.services.session_controller import SessionController
@@ -388,6 +392,9 @@ class AutoApplyApp(tk.Tk):
         )
         file_menu.add_command(
             label="Research…", command=self._open_research,
+        )
+        file_menu.add_command(
+            label="Build a Search…", command=self._open_search_builder,
         )
         file_menu.add_command(
             label="Install / Repair…", command=self._open_install,
@@ -742,6 +749,23 @@ class AutoApplyApp(tk.Tk):
         if consent is None:
             consent = build_research_consent()
         ResearchWindow(self, consent)
+
+    def _open_search_builder(self) -> None:
+        """File → Build a Search…: the query-builder window (device-scoped).
+
+        Works before any profile or session, exactly like Research…. During
+        a session the window is handed the controller — the UI port; before
+        or between sessions it is handed the pre-session builder service.
+        Both expose the identical builder method names, so the window reads
+        and writes through one vocabulary either way.
+        """
+        builder: Any = None
+        if self.controller is not None and self.controller.query_builder is not None:
+            builder = self.controller
+        if builder is None:
+            builder = build_query_builder(self.profile)
+        strings = get_strings()
+        SearchBuilderWindow(self, builder, translate=lambda key: strings.get(key, key))
 
     # =====================================================================
     # LIFECYCLE (Install / Repair…, Uninstall…)

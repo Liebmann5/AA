@@ -46,7 +46,7 @@ def test_nicks_three_queries_compose_exactly_through_platform_data(platform, exp
     """TEETH — the platform data did not exist. Mutation caught: a
     restriction differing from Nick's measured/reported strings by one
     character, or the composer reformatting them."""
-    result = _service().build_platform_search(
+    result = _service().build_platform_query(
         platform, QueryRequest(surface="google", phrases=("Software Engineer",))
     )
     assert result.bar_text == expected
@@ -56,7 +56,7 @@ def test_nicks_three_queries_compose_exactly_through_platform_data(platform, exp
 def test_a_domain_restricted_bing_search_uses_web_results():
     """TEETH — Bing defaulted to the jobs vertical. Mutation caught: the
     site template selection ignored or removed."""
-    result = _service().build_platform_search(
+    result = _service().build_platform_query(
         "workday", QueryRequest(surface="bing", phrases=("Software Engineer",))
     )
     assert result.url is not None
@@ -67,7 +67,7 @@ def test_a_domain_restricted_bing_search_uses_web_results():
 def test_a_restriction_a_surface_cannot_express_refuses_the_link_too():
     """TEETH — the link used to survive with the restriction silently
     dropped. Mutation caught: hard_stop ignored for content refusals."""
-    result = _service().build_platform_search(
+    result = _service().build_platform_query(
         "workday", QueryRequest(surface="indeed", phrases=("x",))
     )
     assert result.bar_text is None
@@ -78,7 +78,7 @@ def test_a_restriction_a_surface_cannot_express_refuses_the_link_too():
 def test_a_platform_search_on_a_surface_without_site_refuses_cleanly():
     """TEETH. Mutation caught: LinkedIn composing anything from a site
     restriction."""
-    result = _service().build_platform_search(
+    result = _service().build_platform_query(
         "greenhouse", QueryRequest(surface="linkedin", phrases=("x",))
     )
     assert result.bar_text is None
@@ -88,7 +88,7 @@ def test_a_platform_search_on_a_surface_without_site_refuses_cleanly():
 def test_an_indeed_search_without_a_location_has_no_empty_parameter():
     """TEETH — an empty l= used to be emitted. Mutation caught: the
     empty-parameter filter removed."""
-    result = _service().build(QueryRequest(surface="indeed", phrases=("x",)))
+    result = _service().build_query(QueryRequest(surface="indeed", phrases=("x",)))
     assert result.url is not None
     assert "l=" not in result.url
 
@@ -113,7 +113,7 @@ def test_an_indeed_search_without_a_location_has_no_empty_parameter():
 def test_a_company_url_scopes_the_search_to_the_tenant(url, expected_bar):
     """TEETH — one subdomain, one path, one opaque tenancy. Mutation caught:
     the slug ignored, or the shared path prefix dropped."""
-    result = _service().build_company_search(
+    result = _service().build_company_query(
         url, QueryRequest(surface="google", phrases=("x",))
     )
     assert result.bar_text == expected_bar
@@ -121,7 +121,7 @@ def test_a_company_url_scopes_the_search_to_the_tenant(url, expected_bar):
 
 def test_a_company_url_on_no_known_platform_refuses_without_a_guess():
     """TEETH. Mutation caught: composing a restriction from the raw host."""
-    result = _service().build_company_search(
+    result = _service().build_company_query(
         "https://example.org/jobs/1", QueryRequest(surface="google", phrases=("x",))
     )
     assert result.bar_text is None
@@ -149,7 +149,7 @@ def test_a_builder_without_a_registry_refuses_platform_searches_loudly():
     )
     assert service.platforms() == ()
     with pytest.raises(QueryBuilderError):
-        service.build_platform_search("jobvite", QueryRequest(surface="google", phrases=("x",)))
+        service.build_platform_query("jobvite", QueryRequest(surface="google", phrases=("x",)))
 
 
 def test_the_builder_modules_do_not_import_the_registry_adapter():

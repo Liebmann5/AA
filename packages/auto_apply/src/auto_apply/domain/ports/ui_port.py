@@ -25,7 +25,7 @@ surface structurally. adapters_primary → domain is already a permitted
 import direction (tests/test_architecture.py:119-125), so the port sits
 in domain/ports where both adapters can see it. Verified.
 
-Whole surface, deliberately: 26 methods.
+Whole surface, deliberately: 27 methods.
 -----------------------------------------
 AA's idiom prefers narrow ports, but this port describes a whole surface,
 not a capability, and the ProfileRepositoryPort precedent applies. The 26
@@ -36,10 +36,10 @@ get_pending_approvals, provide_approval) plus one new stream query
 (recent_events), plus three custody methods added when the results surface
 landed (export_session_results, export_profile, list_session_history),
 plus the two autonomy methods added at stage E1 (autonomy, set_autonomy),
-plus the nine query-builder methods (query_surfaces, query_platforms,
+plus the ten query-builder methods (query_surfaces, query_platforms,
 query_defaults, build_query, build_platform_query, build_company_query,
-remember_query, recent_queries, clear_recent_queries), added when the
-builder's surfaces landed.
+resolve_query_target, remember_query, recent_queries, clear_recent_queries) —
+the builder's surfaces plus the resolve-then-remember step.
 tests/domain/test_ui_contract.py and tests/application/test_ui_port_conformance.py
 pin this exact set, so growth is mechanical, not accidental. If the
 consumers only ever take halves, splitting then is cheap — the types do
@@ -322,6 +322,19 @@ class UIPort(Protocol):
 
     def build_company_query(self, url: str, request: QueryRequest) -> QueryResult:
         """A company-scoped engine search from a pasted tenant URL."""
+        ...
+
+    def resolve_query_target(
+        self,
+        request: QueryRequest,
+        *,
+        platform: str | None = None,
+        company_url: str | None = None,
+    ) -> QueryRequest:
+        """The request as it should be remembered: a platform or company
+        target folded to its resolved site: restriction, so a remembered
+        query replays identically as an engine search. Plain engine queries
+        are returned unchanged."""
         ...
 
     def remember_query(self, request: QueryRequest) -> None:

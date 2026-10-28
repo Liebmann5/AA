@@ -199,3 +199,25 @@ def resolved_remember_request(
     if not restriction:
         return request
     return request.model_copy(update={"site": restriction})
+
+
+def resolve_and_remember(
+    builder,
+    request: QueryRequest,
+    *,
+    platform: str | None = None,
+    company_url: str | None = None,
+) -> QueryRequest:
+    """Resolve a target, then remember the resolved query — the ONE pairing.
+
+    Every surface (CLI screen, GUI window) remembers through this helper so a
+    query kept on one surface replays identically on the other. ``builder`` is
+    any object exposing the UI port's ``resolve_query_target`` and
+    ``remember_query`` (the in-session controller, or the pre-session
+    service). Returns the request that was remembered, for display.
+    """
+    resolved = builder.resolve_query_target(
+        request, platform=platform, company_url=company_url
+    )
+    builder.remember_query(resolved)
+    return resolved

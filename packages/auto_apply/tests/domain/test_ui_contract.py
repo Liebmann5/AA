@@ -69,7 +69,8 @@ _EXPECTED_PORT_METHODS = {
     # commands. Each returns data only.
     "query_surfaces", "query_platforms", "query_defaults",
     "build_query", "build_platform_query", "build_company_query",
-    "remember_query", "recent_queries", "clear_recent_queries",
+    "resolve_query_target", "remember_query", "recent_queries",
+    "clear_recent_queries",
 }
 
 

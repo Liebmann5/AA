@@ -62,6 +62,7 @@ along with what evidence would falsify it.
 | Run from a USB stick with no admin rights | **Working** |
 | Record an auditable, opt-in research dataset | **Working** |
 | Operate with no browser at all | **Removed** — see [ADR-013](packages/auto_apply/docs/adr/013_static_path_retirement.md) |
+| Build a search by hand (engine, platform, or one company) | **Working** — composes the link; you open it. Automates nothing |
 
 A live browser is now **required**. AA refuses to start a session rather than
 pretending to run without one.
@@ -174,7 +175,10 @@ Reproduction instructions are in
 Automating interaction with job boards may conflict with their terms of
 service, and using AA is your decision and your responsibility. AA does not
 solve CAPTCHAs, does not store credentials by default, and does not invent
-claims on your behalf. Read the
+claims on your behalf. The query builder composes search links but automates
+nothing — you open them yourself, which is ordinary use. Search sites change
+their query syntax without notice, so a surface's "verified" mark is only as
+good as its verification date (each surface records one). Read the
 **[DISCLAIMER](DISCLAIMER.md)** and **[ETHICS](packages/auto_apply/docs/ETHICS.md)**
 before your first run.
 

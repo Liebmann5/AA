@@ -215,6 +215,45 @@
     "platform": {
       "unverified": "Unverified: the search mechanism is documented, but how much of this platform it reaches is not yet known. Open the link yourself and check that results come from the platform; the user guide shows how to report the outcome.",
       "third_party": "Reported by others; AA has not checked it."
+    },
+    "window_title": "Build a Search",
+    "engine_label": "Search engine:",
+    "target_label": "Search within:",
+    "target": {
+      "surface": "Everything it finds",
+      "platform": "A hiring platform",
+      "company": "One company"
+    },
+    "platform_label": "Platform:",
+    "company_label": "Company careers page link:",
+    "terms_label": "Search words:",
+    "location_label": "Location:",
+    "any_of_label": "Any of these:",
+    "exclude_label": "Without:",
+    "in_title_label": "In the title:",
+    "defaults_label": "From your profile:",
+    "pick_one": "Pick one…",
+    "options_label": "Options:",
+    "option_not_set": "(not set)",
+    "preview_label": "Result:",
+    "recent_label": "Recent searches:",
+    "recent_placeholder": "Choose one to reuse…",
+    "recent_empty_label": "No recent searches yet",
+    "copy_text": "Copy search text",
+    "copy_link": "Copy link",
+    "open_link": "Open link",
+    "keep": "Keep",
+    "clear_recent": "Clear recent",
+    "close": "Close",
+    "status": {
+      "no_result": "Build a search first.",
+      "copied_text": "Search text copied and kept.",
+      "copied_link": "Link copied and kept.",
+      "opened": "Link opened in your browser; the search was kept.",
+      "kept": "Search kept.",
+      "cleared": "Recent searches cleared.",
+      "recent_loaded": "Showing a remembered search. Edit the fields to build a new one.",
+      "recent_unavailable": "That search used a site that is not available here."
     }
   }
 }

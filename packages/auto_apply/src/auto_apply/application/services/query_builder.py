@@ -55,6 +55,7 @@ from auto_apply.domain.models.search_query import (
     QueryRequest,
     QueryResult,
     SurfaceOffer,
+    resolved_remember_request,
 )
 from auto_apply.domain.ports.ats_port import ATSDescriptor, ATSRegistryPort
 from auto_apply.domain.models.search_surface import (
@@ -97,7 +98,7 @@ class QueryBuilderService:
     # Offered surfaces — the verification rule applied
     # ------------------------------------------------------------------
 
-    def surfaces(self) -> tuple[SurfaceOffer, ...]:
+    def query_surfaces(self) -> tuple[SurfaceOffer, ...]:
         """Every catalogued surface, with unverified capabilities removed.
 
         A catalog defect propagates (SearchSurfaceError) — a wrong offer is
@@ -150,7 +151,7 @@ class QueryBuilderService:
     # Profile defaults — strictly read-only
     # ------------------------------------------------------------------
 
-    def defaults(self) -> BuilderDefaults:
+    def query_defaults(self) -> BuilderDefaults:
         """The profile's saved search values, offered as one-click choices."""
         prefs = getattr(self._profile, "search_preferences", None)
         return BuilderDefaults(
@@ -163,7 +164,7 @@ class QueryBuilderService:
     # Build (writes nothing) and remember (explicit)
     # ------------------------------------------------------------------
 
-    def build(self, request: QueryRequest) -> QueryResult:
+    def build_query(self, request: QueryRequest) -> QueryResult:
         """Compose the bar text and URL. Writes NOTHING.
 
         The surfaces may rebuild the preview as the user types, so building
@@ -193,7 +194,7 @@ class QueryBuilderService:
             return ()
         return tuple(d for d in self._ats_registry.all_descriptors() if d.hosts)
 
-    def platform_offers(self) -> tuple[PlatformOffer, ...]:
+    def query_platforms(self) -> tuple[PlatformOffer, ...]:
         """Every targetable platform with its verification label.
 
         The label is computed here — once, from the shared locale strings —
@@ -246,7 +247,28 @@ class QueryBuilderService:
             )
         return self._descriptor_for(platform).search_restriction_for()
 
-    def build_platform_search(
+    def resolve_query_target(
+        self,
+        request: QueryRequest,
+        *,
+        platform: str | None = None,
+        company_url: str | None = None,
+    ) -> QueryRequest:
+        """The request as it should be remembered: a platform or company
+        target folded to its resolved site: restriction, so a remembered
+        query replays identically as an engine search. Plain engine queries
+        are returned unchanged."""
+        if platform:
+            return resolved_remember_request(
+                request, self.platform_restriction_for(platform)
+            )
+        if company_url:
+            return resolved_remember_request(
+                request, self.platform_restriction_for(url=company_url)
+            )
+        return request
+
+    def build_platform_query(
         self, platform: str, request: QueryRequest
     ) -> QueryResult:
         """A domain-restricted engine search for one platform.
@@ -261,9 +283,9 @@ class QueryBuilderService:
         restricted = request.model_copy(
             update={"site": self.platform_restriction_for(platform)}
         )
-        return self.build(restricted)
+        return self.build_query(restricted)
 
-    def build_company_search(self, url: str, request: QueryRequest) -> QueryResult:
+    def build_company_query(self, url: str, request: QueryRequest) -> QueryResult:
         """A company-scoped engine search from a pasted tenant URL.
 
         The URL's platform is matched and its tenant slug narrows the
@@ -300,7 +322,7 @@ class QueryBuilderService:
         restricted = request.model_copy(
             update={"site": self.platform_restriction_for(url=url)}
         )
-        return self.build(restricted)
+        return self.build_query(restricted)
 
     def _descriptor_for(self, platform: str) -> ATSDescriptor:
         """One descriptor by name, or a loud error — a quiet empty result
@@ -314,7 +336,7 @@ class QueryBuilderService:
                 return descriptor
         raise QueryBuilderError(f"unknown platform {platform!r}")
 
-    def remember(self, request: QueryRequest) -> None:
+    def remember_query(self, request: QueryRequest) -> None:
         """Record a query as one of the recent few.
 
         Called by the surfaces only when the user copies or opens a result —
@@ -326,7 +348,7 @@ class QueryBuilderService:
     # Recent queries
     # ------------------------------------------------------------------
 
-    def recent(self) -> tuple[QueryRequest, ...]:
+    def recent_queries(self) -> tuple[QueryRequest, ...]:
         """The remembered queries, newest first."""
         out: list[QueryRequest] = []
         for item in self._read_recent():
@@ -336,7 +358,7 @@ class QueryBuilderService:
                 continue
         return tuple(out)
 
-    def clear_recent(self) -> None:
+    def clear_recent_queries(self) -> None:
         """Forget every remembered query. The file is removed, not emptied."""
         try:
             self._recent_path.unlink(missing_ok=True)

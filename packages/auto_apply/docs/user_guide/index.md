@@ -21,6 +21,7 @@ looking for architectural details, head to the [Developer Guide](../developer_gu
 | Guide | What you'll learn |
 | ----- | ----------------- |
 | [Running a Job Hunt](running_a_job_hunt.md) | Session modes (discovery, direct links, company pages), GUI vs CLI, how to pause/resume/stop, reading the live dashboard. |
+| [Building a Search](building_searches.md) | Compose a search link yourself (engine, platform, or one company) — no automation; copy, open, or reuse recent queries. |
 | [Understanding the Output](understanding_output.md) | Logs, session reports, CSV exports, screenshots on failure, and the optional research data file. |
 | [Profiles & Privacy](profiles_and_privacy.md) | Creating and editing profiles, encrypting your data with a master password, storing profiles on external drives, what AA collects and how to delete it. |
 | [Admin Policy](admin_policy.md) | How IT administrators can lock down AA on shared computers — allowed browsers, headless enforcement, rate limits, research opt‑out. |
