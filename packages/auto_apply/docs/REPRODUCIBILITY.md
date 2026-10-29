@@ -404,9 +404,9 @@ When publishing results derived from AA data, please include:
    collection (the YAML file itself is ideal).
 3. **Seed** — the `--seed` value if deterministic mode was used.
 4. **Signal schema version** — `RESEARCH_SCHEMA_VERSION` from
-   `domain/constants.py` (currently `3`).
+   `domain/constants.py` (currently `5`).
 5. **Consent version** — `CURRENT_CONSENT_VERSION` from
-   `domain/constants.py` (currently `"2.5"`).
+   `domain/constants.py` (currently `"2.7"`).
 6. **Citation** — use the `CITATION.cff` file in the repository root.
 
 ---

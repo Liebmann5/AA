@@ -39,6 +39,7 @@ from auto_apply.domain.ports.research_port import (
     JobPostingObservation,
     ResearchAccounting,
     ResearchObserverPort,
+    SearchPlanObservation,
 )
 from auto_apply.domain.services.job_lifecycle_tracker import (
     JobLifecycleRecord,
@@ -226,6 +227,25 @@ CREATE TABLE IF NOT EXISTS discovery_candidates (
 -- outcomes only. detectors_roster is a JSON array of the signal_types that
 -- ran, in registry order, so "clean" stays derivable as roster minus
 -- recorded outcomes even after the registry grows.
+-- The session's sampling frame for automated site-restricted search: which
+-- engines and platforms were searched and how many queries each received.
+-- Names and counts only — the words searched for are never stored.
+CREATE TABLE IF NOT EXISTS search_plan_frames (
+    frame_id         TEXT PRIMARY KEY,
+    planned_date     TEXT NOT NULL,
+    engines          TEXT NOT NULL,
+    platforms        TEXT NOT NULL,
+    queries_planned  INTEGER NOT NULL,
+    per_engine       TEXT NOT NULL,
+    per_platform     TEXT NOT NULL,
+    dropped_count    INTEGER NOT NULL DEFAULT 0,
+    notes_info       INTEGER NOT NULL DEFAULT 0,
+    notes_warning    INTEGER NOT NULL DEFAULT 0,
+    budget_before    INTEGER NOT NULL,
+    budget_after     INTEGER NOT NULL,
+    schema_version   INTEGER DEFAULT 2
+);
+
 CREATE TABLE IF NOT EXISTS detector_examinations (
     examination_id     TEXT PRIMARY KEY,
     posting_hash       TEXT,
@@ -374,7 +394,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
         self._consent_version = consent_version
         self._flush_interval = flush_interval_seconds
         self._macro_signal_interval = macro_signal_interval_seconds
-        self._queue: queue.Queue[ResearchSignal | DiscoveryObservation | _DetectorExamination | None] = queue.Queue()
+        self._queue: queue.Queue[ResearchSignal | DiscoveryObservation | _DetectorExamination | SearchPlanObservation | None] = queue.Queue()
         self._running = False
         self._thread: threading.Thread | None = None
         self._enabled = consent_version is not None
@@ -953,6 +973,20 @@ class ResearchSignalAggregator(ResearchObserverPort):
             self._record_failure("observe_discovery")
             logger.debug("ResearchSignalAggregator | observe_discovery error: %s", exc)
 
+    def observe_search_plan(self, observation: SearchPlanObservation) -> None:
+        """Accept the session's sampling frame (names and counts only).
+
+        Same queue-plus-daemon pipeline as every other record: no I/O on the
+        calling discovery thread, and the consent gate above is unchanged.
+        """
+        if not self._enabled:
+            return
+        try:
+            self._queue.put_nowait(observation)
+        except Exception as exc:
+            self._record_failure("observe_search_plan")
+            logger.debug("ResearchSignalAggregator | observe_search_plan error: %s", exc)
+
     # ── Job lifecycle persistence (GJ-02, GJ-03) ─────────────────────────────
 
     def _load_lifecycle(
@@ -1459,6 +1493,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
         batch: list[ResearchSignal] = []
         discovery_batch: list[DiscoveryObservation] = []
         examination_batch: list[_DetectorExamination] = []
+        plan_batch: list[SearchPlanObservation] = []
         while self._running:
             try:
                 item = self._queue.get(timeout=self._flush_interval)
@@ -1468,6 +1503,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                     discovery_batch.append(item)
                 elif isinstance(item, _DetectorExamination):
                     examination_batch.append(item)
+                elif isinstance(item, SearchPlanObservation):
+                    plan_batch.append(item)
                 else:
                     batch.append(item)
                 # Drain additional items without waiting
@@ -1480,6 +1517,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                             discovery_batch.append(nxt)
                         elif isinstance(nxt, _DetectorExamination):
                             examination_batch.append(nxt)
+                        elif isinstance(nxt, SearchPlanObservation):
+                            plan_batch.append(nxt)
                         else:
                             batch.append(nxt)
                     except queue.Empty:
@@ -1496,6 +1535,9 @@ class ResearchSignalAggregator(ResearchObserverPort):
             if examination_batch:
                 self._write_examination_batch(examination_batch)
                 examination_batch = []
+            if plan_batch:
+                self._write_plan_batch(plan_batch)
+                plan_batch = []
 
             # ── Periodic macro‑signal computation ────────────────────────
             now = time.monotonic()
@@ -1527,6 +1569,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
         remaining: list[ResearchSignal] = []
         remaining_discovery: list[DiscoveryObservation] = []
         remaining_examination: list[_DetectorExamination] = []
+        remaining_plan: list[SearchPlanObservation] = []
         while True:
             try:
                 item = self._queue.get_nowait()
@@ -1535,6 +1578,8 @@ class ResearchSignalAggregator(ResearchObserverPort):
                         remaining_discovery.append(item)
                     elif isinstance(item, _DetectorExamination):
                         remaining_examination.append(item)
+                    elif isinstance(item, SearchPlanObservation):
+                        remaining_plan.append(item)
                     else:
                         remaining.append(item)
             except queue.Empty:
@@ -1551,6 +1596,10 @@ class ResearchSignalAggregator(ResearchObserverPort):
             self._write_examination_batch(examination_batch)
         if remaining_examination:
             self._write_examination_batch(remaining_examination)
+        if plan_batch:
+            self._write_plan_batch(plan_batch)
+        if remaining_plan:
+            self._write_plan_batch(remaining_plan)
 
     def _key_path(self) -> Path:
         """The provenance key's path: injected, else the config constant.
@@ -1842,6 +1891,54 @@ class ResearchSignalAggregator(ResearchObserverPort):
             self._record_failure("discovery_write", len(observations))
             logger.error(
                 "ResearchSignalAggregator | Discovery write batch failed: %s", exc
+            )
+
+    def _write_plan_batch(self, observations: list[SearchPlanObservation]) -> None:
+        """Persist sampling frames: one row per planning pass.
+
+        Identity follows the 4c ruling: frame_id is a random surrogate minted
+        at write time; nothing content-derived. Query text is never written —
+        the observation has no field that could carry it. Deliberately not
+        provenance-signed, mirroring the discovery tables.
+        """
+        rows: list[tuple] = []
+        planned_date = date.today().isoformat()
+        for obs in observations:
+            rows.append((
+                uuid.uuid4().hex,
+                planned_date,
+                json.dumps(list(obs.engines)),
+                json.dumps(list(obs.platforms)),
+                obs.queries_planned,
+                json.dumps(dict(obs.per_engine)),
+                json.dumps(dict(obs.per_platform)),
+                obs.dropped_count,
+                obs.notes_info,
+                obs.notes_warning,
+                obs.budget_before,
+                obs.budget_after,
+                RESEARCH_SCHEMA_VERSION,
+            ))
+        try:
+            with self._get_connection() as conn:
+                conn.executemany(
+                    """INSERT INTO search_plan_frames
+                       (frame_id, planned_date, engines, platforms,
+                        queries_planned, per_engine, per_platform,
+                        dropped_count, notes_info, notes_warning,
+                        budget_before, budget_after, schema_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    rows,
+                )
+            self._record_written("search_plan_frames", len(rows))
+            logger.debug(
+                "ResearchSignalAggregator | Wrote %d sampling frame(s) to DB",
+                len(observations),
+            )
+        except Exception as exc:
+            self._record_failure("plan_write", len(observations))
+            logger.error(
+                "ResearchSignalAggregator | Plan write batch failed: %s", exc
             )
 
     def _write_examination_batch(self, examinations: list[_DetectorExamination]) -> None:

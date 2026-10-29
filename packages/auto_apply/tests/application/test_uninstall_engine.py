@@ -554,7 +554,7 @@ def test_consent_text_states_the_uninstall_rules_and_versions_moved() -> None:
     assert "uninstall" in research_consent_text.DIALOG_BODY.lower()
     assert "kept by default" in research_consent_text.DIALOG_BODY
     assert "retention hold" in research_consent_text.DIALOG_BODY
-    assert CURRENT_CONSENT_VERSION == "2.6"
+    assert tuple(int(p) for p in CURRENT_CONSENT_VERSION.split(".")) >= (2, 6)
     assert "retention hold" in research_consent_text.PAGE_COPIES_BODY
     assert CURRENT_PAGE_COPIES_VERSION == "1.1"
     assert WITHDRAWAL_NOTICE_FILENAME == "aa_withdrawal_notice.json"

@@ -780,6 +780,27 @@ def build_orchestrator(  # noqa: PLR0914
     interaction_pacing_rng = behavior_params.make_rng("interaction.pacing")
     motion_pointer_rng = behavior_params.make_rng("motion.pointer")
     motion_wheel_rng = behavior_params.make_rng("motion.wheel")
+    host_pacing_rng = behavior_params.make_rng("discovery.host_pacing")
+
+    # The one per-host pacing owner, shared by discovery, vetting and
+    # application navigation. Its floor is the (previously unread) config
+    # pair discovery.between_provider_pause_min/max; jitter is seeded.
+    _host_pacer = None
+    try:
+        from auto_apply.application.services.host_pacing import HostPacer  # noqa: PLC0415
+
+        _discovery_settings = registry.get_effective_settings().discovery
+        _host_pacer = HostPacer(
+            min_interval_s=_discovery_settings.between_provider_pause_min,
+            max_interval_s=_discovery_settings.between_provider_pause_max,
+            rng=host_pacing_rng,
+        )
+    except Exception as _exc:
+        logger.warning(
+            "build_orchestrator: host pacing unavailable — navigations are "
+            "not per-host paced this session | %s",
+            _exc,
+        )
 
     page_action_tool = (
         PageActionService(
@@ -789,6 +810,7 @@ def build_orchestrator(  # noqa: PLR0914
             pointer_rng=motion_pointer_rng,
             wheel_rng=motion_wheel_rng,
             readiness=dom_readiness,
+            host_pacer=_host_pacer,
         )
         if driver is not None
         else None
@@ -1103,6 +1125,7 @@ def build_orchestrator(  # noqa: PLR0914
                 research_observer=research_observer,
                 readiness=dom_readiness,
                 page_action=page_action_tool,
+                host_pacer=_host_pacer,
             ),
             BingProvider(
                 browser=driver,
@@ -1117,6 +1140,7 @@ def build_orchestrator(  # noqa: PLR0914
                 research_observer=research_observer,
                 readiness=dom_readiness,
                 page_action=page_action_tool,
+                host_pacer=_host_pacer,
             ),
             IndeedProvider(
                 browser=driver,
@@ -1131,6 +1155,7 @@ def build_orchestrator(  # noqa: PLR0914
                 research_observer=research_observer,
                 readiness=dom_readiness,
                 page_action=page_action_tool,
+                host_pacer=_host_pacer,
             ),
         ]
 
@@ -1227,6 +1252,36 @@ def build_orchestrator(  # noqa: PLR0914
             _exc,
         )
 
+    # The discovery verifier's engine-host set, derived from the bundled
+    # catalog (job boards are not engines). When unavailable, the verifier's
+    # pinned fallback applies.
+    _engine_hosts = None
+    try:
+        from urllib.parse import urlparse  # noqa: PLC0415
+
+        from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+            list_surface_names,
+            load_surface_bundled,
+        )
+
+        _hosts: set[str] = set()
+        for _surface_name in list_surface_names():
+            try:
+                _spec = load_surface_bundled(_surface_name)
+            except Exception:
+                continue
+            if _spec.kind != "engine":
+                continue
+            _host = urlparse(_spec.homepage).netloc.lower().removeprefix("www.")
+            if _host:
+                _hosts.add(_host)
+        if _hosts:
+            _engine_hosts = tuple(sorted(_hosts))
+    except Exception as _exc:
+        logger.debug(
+            "composition_root: engine-host derivation unavailable: %s", _exc
+        )
+
     # ── Deterministic RNG streams ──────────────────────────────────────────────
     # BehaviorParameters is already constructed above (see cascade section).
     apps_workflow_rng = behavior_params.make_rng("applications_workflow")
@@ -1276,6 +1331,7 @@ def build_orchestrator(  # noqa: PLR0914
         research_observer=research_observer,
         provider_order_rng=behavior_params.make_rng("discovery.provider_order"),
         search_planner=_search_planner,
+        engine_hosts=_engine_hosts,
     )
 
     vetting_workflow = VettingWorkflow(
@@ -1295,6 +1351,7 @@ def build_orchestrator(  # noqa: PLR0914
             profile,
             research_active=not isinstance(research_observer, NullResearchObserver),
         ),
+        host_pacer=_host_pacer,
     )
 
     # ── Context manager — tab/window switching for offsite apply clicks ────

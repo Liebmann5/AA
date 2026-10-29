@@ -119,6 +119,9 @@ class SessionReport:
     new_jobs_identified: int = 0
     deduplicated_count: int = 0
     discovery_sources: list[str] = field(default_factory=list)
+    # Engines benched this session (challenge-blocked or degraded), with
+    # reason where the guard supplied one.
+    blocked_providers: list[str] = field(default_factory=list)
 
     # Vetting stats
     pending_jobs_to_apply_for: int = 0
@@ -317,6 +320,7 @@ class SessionReport:
                 "raw_results_found": self.raw_results_found,
                 "new_jobs_identified": self.new_jobs_identified,
                 "sources": self.discovery_sources,
+                "blocked_providers": self.blocked_providers,
             },
             "vetting": {
                 "jobs_approved": self.pending_jobs_to_apply_for,

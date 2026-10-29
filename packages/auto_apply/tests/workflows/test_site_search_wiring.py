@@ -11,10 +11,14 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock
 
-from auto_apply.application.workflows.discovery_workflow import DiscoveryWorkflow
+from auto_apply.application.workflows.discovery_workflow import (
+    DiscoveryWorkflow,
+    _DiscoveryStats,
+)
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.models.session_plan import SearchPair, SessionPlan
+from auto_apply.domain.models.work_unit import TaskType
 from auto_apply.domain.services.search_planner import (
     PlannedQuery,
     PlannedSearch,
@@ -271,3 +275,105 @@ def test_planner_notes_reach_the_log(caplog) -> None:
     messages = [r.getMessage() for r in caplog.records]
     assert any("budget reached" in m for m in messages)
     assert any("skipped x" in m for m in messages)
+
+
+def _off_shape_workflow(registry, plan=None) -> DiscoveryWorkflow:
+    return DiscoveryWorkflow(
+        profile=_profile(),
+        providers=[],
+        task_queue=MagicMock(),
+        event_bus=MagicMock(),
+        dedup=MagicMock(),
+        text_matcher=MagicMock(),
+        ats_registry=registry,
+        plan=plan if plan is not None else _plan(),
+    )
+
+
+def _hit(url: str, platform: str = "jobvite") -> Job:
+    job = Job(title="Engineer", company="Acme", url=url, source="google")
+    job.metadata["target_platform"] = platform
+    return job
+
+
+def test_a_terminal_hit_is_dropped_and_never_followed():
+    """A success/confirm page is never routed anywhere — mining included."""
+    registry = MagicMock()
+    registry.is_terminal_page.return_value = True
+    workflow = _off_shape_workflow(registry)
+    kept, counts = workflow._handle_off_shape_hits(
+        [_hit("https://jobs.jobvite.com/acme/job/1/apply/success")]
+    )
+    assert kept == []
+    assert counts == {"dropped": 0, "terminal": 1, "mined": 0}
+    registry.match.assert_not_called()
+    workflow._task_queue.queue_task.assert_not_called()
+
+
+def test_an_off_shape_hit_is_dropped_and_counted_by_default():
+    """A board URL with mining off: dropped, counted, never enqueued."""
+    registry = MagicMock()
+    registry.is_terminal_page.return_value = False
+    registry.match.return_value = None
+    workflow = _off_shape_workflow(registry)
+    kept, counts = workflow._handle_off_shape_hits(
+        [_hit("https://jobs.jobvite.com/acme")]
+    )
+    assert kept == []
+    assert counts == {"dropped": 1, "terminal": 0, "mined": 0}
+    workflow._task_queue.queue_task.assert_not_called()
+
+
+def test_an_off_shape_hit_routes_to_company_mining_when_enabled():
+    """A board URL with mining on becomes a DISCOVER_COMPANY task."""
+    registry = MagicMock()
+    registry.is_terminal_page.return_value = False
+    registry.match.return_value = None
+    plan = _plan(enable_company_page_mining=True)
+    workflow = _off_shape_workflow(registry, plan=plan)
+    kept, counts = workflow._handle_off_shape_hits(
+        [_hit("https://jobs.jobvite.com/acme")]
+    )
+    assert kept == []
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 1}
+    workflow._task_queue.queue_task.assert_called_once()
+    task = workflow._task_queue.queue_task.call_args.args[0]
+    assert task.task_type == TaskType.DISCOVER_COMPANY
+    assert task.payload["careers_url"] == "https://jobs.jobvite.com/acme"
+
+
+def test_an_on_shape_posting_is_kept():
+    """A URL matching the targeted platform's posting shape passes through."""
+    registry = MagicMock()
+    registry.is_terminal_page.return_value = False
+    registry.match.return_value = MagicMock(name="jobvite")
+    registry.match.return_value.name = "jobvite"
+    workflow = _off_shape_workflow(registry)
+    hit = _hit("https://jobs.jobvite.com/acme/job/123")
+    kept, counts = workflow._handle_off_shape_hits([hit])
+    assert kept == [hit]
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 0}
+
+
+def test_unstamped_jobs_pass_untouched():
+    """The default path never stamps target_platform — it is never filtered."""
+    registry = MagicMock()
+    workflow = _off_shape_workflow(registry)
+    job = Job(title="Engineer", company="Acme", url="https://acme.example/1", source="bing")
+    kept, counts = workflow._handle_off_shape_hits([job])
+    assert kept == [job]
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 0}
+    registry.is_terminal_page.assert_not_called()
+
+
+def test_off_shape_counts_reach_the_completion_summary():
+    """The discovery report names what was dropped and why."""
+    workflow = _off_shape_workflow(MagicMock())
+    stats = _DiscoveryStats(
+        off_shape_dropped=2, terminal_dropped=1, routed_to_mining=1
+    )
+    workflow._emit_completion_summary(stats)
+    payload = workflow._event_bus.publish.call_args.args[1]
+    assert payload["off_shape_dropped"] == 2
+    assert payload["terminal_dropped"] == 1
+    assert payload["routed_to_mining"] == 1

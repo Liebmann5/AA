@@ -16,8 +16,9 @@ What this engine does:
     4. _scrape_company_pages     — optional direct-careers-page mining
     5. _prefilter_with_spacy     — drop blocked vocab/company/location matches cheaply
     6. _normalize_and_deduplicate — skip URL-duplicates, emit TASK_SKIPPED_DUPLICATE
-    7. _persist_discovered_jobs  — record unique jobs with session_id (mode-independent)
-    8. _classify_job_source      — stamp job.metadata["ats"] and ["provider"]
+    7. _classify_job_source      — stamp job.metadata["ats"] and ["provider"]
+    8. _persist_discovered_jobs  — record unique jobs with session_id and their
+                                   provenance (mode-independent)
     9. _enqueue_vet_tasks        — push WorkUnit(VET) into task queue
     10. _emit_completion_summary — publish DISCOVERY_COMPLETE with aggregate stats
 
@@ -40,7 +41,11 @@ from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.models.session_plan import SessionExecutionMode, SessionPlan
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
-from auto_apply.domain.ports.research_port import ResearchObserverPort, NullResearchObserver
+from auto_apply.domain.ports.research_port import (
+    NullResearchObserver,
+    ResearchObserverPort,
+    SearchPlanObservation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,10 @@ class _DiscoveryStats:
     prefiltered_dropped: int = 0
     deduped_dropped: int = 0
     enqueued: int = 0
+    budget_skipped: int = 0
+    off_shape_dropped: int = 0
+    terminal_dropped: int = 0
+    routed_to_mining: int = 0
 
 
 class DiscoveryWorkflow:
@@ -75,6 +84,7 @@ class DiscoveryWorkflow:
         research_observer: ResearchObserverPort | None = None,
         provider_order_rng: random.Random | None = None,
         search_planner=None,
+        engine_hosts: tuple[str, ...] | None = None,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -125,6 +135,12 @@ class DiscoveryWorkflow:
         self._browser_lease = browser_lease
         self._search_planner = search_planner
         self._site_search_warned = False
+        self._engine_hosts = engine_hosts
+        # The session query budget and the engine rotation are owned HERE —
+        # this workflow is the one component that spans DISCOVER tasks, and
+        # the planner is deliberately stateless.
+        self._queries_sent_this_session: int = 0
+        self._engine_rotation_offset: int = 0
 
         # Fallback: a minimal plan is always available
         if plan is not None:
@@ -366,22 +382,52 @@ class DiscoveryWorkflow:
         bases: tuple[tuple[str, str, str], ...],
         plan_date_range=None,
     ) -> list[SearchInstruction]:
-        """Run the planner over bases and convert its output to instructions."""
+        """Run the planner over bases and convert its output to instructions.
+
+        The session budget is owned here: the planner is told how many
+        queries remain for the WHOLE session, not a fresh cap per task, and
+        the engine rotation carries across task boundaries so no engine gets
+        two consecutive planned queries while another enabled engine exists.
+        """
+        remaining = max(
+            0, self._max_queries_per_session - self._queries_sent_this_session
+        )
+        if remaining <= 0:
+            logger.warning(
+                "DiscoveryWorkflow: session query budget (%d) already spent — "
+                "no planning for this task",
+                self._max_queries_per_session,
+            )
+            return []
+        base_engines = tuple(self._plan.active_providers)
+        engines = base_engines
+        if base_engines and self._engine_rotation_offset:
+            off = self._engine_rotation_offset % len(base_engines)
+            engines = base_engines[off:] + base_engines[:off]
         planned = self._search_planner.plan(
             bases=bases,
-            engines=tuple(self._plan.active_providers),
+            engines=engines,
             platforms=tuple(self._plan.ats_platforms),
             date_range=(
                 self._plan.date_range if plan_date_range is None else plan_date_range
             ),
             max_results=self._plan.max_results_per_query,
-            budget=self._max_queries_per_session,
+            budget=remaining,
         )
         for note in planned.notes:
             if note.severity == "warning":
                 logger.warning("SearchPlanner: %s", note.message)
             else:
                 logger.info("SearchPlanner: %s", note.message)
+        self._emit_search_plan_frame(
+            planned, engines=engines, budget_before=remaining
+        )
+        if base_engines:
+            bound = [q.engine for q in planned.queries if q.engine]
+            if bound and bound[-1] in base_engines:
+                self._engine_rotation_offset = (
+                    base_engines.index(bound[-1]) + 1
+                ) % len(base_engines)
         return [self._instruction_from_planned(query) for query in planned.queries]
 
     @staticmethod
@@ -418,7 +464,10 @@ class DiscoveryWorkflow:
         return ordered
 
     def _execute_serp_discovery(
-        self, instructions: list[SearchInstruction], active_providers: list
+        self,
+        instructions: list[SearchInstruction],
+        active_providers: list,
+        stats: _DiscoveryStats | None = None,
     ) -> list[Job]:
         """Fan out to all active providers, passing one instruction per call.
 
@@ -435,6 +484,27 @@ class DiscoveryWorkflow:
         """
         all_jobs: list[Job] = []
         active_providers = self._order_providers(active_providers)
+
+        # The session budget binds at the fan-out — the one place every
+        # instruction (planned or generic) passes through on its way out.
+        affordable: list[SearchInstruction] = []
+        skipped = 0
+        for instr in instructions:
+            if self._queries_sent_this_session >= self._max_queries_per_session:
+                skipped += 1
+                continue
+            self._queries_sent_this_session += 1
+            affordable.append(instr)
+        if skipped:
+            if stats is not None:
+                stats.budget_skipped += skipped
+            logger.warning(
+                "DiscoveryWorkflow: session query budget (%d) reached — %d "
+                "instruction(s) not sent",
+                self._max_queries_per_session,
+                skipped,
+            )
+        instructions = affordable
 
         def _run_provider(provider, instr: SearchInstruction) -> list[Job]:
             name = getattr(provider, "name", type(provider).__name__)
@@ -456,6 +526,12 @@ class DiscoveryWorkflow:
                     try:
                         job.metadata.setdefault(
                             "search_query", instr.effective_query
+                        )
+                        job.metadata.setdefault(
+                            "route",
+                            "engine_site_search"
+                            if instr.platform
+                            else "provider_serp",
                         )
                         if instr.platform:
                             job.metadata.setdefault(
@@ -625,6 +701,135 @@ class DiscoveryWorkflow:
             )
         return recorded
 
+    def _handle_off_shape_hits(self, jobs: list[Job]) -> tuple[list[Job], dict[str, int]]:
+        """Handle hits that are not postings of the platform they targeted.
+
+        Only jobs stamped ``target_platform`` by the planner path are
+        examined; everything else passes through untouched. A hit on one of
+        the platform's terminal shapes (success/confirm/closed) is dropped
+        and never followed. A hit that matches no posting pattern for its
+        target platform is a board, a listing page or noise: when company-page
+        mining is enabled it becomes a DISCOVER_COMPANY task; otherwise it is
+        dropped. Each outcome is counted and reported.
+        """
+        counts = {"dropped": 0, "terminal": 0, "mined": 0}
+        if self._ats_registry is None:
+            return jobs, counts
+        kept: list[Job] = []
+        for job in jobs:
+            try:
+                platform = str(job.metadata.get("target_platform") or "")
+            except Exception:
+                kept.append(job)
+                continue
+            if not platform:
+                kept.append(job)
+                continue
+            try:
+                if self._ats_registry.is_terminal_page(job.url):
+                    counts["terminal"] += 1
+                    logger.info(
+                        "DiscoveryWorkflow: terminal page never followed | url=%s",
+                        job.url,
+                    )
+                    continue
+                descriptor = self._ats_registry.match(job.url)
+            except Exception as exc:
+                logger.debug("DiscoveryWorkflow: registry match failed: %s", exc)
+                kept.append(job)
+                continue
+            if descriptor is not None and descriptor.name == platform:
+                kept.append(job)
+                continue
+            if (
+                self._plan.enable_company_page_mining
+                and self._plan.execution_mode.includes_discovery
+            ):
+                try:
+                    self._task_queue.queue_task(
+                        WorkUnit(
+                            priority=4,
+                            task_type=TaskType.DISCOVER_COMPANY,
+                            payload={
+                                "careers_url": job.url,
+                                "company_name": job.company or "Unknown",
+                            },
+                            source="site_search_off_shape",
+                            context_data={"target_platform": platform},
+                        )
+                    )
+                    counts["mined"] += 1
+                    logger.info(
+                        "DiscoveryWorkflow: off-shape hit routed to company "
+                        "mining | platform=%s url=%s",
+                        platform,
+                        job.url,
+                    )
+                except Exception as exc:
+                    counts["dropped"] += 1
+                    logger.warning(
+                        "DiscoveryWorkflow: off-shape routing failed | url=%s error=%s",
+                        job.url,
+                        exc,
+                    )
+            else:
+                counts["dropped"] += 1
+                logger.info(
+                    "DiscoveryWorkflow: off-shape hit dropped | platform=%s url=%s",
+                    platform,
+                    job.url,
+                )
+        return kept, counts
+
+    def _emit_search_plan_frame(
+        self,
+        planned,
+        *,
+        engines: tuple[str, ...],
+        budget_before: int,
+    ) -> None:
+        """Emit the session's sampling frame to research (consent-gated).
+
+        The frame is names and counts only — which engines and platforms were
+        searched, how many queries each received, how many targets were
+        dropped. Query text, titles and locations NEVER appear in it: those
+        are the user's search, and the research store does not carry them.
+        """
+        observer = self._research_observer
+        if not getattr(observer, "is_enabled", False):
+            return
+        try:
+            per_engine: dict[str, int] = {}
+            per_platform: dict[str, int] = {}
+            for query in planned.queries:
+                if query.engine:
+                    per_engine[query.engine] = per_engine.get(query.engine, 0) + 1
+                if query.platform:
+                    per_platform[query.platform] = (
+                        per_platform.get(query.platform, 0) + 1
+                    )
+            observer.observe_search_plan(
+                SearchPlanObservation(
+                    engines=tuple(sorted(engines)),
+                    platforms=tuple(sorted(per_platform)),
+                    queries_planned=len(planned.queries),
+                    per_engine=tuple(sorted(per_engine.items())),
+                    per_platform=tuple(sorted(per_platform.items())),
+                    dropped_count=len(planned.dropped_targets),
+                    notes_info=sum(1 for n in planned.notes if n.severity == "info"),
+                    notes_warning=sum(
+                        1 for n in planned.notes if n.severity == "warning"
+                    ),
+                    budget_before=budget_before,
+                    budget_after=budget_before - len(planned.queries),
+                )
+            )
+        except Exception as exc:
+            logger.debug(
+                "DiscoveryWorkflow: sampling-frame observation failed (non-fatal): %s",
+                exc,
+            )
+
     def _classify_job_source(self, jobs: list[Job]) -> None:
         for job in jobs:
             if not hasattr(job, "metadata"):
@@ -676,6 +881,10 @@ class DiscoveryWorkflow:
             "prefiltered_dropped": stats.prefiltered_dropped,
             "deduped_dropped": stats.deduped_dropped,
             "enqueued": stats.enqueued,
+            "budget_skipped": stats.budget_skipped,
+            "off_shape_dropped": stats.off_shape_dropped,
+            "terminal_dropped": stats.terminal_dropped,
+            "routed_to_mining": stats.routed_to_mining,
         }
         try:
             self._event_bus.publish(Event.DISCOVERY_COMPLETE, payload)
@@ -743,7 +952,9 @@ class DiscoveryWorkflow:
         stats.providers_attempted = len(active_providers)
 
         all_jobs: list[Job] = []
-        all_jobs.extend(self._execute_serp_discovery(search_instructions, active_providers))
+        all_jobs.extend(
+            self._execute_serp_discovery(search_instructions, active_providers, stats)
+        )
         all_jobs.extend(self._scrape_company_pages(all_jobs))
         stats.raw_found = len(all_jobs)
 
@@ -753,13 +964,18 @@ class DiscoveryWorkflow:
         all_jobs = self._normalize_and_deduplicate(all_jobs)
         stats.deduped_dropped = (stats.raw_found - stats.prefiltered_dropped) - len(all_jobs)
 
+        all_jobs, off_shape = self._handle_off_shape_hits(all_jobs)
+        stats.off_shape_dropped = off_shape["dropped"]
+        stats.terminal_dropped = off_shape["terminal"]
+        stats.routed_to_mining = off_shape["mined"]
+
         # ── Persist before the mode branch (C1) ─────────────────────────────
         # A job is persisted the moment it is known, so results survive
         # DISCOVER_ONLY sessions and process death alike. This is history,
         # not a skip list.
-        self._persist_discovered_jobs(all_jobs)
-
+        # Stamp provider and platform first, so the stored row carries them.
         self._classify_job_source(all_jobs)
+        self._persist_discovered_jobs(all_jobs)
 
         # Verify the output is real before enqueueing: valid fields, no
         # duplicates, and within the resolved per-query ceiling. "Know, not
@@ -769,7 +985,9 @@ class DiscoveryWorkflow:
             len(active_providers)
             * sum(instr.max_results for instr in search_instructions)
         ) or None
-        report = DiscoveryVerifier(max_results=ceiling).verify(all_jobs)
+        report = DiscoveryVerifier(
+            max_results=ceiling, engine_hosts=self._engine_hosts
+        ).verify(all_jobs)
         if report.passed:
             logger.info(report.summary())
         else:

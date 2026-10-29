@@ -57,6 +57,17 @@ MAX_RETRY_ATTEMPTS: int = 3
 REACTIVE_TASK_TYPES: tuple[str, ...] = (TaskType.HANDLE_CAPTCHA.value,)
 
 
+def _row_metadata(raw: Any) -> dict:
+    """Parse a stored metadata_json value. Absent or corrupt reads as {}."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 class DatabaseManager(WorkQueuePort):
     """Singleton manager for SQLite database interactions.
 
@@ -186,6 +197,17 @@ class DatabaseManager(WorkQueuePort):
                     session_id TEXT
                 )
             """)
+
+            # ── Migration: add metadata_json if upgrading from older schema ──
+            try:
+                conn.execute("SELECT metadata_json FROM job_history LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "ALTER TABLE job_history ADD COLUMN metadata_json TEXT"
+                )
+                logger.info(
+                    "DatabaseManager: added metadata_json column to job_history"
+                )
 
             # 3. Applied Jobs — permanent application log; NEVER cleared.
             conn.execute("""
@@ -754,16 +776,19 @@ class DatabaseManager(WorkQueuePort):
         title = getattr(job_obj, "title", "Unknown")
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:32]
         now = datetime.now(timezone.utc).isoformat()
+        metadata_json = json.dumps(
+            getattr(job_obj, "metadata", None) or {}, default=str, sort_keys=True
+        )
 
         try:
             with self.get_connection() as conn:
                 cursor = conn.execute(
                     """
                     INSERT OR IGNORE INTO job_history
-                        (url_hash, url, company, title, status, applied_at, session_id)
-                    VALUES (?, ?, ?, ?, 'DISCOVERED', ?, ?)
+                        (url_hash, url, company, title, status, applied_at, session_id, metadata_json)
+                    VALUES (?, ?, ?, ?, 'DISCOVERED', ?, ?, ?)
                     """,
-                    (url_hash, url, company, title, now, session_id),
+                    (url_hash, url, company, title, now, session_id, metadata_json),
                 )
                 return cursor.rowcount > 0
         except sqlite3.Error as exc:
@@ -861,10 +886,12 @@ class DatabaseManager(WorkQueuePort):
                     (session_id, status),
                 ).fetchall()
         for row in rows:
+            metadata = _row_metadata(row["metadata_json"])
             jobs.append(Job(
                 title=row["title"],
                 company=row["company"] or "Unknown",
                 url=row["url"],
-                source="history",
+                source=metadata.get("provider") or "history",
+                metadata=metadata,
             ))
         return jobs

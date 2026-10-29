@@ -1388,6 +1388,7 @@ class AgentOrchestrator:
         self.event_bus.subscribe(Event.HUMAN_APPROVAL_GRANTED,   self._on_human_approval_granted)
         self.event_bus.subscribe(Event.CAPTCHA_REQUIRES_MANUAL_SOLVE, self._on_captcha_manual_solve_requested)
         self.event_bus.subscribe(Event.PROVIDER_TIMED_OUT, self._on_provider_timed_out)
+        self.event_bus.subscribe(Event.PROVIDER_BENCHED,   self._on_provider_benched)
         self.event_bus.subscribe(Event.REDIRECT_TO_LIST_DETECTED, self._on_redirect_to_list_detected)
 
         logger.debug("Orchestrator event handlers registered")
@@ -1574,6 +1575,24 @@ class AgentOrchestrator:
                     "Stuck task permanently failed (retry budget exhausted) | id=%s",
                     current.id[:8],
                 )
+
+    def _on_provider_benched(self, payload: Any) -> None:
+        """Records a benched engine in the session report's discovery section.
+
+        Consumer for PROVIDER_BENCHED. The session continues on the other
+        engines; the report names the one that stopped being contacted, with
+        the reason when the guard supplied one.
+        """
+        payload = payload or {}
+        provider = str(payload.get("provider") or "unknown")
+        reason = str(payload.get("reason") or "")
+        entry = f"{provider} ({reason})" if reason else provider
+        try:
+            if entry not in self._session_report.blocked_providers:
+                self._session_report.blocked_providers.append(entry)
+        except Exception as exc:
+            logger.debug("SessionReport bench record failed (non-fatal) | %s", exc)
+        logger.warning("Engine benched for this session | %s", entry)
 
     def _on_redirect_to_list_detected(self, payload: Any) -> None:
         """Handles an application redirect to a job-listing page.

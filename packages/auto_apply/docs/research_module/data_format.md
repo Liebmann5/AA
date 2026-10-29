@@ -89,7 +89,7 @@ accumulated data (lifecycle tracking, salary benchmarking, form analysis,
 application outcomes). Two more tables exist and are not yet documented
 column-by-column here: `detector_examinations` and `detector_outcomes` (one
 accounting row per detector run). `detector_examinations` carries the same
-`page_copy_id` column as `research_signals`. All eleven tables are covered by research
+`page_copy_id` column as `research_signals`. All twelve tables are covered by research
 export and by consent withdrawal's delete-all.
 
 ### Discovery tables: `discovery_pages`, `discovery_cards`, `discovery_candidates`
@@ -219,6 +219,28 @@ Tracks whether submitted applications receive any acknowledgment, used by the
 | `submitted_date` | TEXT | Date the application was submitted. |
 | `acknowledgment_received` | INTEGER | 0/1 — whether ANY response was received within 30 days. |
 | `acknowledgment_date` | TEXT | Date of acknowledgment, if received. |
+| `schema_version` | INTEGER | Schema version. |
+
+### `search_plan_frames`
+
+The sampling frame of automated site-restricted search: one row per planning
+pass recording which engines and platforms were searched and how many queries
+each received, plus dropped/skip counts and the session budget before and
+after the pass. **Names and counts only — the words searched for are never
+stored, and the observation type has no field that could carry them.**
+
+| Column | Type | Description |
+| ------ | ---- | ----------- |
+| `frame_id` | TEXT PRIMARY KEY | Random surrogate ID minted at write time. |
+| `planned_date` | TEXT | ISO‑8601 date of the planning pass. |
+| `engines` | TEXT | JSON list of engine names planned (e.g. `["bing","google"]`). |
+| `platforms` | TEXT | JSON list of platform names planned. |
+| `queries_planned` | INTEGER | Queries the pass produced. |
+| `per_engine` | TEXT | JSON map of engine → query count. |
+| `per_platform` | TEXT | JSON map of platform → query count. |
+| `dropped_count` | INTEGER | Targets dropped by the budget cap. |
+| `notes_info` / `notes_warning` | INTEGER | Planner note counts by severity (never the note text). |
+| `budget_before` / `budget_after` | INTEGER | Session query budget around the pass. |
 | `schema_version` | INTEGER | Schema version. |
 
 ### `research_provenance`

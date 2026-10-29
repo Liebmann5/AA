@@ -756,6 +756,7 @@ def test_every_schema_table_is_disclosed_in_the_consent_text():
         "detector_examinations": "Which detectors ran",
         "detector_outcomes": "how each concluded",
         "research_provenance": "public verification key",
+        "search_plan_frames": "sampling frame",
     }
     assert tables == set(disclosure), (
         f"schema/consent-text drift — update the dialog AND this map: "

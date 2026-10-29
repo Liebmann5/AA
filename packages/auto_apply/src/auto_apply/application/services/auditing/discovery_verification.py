@@ -44,10 +44,17 @@ def _is_valid_url(url: object) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-_SEARCH_ENGINE_HOSTS = ("google.", "bing.", "duckduckgo.", "search.yahoo.")
+# Last-resort set used only when no catalog-derived list is injected. It is
+# pinned equal to the catalog's engine hosts in
+# tests/application/test_discovery_verification.py, so it cannot drift
+# silently. The catalog is the single source of truth: the composition root
+# derives the set from it and injects it through the discovery workflow.
+# Job boards (Indeed, LinkedIn) are deliberately absent: real postings live
+# on their hosts.
+_FALLBACK_ENGINE_HOSTS = ("google.com", "bing.com", "duckduckgo.com")
 
 
-def _is_navigation_chrome(job: Job) -> str:
+def _is_navigation_chrome(job: Job, engine_hosts: tuple[str, ...]) -> str:
     """Return why this record looks like site furniture, or "" if it does not.
 
     Two rules, both learned from live runs rather than guessed:
@@ -56,8 +63,9 @@ def _is_navigation_chrome(job: Job) -> str:
       they are not the same string. Every one of Indeed's ``Find jobs`` /
       ``Company Reviews`` and Bing's ``Rewards`` records has this shape.
     * a job URL hosted on a search engine — a posting is never served from
-      google.com or bing.com. Indeed is deliberately absent from that list:
-      real Indeed postings *do* live on indeed.com.
+      google.com or bing.com. Matching is suffix-exact (``evilgoogle.com``
+      does not match ``google.com``). Indeed is deliberately absent from the
+      host set: real Indeed postings *do* live on indeed.com.
     """
     title = (job.title or "").strip()
     company = (job.company or "").strip()
@@ -67,8 +75,9 @@ def _is_navigation_chrome(job: Job) -> str:
         host = urlparse((job.url or "").strip()).netloc.lower()
     except ValueError:
         return ""
-    if any(part in host for part in _SEARCH_ENGINE_HOSTS):
-        return f"job URL is hosted on a search engine ({host})"
+    for engine_host in engine_hosts:
+        if host == engine_host or host.endswith("." + engine_host):
+            return f"job URL is hosted on a search engine ({host})"
     return ""
 
 
@@ -133,9 +142,17 @@ class DiscoveryVerifier:
         sample_size: how many offending items to name in a failure detail.
     """
 
-    def __init__(self, max_results: int | None = None, sample_size: int = 5) -> None:
+    def __init__(
+        self,
+        max_results: int | None = None,
+        sample_size: int = 5,
+        engine_hosts: tuple[str, ...] | None = None,
+    ) -> None:
         self._cap = max_results
         self._sample = max(1, sample_size)
+        # Catalog-derived when wired by the composition root; the pinned
+        # fallback otherwise.
+        self._engine_hosts = engine_hosts or _FALLBACK_ENGINE_HOSTS
 
     def verify(self, jobs: list[Job]) -> VerificationReport:
         checks = [
@@ -176,7 +193,11 @@ class DiscoveryVerifier:
         tab bar should say so instead of reporting ``[PASS]``, which is what
         happened for four live runs.
         """
-        offenders = [(j, why) for j in jobs if (why := _is_navigation_chrome(j))]
+        offenders = [
+            (j, why)
+            for j in jobs
+            if (why := _is_navigation_chrome(j, self._engine_hosts))
+        ]
         if not offenders:
             return CheckResult(
                 "chrome", True, f"none of {len(jobs)} jobs look like navigation"

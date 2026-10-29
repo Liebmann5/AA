@@ -22,6 +22,27 @@ from its first tag onward.
 
 ### Added
 
+- **Automated search runs safely and says where every job came from.**
+  `max_queries_per_session` now caps the whole session, not each search
+  task (a session with more searches than the cap stops at the cap, with a
+  warning), and engine rotation carries across tasks. One per-host pacer
+  (`application/services/host_pacing.py`) spaces consecutive contacts to
+  any one host - engines, and the hiring-platform hosts vetting and
+  applying visit - using `discovery.between_provider_pause_min/max` (read
+  for the first time) with seeded jitter. An engine that answers with a
+  CAPTCHA or login wall is stopped for the rest of the session before any
+  further request is sent, and the saved session report names it.
+  Site-restricted harvests keep their own degradation baseline (stored
+  baseline keys are now lowercase, so old ones re-collect). Hits that are
+  not postings of the platform searched are dropped or, with company-page
+  mining on, routed to it, and counted; terminal pages are never followed.
+  Each discovered job's provenance (provider, query, platform, engine form,
+  route, page and rank) is stored with it and appears in the results CSV.
+  Behind research consent, a new `search_plan_frames` table records the
+  sampling frame - which engines and platforms were searched and how often,
+  never the words searched for (research schema 5, consent text 2.7). The
+  discovery verifier's engine hosts now come from the search-surface
+  catalog.
 - **ATS-targeted automated search (opt-in).** A pure, deterministic planner
   (`domain/services/search_planner.py`) turns the session's titles, locations,
   enabled engines and chosen ATS platforms into engine-bound, site-restricted

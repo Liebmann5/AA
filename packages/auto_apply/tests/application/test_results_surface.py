@@ -490,3 +490,29 @@ def test_gui_format_helpers_are_pure_and_correct():
     assert "applied 3" in history_text
 
     assert format_history_lines(()) == ["No past sessions found."]
+
+
+def test_the_results_csv_carries_search_provenance(fresh_db, tmp_path):
+    """TEETH: pre-change, the export was title/company/url/source only."""
+    job = _job(0)
+    job.metadata.update({
+        "search_query": 'site:jobs.jobvite.com ("Engineer")',
+        "target_platform": "jobvite",
+        "engine_form": "web",
+        "page_index": 0,
+        "rank": 1,
+    })
+    fresh_db.record_job_discovery(job, session_id="s1")
+    controller = _controller(fresh_db, "s1")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    target = controller.export_session_results(out_dir)
+
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert "search_query" in lines[0]
+    assert "target_platform" in lines[0]
+    assert "engine_form" in lines[0]
+    assert "page_index" in lines[0]
+    assert "rank" in lines[0]
+    assert "jobvite" in lines[1]

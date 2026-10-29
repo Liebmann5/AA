@@ -1828,13 +1828,21 @@ class SessionController:
             )
 
         jobs = self.db.get_jobs_for_session(session_id)
-        rows = [["title", "company", "url", "source"]]
+        rows = [[
+            "title", "company", "url", "source",
+            "search_query", "target_platform", "engine_form", "page_index", "rank",
+        ]]
         rows.extend(
             [
                 str(getattr(j, "title", "") or ""),
                 str(getattr(j, "company", "") or ""),
                 str(getattr(j, "url", "") or ""),
                 str(getattr(j, "source", "") or ""),
+                str(getattr(j, "metadata", {}).get("search_query", "") or ""),
+                str(getattr(j, "metadata", {}).get("target_platform", "") or ""),
+                str(getattr(j, "metadata", {}).get("engine_form", "") or ""),
+                str(getattr(j, "metadata", {}).get("page_index", "")),
+                str(getattr(j, "metadata", {}).get("rank", "")),
             ]
             for j in jobs
         )

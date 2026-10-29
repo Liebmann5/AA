@@ -64,6 +64,7 @@ class GoogleProvider(BaseSearchProvider):
         research_observer=None,
         readiness=None,
         page_action=None,
+        host_pacer=None,
     ) -> None:
         super().__init__(
             browser,
@@ -73,6 +74,7 @@ class GoogleProvider(BaseSearchProvider):
             observer,
             reporter,
             forced_tier,
+            host_pacer,
         )
         self._degradation_detector = degradation_detector
         # Optional ATSRegistry: when provided, find_company_career_page() builds
@@ -146,6 +148,11 @@ class GoogleProvider(BaseSearchProvider):
             instruction.date_range or "none",
         )
 
+        if self._session_guard_blocks(instruction):
+            return []
+
+        self._pace_for(instruction)
+
         if not self.navigator.navigate_with_fallback(
             self._engine_strategy, instruction, self._is_page_healthy
         ):
@@ -181,6 +188,7 @@ class GoogleProvider(BaseSearchProvider):
             forced_tier=self._forced_tier,
             research_observer=self._research_observer,
             page_action=self._page_action,
+            baseline_scope=self._baseline_scope_for(instruction),
             title_parser=SmartTextExtractor(
                 strategies=[
                     "div[role='heading']",
@@ -230,6 +238,9 @@ class GoogleProvider(BaseSearchProvider):
         )
 
         logger.info("GoogleProvider: Hunting for ATS link: %s", search_url)
+
+        if self._host_pacer is not None:
+            self._host_pacer.wait_for_url(search_url)
 
         try:
             self.browser.get(search_url)
