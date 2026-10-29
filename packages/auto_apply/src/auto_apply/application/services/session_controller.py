@@ -142,6 +142,7 @@ from auto_apply.application.services.autonomy import (
     apply_autonomy,
     autonomy_enabled_for_profile,
 )
+from auto_apply.application.services.search_preview import plan_updates_for_request
 from auto_apply.domain.config import USER_DATA_DIR
 from auto_apply.domain.events import Event
 from auto_apply.domain.exceptions import QueryBuilderError
@@ -161,10 +162,12 @@ from auto_apply.domain.models.task_priority import TaskPriority
 from auto_apply.domain.models.ui_contract import (
     ActivityKind,
     ApprovalRequest,
+    BlockedEngine,
     DiscoveredJob,
     EntryPoint,
     QueueSnapshot,
     ResearchSessionView,
+    SearchPlanPreview,
     SessionEventRecord,
     SessionHistoryEntry,
     SessionRequest,
@@ -303,10 +306,22 @@ _STREAM_WARNING_KINDS: frozenset[ActivityKind] = frozenset({
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_discovery_complete(p: dict) -> str:
-    return (
+    line = (
         f"Discovery round complete: {p.get('enqueued', 0)} new job(s) "
         f"from {p.get('raw_found', 0)} found"
     )
+    extras = []
+    if p.get("off_shape_dropped"):
+        extras.append(f"{p['off_shape_dropped']} off-shape dropped")
+    if p.get("terminal_dropped"):
+        extras.append(f"{p['terminal_dropped']} terminal skipped")
+    if p.get("routed_to_mining"):
+        extras.append(f"{p['routed_to_mining']} routed to company pages")
+    if p.get("budget_skipped"):
+        extras.append(f"{p['budget_skipped']} over budget")
+    if extras:
+        line += " (" + "; ".join(extras) + ")"
+    return line
 
 
 def _render_captcha_manual_solve(p: dict) -> str:
@@ -464,6 +479,7 @@ class SessionController:
         profile_repo: ProfileRepositoryPort | None = None,
         research_consent: "ResearchConsentManager | None" = None,
         query_builder: "QueryBuilderService | None" = None,
+        plan_previewer=None,
     ) -> None:
         """Stores pre-built dependencies and starts the event-fed projections.
 
@@ -492,6 +508,15 @@ class SessionController:
         self._profile_repo = profile_repo
         self._research_consent = research_consent
         self._query_builder = query_builder
+        self._plan_previewer = plan_previewer
+        # Automation outcome accumulators (event-fed; read by summary()).
+        self._blocked_engines: list[BlockedEngine] = []
+        self._discovery_outcome_counts = {
+            "off_shape_dropped": 0,
+            "terminal_dropped": 0,
+            "routed_to_mining": 0,
+            "budget_skipped": 0,
+        }
         self._agent_thread: threading.Thread | None = None
         # HITL: maps context_id → (gate_event, chosen_value_holder, payload).
         self._pending_approvals: dict[
@@ -721,6 +746,11 @@ class SessionController:
         exists so that never happens in production; a raise here would be
         swallowed by the EventBus into a log line nobody reads.
         """
+        if event is Event.PROVIDER_BENCHED:
+            self._accumulate_blocked_engine(payload)
+        elif event is Event.DISCOVERY_COMPLETE:
+            self._accumulate_discovery_counts(payload)
+
         kind = _EVENT_KIND_MAP.get(event)
         renderer = _STREAM_TEXT_RENDERERS.get(event)
         if kind is None or renderer is None:
@@ -920,21 +950,23 @@ class SessionController:
         max_results used to reach the plan but never the scraper.
         """
         base_plan = self.registry.get_session_plan()
-        updates: dict[str, Any] = {"execution_mode": request.execution_mode}
-        if isinstance(request.max_results, int) and request.max_results > 0:
-            updates["max_results_per_query"] = request.max_results
-        if request.providers:
-            updates["active_providers"] = request.providers
+        # One computation, shared with the plan preview — the live rebuild
+        # and the preview cannot drift.
+        updates = plan_updates_for_request(
+            request, self.registry.get_admin_policy()
+        )
         try:
             new_plan = base_plan.model_copy(update=updates)
             self.orchestrator.session_plan = new_plan
             self._refresh_workflow_plans(new_plan)
             logger.debug(
                 "SessionController: session plan rebuilt | mode=%s cap=%s "
-                "providers=%s",
+                "providers=%s platforms=%s site_search=%s",
                 new_plan.execution_mode.value,
                 new_plan.max_results_per_query,
                 new_plan.active_providers,
+                new_plan.ats_platforms,
+                new_plan.use_ats_site_search,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -1521,6 +1553,12 @@ class SessionController:
             report_path=report.report_path,
             autonomy_enabled=self.autonomy(),
             research=self._research_view(),
+            blocked_engines=tuple(self._blocked_engines),
+            discovery_off_shape_dropped=self._discovery_outcome_counts["off_shape_dropped"],
+            discovery_terminal_dropped=self._discovery_outcome_counts["terminal_dropped"],
+            discovery_routed_to_mining=self._discovery_outcome_counts["routed_to_mining"],
+            discovery_budget_skipped=self._discovery_outcome_counts["budget_skipped"],
+            search_budget=self._search_budget(),
         )
 
     def _research_view(self) -> ResearchSessionView:
@@ -1584,6 +1622,61 @@ class SessionController:
             skipped=int(stats.get("skipped", 0) or 0),
             permanently_failed=int(stats.get("permanently_failed", 0) or 0),
         )
+
+    def preview_search_plan(self, request: SessionRequest) -> SearchPlanPreview:
+        """What this session plans to search, computed before Start.
+
+        Delegates to the injected previewer (the composition root's closure
+        over the session's own registry and planner). A missing or failing
+        previewer degrades to a generic preview with the reason named —
+        never None, never an exception.
+        """
+        previewer = self._plan_previewer
+        if previewer is None:
+            return SearchPlanPreview(
+                reason_key="searchplan.preview.reason_no_planner"
+            )
+        try:
+            return previewer(request)
+        except Exception as exc:  # noqa: BLE001 — a preview must never break a session
+            logger.warning("SessionController: plan preview failed | %s", exc)
+            return SearchPlanPreview(
+                reason_key="searchplan.preview.reason_no_planner"
+            )
+
+    def _accumulate_blocked_engine(self, payload: Any) -> None:
+        """Records a benched engine for the end-of-session summary.
+
+        Dedupes by provider name — the bench is session-scoped, so a second
+        event for the same engine is the same fact, not a new one.
+        """
+        if not isinstance(payload, dict):
+            return
+        provider = str(payload.get("provider") or "unknown")
+        reason = str(payload.get("reason") or "")
+        if not reason and "yield_ratio" in payload:
+            reason = "harvest collapsed against this engine's own baseline"
+        if provider not in {e.provider for e in self._blocked_engines}:
+            self._blocked_engines.append(
+                BlockedEngine(provider=provider, reason=reason)
+            )
+
+    def _accumulate_discovery_counts(self, payload: Any) -> None:
+        """Sums the per-round discovery outcome counts for the summary."""
+        if not isinstance(payload, dict):
+            return
+        for key in self._discovery_outcome_counts:
+            try:
+                self._discovery_outcome_counts[key] += int(payload.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+
+    def _search_budget(self) -> int:
+        """The session's query budget, read from the live plan."""
+        try:
+            return int(self.orchestrator.session_plan.max_queries_per_session)
+        except Exception:  # noqa: BLE001
+            return 0
 
     def pending_approvals(self) -> tuple[ApprovalRequest, ...]:
         """Returns all currently open HITL gates as typed data."""

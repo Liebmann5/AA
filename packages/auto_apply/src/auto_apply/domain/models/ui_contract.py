@@ -317,6 +317,15 @@ class SessionRequest(_FrozenModel):
     tuple into the rebuilt plan's ``active_providers``, and
     DiscoveryWorkflow's fan-out filters by that field — so a request
     naming one engine runs one engine.
+
+    ``platforms`` names the hiring platforms for ATS-targeted (site-
+    restricted) search, as a tri-state: None means "not declared — inherit
+    the profile's saved choice or the configured default"; an empty tuple
+    means "explicitly generic search — targeting is off this session"; a
+    non-empty tuple targets exactly those platforms and engages targeting.
+    Only platforms whose search restriction is measured or vendor-
+    documented are ever planned; the wizards refuse the rest, and an admin
+    policy can lock the set outright.
     """
 
     entry: EntryPoint
@@ -326,6 +335,7 @@ class SessionRequest(_FrozenModel):
     max_results: int | None = None
     urls: tuple[str, ...] = ()
     providers: tuple[str, ...] = ()
+    platforms: tuple[str, ...] | None = None
 
     @property
     def seed_priority(self) -> int:
@@ -444,6 +454,13 @@ class ResearchSessionView(_FrozenModel):
         return tuple(out)
 
 
+class BlockedEngine(_FrozenModel):
+    """One search engine that was benched for the rest of a session."""
+
+    provider: str
+    reason: str = ""
+
+
 class SessionSummary(_FrozenModel):
     """The end-of-session / results view.
 
@@ -470,6 +487,12 @@ class SessionSummary(_FrozenModel):
     report_path: Path | None = None
     autonomy_enabled: bool = False
     research: ResearchSessionView = ResearchSessionView()
+    blocked_engines: tuple[BlockedEngine, ...] = ()
+    discovery_off_shape_dropped: int = 0
+    discovery_terminal_dropped: int = 0
+    discovery_routed_to_mining: int = 0
+    discovery_budget_skipped: int = 0
+    search_budget: int = 0
 
     @property
     def duration_str(self) -> str:
@@ -548,6 +571,40 @@ class SessionHistoryEntry(_FrozenModel):
     applications_submitted: int = 0
     applications_failed: int = 0
     report_path: Path | None = None
+
+
+class PlannedQueryView(_FrozenModel):
+    """One query the session will send, as the plan preview shows it.
+
+    ``engine`` empty means every enabled engine (a broadcast); ``platform``
+    empty means no site restriction; ``form`` is the surface's URL form name.
+    """
+
+    engine: str = ""
+    platform: str = ""
+    form: str = ""
+    query: str = ""
+    date_range: str | None = None
+    max_results: int = 30
+
+
+class SearchPlanPreview(_FrozenModel):
+    """What a session plans to search, computed before Start.
+
+    Never None and never an exception — the same null-object ruling as the
+    rest of the port. When the planner or catalog is unavailable this is a
+    valid preview of the generic search with ``reason_key`` set.
+    """
+
+    site_search: bool = False
+    queries: tuple[PlannedQueryView, ...] = ()
+    notes: tuple[str, ...] = ()
+    dropped: tuple[str, ...] = ()
+    engines: tuple[str, ...] = ()
+    budget: int = 0
+    planned_count: int = 0
+    reason_key: str = ""
+    locked_platforms: tuple[str, ...] = ()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -629,6 +686,27 @@ def provider_vocabulary() -> tuple[str, ...]:
     return tuple(SessionPlan.model_fields["active_providers"].default)
 
 
+def parse_platform_names(raw: str | None) -> tuple[str, ...] | None:
+    """Parse a comma-separated platform list into the request's tri-state.
+
+    None means the flag was not given (inherit the profile/config default);
+    "" or "none"/"off" means explicitly none this session; anything else is
+    the named platforms, lowercased and deduplicated. The one parser — the
+    CLI flag, the wizard, and the plan screen all read it.
+    """
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if text in ("", "none", "off"):
+        return ()
+    out: list[str] = []
+    for part in text.split(","):
+        name = part.strip()
+        if name and name not in out:
+            out.append(name)
+    return tuple(out)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared display vocabulary for the activity stream (stage D2)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -694,3 +772,97 @@ def activity_new(
     except ValueError:
         return tuple(records)
     return tuple(records[index + 1:])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared display: the plan preview and the automation outcome block
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Both surfaces render the plan preview and the end-of-session automation
+# outcome. One formatter each, shared by the CLI and the GUI, so the two can
+# never describe the same plan or the same session two different ways. The
+# planner's own notes arrive as English sentences from the planner — a
+# documented limitation (see the automated-search ADR); everything the
+# preview itself says goes through the locale.
+
+
+def format_search_plan_preview(
+    preview: SearchPlanPreview,
+    translate=lambda key: key,
+) -> list[str]:
+    """The one rendering of the plan preview, shared by both surfaces."""
+    lines: list[str] = [translate("searchplan.preview.title")]
+    if preview.reason_key:
+        lines.append(translate(preview.reason_key))
+    if preview.locked_platforms:
+        lines.append(
+            translate("searchplan.preview.admin_lock").format(
+                platforms=", ".join(preview.locked_platforms)
+            )
+        )
+    if preview.site_search:
+        lines.append(translate("searchplan.preview.mode_targeted"))
+    else:
+        lines.append(translate("searchplan.preview.mode_generic"))
+    for query in preview.queries:
+        engine = query.engine or translate("searchplan.preview.engine_all")
+        scope = query.platform or translate("searchplan.preview.scope_all")
+        form = f" [{query.form}]" if query.form else ""
+        lines.append(f"  {engine} · {scope}{form}: {query.query}")
+    lines.append(
+        translate("searchplan.preview.budget").format(
+            planned=preview.planned_count, budget=preview.budget
+        )
+    )
+    for note in preview.notes:
+        lines.append(f"  {translate('searchplan.preview.note_prefix')} {note}")
+    if preview.dropped:
+        lines.append(
+            translate("searchplan.preview.dropped").format(
+                targets="; ".join(preview.dropped)
+            )
+        )
+    return lines
+
+
+def format_discovery_outcome_lines(
+    summary: SessionSummary,
+    translate=lambda key: key,
+) -> list[str]:
+    """The automation outcome block on the results view — one formatter, two
+    surfaces (the CLI summary and the GUI results window), parity pinned.
+
+    Lines appear only when there is something to report.
+    """
+    lines: list[str] = []
+    if summary.blocked_engines:
+        lines.append(translate("searchplan.results.blocked_header"))
+        for engine in summary.blocked_engines:
+            reason = engine.reason or translate(
+                "searchplan.results.blocked_reason_unknown"
+            )
+            lines.append(
+                translate("searchplan.results.blocked_line").format(
+                    engine=engine.provider, reason=reason
+                )
+            )
+    if (
+        summary.discovery_off_shape_dropped
+        or summary.discovery_terminal_dropped
+        or summary.discovery_routed_to_mining
+    ):
+        lines.append(
+            translate("searchplan.results.off_shape").format(
+                dropped=summary.discovery_off_shape_dropped,
+                terminal=summary.discovery_terminal_dropped,
+                routed=summary.discovery_routed_to_mining,
+            )
+        )
+    if summary.discovery_budget_skipped:
+        lines.append(
+            translate("searchplan.results.budget").format(
+                skipped=summary.discovery_budget_skipped,
+                budget=summary.search_budget,
+            )
+        )
+    return lines

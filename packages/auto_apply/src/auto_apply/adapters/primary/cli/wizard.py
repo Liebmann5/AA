@@ -70,12 +70,15 @@ from typing import TYPE_CHECKING
 from auto_apply.application.services.session_controller import (
     _LEGACY_ENTRY_TO_EXECUTION_MODE,
 )
+from auto_apply.application.services.i18n import get_text
 from auto_apply.application.services.ui_schema import UIField, build_ui_schema
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.session_plan import SessionExecutionMode
+from auto_apply.domain.models.search_query import AutomationPlatformOffer
 from auto_apply.domain.models.ui_contract import (
     EntryPoint,
     SessionRequest,
+    format_search_plan_preview,
     outcome_options_for_entry,
     provider_vocabulary,
 )
@@ -92,8 +95,17 @@ class CLIWizard:
             populated from the user's saved search preferences.
     """
 
-    def __init__(self, profile: UserProfile | None = None) -> None:
+    def __init__(
+        self,
+        profile: UserProfile | None = None,
+        platforms_vocabulary: tuple[AutomationPlatformOffer, ...] = (),
+        preview_factory=None,
+        platforms_override: tuple[str, ...] | None = None,
+    ) -> None:
         self._profile = profile
+        self._platforms_vocabulary = platforms_vocabulary
+        self._preview_factory = preview_factory
+        self._platforms_override = platforms_override
         try:
             self._ui_schema: list[UIField] = build_ui_schema(UserProfile, "en")
         except Exception:
@@ -126,17 +138,28 @@ class CLIWizard:
                 urls=urls,
             )
 
-        execution_mode = self._ask_outcome_for_search()
-        providers = self._ask_providers()
-        keywords, location, max_results = self._fill_discovery_params()
-        return SessionRequest(
-            entry=EntryPoint.SEARCH,
-            execution_mode=execution_mode,
-            keywords=keywords,
-            location=location,
-            max_results=max_results,
-            providers=providers,
-        )
+        while True:
+            execution_mode = self._ask_outcome_for_search()
+            providers = self._ask_providers()
+            platforms = self._ask_platforms()
+            keywords, location, max_results = self._fill_discovery_params()
+            request = SessionRequest(
+                entry=EntryPoint.SEARCH,
+                execution_mode=execution_mode,
+                keywords=keywords,
+                location=location,
+                max_results=max_results,
+                providers=providers,
+                platforms=platforms,
+            )
+            if self._preview_factory is None:
+                return request
+            verdict = self._show_preview(request)
+            if verdict == "start":
+                return request
+            if verdict == "cancel":
+                return None
+            # "revise" — ask everything again.
 
     # ─────────────────────────────────────────────────────────────────────────
     # Exit axis (per entry point — see the module docstring for the ruling)
@@ -254,6 +277,93 @@ class CLIWizard:
         # The prompt collects a comma-separated string; the request carries a tuple.
         keywords = tuple(t.strip() for t in titles_raw.split(",") if t.strip())
         return keywords, location, max_results
+
+    def _ask_platforms(self) -> tuple[str, ...] | None:
+        """Asks which hiring platforms to target. None = inherit the default.
+
+        Only platforms whose search restriction is measured or vendor-
+        documented are offered — anything else would be planned into queries
+        that do not work. The rest are counted, and listed on request (the
+        ``v`` answer) with their reasons. Unknown names are dropped with a
+        printed note, never silently. "none" disables targeting this session.
+        """
+        if self._platforms_override is not None:
+            shown = ", ".join(self._platforms_override) or get_text(
+                "searchplan.pick.default_off"
+            )
+            print(  # noqa: T201
+                f"  {get_text('searchplan.cli.override_note').format(platforms=shown)}"
+            )
+            return self._platforms_override
+        vocabulary = self._platforms_vocabulary
+        if not vocabulary:
+            return None
+        eligible = [offer for offer in vocabulary if offer.eligible]
+        ineligible = [offer for offer in vocabulary if not offer.eligible]
+        if not eligible:
+            print(f"  {get_text('searchplan.pick.none_eligible')}")  # noqa: T201
+            return None
+        saved = tuple(
+            getattr(
+                getattr(self._profile, "app_config", None), "search_platforms", None
+            )
+            or ()
+        )
+        hint = ", ".join(saved) if saved else get_text("searchplan.pick.default_off")
+        print(f"  {get_text('searchplan.pick.prompt')}")  # noqa: T201
+        print(f"    {', '.join(offer.name for offer in eligible)}")  # noqa: T201
+        if ineligible:
+            print(  # noqa: T201
+                f"    {get_text('searchplan.pick.unverified_count').format(count=len(ineligible))}"
+            )
+        while True:
+            raw = input(f"  {get_text('searchplan.pick.choose')} [{hint}]: ").strip().lower()
+            if not raw:
+                return None
+            if raw in ("none", "off"):
+                return ()
+            if raw == "v":
+                for offer in ineligible:
+                    print(f"    {offer.name} — {offer.reason}")  # noqa: T201
+                continue
+            names = {offer.name for offer in eligible}
+            chosen: list[str] = []
+            dropped: list[str] = []
+            for part in raw.split(","):
+                name = part.strip()
+                if not name:
+                    continue
+                if name in names:
+                    chosen.append(name)
+                else:
+                    dropped.append(name)
+            for name in dropped:
+                print(  # noqa: T201
+                    f"    {get_text('searchplan.pick.unknown').format(name=name)}"
+                )
+            return tuple(chosen)
+
+    def _show_preview(self, request: SessionRequest) -> str:
+        """Prints the plan preview and asks whether to start.
+
+        Returns "start", "revise" or "cancel". A preview failure is a note,
+        never a crash — the session can still start.
+        """
+        try:
+            preview = self._preview_factory(request)
+            print()  # noqa: T201
+            for line in format_search_plan_preview(preview, translate=get_text):
+                print(f"  {line}")  # noqa: T201
+        except Exception as exc:  # noqa: BLE001
+            print(  # noqa: T201
+                f"  {get_text('searchplan.preview.unavailable').format(reason=exc)}"
+            )
+        raw = input(f"  {get_text('searchplan.preview.confirm')} ").strip().lower()
+        if raw in ("n", "no"):
+            return "cancel"
+        if raw in ("r", "revise"):
+            return "revise"
+        return "start"
 
     def _schema_label(self, key: str, fallback: str) -> str:
         """Returns the i18n-resolved label for *key*, or *fallback* on miss."""

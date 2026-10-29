@@ -126,6 +126,13 @@ class AdminPolicy:
     # unknown name is refused at registry build, naming the allowed names.
     motion_profile: str | None = None
 
+    # -- Search scope ---------------------------------------------------------
+    # Field-level lock on which hiring platforms automated site-restricted
+    # search may target. None = user-controlled. A list locks the set (an
+    # empty list disables targeting on this device), is applied after
+    # config_overrides so the named lock wins, and shows as locked in the UI.
+    search_platforms: list[str] | None = None
+
     # -- Data collection ----------------------------------------------------
     disable_research_collection: bool | None = None
 
@@ -244,6 +251,7 @@ class AdminPolicy:
             self.force_respect_robots_txt is not None,
             self.min_action_delay_seconds is not None,
             self.motion_profile is not None,
+            self.search_platforms is not None,
             self.disable_research_collection is not None,
             bool(self.config_overrides),
         ])
@@ -259,6 +267,7 @@ class AdminPolicy:
                 "force_robots_txt" if self.force_respect_robots_txt else None,
                 f"min_delay={self.min_action_delay_seconds}s" if self.min_action_delay_seconds is not None else None,  # noqa: E501
                 f"motion={self.motion_profile}" if self.motion_profile is not None else None,
+                f"platforms={len(self.search_platforms)}" if self.search_platforms is not None else None,
                 "no_research" if self.disable_research_collection else None,
                 f"overrides({len(self.config_overrides)})" if self.config_overrides else None,  # noqa: E501
             ]

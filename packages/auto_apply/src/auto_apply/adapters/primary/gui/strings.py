@@ -152,4 +152,17 @@ def get_strings(lang_code: str | None = None) -> dict[str, str]:
         "builder.status.recent_unavailable": _tr("builder.status.recent_unavailable", "That search used a site that is not available here."),
         "builder.result.bar": _tr("builder.result.bar", "Search bar"),
         "builder.result.link": _tr("builder.result.link", "Link"),
+
+        # --- Automated site-restricted search (picker, preview, settings) ---
+        "platforms_frame": _tr("searchplan.gui.frame", "Hiring platforms (automatic search)"),
+        "platforms_locked": _tr("searchplan.gui.locked", "Locked by your administrator: {platforms}"),
+        "platforms_unavailable": _tr("searchplan.gui.unavailable", "Platform targeting unavailable (platform registry not loaded)"),
+        "platforms_unverified_count": _tr("searchplan.gui.unverified_count", "{count} more platforms are not yet verified for automated search."),
+        "platforms_unverified_suffix": _tr("searchplan.gui.unverified_suffix", "(not yet verified)"),
+        "platforms_none": _tr("searchplan.gui.none", "none"),
+        "platforms_preview_button": _tr("searchplan.gui.preview_button", "Preview plan…"),
+        "platforms_preview_title": _tr("searchplan.gui.preview_title", "Planned searches"),
+        "platforms_settings_label": _tr("searchplan.gui.settings_label", "Hiring platforms for automatic search:"),
+        "platforms_settings_locked": _tr("searchplan.gui.settings_locked", "Locked by your administrator: {platforms}"),
+        "platforms_settings_note": _tr("searchplan.gui.settings_note", "AA searches these platforms' postings directly. Only verified platforms can be chosen."),
     }

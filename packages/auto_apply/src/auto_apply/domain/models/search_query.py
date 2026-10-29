@@ -109,6 +109,25 @@ class PlatformOffer(_Frozen):
     label: str = ""
 
 
+class AutomationPlatformOffer(_Frozen):
+    """A hiring platform as a target for AUTOMATED search.
+
+    Distinct from PlatformOffer (the query builder): the builder's label
+    describes hand-verification for searches a person runs, while
+    ``eligible`` here answers the automation floor — only measured or
+    vendor-documented restrictions may be planned, because automation acts
+    with no one reading a label. Same registry data, two readings; the
+    reading is decided once, in the application service, never in an
+    adapter. Ineligible platforms carry a plain-language reason, so a
+    surface never has to invent one.
+    """
+
+    name: str
+    status: str
+    eligible: bool
+    reason: str = ""
+
+
 def _split_terms(text: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in text.split(",") if part.strip())
 

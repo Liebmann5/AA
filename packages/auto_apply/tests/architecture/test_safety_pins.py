@@ -187,12 +187,23 @@ EXPECTED_REACHES: dict[str, set[str]] = {
     },
     "cli/startup.py": {
         "auto_apply.application.services.autonomy",
+        # i18n: the CLI configures the locale before its first question.
+        "auto_apply.application.services.i18n",
         "auto_apply.application.services.session_controller",
         "auto_apply.infrastructure.composition_root",
     },
     "cli/wizard.py": {
+        # i18n: the platform question and the plan preview are translated.
+        "auto_apply.application.services.i18n",
         "auto_apply.application.services.session_controller",
         "auto_apply.application.services.ui_schema",
+    },
+    "cli/plan_screen.py": {
+        # The print-the-plan screen reaches the wiring layer for the
+        # pre-session preview factory (the search-screen precedent) and
+        # application.services.i18n for its translated text.
+        "auto_apply.application.services.i18n",
+        "auto_apply.infrastructure.composition_root",
     },
     "gui/app.py": {
         "auto_apply.application.services.profile_validator",

@@ -43,16 +43,19 @@ Autonomy (stage E1):
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
 
 from auto_apply.application.services.autonomy import (
     apply_autonomy,
     autonomy_enabled_for_profile,
 )
+from auto_apply.adapters.primary.gui.strings import get_strings, locale_text
 from auto_apply.domain.models.session_plan import SessionExecutionMode
 from auto_apply.domain.models.ui_contract import (
     ENTRY_POINT_LABELS,
     EntryPoint,
     SessionRequest,
+    format_search_plan_preview,
     outcome_options_for_entry,
     provider_vocabulary,
 )
@@ -69,6 +72,7 @@ def build_session_request(
     max_results: int | None = None,
     urls_text: str = "",
     providers: tuple[str, ...] = (),
+    platforms: tuple[str, ...] | None = None,
 ) -> SessionRequest:
     """Assembles the SessionRequest from wizard field values.
 
@@ -92,6 +96,7 @@ def build_session_request(
             location=location.strip(),
             max_results=max_results,
             providers=providers,
+            platforms=platforms,
         )
     return SessionRequest(
         entry=entry,
@@ -128,12 +133,24 @@ class SessionConfigWizard(ttk.Frame):
         profile=None,
         profile_repo=None,
         controller=None,
+        platforms_vocabulary=(),
+        preview_factory=None,
+        locked_platforms=None,
     ) -> None:
         super().__init__(parent)
         self.on_complete = on_complete
         self._profile = profile
         self._profile_repo = profile_repo
         self._controller = controller
+        self._platforms_vocabulary = tuple(platforms_vocabulary)
+        self._preview_factory = preview_factory
+        self._locked_platforms = locked_platforms
+        self._platform_vars: dict[str, tk.BooleanVar] = {}
+        self._profile_platforms: tuple[str, ...] = tuple(
+            getattr(getattr(profile, "app_config", None), "search_platforms", None)
+            or ()
+        )
+        self.strings = get_strings()
 
         self._entry_var = tk.StringVar(value=EntryPoint.SEARCH.name)
         self._outcome_var = tk.IntVar(value=0)
@@ -221,6 +238,53 @@ class SessionConfigWizard(ttk.Frame):
         ttk.Label(self._criteria_box, text="Job sites:").pack(anchor=tk.W)
         for name, var in self._provider_vars.items():
             ttk.Checkbutton(self._criteria_box, text=name, variable=var).pack(anchor=tk.W)
+
+        # Hiring platforms for automated site-restricted search. Only
+        # platforms whose restriction is measured or vendor-documented are
+        # selectable; the rest are a count note. An admin lock replaces the
+        # picker with the locked set; an empty vocabulary (registry
+        # unavailable) degrades to a note — the session still starts.
+        ttk.Label(
+            self._criteria_box, text=self.strings["platforms_frame"]
+        ).pack(anchor=tk.W, pady=(8, 0))
+        if self._locked_platforms is not None:
+            locked_text = ", ".join(self._locked_platforms) or self.strings[
+                "platforms_none"
+            ]
+            ttk.Label(
+                self._criteria_box,
+                text=self.strings["platforms_locked"].format(platforms=locked_text),
+                foreground="#B8860B",
+                wraplength=280,
+            ).pack(anchor=tk.W)
+        elif not self._platforms_vocabulary:
+            ttk.Label(
+                self._criteria_box,
+                text=self.strings["platforms_unavailable"],
+                foreground="gray",
+                wraplength=280,
+            ).pack(anchor=tk.W)
+        else:
+            ineligible = 0
+            for offer in self._platforms_vocabulary:
+                if offer.eligible:
+                    var = tk.BooleanVar(value=offer.name in self._profile_platforms)
+                    self._platform_vars[offer.name] = var
+                    ttk.Checkbutton(
+                        self._criteria_box, text=offer.name, variable=var
+                    ).pack(anchor=tk.W)
+                else:
+                    ineligible += 1
+            if ineligible:
+                ttk.Label(
+                    self._criteria_box,
+                    text=self.strings["platforms_unverified_count"].format(
+                        count=ineligible
+                    ),
+                    foreground="gray",
+                    wraplength=280,
+                ).pack(anchor=tk.W)
+
         ttk.Label(
             self._criteria_box,
             text="Leave titles and location blank to use your profile's defaults.",
@@ -237,7 +301,17 @@ class SessionConfigWizard(ttk.Frame):
         ttk.Label(
             outer, textvariable=self._status_var, foreground="#B8860B"
         ).pack(anchor=tk.W, pady=(10, 2))
-        ttk.Button(outer, text="Start Session 🚀", command=self._finish).pack(anchor=tk.W)
+        buttons = ttk.Frame(outer)
+        buttons.pack(anchor=tk.W)
+        if self._preview_factory is not None:
+            ttk.Button(
+                buttons,
+                text=self.strings["platforms_preview_button"],
+                command=self._show_preview,
+            ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(
+            buttons, text="Start Session 🚀", command=self._finish
+        ).pack(side=tk.LEFT)
 
     def _render_for_entry(self) -> None:
         entry = EntryPoint[self._entry_var.get()]
@@ -326,7 +400,23 @@ class SessionConfigWizard(ttk.Frame):
 
     # ── finish ────────────────────────────────────────────────────────────────
 
-    def _finish(self) -> None:
+    def _chosen_platforms(self, entry: EntryPoint) -> tuple[str, ...] | None:
+        """The request's platform tri-state from the picker.
+
+        Unchanged from the profile default means "not declared" (None), so a
+        user who touches nothing inherits; any change — including unchecking
+        everything — is explicit.
+        """
+        if entry is not EntryPoint.SEARCH or not self._platform_vars:
+            return None
+        checked = tuple(n for n, v in self._platform_vars.items() if v.get())
+        if checked == self._profile_platforms:
+            return None
+        return checked
+
+    def _current_request(self) -> SessionRequest:
+        """The request the current field values describe — the one assembly
+        shared by Start and the preview, so what is previewed is what runs."""
         entry = EntryPoint[self._entry_var.get()]
         options = outcome_options_for_entry(entry)
         idx = self._outcome_var.get()
@@ -336,7 +426,7 @@ class SessionConfigWizard(ttk.Frame):
             if entry is EntryPoint.SEARCH
             else ()
         )
-        request = build_session_request(
+        return build_session_request(
             entry=entry,
             execution_mode=mode,
             keywords_text=self._keywords_var.get(),
@@ -344,7 +434,37 @@ class SessionConfigWizard(ttk.Frame):
             max_results=self._max_var.get() if entry is EntryPoint.SEARCH else None,
             urls_text=self._links_text.get("1.0", "end-1c"),
             providers=providers,
+            platforms=self._chosen_platforms(entry),
         )
+
+    def _show_preview(self) -> None:
+        """Shows the planned searches in a modal before Start."""
+        try:
+            preview = self._preview_factory(self._current_request())
+        except Exception as exc:  # noqa: BLE001 — a preview must never break Start
+            self._status_var.set(f"Preview unavailable: {exc}")
+            return
+        lines = format_search_plan_preview(
+            preview,
+            translate=lambda key: self.strings.get(key) or locale_text(key),
+        )
+        win = tk.Toplevel(self)
+        win.title(self.strings["platforms_preview_title"])
+        win.geometry("640x480")
+        win.transient(self)  # type: ignore[call-overload]
+        viewer = ScrolledText(
+            win, state="disabled", wrap=tk.WORD, font=("Consolas", 9)
+        )
+        viewer.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        viewer.configure(state="normal")
+        viewer.insert(tk.END, "\n".join(lines))
+        viewer.configure(state="disabled")
+        ttk.Button(
+            win, text=self.strings.get("btn_close", "Close"), command=win.destroy
+        ).pack(pady=(0, 10))
+
+    def _finish(self) -> None:
+        request = self._current_request()
         # URL entries with no links are the GUI's "nothing to do" case — the
         # CLI returns None there. Block Start rather than begin a zero-task
         # session that idles forever (the old GUI's failure mode).

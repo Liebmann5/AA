@@ -356,6 +356,11 @@ def test_controller_summary_carries_the_accounting() -> None:
     controller._view_state = lambda: idle  # type: ignore[method-assign]
     controller._load_discovered_jobs = lambda: ()  # type: ignore[method-assign]
     controller.autonomy = lambda: False  # type: ignore[method-assign]
+    controller._blocked_engines = []
+    controller._discovery_outcome_counts = {
+        "off_shape_dropped": 0, "terminal_dropped": 0,
+        "routed_to_mining": 0, "budget_skipped": 0,
+    }
     assert controller.summary().research == _lost_view()
 
     controller.orchestrator.research_accounting.side_effect = RuntimeError("gone")

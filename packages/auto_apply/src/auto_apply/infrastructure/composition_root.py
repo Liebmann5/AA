@@ -74,6 +74,10 @@ from auto_apply.application.services.uninstall.model import (
 )
 
 if TYPE_CHECKING:
+    from auto_apply.domain.models.ui_contract import (
+        SearchPlanPreview,
+        SessionRequest,
+    )
     from auto_apply.application.agent.orchestrator import AgentOrchestrator
     #from auto_apply.application.agent.task_kernel import TaskKernel
     from auto_apply.domain.models.profile import UserProfile
@@ -107,6 +111,7 @@ __all__ = [
     "build_page_copier",
     "build_query_builder",
     "build_research_consent",
+    "build_search_plan_preview",
     "build_session",
     "build_session_controller",
     "export_research_bundle",
@@ -146,6 +151,60 @@ def _build_ats_registry():
         return ATSRegistry()
     except Exception as _exc:
         logger.debug("composition_root: ATSRegistry unavailable: %s", _exc)
+        return None
+
+
+def _build_search_planner(plan, ats_registry):
+    """Build the site-restricted search planner — one builder, shared by the
+    session (build_orchestrator) and the plan preview.
+
+    Plain data in, nothing else: engine specs come from the bundled catalog
+    (a user override must never change automated bytes), platform data comes
+    from the ATS registry. Any failure degrades to no planner, which leaves
+    the default query path untouched.
+    """
+    try:
+        from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+            list_surface_names,
+            load_surface_bundled,
+        )
+        from auto_apply.domain.services.search_planner import (  # noqa: PLC0415
+            PlatformTarget,
+            SearchPlanner,
+        )
+
+        engine_specs = {}
+        for surface_name in list_surface_names():
+            try:
+                spec = load_surface_bundled(surface_name)
+            except Exception:
+                continue
+            if spec.automation_url is not None:
+                engine_specs[surface_name] = spec
+
+        platform_targets = {}
+        if ats_registry is not None:
+            for descriptor in ats_registry.all_descriptors():
+                platform_targets[descriptor.name] = PlatformTarget(
+                    name=descriptor.name,
+                    restriction=descriptor.search_restriction,
+                    status=descriptor.search_restriction_status,
+                )
+
+        return SearchPlanner(
+            engine_specs=engine_specs,
+            platform_targets=platform_targets,
+            is_terminal=(
+                ats_registry.is_terminal_page if ats_registry is not None else None
+            ),
+            strategy_name=plan.site_search_strategy,
+        )
+    except Exception as exc:
+        logger.warning(
+            "composition_root: search planner unavailable — ATS-targeted "
+            "planning is disabled: %s",
+            exc,
+        )
         return None
 
 
@@ -1202,55 +1261,11 @@ def build_orchestrator(  # noqa: PLR0914
     dedup = DeduplicationManager()
 
     # ── Site-restricted search planner (ATS-targeted automated search) ──────
-    # Plain data in, nothing else: engine specs come from the bundled catalog
-    # (a user override must never change automated bytes), platform data comes
-    # from the ATS registry. Any failure degrades to no planner, which leaves
-    # the default query path untouched.
-    _search_planner = None
-    try:
-        from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
-            list_surface_names,
-            load_surface_bundled,
-        )
-        from auto_apply.domain.services.search_planner import (  # noqa: PLC0415
-            PlatformTarget,
-            SearchPlanner,
-        )
-
-        _planner_engine_specs = {}
-        for _surface_name in list_surface_names():
-            try:
-                _spec = load_surface_bundled(_surface_name)
-            except Exception:
-                continue
-            if _spec.automation_url is not None:
-                _planner_engine_specs[_surface_name] = _spec
-
-        _planner_platforms = {}
-        if _ats_registry is not None:
-            for _descriptor in _ats_registry.all_descriptors():
-                _planner_platforms[_descriptor.name] = PlatformTarget(
-                    name=_descriptor.name,
-                    restriction=_descriptor.search_restriction,
-                    status=_descriptor.search_restriction_status,
-                )
-
-        _search_planner = SearchPlanner(
-            engine_specs=_planner_engine_specs,
-            platform_targets=_planner_platforms,
-            is_terminal=(
-                _ats_registry.is_terminal_page
-                if _ats_registry is not None
-                else None
-            ),
-            strategy_name=plan.site_search_strategy,
-        )
-    except Exception as _exc:
-        logger.warning(
-            "build_orchestrator: search planner unavailable — ATS-targeted "
-            "planning is disabled for this session: %s",
-            _exc,
-        )
+    # One builder, shared with the plan preview: engine specs come from the
+    # bundled catalog (a user override must never change automated bytes),
+    # platform data from the ATS registry. Any failure degrades to no
+    # planner, which leaves the default query path untouched.
+    _search_planner = _build_search_planner(plan, _ats_registry)
 
     # The discovery verifier's engine-host set, derived from the bundled
     # catalog (job boards are not engines). When unavailable, the verifier's
@@ -1670,6 +1685,37 @@ def build_query_builder(profile: "UserProfile | None" = None) -> "QueryBuilderSe
     )
 
 
+def build_search_plan_preview(
+    profile: "UserProfile",
+    request: "SessionRequest",
+    registry: CapabilitiesRegistry | None = None,
+) -> "SearchPlanPreview":
+    """Build the pre-session plan preview for both surfaces.
+
+    Builds (or reuses) the capabilities registry so the preview reflects the
+    same three-tier config merge and any admin lock the session would get,
+    then plans with the same planner build_orchestrator uses. Offline: no
+    browser is launched and no network is touched. A registry or catalog
+    failure degrades to a generic preview with the reason named — it never
+    raises into a surface.
+    """
+    from auto_apply.application.services.search_preview import (  # noqa: PLC0415
+        preview_search_plan,
+    )
+
+    if registry is None:
+        registry = CapabilitiesRegistry.build(user_profile=profile)
+    plan = registry.get_session_plan()
+    planner = _build_search_planner(plan, _build_ats_registry())
+    return preview_search_plan(
+        profile,
+        plan,
+        planner,
+        request,
+        admin_policy=registry.get_admin_policy(),
+    )
+
+
 def _register_exit_shutdown(
     controller: "SessionController",
     instances: "InstanceRegistry | None" = None,
@@ -1764,6 +1810,22 @@ def build_session_controller(
     # profile only as one-click defaults and never writes to it.
     query_builder = build_query_builder(profile)
 
+    # The in-session plan previewer: the same preview the wizards show,
+    # computed against the session's own registry and the shared planner
+    # builder, so the port's preview can never drift from the run.
+    def _plan_previewer(request: "SessionRequest") -> "SearchPlanPreview":
+        from auto_apply.application.services.search_preview import (  # noqa: PLC0415
+            preview_search_plan,
+        )
+
+        return preview_search_plan(
+            profile,
+            registry.get_session_plan(),
+            _build_search_planner(registry.get_session_plan(), _build_ats_registry()),
+            request,
+            admin_policy=registry.get_admin_policy(),
+        )
+
     # 3. Assemble the controller (all deps injected). If assembly fails after
     # the orchestrator exists, its browser has no owner yet — release it here
     # rather than stranding it against the shared profile directory.
@@ -1775,6 +1837,7 @@ def build_session_controller(
             profile_repo=profile_repo,
             research_consent=research_consent,
             query_builder=query_builder,
+            plan_previewer=_plan_previewer,
         )
     except Exception:
         orchestrator.shutdown()

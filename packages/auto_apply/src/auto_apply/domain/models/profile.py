@@ -625,6 +625,40 @@ class ApplicationConfig(BaseModel):
         except ValueError as exc:
             raise ValueError(f"Invalid motion override: {exc}") from exc
         return dict(v)
+
+    # The persistent default for ATS-targeted (site-restricted) search — the
+    # layered-settings pattern (the per-session wizard choice overrides it,
+    # and AdminPolicy.search_platforms locks it). None inherits
+    # runtime_defaults.yaml's discovery.ats_platforms; an empty list turns
+    # the feature off for this profile.
+    search_platforms: list[str] | None = Field(
+        None,
+        description=(
+            "Hiring platforms AA may target with automated site-restricted "
+            "search (names from resources/ats/). None inherits the app-wide "
+            "default; an empty list disables targeting for this profile. "
+            "Only measured or vendor-verified platforms are planned."
+        ),
+    )
+
+    @field_validator("search_platforms")
+    @classmethod
+    def _validate_search_platforms(cls, v: Any) -> Any:
+        """Normalise the platform list; unknown names are refused downstream."""
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError(
+                "search_platforms must be a list of platform names, "
+                f"got {type(v).__name__}."
+            )
+        out: list[str] = []
+        for item in v:
+            name = str(item).strip().lower()
+            if name and name not in out:
+                out.append(name)
+        return out
+
     rotate_user_agent: bool = Field(
         False,
         description=(
@@ -838,6 +872,11 @@ class UserProfile(BaseModel):
                 result["motion_profile"] = ac.motion_profile
             if ac.motion_overrides:
                 result["motion_overrides"] = dict(ac.motion_overrides)
+            # Emitted only when set: None means "inherit the YAML default",
+            # and a flat None key would shadow it. The registry folds this
+            # into the nested discovery section.
+            if ac.search_platforms is not None:
+                result["search_platforms"] = list(ac.search_platforms)
 
         # ── Politeness settings ───────────────────────────────────────
         if self.politeness:

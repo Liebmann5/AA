@@ -277,5 +277,57 @@
       "recent_loaded": "Showing a remembered search. Edit the fields to build a new one.",
       "recent_unavailable": "That search used a site that is not available here."
     }
+  },
+  "searchplan": {
+    "platform": {
+      "not_eligible": "Not yet verified for automated search — the user guide's verification checklist shows how to verify it by hand."
+    },
+    "pick": {
+      "prompt": "Hiring platforms to target automatically (comma-separated):",
+      "choose": "Choose",
+      "default_off": "none",
+      "unverified_count": "{count} more platforms are not yet verified for automated search (type v to list them).",
+      "unknown": "Not a searchable platform, skipped: {name}",
+      "none_eligible": "No hiring platforms are verified for automated search yet — a standard search will run.",
+      "unavailable": "The platform list could not be loaded — a standard search will run."
+    },
+    "preview": {
+      "title": "What AutoApply will search",
+      "mode_targeted": "Targeted search — only the platforms you chose:",
+      "mode_generic": "Standard search — every enabled engine, for each title and location:",
+      "engine_all": "all engines",
+      "scope_all": "everywhere",
+      "budget": "{planned} searches planned — session budget {budget}.",
+      "note_prefix": "note:",
+      "dropped": "Not planned: {targets}",
+      "unavailable": "Platform targeting is unavailable: {reason}. A standard search will run.",
+      "admin_lock": "Locked by your administrator: {platforms}",
+      "confirm": "Start this search? [Y/n/r]:",
+      "reason_no_planner": "the search catalog could not be loaded"
+    },
+    "results": {
+      "blocked_header": "Search engines stopped this session:",
+      "blocked_line": "{engine} — {reason}",
+      "blocked_reason_unknown": "no reason recorded",
+      "off_shape": "Dropped {dropped} off-platform results, skipped {terminal} terminal pages, routed {routed} to company pages.",
+      "budget": "Search budget: {skipped} planned searches were skipped once the budget of {budget} was reached."
+    },
+    "gui": {
+      "frame": "Hiring platforms (automatic search)",
+      "unverified_suffix": "(not yet verified)",
+      "unverified_count": "{count} more platforms are not yet verified for automated search.",
+      "locked": "Locked by your administrator: {platforms}",
+      "unavailable": "Platform targeting unavailable (platform registry not loaded)",
+      "none": "none",
+      "preview_button": "Preview plan…",
+      "preview_title": "Planned searches",
+      "settings_label": "Hiring platforms for automatic search:",
+      "settings_locked": "Locked by your administrator: {platforms}",
+      "settings_note": "AA searches these platforms' postings directly. Only verified platforms can be chosen."
+    },
+    "cli": {
+      "no_profile": "No profile found — cannot show the plan without one.",
+      "override_note": "Platforms from --platforms: {platforms}"
+    }
   }
 }
