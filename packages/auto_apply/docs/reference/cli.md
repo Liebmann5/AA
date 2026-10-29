@@ -47,6 +47,8 @@ auto-apply                # console script, available after install
 | `--search-recent` | — | List your recent built searches, then exit |
 | `--search-clear-recent` | — | Forget every remembered search, then exit |
 | `--encrypt-profile` | — | Encrypt the current plaintext profile into a `.vault` file behind a master password |
+| `--platforms` | `NAMES` | Hiring platforms for automated site-restricted search this session, comma-separated (e.g. `--platforms jobvite`). `none` disables platform targeting. Only measured or vendor-verified platforms are ever planned |
+| `--print-plan` | — | Print what a session would search (engines, platforms, queries, budget) and exit. Offline; starts no session and no browser. Composes with `--seed` and `--platforms` |
 
 ## Building a search
 
@@ -62,6 +64,22 @@ company searches. What a surface cannot express is refused in plain words —
 never silently dropped. Copy, open and keep are the only actions that remember
 a query (five, deduplicated, in your data home; `--search-clear-recent` forgets
 them).
+
+## Previewing the plan
+
+```bash
+python -m auto_apply --print-plan
+python -m auto_apply --print-plan --platforms jobvite
+python -m auto_apply --print-plan --seed 42
+```
+
+Prints what a session would search — the engines, the platforms, the composed
+queries and the session budget — then exits. Offline: no session, no browser,
+no network. With no platforms chosen it shows the generic searches the session
+will actually run. A profile must exist; without one the command says so and
+exits non-zero. `--platforms` also applies to a real CLI session
+(`python -m auto_apply --cli --platforms jobvite`); `none` disables platform
+targeting for that session.
 
 ## Flags parsed before anything else
 
@@ -141,7 +159,7 @@ you forget the password — that is a property of the encryption, not an oversig
 AA is a long-running interactive agent rather than a batch tool, and **does not
 yet publish a stable exit-code contract**. `--check-config`,
 `--export-research`, `--research-summary`, `--research`, `--replay`, `--label`,
-`--encrypt-profile` and the `--search*` builder flags exit after their work
+`--encrypt-profile`, `--print-plan` and the `--search*` builder flags exit after their work
 (a builder refusal prints a plain-language note and exits non-zero); the
 others run until you stop the session.
 

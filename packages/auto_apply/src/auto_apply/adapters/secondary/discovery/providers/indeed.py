@@ -62,6 +62,7 @@ class IndeedProvider(BaseSearchProvider):
         research_observer=None,
         readiness=None,
         page_action=None,
+        host_pacer=None,
     ) -> None:
         super().__init__(
             browser,
@@ -71,6 +72,7 @@ class IndeedProvider(BaseSearchProvider):
             observer,
             reporter,
             forced_tier,
+            host_pacer,
         )
         self._degradation_detector = degradation_detector
         self._page_understanding = page_understanding_port
@@ -150,6 +152,11 @@ class IndeedProvider(BaseSearchProvider):
             instruction.date_range or "none",
         )
 
+        if self._session_guard_blocks(instruction):
+            return []
+
+        self._pace_for(instruction)
+
         self._blocked_observation_emitted = False
         if not self.navigator.navigate_with_fallback(
             self._engine_strategy, instruction, self._is_page_healthy
@@ -183,6 +190,7 @@ class IndeedProvider(BaseSearchProvider):
                 forced_tier=self._forced_tier,
                 degradation_detector=self._degradation_detector,
                 research_observer=self._research_observer,
+                baseline_scope=self._baseline_scope_for(instruction),
                 title_parser=SmartTextExtractor(
                     strategies=[
                         "h2.jobTitle",
@@ -233,4 +241,13 @@ class IndeedProvider(BaseSearchProvider):
                 research_observer=self._research_observer,
                 page_type=assessment.kind,
             )
+        # A blocked health check benches this engine for the session: the
+        # next instruction is refused before any navigation happens.
+        if self._degradation_detector is not None:
+            try:
+                self._degradation_detector.mark_blocked(
+                    self.name, assessment.kind.name
+                )
+            except Exception:
+                pass
         return False

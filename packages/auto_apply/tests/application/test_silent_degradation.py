@@ -140,7 +140,7 @@ def test_benched_provider_short_circuits_before_mining(mock_assess_page):
     mock_assess_page.return_value = _not_blocked_verdict()
 
     det = SilentDegradationDetector(None)
-    det._benched.add("Google")
+    det._benched.add("google")  # keys are lowercase
 
     miner_spy = MagicMock()
     miner_spy.mine_jobs.return_value = [_job()]

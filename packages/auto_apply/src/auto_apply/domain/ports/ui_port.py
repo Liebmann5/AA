@@ -25,7 +25,7 @@ surface structurally. adapters_primary → domain is already a permitted
 import direction (tests/test_architecture.py:119-125), so the port sits
 in domain/ports where both adapters can see it. Verified.
 
-Whole surface, deliberately: 27 methods.
+Whole surface, deliberately: 28 methods.
 -----------------------------------------
 AA's idiom prefers narrow ports, but this port describes a whole surface,
 not a capability, and the ProfileRepositoryPort precedent applies. The 26
@@ -147,6 +147,7 @@ from auto_apply.domain.models.search_query import (
 from auto_apply.domain.models.ui_contract import (
     ApprovalRequest,
     QueueSnapshot,
+    SearchPlanPreview,
     SessionEventRecord,
     SessionHistoryEntry,
     SessionRequest,
@@ -250,6 +251,15 @@ class UIPort(Protocol):
 
     def summary(self) -> SessionSummary:
         """The end-of-session results view. Never None; NO_SESSION when idle."""
+        ...
+
+    def preview_search_plan(self, request: SessionRequest) -> SearchPlanPreview:
+        """What this session plans to search, computed before Start.
+
+        Pure and offline: no browser, no network. Never None and never
+        raises — when the planner or catalog is unavailable the preview
+        shows the generic search with the reason named.
+        """
         ...
 
     def queue_snapshot(self) -> QueueSnapshot:

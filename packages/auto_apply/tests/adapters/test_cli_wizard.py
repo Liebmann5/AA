@@ -317,3 +317,148 @@ def test_max_results_defaults_to_100_on_bad_input():
     result = _run_wizard(["", "", "", "", "", "not-a-number"])
     assert result is not None
     assert result.max_results == 100
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Platforms + preview (new surface; every pin names the mutation it catches)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from auto_apply.domain.models.search_query import AutomationPlatformOffer  # noqa: E402
+from auto_apply.domain.models.ui_contract import SearchPlanPreview  # noqa: E402
+
+
+def _offer(name, eligible=True, status="measured", reason=""):
+    return AutomationPlatformOffer(
+        name=name, status=status, eligible=eligible, reason=reason
+    )
+
+
+def _wizard(vocabulary=(), preview_factory=None, override=None, profile=None):
+    return CLIWizard(
+        profile=profile,
+        platforms_vocabulary=vocabulary,
+        preview_factory=preview_factory,
+        platforms_override=override,
+    )
+
+
+def test_platforms_blank_inherits__teeth():
+    """TEETH: a blank answer inherits the profile/config default (None).
+    Mutation caught: returning () for blank."""
+    wizard = _wizard(vocabulary=(_offer("jobvite"),))
+    with patch("builtins.input", side_effect=["", "", "", "", "", "", ""]):
+        result = wizard.run()
+    assert result is not None
+    assert result.platforms is None
+
+
+def test_platforms_none_disables__teeth():
+    """TEETH: 'none' is an explicit off (()). Mutation caught: treating it
+    as inherit or as a platform name."""
+    wizard = _wizard(vocabulary=(_offer("jobvite"),))
+    with patch("builtins.input", side_effect=["", "", "", "none", "", "", ""]):
+        result = wizard.run()
+    assert result is not None
+    assert result.platforms == ()
+
+
+def test_platforms_names_chosen_and_unknown_dropped__teeth(capsys):
+    """TEETH: chosen names land on the request; unknown names are dropped
+    with a printed note, never silently. Mutation caught: silently accepting
+    or silently dropping."""
+    wizard = _wizard(vocabulary=(_offer("jobvite"), _offer("greenhouse")))
+    with patch(
+        "builtins.input",
+        side_effect=["", "", "", "jobvite, notreal", "", "", ""],
+    ):
+        result = wizard.run()
+    assert result is not None
+    assert result.platforms == ("jobvite",)
+    assert "notreal" in capsys.readouterr().out
+
+
+def test_platforms_unverified_are_not_selectable__teeth(capsys):
+    """TEETH: an ineligible platform name is refused with a note — the
+    wizard never offers what the planner would refuse. Mutation caught:
+    selecting an unverified platform anyway."""
+    wizard = _wizard(
+        vocabulary=(
+            _offer("jobvite"),
+            _offer("workday", eligible=False, status="unverified", reason="x"),
+        )
+    )
+    with patch("builtins.input", side_effect=["", "", "", "workday", "", "", ""]):
+        result = wizard.run()
+    assert result is not None
+    assert result.platforms == ()
+    assert "workday" in capsys.readouterr().out
+
+
+def test_platforms_override_short_circuits_the_question__teeth():
+    """TEETH: --platforms pre-answers the question even with blank input.
+    Mutation caught: asking anyway or ignoring the override."""
+    wizard = _wizard(vocabulary=(_offer("jobvite"),), override=("jobvite",))
+    with patch("builtins.input", side_effect=["", "", "", "", "", ""]):
+        result = wizard.run()
+    assert result is not None
+    assert result.platforms == ("jobvite",)
+
+
+def test_preview_shown_and_start_returns_the_request__teeth():
+    """TEETH: the preview factory is called with the built request, and
+    confirming returns it. Mutation caught: previewing a different request
+    than the one returned, or skipping the preview."""
+    seen = []
+
+    def factory(request):
+        seen.append(request)
+        return SearchPlanPreview()
+
+    wizard = _wizard(vocabulary=(_offer("jobvite"),), preview_factory=factory)
+    with patch(
+        "builtins.input",
+        side_effect=["", "", "", "jobvite", "", "", "", "y"],
+    ):
+        result = wizard.run()
+    assert result is not None
+    assert result.platforms == ("jobvite",)
+    assert seen == [result]
+
+
+def test_preview_cancel_returns_none__teeth():
+    """TEETH: answering 'n' at the preview cancels the session. Mutation
+    caught: starting anyway."""
+    wizard = _wizard(
+        vocabulary=(_offer("jobvite",),),
+        preview_factory=lambda request: SearchPlanPreview(),
+    )
+    with patch(
+        "builtins.input",
+        side_effect=["", "", "", "", "", "", "", "n"],
+    ):
+        result = wizard.run()
+    assert result is None
+
+
+def test_preview_revise_restarts_the_questions__teeth():
+    """TEETH: 'r' at the preview re-asks the questions; the second request
+    is the one returned. Mutation caught: a loop that reuses the first
+    request."""
+    calls = []
+
+    def factory(request):
+        calls.append(request)
+        return SearchPlanPreview()
+
+    wizard = _wizard(vocabulary=(_offer("jobvite"),), preview_factory=factory)
+    with patch(
+        "builtins.input",
+        side_effect=[
+            "", "", "", "", "", "", "", "r",
+            "", "", "jobvite", "", "", "", "y",
+        ],
+    ):
+        result = wizard.run()
+    assert result is not None
+    assert result.platforms == ("jobvite",)
+    assert len(calls) == 2

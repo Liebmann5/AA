@@ -72,12 +72,16 @@ class _SpyMiner:
 class _FakeDegradationDetector:
     def __init__(self) -> None:
         self.evaluations: list = []
+        self.blocked_calls: list = []
 
     def is_benched(self, provider) -> bool:
         return False
 
     def evaluate_first_harvest(self, **kwargs) -> None:
         self.evaluations.append(kwargs)
+
+    def mark_blocked(self, provider, reason) -> None:
+        self.blocked_calls.append((provider, reason))
 
 
 class _FakeResearchObserver:
@@ -166,6 +170,34 @@ def test_non_blocked_page_proceeds_and_evaluates(monkeypatch) -> None:
     assert strategy.execute() == []
     assert fast.mine_calls == 1
     assert len(degradation.evaluations) == 1
+
+
+def test_a_blocked_page_benches_the_engine_for_the_session(monkeypatch) -> None:
+    """TEETH: pre-change, the gate returned no jobs and nothing stopped."""
+    strategy, _fast, degradation = _strategy(monkeypatch, PageType.CAPTCHA_BLOCK)
+
+    assert strategy.execute() == []
+    assert degradation.blocked_calls == [("TestProvider", "CAPTCHA_BLOCK")]
+
+
+def test_a_site_scoped_harvest_is_judged_under_its_own_key(monkeypatch) -> None:
+    """TEETH: a sparse site-restricted harvest must not bench the generic path."""
+    strategy, _fast, degradation = _strategy(monkeypatch, PageType.SERP)
+    strategy._baseline_scope = "#site"
+
+    strategy.execute()
+
+    assert degradation.evaluations
+    assert degradation.evaluations[0]["provider"] == "TestProvider#site"
+
+
+def test_a_generic_harvest_keeps_the_unchanged_key(monkeypatch) -> None:
+    """Behaviour-preserving: the default scope string is empty."""
+    strategy, _fast, degradation = _strategy(monkeypatch, PageType.SERP)
+
+    strategy.execute()
+
+    assert degradation.evaluations[0]["provider"] == "TestProvider"
 
 
 def test_execute_mines_once_per_harvest_not_once_extra(monkeypatch) -> None:

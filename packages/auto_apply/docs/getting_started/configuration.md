@@ -107,6 +107,7 @@ A minimal profile looks like this:
 | `app_config` | `preferred_browser` | `"chrome"`, `"firefox"`, `"edge"`, `"any"` |
 | `app_config` | `run_headless` | `true` to hide the browser window |
 | `app_config` | `daily_application_limit` | Hard cap on applications per session |
+| `app_config` | `search_platforms` | Hiring platforms AA may target with automated site-restricted search. `null` (or absent) inherits the app-wide default; `[]` disables targeting for this profile |
 | `politeness_settings` | `respect_robots_txt` | `true` to obey `robots.txt` (recommended) |
 | `politeness_settings` | `default_delay` | Seconds between browser actions (min 0.5) |
 
@@ -213,10 +214,46 @@ A policy can restrict:
 - Whether the browser must run headless
 - Minimum action delay
 - Whether research data collection is permitted
+- Which hiring platforms automated search may target (`search_platforms`;
+  an empty list disables the feature on that machine)
 
 The full syntax and deployment instructions are in the
 [Admin Policy Guide](../user_guide/admin_policy.md) and
 [Enterprise Deployment Guide](../user_guide/admin_policy.md).
+
+---
+
+## Automated site-restricted search
+
+AA can aim its automated discovery at specific hiring platforms, composing
+`site:`-restricted queries from the search-surface catalog. The feature is
+off by default and layered:
+
+| Layer | Setting | Default |
+| ----- | ------- | ------- |
+| App-wide | `discovery.use_ats_site_search` | `false` |
+| App-wide | `discovery.ats_platforms` | `[]` — platform names from `resources/ats/` |
+| App-wide | `discovery.site_search_strategy` | `per_platform` — one query per platform per engine per title/location |
+| Per profile | `app_config.search_platforms` | `null` inherits; `[]` disables; a list targets exactly those platforms |
+| Per session | the wizard's platform question, or `--platforms` | unset inherits |
+| Per machine | `AdminPolicy.search_platforms` | `null` (no lock); a list locks the set, `[]` locks it off |
+
+Precedence, highest first: **admin lock → this session's choice → profile
+default → YAML**. The admin lock is applied after `config_overrides`, so the
+named lock wins even over a full-section override.
+
+Only platforms whose search restriction is **measured by hand or documented
+by the vendor** are ever planned; the rest are refused, and the developer
+guide's verification checklist is how a platform earns admission. Unknown
+platform names are dropped with a printed note at session setup, never
+silently.
+
+Two related session-wide guards:
+
+| Key | Default | Meaning |
+| --- | ------- | ------- |
+| `max_queries_per_session` | 20 | Total queries a session may send, across every search task. A `SessionPlan` field; there is no `runtime_defaults.yaml` key for it. |
+| `discovery.between_provider_pause_min` / `discovery.between_provider_pause_max` | 1.0 / 2.0 seconds | Floor and ceiling of the per-host pacer: the spacing between two contacts to the *same* host — search engines during discovery, hiring-platform hosts during vetting and applying alike. Seeded jitter picks within the range. |
 
 ---
 

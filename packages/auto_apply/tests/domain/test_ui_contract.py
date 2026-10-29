@@ -27,8 +27,11 @@ from auto_apply.domain.models.session_plan import SessionExecutionMode
 from auto_apply.domain.models.ui_contract import (
     ActivityKind,
     ApprovalRequest,
+    BlockedEngine,
     EntryPoint,
+    PlannedQueryView,
     QueueSnapshot,
+    SearchPlanPreview,
     SessionEventRecord,
     SessionRequest,
     SessionSnapshot,
@@ -71,6 +74,7 @@ _EXPECTED_PORT_METHODS = {
     "build_query", "build_platform_query", "build_company_query",
     "resolve_query_target", "remember_query", "recent_queries",
     "clear_recent_queries",
+    "preview_search_plan",
 }
 
 
@@ -307,7 +311,7 @@ def test_session_request_fields_do_not_shadow_profile() -> None:
     session-scoped, not a property of the person."""
     assert set(SessionRequest.model_fields) == {
         "entry", "execution_mode", "keywords", "location",
-        "max_results", "urls", "providers",
+        "max_results", "urls", "providers", "platforms",
     }
 
 
@@ -373,3 +377,29 @@ def test_activity_kind_membership_is_exactly_the_ui_vocabulary() -> None:
         ActivityKind.INFO,
         ActivityKind.WAITING,
     }
+
+
+def test_preview_and_outcome_dtos_are_frozen() -> None:
+    """TEETH: the preview and outcome DTOs reject assignment like the rest.
+
+    Mutation caught: a mutable DTO crossing the port."""
+    for instance in (
+        SearchPlanPreview(),
+        PlannedQueryView(query="q"),
+        BlockedEngine(provider="google"),
+    ):
+        field_name = next(iter(type(instance).model_fields))
+        with pytest.raises(ValidationError):
+            setattr(instance, field_name, getattr(instance, field_name))
+
+
+def test_summary_carries_the_automation_outcome_fields() -> None:
+    """TEETH: the results view carries the automation outcome — zeroed when
+    nothing happened. Mutation caught: a missing or non-defaulted field."""
+    summary = SessionSummary()
+    assert summary.blocked_engines == ()
+    assert summary.discovery_off_shape_dropped == 0
+    assert summary.discovery_terminal_dropped == 0
+    assert summary.discovery_routed_to_mining == 0
+    assert summary.discovery_budget_skipped == 0
+    assert summary.search_budget == 0

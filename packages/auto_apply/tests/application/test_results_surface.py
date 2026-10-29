@@ -490,3 +490,120 @@ def test_gui_format_helpers_are_pure_and_correct():
     assert "applied 3" in history_text
 
     assert format_history_lines(()) == ["No past sessions found."]
+
+
+def test_the_results_csv_carries_search_provenance(fresh_db, tmp_path):
+    """TEETH: pre-change, the export was title/company/url/source only."""
+    job = _job(0)
+    job.metadata.update({
+        "search_query": 'site:jobs.jobvite.com ("Engineer")',
+        "target_platform": "jobvite",
+        "engine_form": "web",
+        "page_index": 0,
+        "rank": 1,
+    })
+    fresh_db.record_job_discovery(job, session_id="s1")
+    controller = _controller(fresh_db, "s1")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    target = controller.export_session_results(out_dir)
+
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert "search_query" in lines[0]
+    assert "target_platform" in lines[0]
+    assert "engine_form" in lines[0]
+    assert "page_index" in lines[0]
+    assert "rank" in lines[0]
+    assert "jobvite" in lines[1]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Automation outcome block — one formatter, both surfaces
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _outcome_summary() -> SessionSummary:
+    from auto_apply.domain.models.ui_contract import BlockedEngine  # noqa: PLC0415
+
+    return SessionSummary(
+        blocked_engines=(
+            BlockedEngine(provider="google", reason="CAPTCHA_BLOCK"),
+            BlockedEngine(provider="indeed", reason=""),
+        ),
+        discovery_off_shape_dropped=2,
+        discovery_terminal_dropped=1,
+        discovery_routed_to_mining=3,
+        discovery_budget_skipped=4,
+        search_budget=20,
+    )
+
+
+def test_discovery_outcome_lines_render_blocked_engines_and_counts__teeth() -> None:
+    """TEETH: blocked engines (with their reason, or a stated "no reason"),
+    the off-shape counts and the budget skips all render with their values.
+    Mutation caught: a dropped line, a dropped value, or a blank reason."""
+    from auto_apply.application.services.i18n import configure_locale, get_text  # noqa: PLC0415
+    from auto_apply.domain.models.ui_contract import format_discovery_outcome_lines  # noqa: PLC0415
+
+    configure_locale(language="en")
+    text = "\n".join(format_discovery_outcome_lines(_outcome_summary(), translate=get_text))
+    assert "Search engines stopped this session:" in text
+    assert "google — CAPTCHA_BLOCK" in text
+    assert "indeed — no reason recorded" in text
+    assert "Dropped 2 off-platform results" in text
+    assert "skipped 1 terminal pages" in text
+    assert "routed 3 to company pages" in text
+    assert "4 planned searches were skipped" in text
+    assert "budget of 20" in text
+
+
+def test_discovery_outcome_lines_are_empty_when_nothing_happened() -> None:
+    """GUARD: an ordinary session adds nothing to the results view."""
+    from auto_apply.domain.models.ui_contract import format_discovery_outcome_lines  # noqa: PLC0415
+
+    assert format_discovery_outcome_lines(SessionSummary()) == []
+
+
+def test_discovery_outcome_lines_follow_the_locale__teeth() -> None:
+    """TEETH: the block renders in Spanish through the real locale.
+    Mutation caught: hard-coded English, or an es.json key missing."""
+    from auto_apply.application.services.i18n import configure_locale, get_text  # noqa: PLC0415
+    from auto_apply.domain.models.ui_contract import format_discovery_outcome_lines  # noqa: PLC0415
+
+    try:
+        configure_locale(language="es")
+        text = "\n".join(format_discovery_outcome_lines(_outcome_summary(), translate=get_text))
+    finally:
+        configure_locale(language="en")  # restore default for other tests
+    assert "Buscadores detenidos en esta sesión:" in text
+    assert "sin motivo registrado" in text
+    assert "Search engines stopped" not in text
+
+
+def test_both_results_surfaces_render_the_outcome_from_one_formatter__teeth() -> None:
+    """TEETH (parity): the GUI results lines contain the shared block, and
+    the CLI results printer calls the same formatter. Mutation caught: either
+    surface dropping the block, or growing its own copy of it."""
+    from auto_apply.adapters.primary.gui import app as gui_app  # noqa: PLC0415
+    from auto_apply.application.services.i18n import configure_locale  # noqa: PLC0415
+    from auto_apply.domain.models.ui_contract import format_discovery_outcome_lines  # noqa: PLC0415
+
+    configure_locale(language="en")
+    gui_lines = gui_app.format_results_lines(_outcome_summary())
+    shared = format_discovery_outcome_lines(
+        _outcome_summary(), translate=gui_app.locale_text
+    )
+    assert shared and all(line in gui_lines for line in shared)
+
+    startup = (
+        Path(__file__).resolve().parents[2]
+        / "src/auto_apply/adapters/primary/cli/startup.py"
+    )
+    tree = ast.parse(startup.read_text(encoding="utf-8"))
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "format_discovery_outcome_lines" in called

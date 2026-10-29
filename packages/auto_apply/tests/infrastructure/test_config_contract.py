@@ -366,8 +366,9 @@ def test_session_plan_sources_config_from_typed_effective_config() -> None:
         f"fields — a renamed field would silently vanish."
     )
 
-    # execution_mode is an admin grant injected under a 'session' section, not a
-    # YAML knob, so those are the only raw dict reads permitted to remain.
+    # execution_mode and search_pairs are session-scoped values injected under
+    # the 'session' section (admin grants and research harnesses), not YAML
+    # knobs, so only those raw dict reads are permitted to remain.
     raw_get_keys = {
         n.args[0].value
         for n in ast.walk(tree)
@@ -378,7 +379,7 @@ def test_session_plan_sources_config_from_typed_effective_config() -> None:
         and isinstance(n.args[0], ast.Constant)
         and isinstance(n.args[0].value, str)
     }
-    stray = sorted(raw_get_keys - {"session", "execution_mode"})
+    stray = sorted(raw_get_keys - {"session", "execution_mode", "search_pairs"})
     assert not stray, (
         f"from_config still reads raw config keys {stray} instead of the typed "
         f"EffectiveConfig — each is a dict.get that can silently default."

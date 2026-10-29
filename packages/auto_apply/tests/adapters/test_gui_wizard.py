@@ -231,3 +231,38 @@ def test_gui_wizard_module_imports_without_a_display() -> None:
     suite would fail at collection."""
     assert callable(gui_wizard.build_session_request)
     assert gui_wizard.SessionConfigWizard is not None
+
+
+def test_build_session_request_carries_platforms__teeth() -> None:
+    """TEETH: the GUI assembly forwards the platform choice to the request.
+    Mutation caught: dropping platforms on the SEARCH branch."""
+    request = gui_wizard.build_session_request(
+        entry=EntryPoint.SEARCH,
+        execution_mode=SessionExecutionMode.FULL_PIPELINE,
+        keywords_text="Engineer",
+        platforms=("jobvite",),
+    )
+    assert request.platforms == ("jobvite",)
+
+
+def test_build_session_request_platforms_default_is_none__guard() -> None:
+    """GUARD: undeclared platforms stay None (inherit) — the behaviour-
+    preserving default. Mutation caught: defaulting to ()."""
+    request = gui_wizard.build_session_request(
+        entry=EntryPoint.SEARCH,
+        execution_mode=SessionExecutionMode.FULL_PIPELINE,
+    )
+    assert request.platforms is None
+
+
+def test_platforms_are_dropped_for_non_search_entries__teeth() -> None:
+    """TEETH: pasted links do not search platforms — the choice is dropped
+    for non-SEARCH entries, the same rule the CLI enforces by not asking.
+    Mutation caught: forwarding platforms on the URL path."""
+    request = gui_wizard.build_session_request(
+        entry=EntryPoint.DIRECT_URLS,
+        execution_mode=SessionExecutionMode.APPLY_ONLY,
+        urls_text="https://example.com/j/1",
+        platforms=("jobvite",),
+    )
+    assert request.platforms is None

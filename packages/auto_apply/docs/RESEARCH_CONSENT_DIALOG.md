@@ -1,12 +1,12 @@
 ---
-title: "Research Consent Dialog — Exact UI Text (v2.6)"
+title: "Research Consent Dialog — Exact UI Text (v2.7)"
 status: needs-review
 last_verified: 2026-09-27
 verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
 audience: researchers
 ---
 
-# Research Consent Dialog — Exact UI Text (v2.6)
+# Research Consent Dialog — Exact UI Text (v2.7)
 
 This document is the AUTHORITATIVE SOURCE for the consent dialog text shown
 to users when they enable research data collection in the Research screen —
@@ -68,6 +68,10 @@ way that changes what data is collected or how, increment
 >   "20 Python jobs in Sacramento") is stored as shown too.
 > - Which detectors ran on each posting and how each concluded, so rates
 >   in published research have a trustworthy denominator
+> - Which search engines and hiring platforms were searched, and how many
+>   searches each received — the sampling frame for automated site-restricted
+>   search — with counts of planned, dropped and skipped targets. The words
+>   you searched for are never included.
 > - A public verification key that lets recipients confirm exported rows
 >   came from an unmodified AutoApply (the private key never leaves your
 >   data folder)

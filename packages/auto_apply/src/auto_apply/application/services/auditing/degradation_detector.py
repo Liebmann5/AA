@@ -81,8 +81,39 @@ class SilentDegradationDetector:
         self._benched: set[str] = set()
 
     def is_benched(self, provider: str) -> bool:
-        """True if *provider* has been benched this session."""
-        return provider in self._benched
+        """True if *provider* has been benched this session.
+
+        Keys are case-insensitive: the strategy's source tag ("Google") and
+        the provider's canonical name ("google") name the same engine.
+        """
+        return provider.lower() in self._benched
+
+    def mark_blocked(self, provider: str, reason: str) -> None:
+        """Bench *provider* for the session because its host challenged us.
+
+        A CAPTCHA or login wall is a hard signal from the engine's host: the
+        engine stops receiving requests for the rest of the session, while
+        other engines continue. This is deliberately the base provider name —
+        a challenged host challenges every query shape, not one scope. Idempotent.
+        """
+        provider_key = provider.lower()
+        if provider_key in self._benched:
+            return
+        self._benched.add(provider_key)
+        logger.warning(
+            "%s blocked this session (reason=%s) — no further requests will "
+            "be sent to it; other engines continue.",
+            provider_key,
+            reason,
+        )
+        if self._event_bus is not None:
+            try:
+                self._event_bus.publish(
+                    Event.PROVIDER_BENCHED,
+                    {"provider": provider_key, "reason": reason},
+                )
+            except Exception as exc:
+                logger.debug("degradation guard: event publish failed: %s", exc)
 
     def evaluate_first_harvest(
         self,
@@ -98,16 +129,17 @@ class SilentDegradationDetector:
         Only the first harvest is meaningful: the dry-scroll tail is expected
         to thin out and must never reach the baseline. Never raises.
         """
-        if provider in self._benched or self._deterministic:
+        provider_key = provider.lower()
+        if provider_key in self._benched or self._deterministic:
             return
         try:
-            baseline = self._store.get_baseline(provider) if self._store else None
+            baseline = self._store.get_baseline(provider_key) if self._store else None
         except Exception as exc:
             logger.debug("degradation guard: baseline read failed: %s", exc)
             baseline = None
 
         if baseline is None or baseline.sample_count < self._min_samples:
-            self._record(provider, visible_count, page_bytes, elapsed_seconds)
+            self._record(provider_key, visible_count, page_bytes, elapsed_seconds)
             logger.info(
                 "%s: degradation guard collecting baseline (%d sample(s)); "
                 "harvest accepted (%d visible, %d bytes, %.1fs, via %s)",
@@ -123,14 +155,14 @@ class SilentDegradationDetector:
         if baseline.avg_visible < 1.0 or baseline.avg_page_bytes < 1.0:
             # Degenerate baseline (e.g. built entirely from empty harvests) —
             # it cannot support a collapse judgment. Refresh and move on.
-            self._record(provider, visible_count, page_bytes, elapsed_seconds)
+            self._record(provider_key, visible_count, page_bytes, elapsed_seconds)
             return
 
         yield_ratio = visible_count / baseline.avg_visible
         bytes_ratio = page_bytes / baseline.avg_page_bytes
 
         if yield_ratio <= self._collapse_ratio and bytes_ratio <= self._bytes_ratio:
-            self._benched.add(provider)
+            self._benched.add(provider_key)
             logger.warning(
                 "SILENT DEGRADATION — benching %s for this session: "
                 "yield %d vs baseline %.1f (ratio %.3f <= %.2f) AND page "
@@ -153,7 +185,7 @@ class SilentDegradationDetector:
                     self._event_bus.publish(
                         Event.PROVIDER_BENCHED,
                         {
-                            "provider": provider,
+                            "provider": provider_key,
                             "yield_ratio": round(yield_ratio, 4),
                             "bytes_ratio": round(bytes_ratio, 4),
                             "baseline_samples": baseline.sample_count,

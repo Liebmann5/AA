@@ -22,6 +22,58 @@ from its first tag onward.
 
 ### Added
 
+- **Automated search gains its surfaces: platform choice, a plan preview and
+  an honest outcome report.** Both wizards now ask which hiring platforms to
+  target for the session (only measured or vendor-verified platforms are
+  selectable; the rest show as a count with their reasons), the persistent
+  default lives on the profile (`ApplicationConfig.search_platforms`), and an
+  admin can lock the set (`AdminPolicy.search_platforms`; an empty list locks
+  the feature off). Precedence: admin lock, then the session's choice, then
+  the profile, then the YAML. A plan preview shows exactly what a session
+  will search before anything runs — a "Preview plan…" button in the GUI, an
+  automatic confirm step in the CLI wizard, and `--print-plan` offline from
+  the shell — computed by the same planner the session uses, so the preview
+  cannot drift from the run. `--platforms NAMES` targets platforms for one
+  CLI session (`none` disables targeting). The end-of-session results on both
+  surfaces now report the engines stopped this session and why, the
+  off-shape/terminal/routed counts, and any searches skipped over budget,
+  from one shared formatter. `UIPort` grows to 28 methods with
+  `preview_search_plan`.
+- **Automated search runs safely and says where every job came from.**
+  `max_queries_per_session` now caps the whole session, not each search
+  task (a session with more searches than the cap stops at the cap, with a
+  warning), and engine rotation carries across tasks. One per-host pacer
+  (`application/services/host_pacing.py`) spaces consecutive contacts to
+  any one host - engines, and the hiring-platform hosts vetting and
+  applying visit - using `discovery.between_provider_pause_min/max` (read
+  for the first time) with seeded jitter. An engine that answers with a
+  CAPTCHA or login wall is stopped for the rest of the session before any
+  further request is sent, and the saved session report names it.
+  Site-restricted harvests keep their own degradation baseline (stored
+  baseline keys are now lowercase, so old ones re-collect). Hits that are
+  not postings of the platform searched are dropped or, with company-page
+  mining on, routed to it, and counted; terminal pages are never followed.
+  Each discovered job's provenance (provider, query, platform, engine form,
+  route, page and rank) is stored with it; the results CSV shows all of it
+  except the route.
+  Behind research consent, a new `search_plan_frames` table records the
+  sampling frame - which engines and platforms were searched and how often,
+  never the words searched for (research schema 5, consent text 2.7). The
+  discovery verifier's engine hosts now come from the search-surface
+  catalog.
+- **ATS-targeted automated search (opt-in).** A pure, deterministic planner
+  (`domain/services/search_planner.py`) turns the session's titles, locations,
+  enabled engines and chosen ATS platforms into engine-bound, site-restricted
+  queries — every one composed by the search-surface catalog's composer, never
+  hand-formatted. Off by default (`discovery.use_ats_site_search` plus
+  `discovery.ats_platforms`); with it off, automated queries are byte-identical
+  to before. Only platforms whose restriction is measured or vendor-documented
+  are planned; engines rotate innermost so no engine host is queried twice in
+  a row while another target is available; the session query budget is a hard
+  cap and dropped targets are reported. Jobs found this way carry the engine,
+  the engine form, the platform and the query in `job.metadata`, and every
+  discovered job now carries the query that produced it.
+  `SessionPlan.search_pairs` and `use_ats_site_search` are now live.
 - **The query builder's notes follow the user's language.** Every note the
   composer or the builder service writes now carries a locale key and its
   values (`QueryNote.message_key`, `message_params`); both surfaces render it

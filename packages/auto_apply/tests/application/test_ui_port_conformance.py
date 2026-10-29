@@ -55,6 +55,7 @@ from auto_apply.domain.models.ui_contract import (
     ApprovalRequest,
     EntryPoint,
     QueueSnapshot,
+    SearchPlanPreview,
     SessionEventRecord,
     SessionRequest,
     SessionSnapshot,
@@ -92,6 +93,8 @@ _EXPECTED_PORT_METHODS = {
     "build_query", "build_platform_query", "build_company_query",
     "resolve_query_target", "remember_query", "recent_queries",
     "clear_recent_queries",
+    # The plan preview grew the port from 27 to 28.
+    "preview_search_plan",
 }
 
 
@@ -797,10 +800,11 @@ def test_session_request_fields_do_not_shadow_profile() -> None:
     """GUARD: the one-source-per-value ruling. Adding salary floor,
     skills, daily limits or identity fields to SessionRequest fails this
     pin. ``providers`` is admitted because which engines THIS run uses is
-    session-scoped, not a property of the person."""
+    session-scoped, not a property of the person. ``platforms`` is admitted
+    for the same reason: which hiring platforms THIS run searches."""
     assert set(SessionRequest.model_fields) == {
         "entry", "execution_mode", "keywords", "location",
-        "max_results", "urls", "providers",
+        "max_results", "urls", "providers", "platforms",
     }
 
 
@@ -1656,3 +1660,127 @@ class TestGUISurface:
 
         lines = format_results_lines(SessionSummary(autonomy_enabled=False))
         assert not any("Autonomy" in line for line in lines)
+
+
+class TestPlatformTargeting:
+    """The request → plan path for ATS-targeted search (session surface)."""
+
+    def test_platforms_inherit_leaves_the_plan_untouched__teeth(self) -> None:
+        """TEETH: platforms=None means 'not declared' — the plan keeps its
+        configured default. Mutation caught: writing an empty list for None."""
+        controller = _controller()
+        controller.start_session(
+            SessionRequest(entry=EntryPoint.SEARCH, keywords=("python",))
+        )
+        plan = controller.orchestrator.session_plan
+        assert plan.use_ats_site_search is False
+        assert plan.ats_platforms == ()
+
+    def test_platforms_explicit_empty_disables_site_search__teeth(self) -> None:
+        """TEETH: platforms=() is an explicit 'generic search this session'
+        and turns targeting off even when the plan would engage it.
+        Mutation caught: treating () like None."""
+        plan0 = SessionPlan(
+            session_id="pin",
+            use_ats_site_search=True,
+            ats_platforms=("jobvite",),
+        )
+        controller = _controller(plan=plan0)
+        controller.start_session(
+            SessionRequest(
+                entry=EntryPoint.SEARCH, keywords=("python",), platforms=()
+            )
+        )
+        plan = controller.orchestrator.session_plan
+        assert plan.use_ats_site_search is False
+
+    def test_platforms_named_engage_site_search_with_exactly_those__teeth(self) -> None:
+        """TEETH: a named list engages targeting with exactly those
+        platforms. Mutation caught: engaging without the names, or
+        substituting the configured list."""
+        controller = _controller()
+        controller.start_session(
+            SessionRequest(
+                entry=EntryPoint.SEARCH,
+                keywords=("python",),
+                platforms=("jobvite",),
+            )
+        )
+        plan = controller.orchestrator.session_plan
+        assert plan.use_ats_site_search is True
+        assert plan.ats_platforms == ("jobvite",)
+
+    def test_admin_lock_overrides_the_request_platforms__teeth(self) -> None:
+        """TEETH: the admin lock wins over the session's choice.
+        Mutation caught: applying the request after the lock."""
+        from auto_apply.domain.models.policy import AdminPolicy
+
+        controller = _controller()
+        controller.registry.get_admin_policy.return_value = AdminPolicy(
+            search_platforms=["greenhouse"]
+        )
+        controller.start_session(
+            SessionRequest(
+                entry=EntryPoint.SEARCH,
+                keywords=("python",),
+                platforms=("jobvite",),
+            )
+        )
+        plan = controller.orchestrator.session_plan
+        assert plan.ats_platforms == ("greenhouse",)
+
+
+class TestPreviewAndOutcome:
+    """The preview port method and the event-fed outcome accumulators."""
+
+    def test_preview_search_plan_returns_a_typed_preview__teeth(self) -> None:
+        """TEETH: the port method returns the previewer's DTO.
+        Mutation caught: returning None or a dict."""
+        controller = _controller()
+        sentinel = SearchPlanPreview(site_search=True, planned_count=3)
+        controller._plan_previewer = lambda req: sentinel
+        result = controller.preview_search_plan(
+            SessionRequest(entry=EntryPoint.SEARCH)
+        )
+        assert result is sentinel
+
+    def test_preview_degrades_without_a_previewer__teeth(self) -> None:
+        """TEETH: no previewer → a generic preview with the reason named,
+        never an exception. Mutation caught: raising or returning None."""
+        controller = _controller()
+        controller._plan_previewer = None
+        preview = controller.preview_search_plan(
+            SessionRequest(entry=EntryPoint.SEARCH)
+        )
+        assert preview.site_search is False
+        assert preview.reason_key == "searchplan.preview.reason_no_planner"
+
+    def test_summary_accumulates_blocked_engines_and_counts__teeth(self) -> None:
+        """TEETH: benched engines dedupe by name, reasons survive, and the
+        discovery outcome counts sum across rounds into the typed summary.
+        Mutation caught: double-counting a re-benched engine, or dropping
+        the counts."""
+        controller, bus = _projection_controller()
+        bus.publish(Event.PROVIDER_BENCHED, {"provider": "google", "reason": "captcha"})
+        bus.publish(Event.PROVIDER_BENCHED, {"provider": "google", "reason": "captcha"})
+        bus.publish(
+            Event.PROVIDER_BENCHED,
+            {"provider": "indeed", "yield_ratio": 0.1, "bytes_ratio": 0.2},
+        )
+        bus.publish(
+            Event.DISCOVERY_COMPLETE,
+            {
+                "off_shape_dropped": 2,
+                "terminal_dropped": 1,
+                "routed_to_mining": 1,
+                "budget_skipped": 3,
+            },
+        )
+        summary = controller.summary()
+        assert [e.provider for e in summary.blocked_engines] == ["google", "indeed"]
+        assert summary.blocked_engines[0].reason == "captcha"
+        assert summary.blocked_engines[1].reason
+        assert summary.discovery_off_shape_dropped == 2
+        assert summary.discovery_terminal_dropped == 1
+        assert summary.discovery_routed_to_mining == 1
+        assert summary.discovery_budget_skipped == 3

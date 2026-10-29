@@ -25,6 +25,7 @@ urls:
     base: "https://www.google.com/search"
     parameters:
       - {name: q, source: query}
+    date_parameter: tbs
   jobs:
     base: "https://www.google.com/search"
     parameters:
@@ -42,6 +43,10 @@ urls:
     date_parameter: tbs
 default_url: web
 automation_url: jobs
+# Site-restricted automation runs on web results: the jobs vertical's cards
+# carry no followable per-card URL (measured 2026-10-07), and site: is a
+# web-search operator.
+site_template: web
 
 operators:
   - name: site

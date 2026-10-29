@@ -139,6 +139,7 @@ class GenericSERPStrategy:
         degradation_detector=None,
         research_observer=None,
         page_action=None,
+        baseline_scope: str = "",
     ):
         """Initializes the strategy with specific parsing tools.
 
@@ -183,6 +184,11 @@ class GenericSERPStrategy:
         self._degradation_detector = degradation_detector
         self._research_observer = research_observer or NullResearchObserver()
         self._page_action = page_action
+        # Degradation-baseline scope: "#site" for planner-produced
+        # (platform-targeted) harvests, "" for generic ones — a sparse
+        # site-restricted harvest is judged against its own kind and never
+        # moves the engine's generic baseline.
+        self._baseline_scope = baseline_scope
 
         self.title_parser = title_parser or SmartTextExtractor()
         self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])
@@ -241,6 +247,16 @@ class GenericSERPStrategy:
             page_type.name,
         )
         self._emit_blocked_observation(page_type)
+        # A challenge from this engine's host stops the engine for the rest
+        # of the session. The next instruction checks before navigating, so
+        # no further request is sent; the others continue.
+        if self._degradation_detector is not None:
+            try:
+                self._degradation_detector.mark_blocked(
+                    self.source_tag, page_type.name
+                )
+            except Exception:
+                pass
         return []
 
     def _emit_blocked_observation(self, page_type: PageType) -> None:
@@ -446,7 +462,11 @@ class GenericSERPStrategy:
         """True if the silent-degradation guard benched this provider."""
         if self._degradation_detector is None:
             return False
-        benched = self._degradation_detector.is_benched(self.source_tag)
+        benched = self._degradation_detector.is_benched(
+            self.source_tag
+        ) or self._degradation_detector.is_benched(
+            self.source_tag + self._baseline_scope
+        )
         if benched:
             logger.warning(
                 "%s: provider is benched this session (silent-degradation "
@@ -469,13 +489,15 @@ class GenericSERPStrategy:
         except Exception:
             page_bytes = 0
         self._degradation_detector.evaluate_first_harvest(
-            provider=self.source_tag,
+            provider=self.source_tag + self._baseline_scope,
             visible_count=len(visible),
             page_bytes=page_bytes,
             elapsed_seconds=elapsed_s,
             route=self._extractor_label(),
         )
-        if self._degradation_detector.is_benched(self.source_tag):
+        if self._degradation_detector.is_benched(
+            self.source_tag + self._baseline_scope
+        ):
             logger.warning(
                 "%s: harvest discarded — %d record(s) in %.1fs over %d bytes "
                 "collapsed versus this provider's baseline. Treated as "

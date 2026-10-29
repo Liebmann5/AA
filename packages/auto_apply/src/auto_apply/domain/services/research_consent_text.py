@@ -69,6 +69,10 @@ What gets collected if you opt in:
   "20 Python jobs in Sacramento") is stored as shown too.
 - Which detectors ran on each posting and how each concluded, so rates
   in published research have a trustworthy denominator
+- Which search engines and hiring platforms were searched, and how many
+  searches each received — the sampling frame for automated site-restricted
+  search — with counts of planned, dropped and skipped targets. The words
+  you searched for are never included.
 - A public verification key that lets recipients confirm exported rows
   came from an unmodified AutoApply (the private key never leaves your
   data folder)

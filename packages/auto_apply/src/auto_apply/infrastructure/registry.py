@@ -168,6 +168,9 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "max_pages_per_query": 1,
         "between_provider_pause_min": 1.0,
         "between_provider_pause_max": 2.0,
+        "use_ats_site_search": False,
+        "ats_platforms": [],
+        "site_search_strategy": "per_platform",
         "degradation_collapse_ratio": 0.15,
         "degradation_page_bytes_ratio": 0.25,
         "degradation_min_samples": 3,
@@ -455,6 +458,26 @@ class CapabilitiesRegistry:
                 motion_section["overrides"] = overrides
             merged["motion"] = motion_section
 
+        # Search-platform reconciliation (the same input -> resolution ->
+        # resolved pattern as the browser pick and the motion profile). The
+        # profile carries the user's choice as a flat declarative input;
+        # SessionPlan reads the nested discovery section. Fold it in here so
+        # the two can never drift. AdminPolicy.search_platforms is applied
+        # below with the other admin overrides, so the named lock beats even
+        # a full-section config_overrides replacement.
+        platforms_pick = merged.get("search_platforms")
+        merged.pop("search_platforms", None)
+        if platforms_pick is not None:
+            if not isinstance(platforms_pick, list):
+                raise ValueError(
+                    "search_platforms must be a list of platform names, got "
+                    f"{type(platforms_pick).__name__}"
+                )
+            discovery_section = dict(merged.get("discovery") or {})
+            discovery_section["ats_platforms"] = list(platforms_pick)
+            discovery_section["use_ats_site_search"] = bool(platforms_pick)
+            merged["discovery"] = discovery_section
+
         if admin_policy:
             for key, value in admin_policy.config_overrides.items():
                 merged[key] = value
@@ -466,6 +489,21 @@ class CapabilitiesRegistry:
                 logger.info(
                     "Admin policy locks motion profile | profile=%s",
                     admin_policy.motion_profile,
+                )
+            if admin_policy.search_platforms is not None:
+                locked_platforms = list(admin_policy.search_platforms)
+                if platforms_pick:
+                    logger.info(
+                        "Admin policy locks search platforms; user "
+                        "search-platform settings ignored"
+                    )
+                discovery_section = dict(merged.get("discovery") or {})
+                discovery_section["ats_platforms"] = locked_platforms
+                discovery_section["use_ats_site_search"] = bool(locked_platforms)
+                merged["discovery"] = discovery_section
+                logger.info(
+                    "Admin policy locks search platforms | platforms=%s",
+                    locked_platforms,
                 )
 
         if is_low_resource:

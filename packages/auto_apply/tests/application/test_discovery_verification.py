@@ -110,3 +110,53 @@ def test_empty_input_passes_trivially():
     report = DiscoveryVerifier(max_results=30).verify([])
     assert report.passed
     assert report.total_jobs == 0
+
+
+def test_fallback_hosts_equal_the_catalog_engine_hosts():
+    """TEETH: the fallback cannot drift from the catalog undetected."""
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+        list_surface_names,
+        load_surface_bundled,
+    )
+    from auto_apply.application.services.auditing.discovery_verification import (
+        _FALLBACK_ENGINE_HOSTS,
+    )
+
+    derived = set()
+    for name in list_surface_names():
+        spec = load_surface_bundled(name)
+        if spec.kind != "engine":
+            continue
+        host = urlparse(spec.homepage).netloc.lower().removeprefix("www.")
+        if host:
+            derived.add(host)
+    assert derived == set(_FALLBACK_ENGINE_HOSTS)
+
+
+def test_no_hand_written_engine_host_list_remains():
+    """Structural: the host list is not a second hand-written literal."""
+    import inspect  # noqa: PLC0415
+
+    import auto_apply.application.services.auditing.discovery_verification as module
+
+    src = inspect.getsource(module)
+    assert "_SEARCH_ENGINE_HOSTS" not in src
+    assert "search.yahoo" not in src
+
+
+def test_a_lookalike_host_is_not_flagged():
+    """TEETH: substring matching flagged evilgoogle.com; suffix-exact does not."""
+    report = DiscoveryVerifier(max_results=None).verify(
+        [_job(url="https://evilgoogle.com/jobs/1")]
+    )
+    assert report.passed, report.details()
+
+
+def test_injected_hosts_are_used_over_the_fallback():
+    """TEETH: the wired (catalog-derived) set drives the check when injected."""
+    verifier = DiscoveryVerifier(max_results=None, engine_hosts=("engine.example",))
+    assert verifier.verify([_job(url="https://www.google.com/vid")]).passed
+    flagged = verifier.verify([_job(url="https://engine.example/jobs/9")])
+    assert not flagged.passed

@@ -47,6 +47,7 @@ from auto_apply.application.services.i18n import get_text
 from auto_apply.domain.config import USER_DATA_DIR
 from auto_apply.domain.exceptions import QueryBuilderError
 from auto_apply.domain.models.search_query import (
+    AutomationPlatformOffer,
     BuilderDefaults,
     OfferedCapability,
     OfferedChoice,
@@ -61,7 +62,9 @@ from auto_apply.domain.ports.ats_port import ATSDescriptor, ATSRegistryPort
 from auto_apply.domain.models.search_surface import (
     OFFERED_STATUSES,
     SearchSurfaceSpec,
+    VerificationStatus,
 )
+from auto_apply.domain.services.search_planner import AUTOMATION_STATUSES
 from auto_apply.domain.services.query_composer import compose
 
 logger = logging.getLogger(__name__)
@@ -213,6 +216,35 @@ class QueryBuilderService:
                 label = ""
             offers.append(
                 PlatformOffer(name=descriptor.name, status=status, label=label)
+            )
+        return tuple(offers)
+
+    def automation_platform_vocabulary(self) -> tuple[AutomationPlatformOffer, ...]:
+        """Every registered platform with its automation eligibility.
+
+        This is the one vocabulary both wizards read — no adapter holds its
+        own list. Eligibility is the automation floor from the search
+        planner: only measured or vendor-documented restrictions may be
+        planned, because automation acts with no one reading a label.
+        Ineligible platforms carry a plain-language reason (and the remedy
+        is the hand-verification checklist), so a surface never invents one.
+        An unknown status reads as unverified — never as eligible.
+        """
+        offers: list[AutomationPlatformOffer] = []
+        for descriptor in self.platforms():
+            try:
+                status = VerificationStatus(descriptor.search_restriction_status)
+            except ValueError:
+                status = VerificationStatus.UNVERIFIED
+            eligible = status in AUTOMATION_STATUSES
+            reason = "" if eligible else get_text("searchplan.platform.not_eligible")
+            offers.append(
+                AutomationPlatformOffer(
+                    name=descriptor.name,
+                    status=status.value,
+                    eligible=eligible,
+                    reason=reason,
+                )
             )
         return tuple(offers)
 

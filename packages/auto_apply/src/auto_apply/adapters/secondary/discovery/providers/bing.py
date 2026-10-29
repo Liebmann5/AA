@@ -59,6 +59,7 @@ class BingProvider(BaseSearchProvider):
         research_observer=None,
         readiness=None,
         page_action=None,
+        host_pacer=None,
     ) -> None:
         super().__init__(
             browser,
@@ -68,6 +69,7 @@ class BingProvider(BaseSearchProvider):
             observer,
             reporter,
             forced_tier,
+            host_pacer,
         )
         self._degradation_detector = degradation_detector
         self._page_understanding = page_understanding_port
@@ -133,6 +135,11 @@ class BingProvider(BaseSearchProvider):
             instruction.date_range or "none",
         )
 
+        if self._session_guard_blocks(instruction):
+            return []
+
+        self._pace_for(instruction)
+
         if not self.navigator.navigate_with_fallback(
             self._engine_strategy, instruction, self._is_page_healthy
         ):
@@ -168,6 +175,7 @@ class BingProvider(BaseSearchProvider):
             forced_tier=self._forced_tier,
             research_observer=self._research_observer,
             page_action=self._page_action,
+            baseline_scope=self._baseline_scope_for(instruction),
             title_parser=SmartTextExtractor(
                 strategies=[
                     "h2",

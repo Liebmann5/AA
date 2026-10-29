@@ -290,3 +290,55 @@ def test_get_recent_jobs_orders_by_applied_at_without_error(fresh_db):
     recent = JobRepository(fresh_db).get_recent_jobs(limit=10)
 
     assert {j.url for j in recent} == {j.url for j in jobs}
+
+
+def test_discovery_metadata_round_trips_through_storage(fresh_db):
+    """TEETH: pre-change, everything the planner stamped died in memory."""
+    job = _job(1)
+    job.metadata.update({
+        "provider": "Bing",
+        "search_query": 'site:jobs.jobvite.com ("Engineer")',
+        "target_platform": "jobvite",
+        "engine_form": "web",
+        "route": "engine_site_search",
+        "page_index": 0,
+        "rank": 2,
+    })
+    fresh_db.record_job_discovery(job, session_id="s1")
+
+    found = JobRepository(fresh_db).get_jobs_for_session("s1")
+
+    assert len(found) == 1
+    assert found[0].metadata["target_platform"] == "jobvite"
+    assert found[0].metadata["engine_form"] == "web"
+    assert found[0].metadata["page_index"] == 0
+    assert found[0].metadata["rank"] == 2
+    assert found[0].source == "Bing"
+
+
+def test_a_real_run_stores_the_provider_and_provenance__teeth(fresh_db):
+    """TEETH: the stored row carries what discovery stamped - the provider
+    and the query - read back through the session read. Mutation caught:
+    storing the jobs before _classify_job_source stamps them (the stored
+    source then reads "history" and "provider" is missing)."""
+    jobs = [_job(i) for i in range(2)]
+    wf = _workflow(fresh_db, jobs, session_id="s1", mode=SessionExecutionMode.DISCOVER_ONLY)
+
+    wf.run(instructions=[SearchInstruction(title="Engineer", location="Remote")])
+
+    found = JobRepository(fresh_db).get_jobs_for_session("s1")
+    assert len(found) == 2
+    assert {j.source for j in found} == {"bing"}
+    assert all(j.metadata.get("provider") == "bing" for j in found)
+    assert all(j.metadata.get("search_query") for j in found)
+    assert all(j.metadata.get("route") == "provider_serp" for j in found)
+
+
+def test_a_job_without_metadata_reads_back_as_history(fresh_db):
+    """Behaviour-preserving: rows without provenance read exactly as before."""
+    fresh_db.record_job_discovery(_job(1), session_id="s1")
+
+    found = JobRepository(fresh_db).get_jobs_for_session("s1")
+
+    assert found[0].metadata == {}
+    assert found[0].source == "history"

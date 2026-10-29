@@ -260,6 +260,29 @@ class DiscoveryObservation:
     cards: tuple[DiscoveryCardObservation, ...] = ()
 
 
+@dataclass(frozen=True)
+class SearchPlanObservation:
+    """One planning pass's sampling frame — names and counts, never query text.
+
+    Records which engines and platforms a session planned to search, how many
+    queries each received, how many targets were dropped, and the budget the
+    pass started and ended with. Privacy ruling: engines and platforms are
+    public identifiers; query text, titles and locations are the user's
+    search and are structurally absent (no field exists to hold them).
+    """
+
+    engines: tuple[str, ...] = ()
+    platforms: tuple[str, ...] = ()
+    queries_planned: int = 0
+    per_engine: tuple[tuple[str, int], ...] = ()
+    per_platform: tuple[tuple[str, int], ...] = ()
+    dropped_count: int = 0
+    notes_info: int = 0
+    notes_warning: int = 0
+    budget_before: int = 0
+    budget_after: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Session accounting (item 3).
 # ---------------------------------------------------------------------------
@@ -417,6 +440,16 @@ class ResearchObserverPort(Protocol):
         """
         ...
 
+    def observe_search_plan(self, observation: SearchPlanObservation) -> None:
+        """Submit a sampling frame: which engines/platforms were searched and
+        how many queries each received, plus dropped/skip counts. Names and
+        counts only — never query text.
+
+        Args:
+            observation: The sampling-frame record for one planning pass.
+        """
+        ...
+
     @property
     def is_enabled(self) -> bool:
         """Whether research collection is currently active (consent given)."""
@@ -443,6 +476,9 @@ class NullResearchObserver:
         pass
 
     def observe_discovery(self, observation: DiscoveryObservation) -> None:
+        pass
+
+    def observe_search_plan(self, observation: SearchPlanObservation) -> None:
         pass
 
     @property

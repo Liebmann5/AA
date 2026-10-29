@@ -145,6 +145,7 @@ class SettingsEditor(tk.Toplevel):
         on_save: Callable[[], None],
         profile_repo: ProfileRepositoryPort,
         on_research: "Callable[[], None] | None" = None,
+        platforms_vocabulary: tuple = (),
     ) -> None:
         super().__init__(parent)
         self.registry = registry
@@ -154,6 +155,8 @@ class SettingsEditor(tk.Toplevel):
         self.on_save_callback = on_save
         self.strings = get_strings()
         self.repo = profile_repo
+        self._platforms_vocabulary = tuple(platforms_vocabulary)
+        self._platform_vars: dict[str, tk.BooleanVar] = {}
 
         self.title(f"Settings - {self.profile.profile_name}")
         self.geometry("700x650")
@@ -510,6 +513,43 @@ class SettingsEditor(tk.Toplevel):
                 opt in current_et,
             )
 
+        # Hiring platforms for automated site-restricted search — the
+        # persistent default the session wizard can override, admin-lockable
+        # like the other safety settings (the layered-settings pattern).
+        platforms_locked = self.admin_policy.is_field_locked("search_platforms")
+        ttk.Label(frame, text=self.strings["platforms_settings_label"]).pack(
+            anchor=tk.W, pady=(15, 5)
+        )
+        if platforms_locked:
+            locked = self.admin_policy.search_platforms or []
+            self._add_note(
+                frame,
+                self.strings["platforms_settings_locked"].format(
+                    platforms=", ".join(locked) or "—"
+                ),
+            )
+        elif not self._platforms_vocabulary:
+            self._add_note(frame, self.strings["platforms_unavailable"])
+        else:
+            current = set(self.profile.app_config.search_platforms or [])
+            for offer in self._platforms_vocabulary:
+                label = offer.name + (
+                    f" {self.strings['platforms_unverified_suffix']}"
+                    if not offer.eligible
+                    else ""
+                )
+                var = tk.BooleanVar(value=offer.name in current)
+                chk = ttk.Checkbutton(
+                    frame,
+                    text=label,
+                    variable=var,
+                    state=tk.NORMAL if offer.eligible else tk.DISABLED,
+                )
+                chk.pack(anchor=tk.W, pady=2)
+                if offer.eligible:
+                    self._platform_vars[offer.name] = var
+            self._add_note(frame, self.strings["platforms_settings_note"])
+
     def _build_safety_tab(self, notebook: ttk.Notebook) -> None:
         """Tab: Rate Limiting & Safety.
 
@@ -762,6 +802,19 @@ class SettingsEditor(tk.Toplevel):
                 if self._vars.get(f"et_{et}") is not None
                 and bool(self._vars[f"et_{et}"].get())
             ]
+
+            # Hiring platforms — skipped entirely when admin-locked, so the
+            # locked value is never written back over the user's setting, and
+            # skipped when unchanged, so "inherit" (None) is never clobbered.
+            if self._platform_vars and not self.admin_policy.is_field_locked(
+                "search_platforms"
+            ):
+                checked = [
+                    name for name, var in self._platform_vars.items() if var.get()
+                ]
+                baseline = list(self.profile.app_config.search_platforms or [])
+                if set(checked) != set(baseline):
+                    self.profile.app_config.search_platforms = checked
 
             # -- Documents tab ---------------------------------------------
             # Store portable strings, never raw Path objects: relative to

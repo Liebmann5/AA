@@ -6,12 +6,15 @@ the Discovery Engine can treat all sources uniformly, regardless of their
 underlying complexity.
 """
 
+import logging
 from abc import abstractmethod
 
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.discovery_port import DiscoveryProviderPort
+
+logger = logging.getLogger(__name__)
 
 
 class BaseSearchProvider(DiscoveryProviderPort):
@@ -31,6 +34,7 @@ class BaseSearchProvider(DiscoveryProviderPort):
         observer=None,
         reporter=None,
         forced_tier=None,
+        host_pacer=None,
     ) -> None:
         """Initializes the provider with the browser and its page collaborators.
 
@@ -57,6 +61,47 @@ class BaseSearchProvider(DiscoveryProviderPort):
         self._observer = observer
         self._reporter = reporter
         self._forced_tier = forced_tier
+        self._host_pacer = host_pacer
+
+    def _baseline_scope_for(self, instruction) -> str:
+        """"#site" for planner-produced (platform-targeted) instructions, else ""."""
+        return "#site" if getattr(instruction, "platform", None) else ""
+
+    def _session_guard_blocks(self, instruction) -> bool:
+        """True when this engine was benched this session — no request is sent.
+
+        Checks the base name (a challenged host challenges every query shape)
+        and the instruction's scope (a degraded site-restricted path stops
+        only site-restricted queries). This check runs BEFORE navigation.
+        """
+        detector = getattr(self, "_degradation_detector", None)
+        if detector is None:
+            return False
+        name = self.name
+        if detector.is_benched(name) or detector.is_benched(
+            name + self._baseline_scope_for(instruction)
+        ):
+            logger.warning(
+                "%s: benched for this session — skipping without navigating | title=%r",
+                name,
+                getattr(instruction, "title", ""),
+            )
+            return True
+        return False
+
+    def _pace_for(self, instruction) -> None:
+        """Per-host pre-navigation pacing; a no-op when no pacer is wired."""
+        pacer = self._host_pacer
+        if pacer is None:
+            return
+        strategy = getattr(self, "_engine_strategy", None)
+        if strategy is None:
+            return
+        try:
+            url = strategy.build_search_url(instruction)
+        except Exception:
+            return
+        pacer.wait_for_url(url)
 
     @property
     def name(self) -> str:
@@ -86,26 +131,12 @@ class BaseSearchProvider(DiscoveryProviderPort):
         ...
 
     def safe_navigate(self, url: str) -> bool:
-        """Navigates to a URL with built-in safety checks.
+        """Navigates to a URL, returning False instead of raising on failure.
 
-        Enforces rate limiting and page-safety validation when the relevant
-        services are available.  Degrades gracefully when they are not —
-        the navigation itself still proceeds, but without rate-limit
-        enforcement or CAPTCHA detection.  This matches the project's
-        worst‑case‑first deployment philosophy.
-
-        Graceful degradation contract:
-            - If rate‑limit enforcement is unavailable, checks are skipped.
-            - If evasion checking is unavailable, page‑safety checks are skipped.
-
-        Args:
-            url: The target URL.
-
-        Returns:
-            True if navigation succeeded and the page passed safety checks
-            (or checks were skipped due to unavailable services).
-            False if rate limiting blocked the request, navigation raised
-            an exception, or the safety check flagged the page.
+        This method performs no rate limiting and no page-safety validation.
+        Per-host pacing lives in ``_pace_for`` (wired from the composition
+        root); page-safety verdicts live in the one page verdict used by the
+        SERP block gate and the provider health checks.
         """
         # ── 1. Navigate ───────────────────────────────────────────────────
         try:

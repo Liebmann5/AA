@@ -116,6 +116,7 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
     TableSpec("discovery_pages", ("observed_date", "page_id")),
     TableSpec("discovery_cards", ("page_id", "card_index", "card_id")),
     TableSpec("discovery_candidates", ("card_id", "candidate_id")),
+    TableSpec("search_plan_frames", ("planned_date", "frame_id")),
     # Item 5 — detector outcome accounting. Orders end at each primary key
     # so two exports of the same database byte-match (R2), as for every
     # other rows table.

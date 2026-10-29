@@ -47,7 +47,10 @@ Usage:
 import logging
 import random
 import time
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from auto_apply.application.services.host_pacing import HostPacer
 
 from auto_apply.application.services.page_action.clicking import Clicker
 from auto_apply.application.services.page_action.pacing import Pacing
@@ -95,6 +98,7 @@ class PageActionService:
         pointer_rng: random.Random | None = None,
         wheel_rng: random.Random | None = None,
         readiness: DomReadinessPort | None = None,
+        host_pacer: "HostPacer | None" = None,
     ) -> None:
         self._browser = browser
         self._state = PageActionContext(
@@ -110,6 +114,7 @@ class PageActionService:
         self._scroller = Scroller(self._state, self._probe, self._pacing)
         self._clicker = Clicker(self._state, self._probe, self._pacing, self._scroller)
         self._typer = Typer(self._state, self._pacing, self._clicker)
+        self._host_pacer = host_pacer
 
         logger.debug(
             "PageActionService ready | micro_peak=%.0fms "
@@ -182,6 +187,13 @@ class PageActionService:
         # Warm up once before the very first load of the session (CAPTCHA
         # mitigation). No-op on every subsequent navigation.
         self.warmup_pause()
+        # Per-host floor, once per navigate call (retries to the same host
+        # are error recovery, not new contacts).
+        if self._host_pacer is not None:
+            try:
+                self._host_pacer.wait_for_url(target)
+            except Exception as exc:
+                logger.debug("navigate: host pacing failed (non-fatal): %s", exc)
         for attempt in range(1, attempts + 1):
             try:
                 logger.debug("navigate | attempt=%d/%d url=%s", attempt, attempts, target)

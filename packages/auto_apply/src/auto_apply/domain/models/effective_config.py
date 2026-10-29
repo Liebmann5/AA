@@ -40,6 +40,9 @@ class DiscoverySettings(_Frozen):
     max_pages_per_query: int
     between_provider_pause_min: float
     between_provider_pause_max: float
+    use_ats_site_search: bool
+    ats_platforms: list[str]
+    site_search_strategy: str
 
 
 class ApplicationTimingSettings(_Frozen):

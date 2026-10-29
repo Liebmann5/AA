@@ -99,7 +99,10 @@ SEVERITY_VIOLATION: str = "violation"
 
 # 4: discovery_pages gained page_index, advance_method, stop_reason and
 #    page_count (verified pagination). Rows written at 2 and 3 stay valid.
-RESEARCH_SCHEMA_VERSION: int = 4
+# 5: search_plan_frames added (the sampling frame of automated site-restricted
+#    search: engines/platforms searched and per-target query counts). Rows
+#    written at 2, 3 and 4 stay valid.
+RESEARCH_SCHEMA_VERSION: int = 5
 RESEARCH_SALT_ENV_VAR: str = "AA_RESEARCH_SALT"
 
 # ── EventBus Event Names (Research Module) ───────────────────────────────────
@@ -122,7 +125,10 @@ EVENT_RESEARCH_SIGNAL_DETECTED: str = "RESEARCH_SIGNAL_DETECTED"
 # practices documented in docs/ETHICS.md change. Stored with every signal.
 # 2.6: the dialog now states what uninstalling AA does to collected data
 # (kept by default; deletion only by explicit choice; retention holds).
-CURRENT_CONSENT_VERSION: str = "2.6"
+# 2.7: the dialog now also states that the sampling frame of automated
+# site-restricted search is recorded (engines/platforms searched, counts
+# only — never the words searched for).
+CURRENT_CONSENT_VERSION: str = "2.7"
 
 # The page-copies consent (item 6) is a separate, specific consent with its
 # own text and version: domain/services/research_consent_text.py

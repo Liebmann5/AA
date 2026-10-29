@@ -107,6 +107,32 @@ class SearchInstruction(BaseModel):
         ),
     )
 
+    # ── Automated-search targeting (planner output) ─────────────────────
+    engine: str | None = Field(
+        default=None,
+        description=(
+            "When set, this instruction runs ONLY on the provider with this "
+            "name (e.g. 'google'). None = broadcast to every active provider "
+            "(the default, and the only behaviour before engine-bound "
+            "planning existed)."
+        ),
+    )
+    surface_template: str | None = Field(
+        default=None,
+        description=(
+            "The search-surface URL form to use (a key in the surface's "
+            "catalog urls, e.g. 'web'). None = the surface's automation "
+            "form, unchanged from before."
+        ),
+    )
+    platform: str | None = Field(
+        default=None,
+        description=(
+            "The ATS platform this query targets (e.g. 'greenhouse'), for "
+            "provenance. None when the query is not platform-targeted."
+        ),
+    )
+
     # ── Derived properties ──────────────────────────────────────────────
 
     @property

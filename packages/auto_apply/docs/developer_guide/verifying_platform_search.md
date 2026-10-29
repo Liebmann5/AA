@@ -27,6 +27,23 @@ In the platform's YAML file:
 - The query does not work → keep `unverified` and say what happened in the
   source line. A wrong restriction is worse than an honest unverified one.
 
+## What verification admits
+
+A platform whose restriction reaches `measured` or `vendor` becomes eligible
+for **automated** site-restricted search: it turns selectable in the session
+wizards and the settings editor, and the planner may build queries for it.
+(`third_party` and `unverified` platforms stay visible in the query builder —
+a person can judge a label — but automation never plans them.)
+
+Confirm admission without starting a session, offline:
+
+```bash
+python -m auto_apply --print-plan --platforms <name>
+```
+
+The preview prints the composed `site:`-restricted query the session would
+send for that platform, per enabled engine — or says why none was planned.
+
 ## Two measurements that apply to many platforms
 
 1. **Subdomain tenancy + shared path.** For platforms like BambooHR

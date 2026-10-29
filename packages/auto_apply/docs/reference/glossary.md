@@ -60,6 +60,12 @@ form‑filling strategies.
 A YAML‑driven registry (`ATSRegistry`) that loads ATS descriptors from
 `resources/ats/*.yaml` and matches job URLs to known platforms.
 
+### Automation floor
+The evidence level a hiring platform's search restriction must reach before
+automation may target it: **measured by hand or documented by the vendor**.
+Below the floor a platform may appear in the query builder (a person can
+judge the label) but is never planned by automated site-restricted search.
+
 ---
 
 ## B
@@ -74,6 +80,12 @@ browsers, and finally falls back to static HTML if nothing works.
 The core **Port** that abstracts a web browser.  Every browser automation
 tool (Selenium, Playwright, etc.) is wrapped in an **Adapter** that
 implements this interface.
+
+### Benched engine
+A search engine that answered AA with a CAPTCHA or a login wall and so
+receives no further requests for the rest of the session.  The check happens
+before navigation; the other engines continue, and the end-of-session
+summary names the benched engine and the reason.
 
 ---
 
@@ -206,9 +218,27 @@ See **AgentOrchestrator**.  The central controller that manages the
 entire session lifecycle: dequeues tasks, dispatches them to engines,
 handles errors and retries, and coordinates health monitors.
 
+### Off‑shape hit
+A discovery result that is not a posting of the platform a site-restricted
+search targeted — a board, a listing page or noise.  Dropped and counted,
+or routed to company-page mining when that is enabled; terminal pages
+(success/confirmation/closed) are never followed.
+
 ---
 
 ## P
+
+### Per‑host pacing
+The single `HostPacer` that spaces consecutive contacts AA makes to any one
+host — search engines during discovery, hiring-platform hosts during vetting
+and applying — by a configured floor and ceiling
+(`discovery.between_provider_pause_min/max`) with seeded jitter.
+
+### Plan preview
+The offline, before-Start view of exactly what a session will search —
+engines, platforms, composed queries and budget — computed by the same
+planner the session runs.  Shown by the GUI "Preview plan…" button, the CLI
+wizard's confirm step, and `--print-plan`.
 
 ### Port
 An abstract interface defined in `domain/ports/` that describes a
@@ -243,8 +273,22 @@ automatic popup dismissal, iframe‑traversal search, and health checks.
 
 ## S
 
+### Sampling frame
+The record of which engines and platforms AA searched and how many queries
+each received during a session — names and counts only, never the words
+searched for.  Written behind research consent to the `search_plan_frames`
+table (research schema 5).
+
 ### Scan‑Plan‑Act Loop
 See **PRA Loop**.
+
+### Site‑restricted search
+Automated discovery aimed at specific hiring platforms: one `site:`-restricted
+query per platform per engine per title/location, composed from the
+search-surface catalog and the ATS registry.  Off by default; enabled per
+session (the wizard or `--platforms`), per profile
+(`app_config.search_platforms`), or locked by an administrator
+(`AdminPolicy.search_platforms`).
 
 ### State Machine
 See **FSM**.

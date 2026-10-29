@@ -96,15 +96,18 @@ from auto_apply.adapters.primary.gui.wizard import SessionConfigWizard as GUIWiz
 from auto_apply.application.services.profile_validator import TEMPLATE_PROFILE_NAME
 from auto_apply.application.services.ui_schema import UIField, build_ui_schema
 from auto_apply.domain.models.profile import UserProfile, make_portable_path
+from auto_apply.adapters.primary.gui.strings import locale_text
 from auto_apply.domain.models.ui_contract import (
     SessionHistoryEntry,
     SessionRequest,
     SessionSummary,
+    format_discovery_outcome_lines,
 )
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 from auto_apply.infrastructure.composition_root import (
     build_query_builder,
     build_research_consent,
+    build_search_plan_preview,
 )
 
 if TYPE_CHECKING:
@@ -224,6 +227,13 @@ def format_results_lines(summary: SessionSummary, limit: int = 200) -> list[str]
         )
     # Research accounting (item 3): the same lines the CLI prints.
     lines.extend(summary.research.lines)
+    # Automation outcome (blocked engines, off-shape counts, budget skips):
+    # the same lines the CLI prints, from one shared formatter.
+    lines.extend(
+        format_discovery_outcome_lines(
+            summary, translate=lambda key: locale_text(key)
+        )
+    )
     lines.append("")
     if summary.discovered:
         lines.append("Discovered jobs:")
@@ -729,7 +739,22 @@ class AutoApplyApp(tk.Tk):
             self.profile = self.registry.get_active_profile()
             logger.info("Settings saved — registry rebuilt")
 
-        SettingsEditor(self, registry=self.registry, on_save=_on_save, profile_repo=self._repo, on_research=self._open_research)
+        vocabulary: tuple = ()
+        try:
+            if self.registry is not None and self.profile is not None:
+                vocabulary = (
+                    build_query_builder(self.profile).automation_platform_vocabulary()
+                )
+        except Exception as exc:  # noqa: BLE001 — the editor must still open
+            logger.warning("Settings: platform vocabulary unavailable: %s", exc)
+        SettingsEditor(
+            self,
+            registry=self.registry,
+            on_save=_on_save,
+            profile_repo=self._repo,
+            on_research=self._open_research,
+            platforms_vocabulary=vocabulary,
+        )
 
     def _open_research(self) -> None:
         """Opens the research-consent window (File -> Research… and the
@@ -950,12 +975,39 @@ class AutoApplyApp(tk.Tk):
         offers the control before every Start (stage E1).
         """
         self._clear_view()
+        platforms_vocabulary: tuple = ()
+        preview_factory = None
+        locked_platforms = None
+        try:
+            policy = self.registry.get_admin_policy() if self.registry else None
+            locked = getattr(policy, "search_platforms", None) if policy else None
+            if locked is not None:
+                locked_platforms = tuple(locked)
+            else:
+                platforms_vocabulary = (
+                    build_query_builder(self.profile).automation_platform_vocabulary()
+                )
+            registry = self.registry
+            profile = self.profile
+
+            def preview_factory(request):  # noqa: E731
+                return build_search_plan_preview(
+                    profile, request, registry=registry
+                )
+
+        except Exception as exc:
+            logger.warning(
+                "Session wizard: platform vocabulary/preview unavailable: %s", exc
+            )
         wizard = GUIWizard(
             parent=self._main_container,
             on_complete=self._on_session_start,
             profile=self.profile,
             profile_repo=self._repo,
             controller=self.controller,
+            platforms_vocabulary=platforms_vocabulary,
+            preview_factory=preview_factory,
+            locked_platforms=locked_platforms,
         )
         wizard.pack(fill=tk.BOTH, expand=True)
 

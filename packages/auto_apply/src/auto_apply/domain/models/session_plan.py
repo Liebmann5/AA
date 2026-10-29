@@ -6,7 +6,7 @@ disk gives you complete experiment parameters for research reproducibility.
 from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -68,6 +68,26 @@ class SearchPair(BaseModel):
     title: str = Field(..., description="Job title or keyword phrase.")
     location: str = Field(..., description="Location string (city, state, 'Remote').")
     workplace_type: str = Field("remote", description="On‑site, hybrid, or remote.")
+
+
+def _coerce_search_pairs(raw: Any) -> tuple[SearchPair, ...]:
+    """Coerce session-section search_pairs entries into SearchPair objects.
+
+    Entries may be SearchPair instances or plain dicts (as JSON/YAML supplies
+    them). Unknown shapes are skipped rather than failing session startup.
+    """
+    if not raw:
+        return ()
+    pairs: list[SearchPair] = []
+    for entry in raw:
+        if isinstance(entry, SearchPair):
+            pairs.append(entry)
+        elif isinstance(entry, dict):
+            try:
+                pairs.append(SearchPair(**entry))
+            except Exception:
+                continue
+    return tuple(pairs)
 
 
 class SessionPlan(BaseModel):
@@ -146,6 +166,12 @@ class SessionPlan(BaseModel):
     # Pre‑computed search pairs (empty = derive from profile)
     search_pairs: tuple[SearchPair, ...] = Field(default=(), description="Explicit search tuples; overrides profile-derived queries.")
 
+    # ATS-targeted (site-restricted) automated search. The engagement flag is
+    # declared above with the feature flags (use_ats_site_search); the targets
+    # and the composition strategy live here.
+    ats_platforms: tuple[str, ...] = Field(default=(), description="ATS platform names (resources/ats/*.yaml) targeted when use_ats_site_search is on.")
+    site_search_strategy: str = Field(default="per_platform", description="Composition strategy name for site-restricted queries; the planner falls back to per_platform with a warning on an unknown name.")
+
     @property
     def is_deterministic(self) -> bool:
         """True when this session will produce reproducible outputs."""
@@ -193,4 +219,10 @@ class SessionPlan(BaseModel):
             browser_framework=browser_framework,
             has_live_browser=settings.discovery_strategy != "static_fetch",
             execution_mode=execution_mode,
+            use_ats_site_search=settings.discovery.use_ats_site_search,
+            ats_platforms=tuple(settings.discovery.ats_platforms),
+            site_search_strategy=settings.discovery.site_search_strategy,
+            search_pairs=_coerce_search_pairs(
+                config.get("session", {}).get("search_pairs", ())
+            ),
         )

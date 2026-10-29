@@ -106,6 +106,36 @@ dashboard's "Export" button or the `--export` CLI flag. The report includes:
 
 This data is ideal for tracking your application pipeline over time.
 
+### The automation outcome block
+
+When a session ends, both the CLI summary and the GUI results view report
+how the automated search itself went — the same lines, from one shared
+formatter:
+
+- **Search engines stopped this session** — if an engine answered AA with a
+  CAPTCHA or a login wall, AA stopped sending it requests for the rest of
+  the session. The summary names the engine and the reason; the other
+  engines kept running.
+- **Dropped and routed results** — how many results were dropped because
+  they were not postings of the platform being searched, how many terminal
+  pages (success, confirmation or closed pages, which AA never follows) were
+  skipped, and how many results were routed to company-page mining when that
+  is enabled.
+- **Budget skips** — how many planned searches were not sent because the
+  session's query budget ran out.
+
+A session with none of these prints none of these lines.
+
+### What each result row records
+
+Every discovered job is stored with its provenance, and the results CSV
+shows it: which site found the job (`source`), the exact query that
+produced it (`search_query`), the platform it targeted when the search was
+site-restricted (`target_platform`) and the engine form used
+(`engine_form`), and the page and rank where it appeared (`page_index`,
+`rank`). If you ever ask "where did this job come from", those columns are
+the answer.
+
 ---
 
 ## 3. Screenshots

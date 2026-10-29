@@ -142,6 +142,7 @@ class VettingWorkflow:
         weights: dict[str, float] | None = None,
         research_observer: ResearchObserverPort | None = None,
         page_copier: PageCopierPort | None = None,
+        host_pacer=None,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -177,6 +178,7 @@ class VettingWorkflow:
         self._weights = weights or self.DEFAULT_WEIGHTS
         self._research_observer = research_observer or NullResearchObserver()
         self._page_copier: PageCopierPort = page_copier or NullPageCopier()
+        self._host_pacer = host_pacer
 
     def _cfg(self, key: str, default: Any) -> Any:
         """Read a dot-path config key from self._config with a default fallback."""
@@ -206,6 +208,14 @@ class VettingWorkflow:
         """
         if self._perception_port is None:
             return FetchedDescription(text=job.title or "", from_page=False)
+
+        if self._host_pacer is not None:
+            try:
+                self._host_pacer.wait_for_url(job.url)
+            except Exception as exc:
+                logger.debug(
+                    "VettingWorkflow: host pacing failed (non-fatal) | %s", exc
+                )
 
         try:
             self._perception_port.navigate(job.url)

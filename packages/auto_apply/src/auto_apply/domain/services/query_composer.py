@@ -507,6 +507,7 @@ def build_automation_url(
     query: str,
     location: str = "",
     date_range: str | None = None,
+    template: str | None = None,
 ) -> str:
     """The URL AA's automated discovery sends.
 
@@ -515,17 +516,31 @@ def build_automation_url(
     come from the catalog's codes regardless of user-facing offer status:
     these are the parameters AA already sends in production. An unknown
     date_range is omitted (the pre-catalog behaviour), never invented.
+
+    ``template`` selects a URL form by name (a key in ``spec.urls``) instead
+    of the surface's automation form. Site-restricted planning uses this to
+    route queries to a surface's web form; None keeps the automation form
+    and the pinned bytes. A form that declares no date_parameter drops
+    date_range (documented, never invented). An unknown template name
+    raises — it is a configuration error, not a runtime condition.
     """
-    if spec.automation_url is None:
+    if template is None:
+        template = spec.automation_url
+    if template is None:
         raise ValueError(f"{spec.name} has no automation URL template")
-    template = spec.urls[spec.automation_url]
-    params = _template_params(template, query, location)
-    if date_range is not None and template.date_parameter is not None:
+    if template not in spec.urls:
+        raise ValueError(
+            f"{spec.name} has no URL template {template!r} "
+            f"(available: {', '.join(spec.urls)})"
+        )
+    url_template = spec.urls[template]
+    params = _template_params(url_template, query, location)
+    if date_range is not None and url_template.date_parameter is not None:
         option = next(
             (
                 o
                 for o in spec.url_options
-                if o.name == template.date_parameter and o.option == "date"
+                if o.name == url_template.date_parameter and o.option == "date"
             ),
             None,
         )
@@ -533,4 +548,4 @@ def build_automation_url(
             code = option.codes.get(date_range)
             if code is not None:
                 params.append((option.name, _format_option_value(option, code)))
-    return f"{template.base}?{urlencode(params)}"
+    return f"{url_template.base}?{urlencode(params)}"

@@ -448,6 +448,7 @@ class TestCompositionRootNamespacing:
             ("interaction.pacing",),
             ("motion.pointer",),
             ("motion.wheel",),
+            ("discovery.host_pacing",),
         }
         missing = required - namespaces
         assert not missing, (

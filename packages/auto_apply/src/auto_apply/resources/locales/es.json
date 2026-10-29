@@ -239,5 +239,57 @@
       "recent_loaded": "Se muestra una búsqueda guardada. Edite los campos para crear una nueva.",
       "recent_unavailable": "Esa búsqueda usaba un sitio que no está disponible aquí."
     }
+  },
+  "searchplan": {
+    "platform": {
+      "not_eligible": "Aún no está verificada para la búsqueda automática — la lista de verificación de la guía del usuario muestra cómo verificarla a mano."
+    },
+    "pick": {
+      "prompt": "Plataformas de contratación a buscar automáticamente (separadas por comas):",
+      "choose": "Elija",
+      "default_off": "ninguna",
+      "unverified_count": "{count} plataformas más aún no están verificadas para la búsqueda automática (escriba v para verlas).",
+      "unknown": "No es una plataforma válida, se omitió: {name}",
+      "none_eligible": "Aún no hay plataformas verificadas para la búsqueda automática — se hará una búsqueda normal.",
+      "unavailable": "No se pudo cargar la lista de plataformas — se hará una búsqueda normal."
+    },
+    "preview": {
+      "title": "Lo que AutoApply buscará",
+      "mode_targeted": "Búsqueda dirigida — solo las plataformas que eligió:",
+      "mode_generic": "Búsqueda normal — todos los buscadores activos, por cada puesto y ubicación:",
+      "engine_all": "todos los buscadores",
+      "scope_all": "en todas partes",
+      "budget": "{planned} búsquedas planeadas — límite de sesión: {budget}.",
+      "note_prefix": "nota:",
+      "dropped": "No planeadas: {targets}",
+      "unavailable": "La búsqueda dirigida no está disponible: {reason}. Se hará una búsqueda normal.",
+      "admin_lock": "Bloqueado por su administrador: {platforms}",
+      "confirm": "¿Iniciar esta búsqueda? [Y/n/r]:",
+      "reason_no_planner": "no se pudo cargar el catálogo de búsqueda"
+    },
+    "results": {
+      "blocked_header": "Buscadores detenidos en esta sesión:",
+      "blocked_line": "{engine} — {reason}",
+      "blocked_reason_unknown": "sin motivo registrado",
+      "off_shape": "Se descartaron {dropped} resultados fuera de la plataforma, se omitieron {terminal} páginas terminales, se enviaron {routed} a páginas de empresa.",
+      "budget": "Límite de búsqueda: {skipped} búsquedas planeadas se omitieron al alcanzar el límite de {budget}."
+    },
+    "gui": {
+      "frame": "Plataformas de contratación (búsqueda automática)",
+      "unverified_suffix": "(aún no verificada)",
+      "unverified_count": "{count} plataformas más aún no están verificadas para la búsqueda automática.",
+      "locked": "Bloqueado por su administrador: {platforms}",
+      "unavailable": "Búsqueda dirigida no disponible (no se cargó el registro de plataformas)",
+      "none": "ninguna",
+      "preview_button": "Ver plan…",
+      "preview_title": "Búsquedas planeadas",
+      "settings_label": "Plataformas de contratación para búsqueda automática:",
+      "settings_locked": "Bloqueado por su administrador: {platforms}",
+      "settings_note": "AA busca directamente en estas plataformas. Solo se pueden elegir plataformas verificadas."
+    },
+    "cli": {
+      "no_profile": "No se encontró un perfil — no se puede mostrar el plan sin uno.",
+      "override_note": "Plataformas de --platforms: {platforms}"
+    }
   }
 }

@@ -136,6 +136,7 @@ nav:
       - "017 Documentation gate": adr/017_documentation_gate.md
       - "018 Layered settings": adr/018_layered_settings_and_motion_profile.md
       - "019 Search surface catalog and query builder": adr/019_search_surface_catalog_and_query_builder.md
+      - "020 Automated site-restricted search": adr/020_automated_site_search.md
 
   - Research:
       - Overview: research_module/index.md

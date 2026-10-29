@@ -128,6 +128,7 @@ _pre_import_parse()
 # Now it's safe to import auto_apply modules — config paths are resolved.
 # ═════════════════════════════════════════════════════════════════════════════
 
+from auto_apply.domain.models.ui_contract import parse_platform_names
 from auto_apply.infrastructure.logging_setup import setup_logging
 from auto_apply.infrastructure.composition_root import build_session
 
@@ -257,12 +258,14 @@ def launch_gui(profile_repo, profile_override=None) -> None:
         sys.exit(1)
 
 
-def launch_cli(profile_repo_factory, profile_override=None) -> None:
+def launch_cli(profile_repo_factory, profile_override=None, platforms_override=None) -> None:
     """Launches the command-line interface.
 
     Args:
         profile_repo_factory: Callable that returns a ProfileRepository.
         profile_override: Optional profile name or path from ``--profile``.
+        platforms_override: Optional platform tuple from ``--platforms``
+            (() disables targeting; None leaves the question to the wizard).
     """
     try:
         from auto_apply.adapters.primary.cli.startup import CLIStartup  # noqa: PLC0415
@@ -270,6 +273,7 @@ def launch_cli(profile_repo_factory, profile_override=None) -> None:
         cli = CLIStartup(
             profile_repo_factory=profile_repo_factory,
             profile_override=profile_override,
+            platforms_override=platforms_override,
         )
         cli.run()
     except KeyboardInterrupt:
@@ -544,6 +548,19 @@ def _handle_verify_research(args) -> None:
     )
 
     sys.exit(run_verify_research(Path(args.verify_research).expanduser()))
+
+
+def _handle_print_plan(args, profile_repo) -> None:
+    """Print the session plan preview and exit (no session, no browser).
+
+    Composition only — rendering lives in the CLI adapter, so this file's
+    pinned print-site count does not move (the research-summary precedent).
+    """
+    from auto_apply.adapters.primary.cli.plan_screen import (  # noqa: PLC0415
+        run_print_plan,
+    )
+
+    sys.exit(run_print_plan(args, profile_repo))
 
 
 def _handle_search(args, profile_repo) -> None:
@@ -1027,6 +1044,26 @@ def main() -> None:
         help="Forget every remembered search, then exit.",
     )
     parser.add_argument(
+        "--platforms",
+        metavar="NAMES",
+        default=None,
+        help=(
+            "Hiring platforms for automated site-restricted search this "
+            "session, comma-separated (e.g. --platforms jobvite). 'none' "
+            "disables platform targeting. Only measured or vendor-verified "
+            "platforms are ever planned."
+        ),
+    )
+    parser.add_argument(
+        "--print-plan",
+        action="store_true",
+        help=(
+            "Print what a session would search (engines, platforms, queries, "
+            "budget) and exit. Offline; starts no session and no browser. "
+            "Composes with --seed and --platforms."
+        ),
+    )
+    parser.add_argument(
         "--uninstall",
         action="store_true",
         help=(
@@ -1215,6 +1252,10 @@ def main() -> None:
     if args.verify_research:
         _handle_verify_research(args)
 
+    # 4h. Plan preview (exits after printing — no session, no browser)
+    if args.print_plan:
+        _handle_print_plan(args, profile_repo)
+
     # 4g. Search builder (exits after building — no session started)
     if (
         args.search
@@ -1251,6 +1292,7 @@ def main() -> None:
         launch_cli(
             profile_repo_factory=build_session,
             profile_override=profile_override,
+            platforms_override=parse_platform_names(args.platforms),
         )
     else:
         logger.info("Launching GUI")

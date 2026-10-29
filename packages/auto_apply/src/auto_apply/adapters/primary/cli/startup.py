@@ -87,7 +87,13 @@ from auto_apply.application.services.autonomy import (
     apply_autonomy,
     autonomy_enabled_for_profile,
 )
-from auto_apply.infrastructure.composition_root import build_session_controller
+from auto_apply.application.services.i18n import configure_locale, get_text
+from auto_apply.domain.models.ui_contract import format_discovery_outcome_lines
+from auto_apply.infrastructure.composition_root import (
+    build_query_builder,
+    build_search_plan_preview,
+    build_session_controller,
+)
 from auto_apply.domain.models.profile import UserProfile, make_portable_path
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
 
@@ -114,9 +120,11 @@ class CLIStartup:
         self,
         profile_repo_factory: Callable[..., ProfileRepositoryPort],
         profile_override: str | None = None,
+        platforms_override: tuple[str, ...] | None = None,
     ) -> None:
         self._repo_factory = profile_repo_factory
         self._profile_override = profile_override
+        self._platforms_override = platforms_override
         self.repo: ProfileRepositoryPort = profile_repo_factory()
 
     def run(self) -> None:
@@ -149,7 +157,31 @@ class CLIStartup:
             print("  Autonomy: OFF — AutoApply will ask before each submission.")  # noqa: T201
 
         # 2. Session Configuration
-        wizard = CLIWizard()
+        # The platform vocabulary and the plan preview factory are built once
+        # here and handed to the wizard. If the registry or catalog cannot be
+        # loaded, both degrade to nothing and the wizard runs a normal session.
+        configure_locale(language=None)
+        platforms_vocabulary: tuple = ()
+        preview_factory = None
+        try:
+            platforms_vocabulary = (
+                build_query_builder(profile).automation_platform_vocabulary()
+            )
+
+            def preview_factory(request):  # noqa: E731
+                return build_search_plan_preview(profile, request)
+
+        except Exception as exc:
+            logger.warning(
+                "CLI startup: platform vocabulary/preview unavailable: %s", exc
+            )
+
+        wizard = CLIWizard(
+            profile=profile,
+            platforms_vocabulary=platforms_vocabulary,
+            preview_factory=preview_factory,
+            platforms_override=self._platforms_override,
+        )
         session_config = wizard.run()
 
         # The wizard returns a typed SessionRequest (stage U3); None means the
@@ -754,6 +786,11 @@ class CLIStartup:
 
             # Research accounting (item 3): the same lines the GUI shows.
             for line in summary.research.lines:
+                print(f"  {line}")  # noqa: T201
+
+            # Automation outcome (blocked engines, off-shape counts, budget
+            # skips): the same lines the GUI results window shows.
+            for line in format_discovery_outcome_lines(summary, translate=get_text):
                 print(f"  {line}")  # noqa: T201
 
             if gate_remedy:
