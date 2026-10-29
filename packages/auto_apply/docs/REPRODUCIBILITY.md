@@ -54,6 +54,17 @@ needs randomness. Components use `self._rng.uniform()` instead of the global
 `secrets.SystemRandom()` directly — if you find one that does, it is a bug
 and should be reported.
 
+### The plan-side record: `--print-plan`
+
+`--print-plan` prints what a session will search — the engines, the
+platforms, the composed queries and the session budget — and exits, offline,
+before any browser or network work. Because the planner is deterministic (no
+clock, no RNG), the same profile, flags and AA version print the same plan;
+pairing it with `--seed` (`python -m auto_apply --print-plan --seed 42`)
+records the planned half of a reproducible run, just as `--replay`
+reproduces the analysis half. It is the before-the-fact complement of
+`--replay`.
+
 ### Replay: the reproducible step
 
 Two live sessions cannot produce the same research rows: the web changes

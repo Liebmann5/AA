@@ -126,6 +126,45 @@ shared machine. Engineers can tune every individual value through
 refused with a plain message naming the field and its allowed range, and
 `--check-config` shows the resolved values.
 
+### Hiring platforms (automated search)
+
+AA can also aim its search at specific hiring platforms instead of searching
+the open web. This is off by default, and it only ever uses platforms whose
+search restriction has been verified — measured by hand, or documented by
+the platform's vendor — so the list you can pick from is short on purpose.
+
+You choose platforms in three places, and the more specific choice wins:
+
+- **Each session**, in the wizard: tick platforms (GUI) or type a
+  comma-separated list (CLI). Blank means "use my saved default"; `none`
+  means "not this session". `python -m auto_apply --cli --platforms jobvite`
+  answers that question in advance; the wizard still asks the rest.
+- **Your profile**, in Settings (GUI) — the saved default for every session.
+- **An administrator**, on a shared machine, can lock the set. A locked
+  choice is shown, not offered, and an empty lock turns the feature off.
+
+Platforms that are not yet verified are never offered for automation. The
+wizards show how many exist and, on request, why each one is waiting; the
+remedy is a short hand check, described in the developer guide's
+verification checklist.
+
+### The plan preview
+
+Before anything runs, you can see exactly what AA will search:
+
+- **GUI:** the "Preview plan…" button on the session wizard.
+- **CLI:** the wizard shows the preview automatically (when the search
+  catalog can be loaded) and asks `Start this search? [Y/n/r]` — `r` goes
+  back and re-asks the search questions, `n` cancels.
+- **Without starting anything:** `python -m auto_apply --print-plan`
+  (add `--platforms <names>` to preview a targeted run).
+
+The preview names the engines, the platforms, the actual queries and the
+session budget. It is computed offline — no browser, no network — by the
+same planner the session uses, so what it shows is what runs. When platform
+targeting is off, it shows the generic searches the session will actually
+send.
+
 ---
 
 ## 4. Watch it run
@@ -149,6 +188,18 @@ payloads never appear in front of you ([ADR-015](../adr/015_polled_ui_state.md))
 - Company names occasionally truncated to a single letter in exports (L-8).
 
 None of that is your setup.
+
+### Pacing, budgets and stopped engines
+
+- AA never contacts the same site twice in quick succession. A per-host
+  pacer spaces every repeat contact — about one to two seconds, varied —
+  for search engines and for hiring-platform pages alike.
+- A session sends at most a fixed number of searches (20 by default).
+  Planned searches beyond that are skipped, and the end-of-session summary
+  says how many.
+- If a search engine answers with a CAPTCHA or a login wall, AA stops asking
+  that engine anything for the rest of the session and carries on with the
+  others. The summary names the engine and why it was stopped.
 
 ---
 

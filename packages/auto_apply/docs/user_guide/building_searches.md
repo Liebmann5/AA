@@ -21,6 +21,28 @@ or one company's careers page — using only the syntax AA has verified for that
 site. You get exactly what the site supports, and anything it cannot express
 is refused or noted in plain words, never silently dropped.
 
+## The builder and the automation
+
+The builder and AA's automated discovery share one catalogue of platform
+knowledge, but they are different actions and they answer to different rules.
+
+- **The builder** composes a search *you* run yourself, in your own browser.
+  Because you are there to read a label, the builder shows every platform,
+  including unverified ones — clearly marked.
+- **Automation** is AA searching on your behalf during a session
+  (site-restricted search across the hiring platforms you choose). Nobody is
+  reading a label mid-run, and every site AA queries becomes part of the
+  research record's sampling frame, so automation only ever targets platforms
+  whose restriction has been **measured by hand or documented by the
+  vendor**. Unverified platforms are never planned — the session wizards show
+  them as a count, not a choice.
+
+Verifying a platform by hand is exactly what moves it from the first list to
+the second: follow
+[Verifying Platform Search Data](../developer_guide/verifying_platform_search.md),
+record the outcome in the platform's descriptor, and it becomes selectable in
+the session wizards and visible in the plan preview (`--print-plan`).
+
 ## Search-bar text versus the link
 
 Most sites give you two forms of the same search:

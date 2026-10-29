@@ -1,8 +1,8 @@
 ---
 title: Project Status
 status: reviewed
-last_verified: 2026-09-19
-verified_against: "suite 1384 passed / 2 skipped; CI green on 6 legs"
+last_verified: 2026-10-29
+verified_against: "suite 2537 passed / 5 skipped / 1 xfailed on Windows"
 audience: everyone
 ---
 
@@ -94,6 +94,7 @@ a defect in that document.**
 | SERP extraction behind a port | `[LIVE]` | DOM miner retained as a committed fallback |
 | URL resolution (7-stage, vendor-free) | `[LIVE]` | detect → climb → identity → static → relocate → activate → classify |
 | Discovery output persistence | `[LIVE]` | Stored at discovery; survives a run that skips vetting |
+| ATS-targeted site-restricted search | `[WIRED]` | Planner, session-wide query budget, per-host pacing, engine benching and the pre-run plan preview are unit-pinned; **never exercised on a live run**. Only measured/vendor-verified platforms are planned (one today) |
 | Company career-page mining | `[PARTIAL]` | Reachable for pasted careers URLs only |
 | Pagination ("next page") | `[ORPHAN]` | Handlers exist, nothing constructs them |
 
@@ -157,7 +158,7 @@ a defect in that document.**
 
 | Gate | State |
 | --- | --- |
-| Test suite | **1384 passed, 2 skipped** |
+| Test suite | **2537 passed, 5 skipped, 1 xfailed** |
 | `ruff check src --select F821` | Clean |
 | `mypy src/auto_apply` | Clean across 264 files |
 | `mypy --explicit-package-bases tests` | Clean |

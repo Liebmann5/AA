@@ -1,8 +1,8 @@
 ---
 title: "Discovery Strategies"
 status: needs-review
-last_verified: 2026-09-27
-verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+last_verified: 2026-10-28
+verified_against: "application/workflows/discovery_workflow.py, domain/services/search_planner.py, application/services/host_pacing.py, application/services/auditing/degradation_detector.py"
 audience: contributors
 ---
 
@@ -27,8 +27,9 @@ Bing, Indeed, or a company’s careers page.
 
 Every provider must satisfy the `DiscoveryProviderPort` contract, which the
 Discovery Engine depends on. The engine is a pure orchestrator: it asks
-each injected provider to `run()`, collects the results, deduplicates by URL,
-and returns them to the AgentOrchestrator.
+each injected provider to `run(instruction)`, collects the results,
+deduplicates by URL, persists them, and enqueues one VET WorkUnit per
+unique job.
 
 ```mermaid
 graph TD
@@ -51,10 +52,13 @@ graph TD
 ```
 
 The composition root builds the list of providers and injects it into the
-engine. The engine calls `provider.run()` on each one, in order. If a
-provider fails (CAPTCHA, network error, layout change), the engine logs the
-error and continues to the next provider — one failure never aborts the
-entire search.
+workflow. For each search instruction, the workflow calls
+`provider.run(instruction)` on **every** active provider, in a seeded order
+that rotates between searches. If a provider fails (network error, layout
+change), the workflow logs the error and continues to the next provider —
+one failure never aborts the entire search. An engine that answers with a
+CAPTCHA or a login wall is benched for the rest of the session instead (see
+the fan-out section below).
 
 ### The DiscoveryProviderPort Contract
 
@@ -66,30 +70,44 @@ class DiscoveryProviderPort(ABC):
     @property
     def requires_live_browser(self) -> bool: ...
     
-    def run(self, override_criteria: dict | None = None) -> list[Job]: ...
+    def run(self, instruction: SearchInstruction) -> list[Job]: ...
 ```
 
 | Method | Purpose |
 | ------ | ------- |
 | `name` | Canonical lowercase identifier: `"google"`, `"bing"`, `"indeed"`. |
 | `requires_live_browser` | Returns `True` if this provider needs a real browser. The composition root excludes browser‑dependent providers when no browser is available. |
-| `run(criteria)` | Execute the search and return a list of Job objects. May be empty; never `None`. |
+| `run(instruction)` | Execute one `SearchInstruction` and return a list of Job objects. May be empty; never `None`. |
 
 ---
 
 ## How a Provider Works: Inside GoogleProvider
 
-Let’s trace what happens when the engine calls `GoogleProvider.run()`.
+Let’s trace what happens when the workflow calls
+`GoogleProvider.run(instruction)`.
 
-### 1. Construct the Search URL
+### 1. Compose the Search URL from the Instruction
 
-The provider reads the user’s desired job titles and locations from the
-profile, then builds a Google Jobs URL:
+The provider never reads the user profile. It receives one
+`SearchInstruction` — title, location, workplace type, optional raw query
+string, engine form, date range and result cap — built by the
+`DiscoveryWorkflow`, either from the profile's search matrix or, when
+ATS-targeted search is engaged, from the deterministic `SearchPlanner`. The
+provider composes the URL from it through its engine strategy
+(`engine_strategies.build_search_url`):
 
 ```python
-query = f"{title} jobs in {location}"
-url = f"https://www.google.com/search?q={query}&ibp=htl;jobs"
+# generic:         the query text is built from the instruction's title and
+#                  location, and sent on the engine's configured form
+# site-restricted: instruction.raw_query_string — composed by the catalog's
+#                  query composer and bound to this one engine — is sent verbatim
 ```
+
+The generic Google URL carries `q` plus `ibp=htl;jobs`, `hl=en`, `gl=us` and
+`start=0`, the parameters recorded in
+`resources/search_surfaces/google.surface.yaml`. A byte-identity pin
+(`tests/adapters/test_engine_url_byte_identity.py`) asserts that introducing
+the catalog changed none of the bytes automation sends.
 
 ### 2. Navigate — with a Fallback Plan
 
@@ -173,44 +191,81 @@ reach the same results page, dramatically increasing the chance of success.
 
 ---
 
-## Adaptive Search Manager
+## Fan-out, Pacing and Benching
 
-The `DiscoveryEngine` functions as an **Adaptive Search Manager**. It does
-not run all providers unconditionally. Instead, it loops through them in
-priority order and **stops as soon as it gets results**.
+The `DiscoveryWorkflow` does **not** stop at the first provider that
+succeeds. Every instruction is offered to every active provider, and the
+results are merged, pre-filtered and deduplicated across all of them. The
+order providers are tried rotates between searches (a seeded shuffle), so
+runs are not always Google-first.
 
 ```mermaid
 graph TD
-    A[Start Discovery] --> B{Try GoogleProvider}
-    B -- Returns ≥1 job --> E[Return results]
-    B -- Returns 0 or fails --> C{Try BingProvider}
-    C -- Returns ≥1 job --> E
-    C -- Returns 0 or fails --> D{Try IndeedProvider}
-    D -- Returns ≥1 job --> E
-    D -- Returns 0 or fails --> F[Return empty list]
+    A[One SearchInstruction] --> B{Every active provider, order rotated}
+    B --> C[Provider 1]
+    B --> D[Provider 2]
+    B --> E[Provider 3]
+    C --> F[Merge, pre-filter, dedupe across ALL providers]
+    D --> F
+    E --> F
+    F --> G[VET task per unique job]
 ```
 
-This means:
+Three session-wide guards sit in front of the fan-out:
 
-- If Google returns 50 jobs, AA never even touches Bing or Indeed — saving
-  bandwidth and reducing the footprint on job boards.
-- If Google is down or blocking, AA moves silently to Bing.
-- If all providers fail, AA returns an empty list and the orchestrator logs
-  a warning. The session is not aborted — the user can retry later or switch
-  to Direct Links mode.
+- **Per-host pacing.** One `HostPacer`
+  (`application/services/host_pacing.py`) spaces consecutive contacts to any
+  single host — engines here, ATS hosts in vetting and applying — by
+  `discovery.between_provider_pause_min/max` (1.0–2.0 s by default) with
+  seeded jitter. Reservations are taken under a lock, so concurrent workers
+  cannot interleave past the floor. robots.txt is not consulted on this
+  interactive path: a robots fetch would itself be a request.
+- **Benching.** An engine that answers with a CAPTCHA or a login wall is
+  benched for the rest of the session, *before any further request is sent*;
+  the other engines continue, and the end-of-session summary names the
+  benched engine and the reason. A separate guard
+  (`SilentDegradationDetector`) benches a provider whose first harvest
+  collapses against its own recorded baseline — only when yield *and* page
+  size fall together, so a legitimately sparse query never benches anyone.
+  Site-restricted harvests keep their own baseline scope, so a thin `site:`
+  harvest cannot bench an engine's generic searches.
+- **Off-shape handling.** A result that is not a posting of the platform a
+  site-restricted search targeted is dropped and counted — or, when
+  company-page mining is enabled, routed to it as a `DISCOVER_COMPANY` task.
+  Terminal pages (success/confirmation/closed) are never followed. Every
+  kept job is stamped with its provenance — provider, query, platform,
+  engine form, route, page and rank — stored with the job in
+  `job_history.metadata_json`; the results CSV shows all of it except the
+  route.
+
+If all providers return nothing, the workflow enqueues no VET tasks and the
+orchestrator logs a warning; the session is not aborted.
 
 ---
 
 ## The Multi‑Query Loop
 
-The Discovery Engine does not perform a single search. For every combination
-of **desired job title × preferred location × workplace type**, it generates a
-separate query. If the user’s profile has two job titles, three locations, and
-two workplace types, the engine runs up to 12 queries — each potentially
-returning dozens of results.
+The Discovery Engine does not perform a single search. By default the
+workflow builds one instruction for every combination of **desired job title
+× preferred location × workplace type** from the profile. When ATS-targeted
+search is engaged (`discovery.use_ats_site_search` plus
+`discovery.ats_platforms`), the `SearchPlanner` instead plans one
+`site:`-restricted query per **platform × engine × (title, location)** —
+each one composed by the search-surface catalog's composer, never
+hand-formatted, and only for platforms whose restriction is measured or
+vendor-documented. Planning is deterministic: engines rotate innermost,
+platforms outermost, and no query is ever reallocated by yield.
 
-This is capped by `max_discovery_results_per_query` and `max_queries_per_session`
-in `runtime_defaults.yaml` to prevent resource exhaustion on low‑end machines.
+Two budgets bind, both session-wide:
+
+- `max_queries_per_session` (a `SessionPlan` field, default 20) caps the
+  **total** queries a session sends, across every search task — the workflow
+  owns the counter, and instructions beyond the cap are skipped with a
+  warning, never silently. Engine rotation carries across task boundaries.
+- `max_discovery_results_per_query` (in `runtime_defaults.yaml`) caps how
+  many results each provider may return per query.
+
+Both exist to protect low‑end machines and metered connections.
 
 ---
 
@@ -221,6 +276,7 @@ and register it in one place.
 
 1.  Create a new file in `adapters/secondary/discovery/providers/`:
     ```python
+    from auto_apply.domain.models.search_instruction import SearchInstruction
     from auto_apply.domain.ports.discovery_port import DiscoveryProviderPort
     from auto_apply.adapters.secondary.discovery.strategies.navigators import (
         DirectURLNavigation,
@@ -240,8 +296,8 @@ and register it in one place.
                 HumanSearchNavigation(browser),
             ])
 
-        def run(self, override_criteria=None):
-            # build LinkedIn search URL, navigate, mine jobs...
+        def run(self, instruction: SearchInstruction) -> list[Job]:
+            # compose the URL from the instruction, navigate, mine jobs...
             return jobs
     ```
 
@@ -283,7 +339,7 @@ The Discovery layer respects AA’s worst‑case‑first philosophy at every lev
 
 | Condition | Behaviour |
 | --------- | --------- |
-| No live browser available | Browser‑dependent providers are excluded from the provider list. Only static‑fetch providers (future) run. |
+| No live browser available | The session refuses to start with an explained error ([ADR‑013](../adr/013_static_path_retirement.md)); no provider is ever run browserless. |
 | A provider raises an exception | The exception is caught, logged, and the engine moves to the next provider. |
 | A provider returns zero results | The engine tries the next provider. |
 | `SpaCy` is not installed | The `TextMatcher` falls back to `difflib.SequenceMatcher` for title matching inside providers. |
