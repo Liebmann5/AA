@@ -74,6 +74,7 @@ class DiscoveryWorkflow:
         browser_lease=None,
         research_observer: ResearchObserverPort | None = None,
         provider_order_rng: random.Random | None = None,
+        search_planner=None,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -102,6 +103,9 @@ class DiscoveryWorkflow:
                 When None, a minimal fallback plan is created.
             browser_lease: Optional BrowserLeaseManager for concurrency control.
             research_observer: ResearchObserverPort | None — new research signal pipeline.
+            search_planner: SearchPlanner | None — plans site-restricted
+                (ATS-targeted) queries when the session enables them. None
+                leaves the default query path untouched.
         """
         self._profile = profile
         self._providers = providers
@@ -119,6 +123,8 @@ class DiscoveryWorkflow:
         self._company_page_miner = company_page_miner
         self._company_page_scraper = company_page_scraper
         self._browser_lease = browser_lease
+        self._search_planner = search_planner
+        self._site_search_warned = False
 
         # Fallback: a minimal plan is always available
         if plan is not None:
@@ -194,12 +200,21 @@ class DiscoveryWorkflow:
                 the orchestrator's ``_handle_discovery`` communicates the
                 user's intent.
 
+        Precedence: explicit overrides (user-specified, via the orchestrator)
+        > plan-declared ``search_pairs`` > site-restricted planning (when
+        ``use_ats_site_search`` is engaged) > the profile-derived matrix.
+
         Returns:
             Ordered list of SearchInstruction objects, capped at
             ``max_queries_per_session``.
         """
         # ── Override path: user‑specified instructions from the orchestrator ─
+        # When ATS site search is engaged, a generic seeded override (title
+        # and location only) is expanded through the planner instead of run
+        # as-is; an override carrying a raw query string is a verbatim
+        # power-user query and is never touched.
         if override_instructions:
+            override_instructions = self._expand_overrides(override_instructions)
             cap = self._max_queries_per_session
             if len(override_instructions) > cap:
                 logger.info(
@@ -219,6 +234,33 @@ class DiscoveryWorkflow:
 
         # Propagate the session‑level date_range into every instruction.
         plan_date_range = self._plan.date_range if self._plan else None
+
+        # ── Plan-declared pairs: an explicit query set (``search_pairs``)
+        #    overrides the profile-derived matrix, after user overrides. ──
+        if self._plan is not None and self._plan.search_pairs:
+            paired = [
+                SearchInstruction(
+                    title=pair.title,
+                    location=pair.location,
+                    workplace_type=pair.workplace_type,
+                    date_range=plan_date_range,
+                    max_results=self._plan.max_results_per_query,
+                )
+                for pair in self._plan.search_pairs
+            ]
+            return paired[: self._max_queries_per_session]
+
+        # ── Site-restricted planning (ATS-targeted search) ──
+        if self._site_search_engaged():
+            planned = self._plan_site_restricted(
+                titles, locations, workplace_types, plan_date_range
+            )
+            logger.info(
+                "DiscoveryWorkflow: site-restricted planning produced %d instructions",
+                len(planned),
+            )
+            return planned
+        self._warn_site_search_inactive_once()
 
         instructions: list[SearchInstruction] = []
         for title in titles:
@@ -243,6 +285,119 @@ class DiscoveryWorkflow:
             instructions = instructions[:cap]
 
         return instructions
+
+    # ------------------------------------------------------------------
+    # Site-restricted (ATS-targeted) planning
+    # ------------------------------------------------------------------
+
+    def _site_search_engaged(self) -> bool:
+        """True when ATS-targeted search is configured and a planner exists."""
+        return bool(
+            self._plan is not None
+            and self._plan.use_ats_site_search
+            and self._plan.ats_platforms
+            and self._search_planner is not None
+        )
+
+    def _warn_site_search_inactive_once(self) -> None:
+        """Warn once when the flag is on but no platforms can be planned."""
+        if self._site_search_warned:
+            return
+        self._site_search_warned = True
+        if self._plan is not None and self._plan.use_ats_site_search:
+            logger.warning(
+                "DiscoveryWorkflow: discovery.use_ats_site_search is on but "
+                "no platforms are usable (ats_platforms empty or planner "
+                "unavailable) — running the normal queries."
+            )
+
+    def _expand_overrides(
+        self, instructions: list[SearchInstruction]
+    ) -> list[SearchInstruction]:
+        """Expand seeded generic overrides through the planner when engaged.
+
+        An override carrying a raw query string is a verbatim power-user
+        query and passes through untouched.
+        """
+        if not self._site_search_engaged():
+            return list(instructions)
+        expanded: list[SearchInstruction] = []
+        for instruction in instructions:
+            if instruction.raw_query_string:
+                expanded.append(instruction)
+                continue
+            expanded.extend(
+                self._plan_for_bases(
+                    (
+                        (
+                            instruction.title,
+                            instruction.location,
+                            instruction.workplace_type,
+                        ),
+                    )
+                )
+            )
+        return expanded
+
+    def _plan_site_restricted(
+        self,
+        titles: list[str],
+        locations: list[str],
+        workplace_types: list[str],
+        plan_date_range,
+    ) -> list[SearchInstruction]:
+        """Plan site-restricted instructions for the profile's search bases.
+
+        Bases are titles × locations. No engine strategy reads the workplace
+        type (verified in engine_strategies.build_search_url), so each base
+        is planned once with the profile's first workplace type rather than
+        duplicated per type the way the generic matrix multiplies identical
+        queries.
+        """
+        bases = tuple(
+            (title, location, workplace_types[0])
+            for title in titles
+            for location in locations
+        )
+        return self._plan_for_bases(bases, plan_date_range)
+
+    def _plan_for_bases(
+        self,
+        bases: tuple[tuple[str, str, str], ...],
+        plan_date_range=None,
+    ) -> list[SearchInstruction]:
+        """Run the planner over bases and convert its output to instructions."""
+        planned = self._search_planner.plan(
+            bases=bases,
+            engines=tuple(self._plan.active_providers),
+            platforms=tuple(self._plan.ats_platforms),
+            date_range=(
+                self._plan.date_range if plan_date_range is None else plan_date_range
+            ),
+            max_results=self._plan.max_results_per_query,
+            budget=self._max_queries_per_session,
+        )
+        for note in planned.notes:
+            if note.severity == "warning":
+                logger.warning("SearchPlanner: %s", note.message)
+            else:
+                logger.info("SearchPlanner: %s", note.message)
+        return [self._instruction_from_planned(query) for query in planned.queries]
+
+    @staticmethod
+    def _instruction_from_planned(query) -> SearchInstruction:
+        """Convert a planner query into the SearchInstruction providers run."""
+        return SearchInstruction(
+            title=query.title,
+            location=query.location,
+            workplace_type=query.workplace_type,
+            raw_query_string=query.raw_query_string,
+            date_range=query.date_range,
+            max_results=query.max_results,
+            engine=query.engine,
+            surface_template=query.surface_template,
+            platform=query.platform,
+        )
 
     def _order_providers(self, active_providers: list) -> list:
         """Return a seeded shuffle of the active SERP providers.
@@ -283,12 +438,35 @@ class DiscoveryWorkflow:
 
         def _run_provider(provider, instr: SearchInstruction) -> list[Job]:
             name = getattr(provider, "name", type(provider).__name__)
+            # Engine-bound instructions (from site-restricted planning) run
+            # only on their engine's provider. An engine that cannot carry
+            # the query gets nothing, never a degraded version of it.
+            if instr.engine is not None and str(name).lower() != instr.engine:
+                return []
             try:
                 if self._browser_lease:
                     with self._browser_lease.acquire():
                         results = provider.run(instr)
                 else:
                     results = provider.run(instr)
+                # Provenance: every job states which query, platform and
+                # engine form produced it. setdefault — a provider's own
+                # stamp wins.
+                for job in results or []:
+                    try:
+                        job.metadata.setdefault(
+                            "search_query", instr.effective_query
+                        )
+                        if instr.platform:
+                            job.metadata.setdefault(
+                                "target_platform", instr.platform
+                            )
+                        if instr.surface_template:
+                            job.metadata.setdefault(
+                                "engine_form", instr.surface_template
+                            )
+                    except Exception:
+                        pass
                 logger.info(
                     "DiscoveryWorkflow: provider=%s instruction=%r found=%d",
                     name,

@@ -22,6 +22,19 @@ from its first tag onward.
 
 ### Added
 
+- **ATS-targeted automated search (opt-in).** A pure, deterministic planner
+  (`domain/services/search_planner.py`) turns the session's titles, locations,
+  enabled engines and chosen ATS platforms into engine-bound, site-restricted
+  queries — every one composed by the search-surface catalog's composer, never
+  hand-formatted. Off by default (`discovery.use_ats_site_search` plus
+  `discovery.ats_platforms`); with it off, automated queries are byte-identical
+  to before. Only platforms whose restriction is measured or vendor-documented
+  are planned; engines rotate innermost so no engine host is queried twice in
+  a row while another target is available; the session query budget is a hard
+  cap and dropped targets are reported. Jobs found this way carry the engine,
+  the engine form, the platform and the query in `job.metadata`, and every
+  discovered job now carries the query that produced it.
+  `SessionPlan.search_pairs` and `use_ats_site_search` are now live.
 - **The query builder's notes follow the user's language.** Every note the
   composer or the builder service writes now carries a locale key and its
   values (`QueryNote.message_key`, `message_params`); both surfaces render it

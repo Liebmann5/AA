@@ -344,6 +344,7 @@ class GoogleSearchStrategy(SearchEngineStrategy):
             query=instruction.effective_query,
             location=instruction.location,
             date_range=instruction.date_range,
+            template=instruction.surface_template,
         )
 
     # ── Legacy hardcoded selectors (used when no locator is injected) ────
@@ -442,6 +443,7 @@ class BingSearchStrategy(SearchEngineStrategy):
             query=instruction.effective_query,
             location=instruction.location,
             date_range=instruction.date_range,
+            template=instruction.surface_template,
         )
 
     # ── Legacy hardcoded selectors ──────────────────────────────────────
@@ -526,6 +528,7 @@ class IndeedSearchStrategy(SearchEngineStrategy):
             query=instruction.effective_query,
             location=instruction.location,
             date_range=instruction.date_range,
+            template=instruction.surface_template,
         )
 
     # ── Legacy hardcoded selectors ──────────────────────────────────────

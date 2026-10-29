@@ -164,6 +164,22 @@ discovery:
   between_provider_pause_min: 1.0   # ↓ 2.0 → 1.0
   between_provider_pause_max: 2.0   # ↓ 5.0 → 2.0
 
+  # ── ATS-targeted (site-restricted) automated search ──────────────────────
+  #! Off by default: automated queries stay byte-identical to before this
+  #! feature existed. When on, discovery plans site:-restricted queries across
+  #! ats_platforms instead of the generic "{title} jobs in {location}" query.
+  use_ats_site_search: false
+  #! ATS platform names to target (a file name in resources/ats/, e.g.
+  #! greenhouse). Only platforms whose restriction is vendor-documented or
+  #! hand-measured are planned; 'unverified' platforms are excluded from
+  #! automation until verified (see
+  #! docs/developer_guide/verifying_platform_search.md).
+  ats_platforms: []
+  #! Composition strategy for site-restricted queries. 'per_platform' writes
+  #! one site:-restricted query per platform per engine; further strategies
+  #! plug in through the planner's registry.
+  site_search_strategy: per_platform
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Applications workflow tuning
 # ─────────────────────────────────────────────────────────────────────────────

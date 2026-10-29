@@ -1176,6 +1176,57 @@ def build_orchestrator(  # noqa: PLR0914
 
     dedup = DeduplicationManager()
 
+    # ── Site-restricted search planner (ATS-targeted automated search) ──────
+    # Plain data in, nothing else: engine specs come from the bundled catalog
+    # (a user override must never change automated bytes), platform data comes
+    # from the ATS registry. Any failure degrades to no planner, which leaves
+    # the default query path untouched.
+    _search_planner = None
+    try:
+        from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+            list_surface_names,
+            load_surface_bundled,
+        )
+        from auto_apply.domain.services.search_planner import (  # noqa: PLC0415
+            PlatformTarget,
+            SearchPlanner,
+        )
+
+        _planner_engine_specs = {}
+        for _surface_name in list_surface_names():
+            try:
+                _spec = load_surface_bundled(_surface_name)
+            except Exception:
+                continue
+            if _spec.automation_url is not None:
+                _planner_engine_specs[_surface_name] = _spec
+
+        _planner_platforms = {}
+        if _ats_registry is not None:
+            for _descriptor in _ats_registry.all_descriptors():
+                _planner_platforms[_descriptor.name] = PlatformTarget(
+                    name=_descriptor.name,
+                    restriction=_descriptor.search_restriction,
+                    status=_descriptor.search_restriction_status,
+                )
+
+        _search_planner = SearchPlanner(
+            engine_specs=_planner_engine_specs,
+            platform_targets=_planner_platforms,
+            is_terminal=(
+                _ats_registry.is_terminal_page
+                if _ats_registry is not None
+                else None
+            ),
+            strategy_name=plan.site_search_strategy,
+        )
+    except Exception as _exc:
+        logger.warning(
+            "build_orchestrator: search planner unavailable — ATS-targeted "
+            "planning is disabled for this session: %s",
+            _exc,
+        )
+
     # ── Deterministic RNG streams ──────────────────────────────────────────────
     # BehaviorParameters is already constructed above (see cascade section).
     apps_workflow_rng = behavior_params.make_rng("applications_workflow")
@@ -1224,6 +1275,7 @@ def build_orchestrator(  # noqa: PLR0914
         browser_lease=browser_lease,
         research_observer=research_observer,
         provider_order_rng=behavior_params.make_rng("discovery.provider_order"),
+        search_planner=_search_planner,
     )
 
     vetting_workflow = VettingWorkflow(
