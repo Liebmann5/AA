@@ -38,6 +38,7 @@ from auto_apply.domain.models.search_query import (
     build_request,
     describe_request,
     format_result_lines,
+    note_text,
     platform_display_text,
     resolved_remember_request,
 )
@@ -260,6 +261,24 @@ def test_a_template_that_cannot_be_filled_falls_back_to_english__teeth() -> None
     )
     lines = format_result_lines(result, translate=lambda key: "Needs {b}")
     assert lines == ["  English sentence"]
+
+
+@pytest.mark.parametrize(
+    ("template", "params"),
+    [
+        ("{surface.x}", (("surface", "google"),)),
+        ("{x[a]}", (("x", "5"),)),
+    ],
+    ids=["attribute-lookup", "string-index"],
+)
+def test_a_malformed_placeholder_falls_back_to_english__teeth(template, params) -> None:
+    """TEETH (a broken locale file never crashes rendering): a template whose
+    placeholder raises AttributeError or TypeError when filled falls back to
+    the English sentence. Mutation caught: AttributeError or TypeError
+    dropped from the except tuple in note_text."""
+    note = QueryNote(severity="info", topic="location", message="English sentence",
+                     message_key="builder.note.x", message_params=params)
+    assert note_text(note, lambda key: template) == "English sentence"
 
 
 def test_resolved_remember_request_folds_site_only__teeth() -> None:

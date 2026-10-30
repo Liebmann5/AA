@@ -219,7 +219,7 @@ def note_text(note: QueryNote, translate: Callable[[str], str]) -> str:
         if template and template != note.message_key:
             try:
                 return template.format(**dict(note.message_params))
-            except (KeyError, IndexError, ValueError):
+            except (KeyError, IndexError, ValueError, AttributeError, TypeError):
                 pass
     return note.message
 
