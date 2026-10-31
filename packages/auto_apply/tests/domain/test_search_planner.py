@@ -281,11 +281,13 @@ def test_planning_is_deterministic() -> None:
     assert first == second
 
 
-def test_location_is_appended_only_when_the_engine_form_lacks_a_location_field() -> None:
-    """NEW SURFACE — location handling follows the engine form's fields.
+def test_location_is_never_typed_into_a_site_restricted_query__teeth() -> None:
+    """TEETH (failed against 75b8d13, which typed the place as bare words).
 
-    Mutation caught: always appending (duplicating the location into engines
-    that carry it in the URL) or never appending (dropping it on web forms).
+    Measured 2026-10-30: Google drops site: when words follow it. The
+    location stays on the planned query for vetting, the URL field carries
+    it where an engine has one, and the plan says once why it was left out.
+    Mutation caught: appending the location again, or dropping the note.
     """
     planner = _planner(
         engine_specs={
@@ -303,7 +305,10 @@ def test_location_is_appended_only_when_the_engine_form_lacks_a_location_field()
     by_engine = {q.engine: q for q in out.queries}
     assert "Austin" not in by_engine["withloc"].raw_query_string
     assert by_engine["withloc"].location == "Austin"
-    assert by_engine["withoutloc"].raw_query_string.endswith("Austin")
+    assert "Austin" not in by_engine["withoutloc"].raw_query_string
+    assert by_engine["withoutloc"].location == "Austin"
+    left_out = [n for n in out.notes if "not typed into site-restricted" in n.message]
+    assert len(left_out) == 1
 
 
 def test_terminal_restrictions_are_never_planned() -> None:

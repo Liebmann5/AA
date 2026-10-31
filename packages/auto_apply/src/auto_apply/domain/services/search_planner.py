@@ -414,15 +414,26 @@ class SearchPlanner:
             return None
         bar_text = result.bar_text
         # Location is user intent. Engines whose form has a location field
-        # get it through the URL at run time; engines without one get the
-        # place as bare words, the way a person would type it.
+        # get it through the URL at run time. Engines without one do NOT get
+        # it as typed words: measured 2026-10-30, Google drops the site:
+        # restriction once words follow it and returns other job boards. The
+        # location stays on the query (PlannedQuery.location) for vetting.
+        # STOPGAP: choosing and verifying a channel per surface is a task-list
+        # item, not this.
         url_template = spec.urls[template]
         has_location_field = any(
             parameter.source == "location"
             for parameter in url_template.parameters
         )
         if location.strip() and not has_location_field:
-            bar_text = f"{bar_text} {location.strip()}"
+            message = (
+                "Locations are not typed into site-restricted searches: "
+                "engines drop the site restriction when words are added "
+                "(measured on Google, 2026-10-30). Postings from any "
+                "location come back; vetting checks the location."
+            )
+            if not any(note.message == message for note in notes):
+                notes.append(PlannerNote("info", message))
         return PlannedQuery(
             engine=engine,
             platform=target.name,
