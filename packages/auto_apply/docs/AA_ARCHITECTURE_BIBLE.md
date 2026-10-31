@@ -1764,6 +1764,34 @@ See Section 14.3.
 | P3-12 | `Pyodide` WebAssembly distribution | See tool list |
 | P3-13 | LinkedIn Easy Apply custom strategy | Already partial in `linkedin_easy_apply.py` |
 
+### LR — Findings from the first live runs of automated site search (2026-10-30)
+
+Sessions `8335d23d`, `d4c17fc3` and `5f9566fd` on Nick's Windows machine, plus
+five hand-run engine checks the same day, on branch
+`work/workflow-beyond-discovery`. Each row carries its evidence. Rows marked
+**first submission** block AA's first submitted application; the others wait
+until after it. Design for LR-1 to LR-7 is recorded in
+[ADR-021](adr/021_search_pieces_through_verified_channels.md) and
+[ADR-022](adr/022_every_page_identified_bounded_recorded.md).
+
+| ID | Finding | Evidence | Next |
+|---|---|---|---|
+| LR-1 | **Google's ordinary result cards are not read.** A Google search returning only Jobvite postings yielded 0 jobs: 6 cards found, all 6 dropped for "no title", no click attempted. Another search: 8 cards all deferred, 8 clicks, 1 link resolved (an off-platform ZipRecruiter page). This overturns the premise of ADR-020 decision 3 and of R-16 option B in `AA_MASTER_TODO.md` ("ordinary web search has real anchors and would work through today's code") | session `5f9566fd`, `page_understanding_extractor.py` lines "6 dropped (no title)", "8 dropped (deferred)" | **First submission.** Implementer task: read title and link straight from organic web-result cards; files `page_understanding_extractor.py`, `domain/services/url_evidence.py`, `domain/services/dom_segmentation.py` |
+| LR-2 | **Bing ignores `site:jobs.jobvite.com`**, with or without other words (generic pages; Lever postings when no location was given). `verifying_platform_search.md` recorded Jobvite as working on Bing | hand-run checks 2-4, session `8335d23d` | Stopgap: choose `google` only at the job-sites question. Root: evidence per engine, ADR-021 |
+| LR-3 | **Words after `site:` make Google drop the restriction.** Typing the location voided the site restriction. Unmeasured: whether the parentheses the composer adds, `("Backend Engineer")`, also loosen it (one such search returned mixed results; the hand-run check without parentheses returned only Jobvite) | hand-run checks 1 and 5, session `5f9566fd` | Stopgap landed: commit `9243714` (bandaid — location now only checked in vetting). Root: ADR-021 |
+| LR-4 | **Card activation clicks off-platform cards** before ADR-020's off-platform drop acts; one click opened roadmap.sh | session `8335d23d` | **First submission.** ADR-022 minimum slice |
+| LR-5 | **One browser command blocked 87 s with no bound.** Only `ResilientDriver.get` sets a page-load timeout (hard-coded 30 s, `resilient_driver.py:138`); the configured `page_load_timeout_seconds` is read by nothing | session `8335d23d`, nine "driver busy" lines | **First submission.** ADR-022 minimum slice |
+| LR-6 | **Discovery logs counts but no URLs** — nothing records which links were found, kept, dropped or opened | sessions `8335d23d`, `5f9566fd` | **First submission.** ADR-022 minimum slice |
+| LR-7 | **Stop is not prompt.** Clicks continued about 20 s after Stop, including a synthetic JS-click fallback against a closing browser; the orchestrator thread did not exit within 10 s | session `8335d23d` | ADR-022 minimum slice |
+| LR-8 | **Chrome fails to start when its profile folder is in use, and AA silently falls back to plain Firefox.** "Chrome instance exited", then `acquired driver browser=firefox`; Google answered the first search with its "unusual traffic" page. Cause: a Chrome left open by session `8335d23d`'s forced stop | session `d4c17fc3` | Name the cause in plain words, say that the fallback raises CAPTCHA risk, and offer — with consent — to close AA's own leftover browser |
+| LR-9 | **The work queue and checkpoint are not scoped to a session.** `get_next_task` (`adapters/secondary/persistence/database.py:463`) takes any PENDING task; a new session ran 6 searches although it queued 2, and restored the previous session's checkpoint. On a shared or library computer, the next person's session would run the previous person's searches | session `d4c17fc3` | Rule: scope tasks to their session, and offer to resume an interrupted session instead of resuming silently. Interim: a one-off script marks leftover tasks SKIPPED before a run |
+| LR-10 | `--check-config` builds its summary with a different profile (`Bruce-Engineer`) from the one a session uses (`Jimmy Senate`) | `run1_check_config.txt` | One profile-resolution path for every command |
+| LR-11 | With several locations, the same site-restricted query now repeats once per location — a consequence of LR-3's stopgap | `--print-plan` with two locations | Deduplicate across the session's tasks, or fold into ADR-021 |
+| LR-12 | A search-engine CAPTCHA only benches the engine (ADR-020 decision 6); there is no "solve it in the browser and continue" choice, which application already has | session `d4c17fc3` | Rule whether discovery offers the in-place pause |
+| LR-13 | Cosmetic: "invalid transition blocked STOPPED → STOPPING" at every session end | all three sessions | Stop signal ignored once already stopped |
+| LR-14 | Query-builder localisation remainders: (a) item names inside the "cannot carry" refusal are English words built in the domain; (b) `QueryBuilderError` messages after "Could not build that search:" are English; (c) the search-surface catalog's labels and explanations are English (needs a per-locale catalog field, not locale keys); (d) a native speaker should review the builder's Spanish in `es.json` | saved 2026-10-28 | After the first submission |
+| LR-15 | Sourcery's review of PR #18: (2) the GUI notes test exercises `locale_text`, not `app.py`'s real translator in `_open_search_builder` — move that translator into a small shared helper and pin it; (3) CLI notes print user-supplied values unescaped, so terminal control sequences would be interpreted — a CLI output-sanitising item; (4) labels and notes could diverge if the locale changed while the builder window is open — not reachable today. Item (1) is done in commit `e769b10` | saved 2026-10-28 | After the first submission |
+
 ---
 
 ## 22. Future Roadmap

@@ -137,6 +137,8 @@ nav:
       - "018 Layered settings": adr/018_layered_settings_and_motion_profile.md
       - "019 Search surface catalog and query builder": adr/019_search_surface_catalog_and_query_builder.md
       - "020 Automated site-restricted search": adr/020_automated_site_search.md
+      - "021 Search pieces through verified channels (proposed)": adr/021_search_pieces_through_verified_channels.md
+      - "022 Every page identified, bounded and recorded (proposed)": adr/022_every_page_identified_bounded_recorded.md
 
   - Research:
       - Overview: research_module/index.md

@@ -73,7 +73,7 @@ result shows only postings from that platform's hosts.
 | rippling | `site:ats.rippling.com ("Software Engineer")` | same |
 | workable | `site:apply.workable.com ("Software Engineer")` | same |
 | smartrecruiters | `site:jobs.smartrecruiters.com ("Software Engineer")` | same |
-| jobvite | `site:jobs.jobvite.com ("Software Engineer")` — measured (reported 2026-10-27) | same |
+| jobvite | `site:jobs.jobvite.com ("Software Engineer")` — measured (reported 2026-10-27); holds only with no other words in the query (measured 2026-10-30) | **not honoured** — measured 2026-10-30: Bing returned other sites with and without extra words |
 | recruitee | `site:recruitee.com ("Software Engineer")` | same |
 | gusto | `site:jobs.gusto.com/boards ("Software Engineer")` | host-only variant |
 | pinpointhq | `site:pinpointhq.com ("Software Engineer")` | same |

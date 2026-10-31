@@ -20,7 +20,7 @@ and here is why not" from "nobody thought of it".
 1. **ADRs are immutable once accepted.** They record history, not current state.
 2. **A reversed decision gets a new ADR**, and the old one is marked
    `Superseded` with a link. It is never edited to look correct in hindsight.
-3. **The next number is `021`.** Take it by creating the file; if two people
+3. **The next number is `023`.** Take it by creating the file; if two people
    collide, the second renumbers.
 4. Write an ADR when a change alters a layer boundary, a port contract, a data
    format, a user-visible guarantee, or reverses an earlier decision.
@@ -52,6 +52,8 @@ and here is why not" from "nobody thought of it".
 | [018](018_layered_settings_and_motion_profile.md) | Layered settings disclosure and the per-user motion profile | Accepted | 2026-10-05 |
 | [019](019_search_surface_catalog_and_query_builder.md) | Search-surface catalog and the query builder | Accepted | 2026-10-28 |
 | [020](020_automated_site_search.md) | Automated site-restricted search: planning, pacing, preview and refusal | Accepted | 2026-10-29 |
+| [021](021_search_pieces_through_verified_channels.md) | Applying each piece of a search through a verified channel, and checking results against the search AA built | Proposed | 2026-10-30 |
+| [022](022_every_page_identified_bounded_recorded.md) | Every page AA reaches is identified, bounded and recorded | Proposed | 2026-10-30 |
 
 `tests/infrastructure/test_docs_gate.py` asserts that this table and the
 directory contain the same set of records.

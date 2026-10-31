@@ -1,8 +1,8 @@
 ---
 title: Project Status
 status: reviewed
-last_verified: 2026-10-29
-verified_against: "suite 2537 passed / 5 skipped / 1 xfailed on Windows"
+last_verified: 2026-10-30
+verified_against: "suite 2539 passed / 5 skipped / 1 xfailed on Windows; live runs 2026-10-30"
 audience: everyone
 ---
 
@@ -94,7 +94,7 @@ a defect in that document.**
 | SERP extraction behind a port | `[LIVE]` | DOM miner retained as a committed fallback |
 | URL resolution (7-stage, vendor-free) | `[LIVE]` | detect → climb → identity → static → relocate → activate → classify |
 | Discovery output persistence | `[LIVE]` | Stored at discovery; survives a run that skips vetting |
-| ATS-targeted site-restricted search | `[WIRED]` | Planner, session-wide query budget, per-host pacing, engine benching and the pre-run plan preview are unit-pinned; **never exercised on a live run**. Only measured/vendor-verified platforms are planned (one today) |
+| ATS-targeted site-restricted search | `[PARTIAL]` | First live runs 2026-10-30: the plan ran exactly as previewed, pacing and engine benching behaved as designed (a CAPTCHA benched Google), and off-platform results were dropped and counted. **No job found yet**: Google's ordinary result cards are not read, and Bing ignores the Jobvite restriction ([Bible §21, LR-1 to LR-3](AA_ARCHITECTURE_BIBLE.md)). Only measured/vendor-verified platforms are planned (one today) |
 | Company career-page mining | `[PARTIAL]` | Reachable for pasted careers URLs only |
 | Pagination ("next page") | `[ORPHAN]` | Handlers exist, nothing constructs them |
 
@@ -158,7 +158,7 @@ a defect in that document.**
 
 | Gate | State |
 | --- | --- |
-| Test suite | **2537 passed, 5 skipped, 1 xfailed** |
+| Test suite | **2539 passed, 5 skipped, 1 xfailed** |
 | `ruff check src --select F821` | Clean |
 | `mypy src/auto_apply` | Clean across 264 files |
 | `mypy --explicit-package-bases tests` | Clean |
