@@ -1,0 +1,170 @@
+# Master capability ledger (pass 2), part 3 of 3. Root, schema and categories: 02_ledger.yaml.
+# src tags: O = observed live in pass 2, environment cloud, with specimen IDs (evidence set: the owner's evidence archive, evidence/specimens);
+#           R = recorded in AA's own evidence (environment owner unless stated); K = recalled, unverified.
+# tool column: T-nnn = CT-T-nnn, ALG-nnn = CT-ALG-nnn, FR-nnn = CT-FR-nnn.
+# ver codes: U unit pin on fixture, P property test, R replay, L live run on the frozen set, M measurement, A analysis, X experiment.
+schema: 2
+part: 3
+rows:
+  - {id: CT-FR-101, cat: EN-disc, item: "Read records from any search engine results page", src: ["Google (O cloud: L01)", "Bing (O cloud: L02)", "DuckDuckGo HTML (O cloud: L03)", "Brave Search (O cloud: L04)", "Mojeek (O cloud: L05)"], st: "[ ]", tool: "T-008/009", ver: "L", ev: "LR-1; pass 2: O: 4 of 5 engines refused the cloud client (L01, L03-L05)"}
+  - {id: CT-FR-102, cat: EN-disc, item: "Site-restricted results: off-platform cards dropped before any click (LR-4)", src: ["Bing (O cloud: L02)"], st: "[ ]", tool: "T-009 + url_evidence", ver: "U+L", ev: "ADR-022 slice"}
+  - {id: CT-FR-103, cat: EN-disc, item: "Job-board lists with pagination", src: ["Tencent (O cloud: C12)", "Amazon Jobs (O cloud: C18)", "Jobvite (O cloud: L06 L07)", "Workday (O cloud: L10 L11 L12)", "iCIMS (O cloud: L13 L14 P24)", "Oracle Recruiting Cloud (O cloud: L27)", "Oracle Taleo (O cloud: L28)", "Eightfold (O cloud: L29 L30)", "NEOGOV (O cloud: L31 L32 L33)", "DirectEmployers (O cloud: L34 L35 L36)", "Arbeitsagentur (O cloud: L38)", "StepStone (O cloud: L39)", "LinkedIn (O cloud: L43)", "Dice (O cloud: L45)"], st: "[~]", tool: "T-008 + T-016", ver: "L", ev: "Bing only"}
+  - {id: CT-FR-104, cat: EN-disc, item: "Careers-page mining (all postings on a company page)", src: ["Jobvite (O cloud: L06 L07 L08 …)", "Stripe careers (company site) (O cloud: L15)", "Databricks careers (company site) (O cloud: L16)", "Figma careers (company site) (O cloud: L17)", "Ashby (O cloud: L18 L19 L20)", "SmartRecruiters (O cloud: L21 L23)", "Bosch careers (company site) (O cloud: L22)", "Tencent (O cloud: L41 P23)", "Notion (O cloud: L60 L61 N60)"], st: "[~]", tool: "T-008", ver: "L", ev: "analyzer exists"}
+  - {id: CT-FR-105, cat: EN-disc, item: "Card destination resolution without clicking off-platform", src: [], st: "[~]", tool: "T-009", ver: "U+L", ev: "card_activation clicks"}
+  - {id: CT-FR-106, cat: EN-disc, item: "Feed posts as candidates", src: ["Hacker News (O cloud: L37 P19)"], st: "[ ]", tool: "FR-031", ver: "L", ev: "none"}
+  - {id: CT-FR-107, cat: EN-disc, item: "Yield and page-size signals for the degradation guard", src: [], st: "[~]", tool: "Trace", ver: "U", ev: "baselines read live"}
+  - {id: CT-FR-108, cat: EN-disc, item: "Per-record provenance: query, page, rank, URL, reason kept or dropped (LR-6)", src: ["DirectEmployers (O cloud: P25)"], st: "[ ]", tool: "Trace L1", ver: "U", ev: "defect 9"}
+  - {id: CT-FR-109, cat: EN-disc, item: "Completeness check: records read against the page's own total count", src: ["Oracle Taleo (O cloud: L28)", "Dice (O cloud: L45)", "Tencent (O cloud: P23)"], st: "[ ]", tool: "T-009 + FR-107", ver: "U+L", ev: "O: totals printed on three sources"}
+  - {id: CT-FR-110, cat: EN-disc, item: "Duplicate postings across hosts and boards collapsed with provenance kept", src: ["DirectEmployers (O cloud: L34 P18 P25)"], st: "[~]", tool: "FR-108 + dedup", ver: "U+L", ev: "O: same posting ID on dejobs.org and a partner host"}
+  - {id: CT-FR-111, cat: EN-vet, item: "Job text from the real posting page with structured data", src: ["Remote OK (O cloud: C14)", "Ashby (O cloud: F02 F03 F04 …)", "Workday (O cloud: F05 F06 P04 …)", "Eightfold (O cloud: F12 P17)", "Jobvite (O cloud: P01 P02 P03)", "Oracle Recruiting Cloud (O cloud: P15)", "Arbeitsagentur (O cloud: P20)", "StepStone (O cloud: P21)", "Dice (O cloud: P22)"], st: "[~]", tool: "T-017/009", ver: "L", ev: "Bible 8.2"}
+  - {id: CT-FR-112, cat: EN-vet, item: "Closed / expired / already applied detection", src: ["Greenhouse (O cloud: L46 P26)", "Stripe careers (company site) (O cloud: L47)", "Oracle Recruiting Cloud (O cloud: L48)", "Arbeitsagentur (O cloud: L52)", "Eightfold (O cloud: P17)"], st: "[~]", tool: "T-006", ver: "L", ev: "verdict kinds; pass 2: A: 0 of 4 closed or missing postings judged CLOSED"}
+  - {id: CT-FR-113, cat: EN-vet, item: "Salary, location, work mode extraction", src: ["Workday (O cloud: L49)", "Jobvite (O cloud: P02 P03)", "Ashby (O cloud: P10 P11 P12)", "Dice (O cloud: P22)"], st: "[~]", tool: "T-009", ver: "U+L", ev: "salary_extraction.py"}
+  - {id: CT-FR-114, cat: EN-vet, item: "Apply entry point and ATS identification", src: ["Workday (O cloud: L49 P04 P05 …)", "iCIMS (O cloud: L51)", "LinkedIn (O cloud: L53 L55)", "Jobvite (O cloud: P01 P02 P03)", "Ashby (O cloud: P10 P11 P12)", "SmartRecruiters (O cloud: P13 P14)", "Oracle Recruiting Cloud (O cloud: P15)", "Oracle Taleo (O cloud: P16)", "Eightfold (O cloud: P17)", "DirectEmployers (O cloud: P18 P25)", "Arbeitsagentur (O cloud: P20)", "StepStone (O cloud: P21)", "Dice (O cloud: P22)"], st: "[~]", tool: "T-009 + registry", ver: "U+L", ev: "ATSRegistry"}
+  - {id: CT-FR-115, cat: EN-vet, item: "Posting language detection and structure-only fallback", src: ["AllJobs (Hebrew) (O cloud: C01)", "JobKorea (Korean) (O cloud: C06)", "Habr Career (Russian) (O cloud: C07)", "SmartRecruiters (O cloud: P14)", "Arbeitsagentur (O cloud: P20)", "StepStone (O cloud: P21)"], st: "[~]", tool: "T-003", ver: "U", ev: "NFR-021"}
+  - {id: CT-FR-116, cat: EN-vet, item: "Closed, missing and expired postings recognised in any language and status (200, 404, 410, silent redirect)", src: ["Greenhouse (O cloud: L46 P26)", "Stripe careers (company site) (O cloud: L47)", "Oracle Recruiting Cloud (O cloud: L48)", "Arbeitsagentur (O cloud: L52)"], st: "[ ]", tool: "T-006 phrases", ver: "R+L", ev: "A: verdict CLOSED on 0 of 4 closed or missing postings; P26 ERROR_404 by title"}
+  - {id: CT-FR-117, cat: EN-vet, item: "Structured data checked against the visible page before it is trusted", src: ["Workday (O cloud: L49 L50)", "Arbeitsagentur (O cloud: P20)"], st: "[ ]", tool: "T-017", ver: "U+L", ev: "see CT-PH-162"}
+  - {id: CT-FR-118, cat: EN-vet, item: "Pay, locations and remote status read from JSON-LD or prose, with which one recorded", src: ["Ashby (O cloud: P10 P11 P12)", "Dice (O cloud: P22)"], st: "[~]", tool: "T-017 + T-009", ver: "U+L", ev: "O: four Ashby/Dice postings"}
+  - {id: CT-FR-119, cat: EN-vet, item: "Posting age and closing date (datePosted, validThrough, relative age)", src: ["LinkedIn (O cloud: L53)", "Oracle Recruiting Cloud (O cloud: P15)", "Eightfold (O cloud: P17)"], st: "[ ]", tool: "T-017 + T-003", ver: "U+L", ev: "see CT-PH-168"}
+  - {id: CT-FR-135, cat: EN-vet, item: "Apply target classified: same page, same host, other host, mailto, button without target", src: ["Jobvite (O cloud: P01)", "Workday (O cloud: P04)", "SmartRecruiters (O cloud: P13)", "Oracle Recruiting Cloud (O cloud: P15)"], st: "[ ]", tool: "FR-114", ver: "U+L", ev: "see CT-PH-170, 171"}
+  - {id: CT-FR-136, cat: EN-vet, item: "Description text read from shadow roots and frames, not only light DOM", src: ["iCIMS (O cloud: L51)", "SmartRecruiters (O cloud: P13)", "Arbeitsagentur (O cloud: P20)"], st: "[ ]", tool: "T-002", ver: "U+L", ev: "see CT-PH-164"}
+  - {id: CT-FR-137, cat: EN-vet, item: "Assessment-first and paused-application states reported to the user", src: ["Notion (O cloud: L59 L62)"], st: "[?]", tool: "T-006 + HITL", ver: "L", ev: "see CT-PH-172, 173"}
+  - {id: CT-FR-121, cat: EN-app, item: "Form discovery and step flow", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)", "Oracle Taleo (O cloud: F11)", "Eightfold (O cloud: F12)"], st: "[~]", tool: "T-010", ver: "L", ev: "mock forms only"}
+  - {id: CT-FR-122, cat: EN-app, item: "Label to control pairing", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)", "Oracle Taleo (O cloud: F11)", "Eightfold (O cloud: F12)"], st: "[~]", tool: "T-011", ver: "P+L", ev: "WIRED"}
+  - {id: CT-FR-123, cat: EN-app, item: "Field type and option lists", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)", "Oracle Taleo (O cloud: F11)", "Eightfold (O cloud: F12)"], st: "[~]", tool: "T-012", ver: "U+L", ev: "WIRED"}
+  - {id: CT-FR-124, cat: EN-app, item: "Required fields known before submit", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)"], st: "[ ]", tool: "T-013", ver: "U+L", ev: "FR-012"}
+  - {id: CT-FR-125, cat: EN-app, item: "Widget operation plans (combobox, picker, dropzone)", src: [], st: "[~]", tool: "T-014/015", ver: "U+L", ev: "partial"}
+  - {id: CT-FR-126, cat: EN-app, item: "Resume upload", src: ["Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)"], st: "[~]", tool: "T-014", ver: "L", ev: "handler"}
+  - {id: CT-FR-127, cat: EN-app, item: "Login/account gates detected and handed off", src: ["iCIMS (O cloud: F07)", "Oracle Recruiting Cloud (O cloud: F10)", "Oracle Taleo (O cloud: F11)", "Eightfold (O cloud: F12)"], st: "[~]", tool: "T-006", ver: "L", ev: "verdict; pass 2: A: account walls recognised on 1 of 4 apply steps (F07)"}
+  - {id: CT-FR-128, cat: EN-app, item: "In-place CAPTCHA pause hook with understanding exposed", src: ["Greenhouse (O cloud: P08)"], st: "[~]", tool: "PauseContext", ver: "U+L", ev: "pause exists; no context"}
+  - {id: CT-FR-129, cat: EN-app, item: "New tab / pop-up handling with epoch", src: [], st: "[~]", tool: "T-016", ver: "U+L", ev: "tab switch"}
+  - {id: CT-FR-130, cat: EN-app, item: "Submit prediction as input to the gate (never a replacement)", src: [], st: "[ ]", tool: "T-026", ver: "P+U", ev: "ADR-012"}
+  - {id: CT-FR-131, cat: EN-app, item: "Error mapping and corrective retry", src: [], st: "[ ]", tool: "ALG-012", ver: "U+L", ev: "FR-014"}
+  - {id: CT-FR-132, cat: EN-app, item: "Confirmation detection", src: [], st: "[~]", tool: "T-006", ver: "L", ev: "SUCCESS_PAGE"}
+  - {id: CT-FR-133, cat: EN-app, item: "Repeating sections filled in order", src: [], st: "[ ]", tool: "ALG-002", ver: "U+L", ev: "design"}
+  - {id: CT-FR-134, cat: EN-app, item: "Honeypots skipped, recorded", src: [], st: "[~]", tool: "ALG-014", ver: "U", ev: "WIRED"}
+  - {id: CT-FR-001, cat: FR, item: "Access through one port with capabilities", src: [], st: "[~]", tool: "T-001", ver: "U,L", ev: "04"}
+  - {id: CT-FR-002, cat: FR, item: "Observation at levels, region, budget", src: [], st: "[~]", tool: "T-002", ver: "U,M", ev: "04"}
+  - {id: CT-FR-003, cat: FR, item: "Columnar Doc with shadow/iframe and truncation flags", src: [], st: "[~]", tool: "T-004", ver: "U,L", ev: "04"}
+  - {id: CT-FR-004, cat: FR, item: "Page family and verdict with abstention", src: [], st: "[~]", tool: "T-006/007", ver: "U,R,L", ev: "04; pass 2: A: today's verdict on 119 cloud specimens: see 10 s5 baseline"}
+  - {id: CT-FR-005, cat: FR, item: "Ranked record runs, tolerant of variants", src: [], st: "[~]", tool: "T-008", ver: "P,U,L", ev: "04; pass 2: A (stage 5): 124 of 136 records detected; one group per page"}
+  - {id: CT-FR-006, cat: FR, item: "Per-record title, link, company, location, date with evidence", src: [], st: "[~]", tool: "T-009", ver: "U,L", ev: "04; pass 2: A (stage 5, live, cloud): 0 of 136 list records came back with both a title and a resolved link (Jobvite, Ashby, Taleo, HN)"}
+  - {id: CT-FR-007, cat: FR, item: "List movement and virtualization guard", src: [], st: "[ ]", tool: "ALG-018", ver: "U,L", ev: "04"}
+  - {id: CT-FR-008, cat: FR, item: "JD sections and structured data", src: [], st: "[~]", tool: "T-009/017", ver: "U,L", ev: "04"}
+  - {id: CT-FR-009, cat: FR, item: "Form, step, section, field segmentation", src: [], st: "[~]", tool: "T-010", ver: "U,L", ev: "04"}
+  - {id: CT-FR-010, cat: FR, item: "Label pairing ladder plus assignment", src: [], st: "[~]", tool: "T-011", ver: "P,U", ev: "04"}
+  - {id: CT-FR-011, cat: FR, item: "Field typing with autofill tokens", src: [], st: "[~]", tool: "T-012", ver: "U", ev: "04"}
+  - {id: CT-FR-012, cat: FR, item: "Requiredness tri-state before submit", src: [], st: "[ ]", tool: "T-013", ver: "U,L", ev: "04; pass 2: [~] -> [ ] (same evidence as CT-PH-051: the requiredness answer is True for every field)"}
+  - {id: CT-FR-013, cat: FR, item: "Submit-outcome prediction", src: [], st: "[ ]", tool: "T-026", ver: "P,U", ev: "04"}
+  - {id: CT-FR-014, cat: FR, item: "Post-submit error mapping", src: [], st: "[ ]", tool: "T-013", ver: "U,L", ev: "04"}
+  - {id: CT-FR-015, cat: FR, item: "Widget recognition and operation plans", src: [], st: "[~]", tool: "T-014", ver: "U,L", ev: "04"}
+  - {id: CT-FR-016, cat: FR, item: "Async/paged option list protocol", src: [], st: "[ ]", tool: "T-015", ver: "U,L", ev: "04"}
+  - {id: CT-FR-017, cat: FR, item: "Visibility, occlusion, honeypot decision", src: [], st: "[~]", tool: "T-005", ver: "P,U", ev: "04"}
+  - {id: CT-FR-018, cat: FR, item: "Defence recognition recorded as research data", src: [], st: "[~]", tool: "T-006", ver: "U,L", ev: "04"}
+  - {id: CT-FR-019, cat: FR, item: "Transitions, windows, dialogs, downloads", src: [], st: "[~]", tool: "T-016", ver: "U,L", ev: "04"}
+  - {id: CT-FR-020, cat: FR, item: "HITL pause exposure and resume re-observation", src: [], st: "[ ]", tool: "ALG-024", ver: "U,L", ev: "04"}
+  - {id: CT-FR-021, cat: FR, item: "Text, encodings, languages with notices", src: [], st: "[~]", tool: "T-003", ver: "P,U", ev: "04"}
+  - {id: CT-FR-022, cat: FR, item: "Trace of every tool run at levels", src: [], st: "[~]", tool: "T-018", ver: "U,R", ev: "04"}
+  - {id: CT-FR-023, cat: FR, item: "Replay bit-identical", src: [], st: "[~]", tool: "T-022", ver: "R", ev: "04"}
+  - {id: CT-FR-024, cat: FR, item: "Tuning under the significance rule", src: [], st: "[ ]", tool: "T-019", ver: "P,U", ev: "04"}
+  - {id: CT-FR-025, cat: FR, item: "Domain memory, bounded and verified", src: [], st: "[ ]", tool: "T-020", ver: "U", ev: "04"}
+  - {id: CT-FR-026, cat: FR, item: "Resource profiles and duty cycling", src: [], st: "[~]", tool: "T-021", ver: "M,U", ev: "04"}
+  - {id: CT-FR-027, cat: FR, item: "Ledger load, coverage, UNKNOWN capture", src: [], st: "[ ]", tool: "T-023", ver: "U", ev: "04"}
+  - {id: CT-FR-028, cat: FR, item: "Workbench review and explore", src: [], st: "[ ]", tool: "T-024", ver: "U,manual", ev: "04"}
+  - {id: CT-FR-029, cat: FR, item: "Non-HTML payloads for Source Channels", src: [], st: "[ ]", tool: "T-002", ver: "U", ev: "04"}
+  - {id: CT-FR-030, cat: FR, item: "Compatibility shims for existing ports", src: [], st: "[~]", tool: "S6", ver: "U", ev: "04"}
+  - {id: CT-FR-031, cat: FR, item: "Feed hiring posts as text-only candidates", src: [], st: "[ ]", tool: "T-007/009", ver: "U,L", ev: "04"}
+  - {id: CT-FR-032, cat: FR, item: "Login/sign-up/code/OAuth gates handed off", src: [], st: "[~]", tool: "T-006", ver: "U,L", ev: "04"}
+  - {id: CT-FR-033, cat: FR, item: "Unknown-unknown capture: any unrecognised state fails closed, is recorded as a [?] row candidate with evidence, and is handed to the human while safe work continues", src: [], st: "[ ]", tool: "T-006 + T-018 + T-023", ver: "U+L", ev: "12"}
+  - {id: CT-FR-034, cat: FR, item: "Edge-case catalogue: every tool declares its behaviour on the catalogue's inputs (returns, raises, hangs), its bound and its trace record", src: [], st: "[ ]", tool: "all", ver: "U+P", ev: "12"}
+  - {id: CT-NFR-001, cat: NFR, item: "Zero required runtime dependencies", src: [], st: "[~]", tool: "boundary pin", ver: "pin", ev: "04"}
+  - {id: CT-NFR-002, cat: NFR, item: "Pure Python 3.10 floor", src: [], st: "[~]", tool: "CI", ver: "CI", ev: "04"}
+  - {id: CT-NFR-003, cat: NFR, item: "Determinism", src: [], st: "[~]", tool: "INV-001", ver: "R,P", ev: "04"}
+  - {id: CT-NFR-004, cat: NFR, item: "P95 analysis CPU 1.0 s at 12,000 nodes on the reference machine", src: [], st: "[ ]", tool: "profiles", ver: "M", ev: "04; pass 2: A: today's verdict alone: median 28 ms, p95 224 ms, max 2.8 s per page (cloud, 119 specimens)"}
+  - {id: CT-NFR-005, cat: NFR, item: "Memory 100 B/node and 25 MB at 100k nodes", src: [], st: "[ ]", tool: "T-004", ver: "M", ev: "04; measured 360 B/node objects"}
+  - {id: CT-NFR-006, cat: NFR, item: "Observable footprint budget", src: [], st: "[ ]", tool: "script registry", ver: "A,X", ev: "04, 07"}
+  - {id: CT-NFR-007, cat: NFR, item: "Accuracy targets with intervals", src: [], st: "[ ]", tool: "evaluation", ver: "L", ev: "04, 09"}
+  - {id: CT-NFR-008, cat: NFR, item: "Calibrated abstention", src: [], st: "[ ]", tool: "evaluation", ver: "L", ev: "04"}
+  - {id: CT-NFR-009, cat: NFR, item: "Declared complexity per tool", src: [], st: "[ ]", tool: "06", ver: "A", ev: "04"}
+  - {id: CT-NFR-010, cat: NFR, item: "No hangs: every wait is capped and typed", src: [], st: "[ ]", tool: "ctx budgets", ver: "U,fault", ev: "LR-5; pass 2: [~] -> [ ] (measured: label pairing is cubic in text nodes with no cap (2 inputs + 300 text nodes 1.6 s); the extraction script has no node or byte cap (30k rows 16 s, 11 MB); see 12)"}
+  - {id: CT-NFR-011, cat: NFR, item: "Library semantic versioning", src: [], st: "[ ]", tool: "packaging", ver: "review", ev: "04"}
+  - {id: CT-NFR-012, cat: NFR, item: "OS and browser portability", src: [], st: "[~]", tool: "profiles", ver: "L matrix", ev: "04"}
+  - {id: CT-NFR-013, cat: NFR, item: "Container and VM adaptation", src: [], st: "[ ]", tool: "EnvFacts", ver: "M,U", ev: "04, 07"}
+  - {id: CT-NFR-014, cat: NFR, item: "Privacy: no PII in traces", src: [], st: "[~]", tool: "sentinel", ver: "pin", ev: "04"}
+  - {id: CT-NFR-015, cat: NFR, item: "Research-grade provenance in every trace", src: [], st: "[~]", tool: "T-018", ver: "U", ev: "04"}
+  - {id: CT-NFR-016, cat: NFR, item: "Workbench accessible by keyboard and screen reader", src: [], st: "[ ]", tool: "T-024", ver: "manual", ev: "04"}
+  - {id: CT-NFR-017, cat: NFR, item: "Modularity cost at most 2%", src: [], st: "[ ]", tool: "05", ver: "M", ev: "derived under 1%"}
+  - {id: CT-NFR-018, cat: NFR, item: "Nothing slows AA over time", src: [], st: "[ ]", tool: "caps, gate", ver: "M,CI", ev: "04, 05"}
+  - {id: CT-NFR-019, cat: NFR, item: "Tuning safety", src: [], st: "[ ]", tool: "T-019", ver: "P,U", ev: "04"}
+  - {id: CT-NFR-020, cat: NFR, item: "Testable without a browser", src: [], st: "[~]", tool: "sans-IO", ver: "U", ev: "04"}
+  - {id: CT-NFR-021, cat: NFR, item: "Language-agnostic structure", src: [], st: "[~]", tool: "T-003", ver: "U", ev: "04"}
+  - {id: CT-NFR-022, cat: NFR, item: "Ledger, requirements, tests in sync", src: [], st: "[ ]", tool: "T-023", ver: "CI", ev: "04"}
+  - {id: CT-NFR-023, cat: NFR, item: "Fail closed", src: [], st: "[~]", tool: "INV-004", ver: "U", ev: "ADR-012"}
+  - {id: CT-NFR-024, cat: NFR, item: "Bounded stores, O(1) lookups over time", src: [], st: "[ ]", tool: "T-018/020", ver: "M", ev: "04"}
+  - {id: CT-NFR-025, cat: NFR, item: "Tail budgets on the worst-case machine: p95, p99 and maximum stated per tool on adversarial input", src: [], st: "[ ]", tool: "all", ver: "M", ev: "06 s12"}
+  - {id: CT-NFR-026, cat: NFR, item: "Bounded acquisition: node cap, byte cap and frame cap on every observation, each with a truncation flag", src: [], st: "[ ]", tool: "T-002", ver: "U+M", ev: "A: 30k rows -> 11.1 MB in one script result"}
+  - {id: CT-NFR-101, cat: RC, item: "FAIR4RS Findable (DOI, CITATION.cff, metadata)", src: [], st: "[ ]", tool: "packaging", ver: "review", ev: "Bible 25.1: Missing"}
+  - {id: CT-NFR-102, cat: RC, item: "FAIR4RS Accessible (open licence, public URL)", src: [], st: "[~]", tool: "repo", ver: "review", ev: "Bible 25.1: Partial"}
+  - {id: CT-NFR-103, cat: RC, item: "FAIR4RS Interoperable (standard formats, documented API)", src: [], st: "[ ]", tool: "trace schema", ver: "review", ev: "08"}
+  - {id: CT-NFR-104, cat: RC, item: "FAIR4RS Reusable (licence, docs, container)", src: [], st: "[~]", tool: "library, image", ver: "review", ev: "Dockerfile.test"}
+  - {id: CT-NFR-105, cat: RC, item: "FAIR4RS Reproducible (seeded, versioned, deterministic)", src: [], st: "[~]", tool: "INV-001/006", ver: "R", ev: "seeded RNG LIVE"}
+  - {id: CT-NFR-106, cat: RC, item: "FAIR4RS Sustained (changelog, releases, contributing)", src: [], st: "[~]", tool: "repo", ver: "review", ev: "CHANGELOG exists"}
+  - {id: CT-NFR-107, cat: RC, item: "ACM Functional: smoke test without a browser", src: [], st: "[~]", tool: "fixtures", ver: "CI", ev: "driver=None path"}
+  - {id: CT-NFR-108, cat: RC, item: "ACM Functional: mock ATS benchmark at least 80% fields", src: [], st: "[~]", tool: "CONTROL set", ver: "L", ev: "tests/benchmarks/ats_forms"}
+  - {id: CT-NFR-109, cat: RC, item: "ACM Reusable: plug-in tools, pinned image, seed, profile flags", src: [], st: "[ ]", tool: "registry", ver: "review", ev: "Bible 25.2"}
+  - {id: CT-NFR-110, cat: RC, item: "Tier 1 property tests (lemmas, pairing, hashing)", src: [], st: "[ ]", tool: "06", ver: "P", ev: "Bible 25.4"}
+  - {id: CT-NFR-111, cat: RC, item: "Tier 3 reproducibility: seeded twice identical; memory ceiling; perf regression", src: [], st: "[ ]", tool: "CI", ver: "R,M", ev: "Bible 25.4"}
+  - {id: CT-NFR-112, cat: RC, item: "Tier 4 validity: ablation of each tool on the benchmark", src: [], st: "[ ]", tool: "evaluation", ver: "L", ev: "Bible 25.4"}
+  - {id: CT-NFR-113, cat: RC, item: "Ethics: deon checklist, consent, data minimisation honoured by the trace", src: [], st: "[~]", tool: "08", ver: "review", ev: "ETHICS.md"}
+  - {id: CT-INV-001, cat: INV-tool, item: "Tools are pure functions of observation, parameters, seed", src: [], st: "[ ]", tool: "all", ver: "R,P", ev: "05"}
+  - {id: CT-INV-002, cat: INV-tool, item: "Library imports nothing from AA", src: [], st: "[ ]", tool: "boundary pin", ver: "pin", ev: "05"}
+  - {id: CT-INV-003, cat: INV-tool, item: "Never act on stale understanding (epoch)", src: [], st: "[ ]", tool: "T-016", ver: "U", ev: "05, 08"}
+  - {id: CT-INV-004, cat: INV-tool, item: "Abstain over guess when consequences are irreversible", src: [], st: "[~]", tool: "all", ver: "U", ev: "ADR-012"}
+  - {id: CT-INV-005, cat: INV-tool, item: "Evidence attached to every finding", src: [], st: "[ ]", tool: "CT-DS-005", ver: "U", ev: "defect 9"}
+  - {id: CT-INV-006, cat: INV-tool, item: "Parameters immutable within a run", src: [], st: "[ ]", tool: "T-019", ver: "U,P", ev: "ADR-020 d4"}
+  - {id: CT-INV-007, cat: INV-tool, item: "Every tool bounded: declared complexity, hard caps, typed timeout", src: [], st: "[ ]", tool: "ctx", ver: "A,U", ev: "06"}
+  - {id: CT-INV-008, cat: INV-tool, item: "Accelerators optional and result-equivalent", src: [], st: "[ ]", tool: "registry", ver: "P", ev: "05"}
+  - {id: CT-INV-009, cat: INV-tool, item: "Every page-world script registered with justification", src: [], st: "[ ]", tool: "script registry", ver: "U", ev: "07"}
+  - {id: CT-INV-010, cat: INV-tool, item: "Observation tools cannot mutate the page", src: [], st: "[ ]", tool: "capability types", ver: "U", ev: "05"}
+  - {id: CT-INV-011, cat: INV-tool, item: "Nothing deleted; retirements via retire.py", src: [], st: "[~]", tool: "process", ver: "pin", ev: "ADR-016"}
+  - {id: CT-INV-012, cat: INV-tool, item: "Memory is never authoritative", src: [], st: "[ ]", tool: "T-020", ver: "U", ev: "06"}
+  - {id: CT-INV-013, cat: INV-tool, item: "Unknown-unknown rule: fail closed, record [?] with evidence, hand to the human, keep other safe work going", src: [], st: "[ ]", tool: "all", ver: "U", ev: "12 s5"}
+  - {id: CT-INV-014, cat: INV-tool, item: "No loop without a work-unit cap and no wait without a deadline; cubic steps only on capped inputs", src: [], st: "[ ]", tool: "all", ver: "P+M", ev: "A: label pairing is cubic in text nodes today"}
+  - {id: CT-INV-101, cat: INV-bible, item: "1.1 Worst-case contract", src: [], st: "[~]", tool: "profiles", ver: "M", ev: "03"}
+  - {id: CT-INV-102, cat: INV-bible, item: "1.2 Separation of concerns", src: [], st: "[~]", tool: "tools", ver: "review", ev: "03"}
+  - {id: CT-INV-103, cat: INV-bible, item: "1.2 Single source of truth", src: [], st: "[~]", tool: "ParameterSet, ledger", ver: "pin", ev: "03"}
+  - {id: CT-INV-104, cat: INV-bible, item: "1.2 DRY", src: [], st: "[~]", tool: "tools", ver: "review", ev: "two hash vocabularies"}
+  - {id: CT-INV-105, cat: INV-bible, item: "1.2 Hexagonal Architecture", src: [], st: "[~]", tool: "boundary pin", ver: "pin", ev: "03"}
+  - {id: CT-INV-106, cat: INV-bible, item: "1.2 Dependency inversion", src: [], st: "[~]", tool: "ports", ver: "review", ev: "03"}
+  - {id: CT-INV-107, cat: INV-bible, item: "1.2 Worst-case first", src: [], st: "[~]", tool: "decision order", ver: "review", ev: "03"}
+  - {id: CT-INV-108, cat: INV-bible, item: "1.2 Zero required external keys", src: [], st: "[~]", tool: "T-001", ver: "review", ev: "03"}
+  - {id: CT-INV-109, cat: INV-bible, item: "1.2 Agnostic implementations", src: [], st: "[~]", tool: "capabilities", ver: "review", ev: "03"}
+  - {id: CT-INV-110, cat: INV-bible, item: "Rule 1: no domain/application import of infrastructure or adapters", src: [], st: "[~]", tool: "pin", ver: "pin", ev: "architecture pin"}
+  - {id: CT-INV-111, cat: INV-bible, item: "Rule 2: no default overriding runtime_defaults.yaml", src: [], st: "[~]", tool: "ParameterSet", ver: "pin", ev: "03"}
+  - {id: CT-INV-112, cat: INV-bible, item: "Rule 3: browser never shared across threads without a lease", src: [], st: "[~]", tool: "Access", ver: "pin", ev: "03"}
+  - {id: CT-INV-113, cat: INV-bible, item: "Rule 4: engines never call each other", src: [], st: "[~]", tool: "findings only", ver: "pin", ev: "03"}
+  - {id: CT-INV-114, cat: INV-bible, item: "Rule 5: math is a strategy, not a source", src: [], st: "[~]", tool: "findings only", ver: "review", ev: "03"}
+  - {id: CT-INV-115, cat: INV-bible, item: "Rule 6: absolute imports only", src: [], st: "[~]", tool: "lint", ver: "pin", ev: "03"}
+  - {id: CT-INV-116, cat: INV-bible, item: "27 Session Supervisor: lease, plan, behaviour parameters, map, watchdog", src: [], st: "[ ]", tool: "ctx.tick", ver: "U", ev: "Bible: PLANNED"}
+  - {id: CT-INV-117, cat: INV-bible, item: "26 Sans-IO", src: [], st: "[~]", tool: "design", ver: "U", ev: "03"}
+  - {id: CT-INV-118, cat: INV-bible, item: "16 Evasion and security framework (policies, thresholds)", src: [], st: "[~]", tool: "T-006", ver: "U,L", ev: "03"}
+  - {id: CT-INV-119, cat: INV-bible, item: "30.4 Disk pre-checks for USB safety", src: [], st: "[ ]", tool: "T-018", ver: "U", ev: "03"}
+  - {id: CT-INV-120, cat: INV-bible, item: "31 Agnostic trinity: platform, framework, provider", src: [], st: "[~]", tool: "capabilities", ver: "review", ev: "03"}
+  - {id: CT-INV-201, cat: INV-phil, item: "Core mission: worst-case users first", src: [], st: "[~]", tool: "profiles", ver: "M", ev: "03"}
+  - {id: CT-INV-202, cat: INV-phil, item: "Tool-first: predictable, safe, explains, respects intent", src: [], st: "[~]", tool: "tools, trace", ver: "L", ev: "03"}
+  - {id: CT-INV-203, cat: INV-phil, item: "Worst-case preferences: low memory, offline, deterministic, local", src: [], st: "[~]", tool: "design", ver: "M", ev: "03"}
+  - {id: CT-INV-204, cat: INV-phil, item: "Autonomy with guardrails: never-seen pages, general strategies, HITL, evidence", src: [], st: "[ ]", tool: "design", ver: "L", ev: "03"}
+  - {id: CT-INV-205, cat: INV-phil, item: "Architectural commitments", src: [], st: "[~]", tool: "design", ver: "review", ev: "03"}
+  - {id: CT-INV-206, cat: INV-phil, item: "Progressive enhancement rules", src: [], st: "[~]", tool: "capabilities", ver: "P", ev: "03"}
+  - {id: CT-INV-207, cat: INV-phil, item: "AA as research-grade software", src: [], st: "[~]", tool: "design", ver: "R", ev: "03"}
+  - {id: CT-INV-208, cat: INV-phil, item: "Outputs as research-grade data", src: [], st: "[ ]", tool: "trace", ver: "R", ev: "08"}
+  - {id: CT-INV-209, cat: INV-phil, item: "Safety, security, respect", src: [], st: "[~]", tool: "design", ver: "review", ev: "03"}
+  - {id: CT-INV-210, cat: INV-phil, item: "Structural excellence", src: [], st: "[~]", tool: "design", ver: "review", ev: "03"}
+  - {id: CT-INV-211, cat: INV-phil, item: "Performance and efficiency", src: [], st: "[ ]", tool: "profiles", ver: "M", ev: "S0"}
+  - {id: CT-INV-212, cat: INV-phil, item: "Maintainability and developer experience", src: [], st: "[~]", tool: "design", ver: "review", ev: "03"}
+  - {id: CT-INV-213, cat: INV-phil, item: "Adaptability and reusability", src: [], st: "[~]", tool: "library", ver: "review", ev: "03"}
+  - {id: CT-INV-214, cat: INV-phil, item: "Quality and reliability", src: [], st: "[~]", tool: "design", ver: "L", ev: "03"}
+  - {id: CT-INV-215, cat: INV-phil, item: "Repository health traits", src: [], st: "[~]", tool: "docs gate, CI", ver: "CI", ev: "03"}
+  - {id: CT-INV-216, cat: INV-phil, item: "Decision standard", src: [], st: "[~]", tool: "decision order", ver: "review", ev: "03"}
+  - {id: CT-INV-217, cat: INV-phil, item: "Guidance for AI-assisted contributors", src: [], st: "[~]", tool: "this suite", ver: "review", ev: "03"}
+  - {id: CT-INV-218, cat: INV-phil, item: "Documentation interpretation policy (propose changes explicitly)", src: [], st: "[~]", tool: "03 s3", ver: "review", ev: "03"}
+  - {id: CT-INV-219, cat: INV-phil, item: "Final principle", src: [], st: "[~]", tool: "design", ver: "review", ev: "03"}

@@ -140,6 +140,23 @@ nav:
       - "021 Search pieces through verified channels (proposed)": adr/021_search_pieces_through_verified_channels.md
       - "022 Every page identified, bounded and recorded (proposed)": adr/022_every_page_identified_bounded_recorded.md
 
+  - Page comprehension:
+      - Index: comprehension/00_index.md
+      - Charter: comprehension/01_charter.md
+      - Capability ledger: comprehension/02_ledger.md
+      - Ledger part 2: comprehension/02_ledger_part2.md
+      - Ledger part 3: comprehension/02_ledger_part3.md
+      - Philosophy and Bible conformance: comprehension/03_philosophy_and_bible_conformance.md
+      - Requirements: comprehension/04_requirements.md
+      - Architecture: comprehension/05_architecture.md
+      - Mathematics: comprehension/06_mathematics.md
+      - Footprint and defences: comprehension/07_footprint_and_defences.md
+      - Evidence and research: comprehension/08_evidence_and_research.md
+      - Verification: comprehension/09_verification.md
+      - Gap analysis and build plan: comprehension/10_gap_analysis_and_build_plan.md
+      - Risks and open questions: comprehension/11_risks_and_open_questions.md
+      - Edge cases and adversity: comprehension/12_edge_cases_and_adversity.md
+
   - Research:
       - Overview: research_module/index.md
       - Data Format: research_module/data_format.md

@@ -816,6 +816,8 @@ When `linear_mode=True`:
 
 ## 9. Math Subsystem — Correct Architecture
 
+The complete blueprint and master capability ledger for this subsystem is in [comprehension/00_index.md](comprehension/00_index.md); section 9.3 below is an earlier sketch, not the live detector.
+
 ### 9.1 What the Math Subsystem Actually Is
 
 The Math subsystem is a **page analysis toolkit** — a collection of algorithms
