@@ -644,7 +644,7 @@ class MathFormUnderstandingService(FormUnderstandingPort):
     def _is_required(input_node: DOMNode) -> bool:
         """Check for 'required' attribute or aria-required."""
         return (
-            input_node.get_attribute("required") is not None
+            any(name == "required" for name, _ in input_node.attributes)
             or input_node.get_attribute("aria-required", "").lower() == "true"
         )
 
