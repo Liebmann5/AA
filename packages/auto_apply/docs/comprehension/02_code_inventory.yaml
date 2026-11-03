@@ -1,0 +1,343 @@
+# Code inventory (pass 4): every module under packages/auto_apply/src/auto_apply/, mapped to the blueprint tool it serves.
+# Verdicts: reuse | change | keep both (with evidence) | keep | retire candidate | new | n/a (not page-facing). Default is reuse.
+# Generated from the code at bcb6c2c plus the slice S4 reply files; regenerate when modules are added.
+schema: 1
+modules_total: 336
+page_facing_mapped: 135
+modules:
+  - {path: "__init__.py", lines: 0, area: "__init__.py", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "__main__.py", lines: 25, area: "__main__.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/__init__.py", lines: 0, area: "adapters/primary/cli", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/primary/cli/dashboard.py", lines: 325, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/labeller.py", lines: 327, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/lifecycle_screen.py", lines: 218, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/plan_screen.py", lines: 43, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/profile_wizard.py", lines: 589, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/progress.py", lines: 100, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/replay_report.py", lines: 49, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/research_consent_screen.py", lines: 271, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/research_summary.py", lines: 86, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/research_verify.py", lines: 47, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/search_builder_screen.py", lines: 308, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/startup.py", lines: 935, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/cli/wizard.py", lines: 381, area: "adapters/primary/cli", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/gui/__init__.py", lines: 0, area: "adapters/primary/gui", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/primary/gui/app.py", lines: 1227, area: "adapters/primary/gui", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/gui/dashboard.py", lines: 349, area: "adapters/primary/gui", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/gui/lifecycle_window.py", lines: 363, area: "adapters/primary/gui", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/gui/research_window.py", lines: 477, area: "adapters/primary/gui", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/gui/search_window.py", lines: 523, area: "adapters/primary/gui", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/gui/settings_editor.py", lines: 846, area: "adapters/primary/gui", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/gui/strings.py", lines: 167, area: "adapters/primary/gui", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/primary/gui/wizard.py", lines: 474, area: "adapters/primary/gui", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/annotation/__init__.py", lines: 1, area: "adapters/secondary/annotation", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/annotation/detector_sample_source.py", lines: 159, area: "adapters/secondary/annotation", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/annotation/jsonl_store.py", lines: 157, area: "adapters/secondary/annotation", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/browser/browser_lifecycle.py", lines: 85, area: "adapters/secondary/browser", tool: "T-001 Access", verdict: "reuse", note: "BrowserInterface adapters and providers; declare capabilities (S3)"}
+  - {path: "adapters/secondary/browser/browser_monitor.py", lines: 550, area: "adapters/secondary/browser", tool: "T-001 health", verdict: "reuse", note: "browser health events; feeds the ADR-022 deadline work"}
+  - {path: "adapters/secondary/browser/context_manager.py", lines: 150, area: "adapters/secondary/browser", tool: "T-016 window set; T-002 frames", verdict: "reuse", note: "already switches frames, finds new tabs (switch_to_new_tab), returns to the main window; wired for Applications in composition_root; S5 builds the window set on it"}
+  - {path: "adapters/secondary/browser/page_snapshot.py", lines: 32, area: "adapters/secondary/browser", tool: "T-006 input", verdict: "reuse", note: "the one snapshot (url, title, html) the verdict reads"}
+  - {path: "adapters/secondary/browser/playwright_adapter.py", lines: 581, area: "adapters/secondary/browser", tool: "T-001 Access", verdict: "reuse", note: "BrowserInterface adapters and providers; declare capabilities (S3)"}
+  - {path: "adapters/secondary/browser/playwright_provider.py", lines: 239, area: "adapters/secondary/browser", tool: "T-001 Access", verdict: "reuse", note: "BrowserInterface adapters and providers; declare capabilities (S3)"}
+  - {path: "adapters/secondary/browser/selenium_adapter.py", lines: 633, area: "adapters/secondary/browser", tool: "T-001 Access", verdict: "reuse", note: "BrowserInterface adapters and providers; declare capabilities (S3)"}
+  - {path: "adapters/secondary/browser/selenium_provider.py", lines: 659, area: "adapters/secondary/browser", tool: "T-001 Access", verdict: "reuse", note: "BrowserInterface adapters and providers; declare capabilities (S3)"}
+  - {path: "adapters/secondary/browser/static_fetch_adapter.py", lines: 0, area: "adapters/secondary/browser", tool: "-", verdict: "keep (empty, pinned PLANNED)", note: "static path retired by ADR-013"}
+  - {path: "adapters/secondary/discovery/__init__.py", lines: 0, area: "adapters/secondary/discovery", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/discovery/ats_registry.py", lines: 311, area: "adapters/secondary/discovery", tool: "engine (Discovery)", verdict: "reuse", note: "providers, catalogs and strategies"}
+  - {path: "adapters/secondary/discovery/components/card_activation.py", lines: 214, area: "adapters/secondary/discovery", tool: "T-016 activation", verdict: "change", note: "value pinning R-20; verdict after each click"}
+  - {path: "adapters/secondary/discovery/components/miner.py", lines: 153, area: "adapters/secondary/discovery", tool: "T-008 fallback", verdict: "keep", note: "DOM miner fallback until S2"}
+  - {path: "adapters/secondary/discovery/components/page_understanding_extractor.py", lines: 858, area: "adapters/secondary/discovery", tool: "T-008/T-009 engine", verdict: "reuse", note: "S1 reader and page record"}
+  - {path: "adapters/secondary/discovery/components/toolbar_navigator.py", lines: 190, area: "adapters/secondary/discovery", tool: "T-027 Controls", verdict: "keep both", note: "navigation-menu scan for careers pages"}
+  - {path: "adapters/secondary/discovery/providers/base_provider.py", lines: 146, area: "adapters/secondary/discovery", tool: "engine (Discovery)", verdict: "reuse", note: "providers, catalogs and strategies"}
+  - {path: "adapters/secondary/discovery/providers/bing.py", lines: 197, area: "adapters/secondary/discovery", tool: "engine (Discovery)", verdict: "reuse", note: "providers, catalogs and strategies"}
+  - {path: "adapters/secondary/discovery/providers/google.py", lines: 310, area: "adapters/secondary/discovery", tool: "engine (Discovery)", verdict: "reuse", note: "providers, catalogs and strategies"}
+  - {path: "adapters/secondary/discovery/providers/indeed.py", lines: 253, area: "adapters/secondary/discovery", tool: "engine (Discovery)", verdict: "reuse", note: "providers, catalogs and strategies"}
+  - {path: "adapters/secondary/discovery/search_surface_registry.py", lines: 170, area: "adapters/secondary/discovery", tool: "engine (Discovery)", verdict: "reuse", note: "providers, catalogs and strategies"}
+  - {path: "adapters/secondary/discovery/strategies/engine_strategies.py", lines: 586, area: "adapters/secondary/discovery", tool: "engine (Discovery)", verdict: "reuse", note: "providers, catalogs and strategies"}
+  - {path: "adapters/secondary/discovery/strategies/linkedin_easy_apply.py", lines: 141, area: "adapters/secondary/discovery", tool: "T-010 + T-014 dialog", verdict: "keep", note: "site FSM; CT-PH-048"}
+  - {path: "adapters/secondary/discovery/strategies/navigators.py", lines: 299, area: "adapters/secondary/discovery", tool: "T-001 + landing check", verdict: "reuse (changed in S4 pass)", note: "landing on another surface is a failed navigation"}
+  - {path: "adapters/secondary/discovery/strategies/selector_loader.py", lines: 248, area: "adapters/secondary/discovery", tool: "T-020 memory tier", verdict: "keep", note: "lowest-memory selector tier"}
+  - {path: "adapters/secondary/discovery/strategies/serp_strategy.py", lines: 860, area: "adapters/secondary/discovery", tool: "engine over T-006/T-008", verdict: "reuse", note: "asks the verdict before reading records"}
+  - {path: "adapters/secondary/discovery/strategies/toolbar_locator.py", lines: 570, area: "adapters/secondary/discovery", tool: "T-027 Controls", verdict: "keep both", note: "YAML first (05 s17)"}
+  - {path: "adapters/secondary/evasion/__init__.py", lines: 0, area: "adapters/secondary/evasion", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/evasion/captcha_handler.py", lines: 46, area: "adapters/secondary/evasion", tool: "footprint (07)", verdict: "keep", note: "fingerprint hardening; never a verdict input"}
+  - {path: "adapters/secondary/evasion/fingerprint_chrome.py", lines: 281, area: "adapters/secondary/evasion", tool: "footprint (07)", verdict: "keep", note: "fingerprint hardening; never a verdict input"}
+  - {path: "adapters/secondary/evasion/fingerprint_firefox.py", lines: 144, area: "adapters/secondary/evasion", tool: "footprint (07)", verdict: "keep", note: "fingerprint hardening; never a verdict input"}
+  - {path: "adapters/secondary/evasion/fingerprinting.py", lines: 120, area: "adapters/secondary/evasion", tool: "footprint (07)", verdict: "keep", note: "fingerprint hardening; never a verdict input"}
+  - {path: "adapters/secondary/interaction/api_direct_adapter.py", lines: 0, area: "adapters/secondary/interaction", tool: "-", verdict: "keep (empty, pinned PLANNED)", note: "05 s17 ruling"}
+  - {path: "adapters/secondary/interaction/dom_observer.py", lines: 345, area: "adapters/secondary/interaction", tool: "T-010 steps; T-016 settle", verdict: "keep both, then change", note: "FormState and wait_for_dom_stable are live in Applications; consume form_fields findings after S4 acceptance (05 s17)"}
+  - {path: "adapters/secondary/interaction/handlers/base.py", lines: 115, area: "adapters/secondary/interaction", tool: "T-014 Widgets (how)", verdict: "reuse", note: "handlers operate controls; the toolkit names the handler"}
+  - {path: "adapters/secondary/interaction/handlers/checkable.py", lines: 113, area: "adapters/secondary/interaction", tool: "T-014 Widgets (how)", verdict: "reuse", note: "handlers operate controls; the toolkit names the handler"}
+  - {path: "adapters/secondary/interaction/handlers/date.py", lines: 150, area: "adapters/secondary/interaction", tool: "T-014 Widgets (how)", verdict: "reuse", note: "handlers operate controls; the toolkit names the handler"}
+  - {path: "adapters/secondary/interaction/handlers/file.py", lines: 127, area: "adapters/secondary/interaction", tool: "T-014 Widgets (how)", verdict: "reuse", note: "handlers operate controls; the toolkit names the handler"}
+  - {path: "adapters/secondary/interaction/handlers/select.py", lines: 294, area: "adapters/secondary/interaction", tool: "T-014 Widgets (how)", verdict: "reuse", note: "handlers operate controls; the toolkit names the handler"}
+  - {path: "adapters/secondary/interaction/handlers/text.py", lines: 95, area: "adapters/secondary/interaction", tool: "T-014 Widgets (how)", verdict: "reuse", note: "handlers operate controls; the toolkit names the handler"}
+  - {path: "adapters/secondary/interaction/human_like_adapter.py", lines: 387, area: "adapters/secondary/interaction", tool: "T-014 (how)", verdict: "reuse", note: "facade over the handlers"}
+  - {path: "adapters/secondary/navigation/__init__.py", lines: 1, area: "adapters/secondary/navigation", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/navigation/interruption.py", lines: 151, area: "adapters/secondary/navigation", tool: "T-006 consent kind; T-016 overlays", verdict: "reuse", note: "dismisses cookie banners, consent walls and pop-ups through the interaction tool; the verdict's consent kind decides when, this module acts"}
+  - {path: "adapters/secondary/navigation/page_advancer.py", lines: 420, area: "adapters/secondary/navigation", tool: "T-016 / ALG-027 pattern", verdict: "reuse", note: "verified page advance"}
+  - {path: "adapters/secondary/navigation/pagination.py", lines: 114, area: "adapters/secondary/navigation", tool: "T-016 scroll growth", verdict: "reuse", note: "feed-scroll strategy"}
+  - {path: "adapters/secondary/network/__init__.py", lines: 3, area: "adapters/secondary/network", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/network/network.py", lines: 0, area: "adapters/secondary/network", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/network/network_monitor.py", lines: 416, area: "adapters/secondary/network", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/network/resilient_http.py", lines: 158, area: "adapters/secondary/network", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/network/robots.py", lines: 75, area: "adapters/secondary/network", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/network/throttler.py", lines: 95, area: "adapters/secondary/network", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/network/watchdog.py", lines: 50, area: "adapters/secondary/network", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/os/detectors.py", lines: 414, area: "adapters/secondary/os", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/os/hardware.py", lines: 136, area: "adapters/secondary/os", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/os/platform_inspector.py", lines: 185, area: "adapters/secondary/os", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/perception/aom_adapter.py", lines: 222, area: "adapters/secondary/perception", tool: "T-002 AX_TREE capability", verdict: "reuse", note: "accessibility tree via CDP or Playwright; the source for shadow-DOM dialogs the DOM walk misses (owner capture: Siemens cookie dialog)"}
+  - {path: "adapters/secondary/perception/dom_adapter.py", lines: 437, area: "adapters/secondary/perception", tool: "T-002 (legacy UIModel)", verdict: "keep", note: "lightweight tier of the router; no new use"}
+  - {path: "adapters/secondary/perception/math_dom_adapter.py", lines: 871, area: "adapters/secondary/perception", tool: "T-001/T-002 Observe", verdict: "change (S4 done)", note: "extraction reads control state, valueMissing, markers (S4); S3 adds Doc, caps, shadow"}
+  - {path: "adapters/secondary/perception/math_perception_adapter.py", lines: 250, area: "adapters/secondary/perception", tool: "T-002 Observe", verdict: "change", note: "consumes Doc (S3)"}
+  - {path: "adapters/secondary/persistence/__init__.py", lines: 13, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/persistence/atomic.py", lines: 50, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/persistence/database.py", lines: 897, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/persistence/geodatabase.py", lines: 74, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/persistence/harvest_baseline_repository.py", lines: 136, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/persistence/job_repository.py", lines: 181, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/persistence/page_feedback_repository.py", lines: 157, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/persistence/policy_manager.py", lines: 136, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/persistence/profile_repository.py", lines: 418, area: "adapters/secondary/persistence", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/reasoning/__init__.py", lines: 18, area: "adapters/secondary/reasoning", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/reasoning/asp_adapter.py", lines: 83, area: "adapters/secondary/reasoning", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/reasoning/gpt4all_adapter.py", lines: 152, area: "adapters/secondary/reasoning", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/reasoning/llm_adapter.py", lines: 0, area: "adapters/secondary/reasoning", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/reasoning/rule_based_adapter.py", lines: 592, area: "adapters/secondary/reasoning", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/research/__init__.py", lines: 0, area: "adapters/secondary/research", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/research/discovery_reader.py", lines: 72, area: "adapters/secondary/research", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/research/queued_page_store.py", lines: 161, area: "adapters/secondary/research", tool: "T-018 L2", verdict: "reuse", note: "page copies"}
+  - {path: "adapters/secondary/research/replay_artifact_dir.py", lines: 32, area: "adapters/secondary/research", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/research/research_exporter.py", lines: 685, area: "adapters/secondary/research", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/research/research_verifier.py", lines: 436, area: "adapters/secondary/research", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/research/signal_aggregator.py", lines: 2032, area: "adapters/secondary/research", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/research/sqlite_audit_repository.py", lines: 193, area: "adapters/secondary/research", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/research/sqlite_consent_repository.py", lines: 382, area: "adapters/secondary/research", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/research/warc_page_store.py", lines: 255, area: "adapters/secondary/research", tool: "T-018 L2 / T-022", verdict: "reuse", note: "page copies as WARC"}
+  - {path: "adapters/secondary/research/warc_replay_corpus.py", lines: 80, area: "adapters/secondary/research", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/resolution/captcha_adapter.py", lines: 150, area: "adapters/secondary/resolution", tool: "T-006 hand-off", verdict: "keep", note: "challenge resolution degrades to the human pause (ruling A)"}
+  - {path: "adapters/secondary/resolution/logic_adapter.py", lines: 0, area: "adapters/secondary/resolution", tool: "-", verdict: "keep (empty)", note: "no page role"}
+  - {path: "adapters/secondary/security/__init__.py", lines: 0, area: "adapters/secondary/security", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "adapters/secondary/security/data_protection.py", lines: 306, area: "adapters/secondary/security", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "adapters/secondary/security/policy_enforcement.py", lines: 272, area: "adapters/secondary/security", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/__init__.py", lines: 0, area: "application/__init__.py", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "application/agent/__init__.py", lines: 0, area: "application/agent", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "application/agent/context.py", lines: 557, area: "application/agent", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/agent/event_bus.py", lines: 309, area: "application/agent", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/agent/orchestrator.py", lines: 2159, area: "application/agent", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/agent/state_machine.py", lines: 565, area: "application/agent", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/agent/watchdog.py", lines: 177, area: "application/agent", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/__init__.py", lines: 0, area: "application/services", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "application/services/accessibility.py", lines: 280, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/analysis_contracts.py", lines: 54, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/audit_coordinator.py", lines: 548, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/auditing/browser_audit.py", lines: 63, area: "application/services", tool: "T-018 audit", verdict: "keep", note: "logging auditors"}
+  - {path: "application/services/auditing/degradation_detector.py", lines: 209, area: "application/services", tool: "T-018 audit", verdict: "keep", note: "logging auditors"}
+  - {path: "application/services/auditing/discovery_math_auditor.py", lines: 113, area: "application/services", tool: "T-018 audit", verdict: "keep", note: "logging auditors"}
+  - {path: "application/services/auditing/discovery_verification.py", lines: 254, area: "application/services", tool: "T-018 checks", verdict: "reuse", note: "verifier; job_identity shared with the counters"}
+  - {path: "application/services/auditing/network_auditor.py", lines: 58, area: "application/services", tool: "T-018 audit", verdict: "keep", note: "logging auditors"}
+  - {path: "application/services/auditing/page_auditor.py", lines: 38, area: "application/services", tool: "T-018 audit", verdict: "keep", note: "logging auditors"}
+  - {path: "application/services/auditing/reporter.py", lines: 94, area: "application/services", tool: "T-018 audit", verdict: "keep", note: "logging auditors"}
+  - {path: "application/services/autonomy.py", lines: 111, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/company_batch_scheduler.py", lines: 132, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/data_processing/checkpoint_manager.py", lines: 577, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/data_processing/deduplication_manager.py", lines: 450, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/footprint_ledger.py", lines: 139, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/host_pacing.py", lines: 106, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/i18n.py", lines: 513, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/install/__init__.py", lines: 28, area: "application/services", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "application/services/install/bootstrap_pins.py", lines: 114, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/install/engine.py", lines: 834, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/install/manifest.py", lines: 101, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/install/python_choice.py", lines: 291, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/instance_registry.py", lines: 96, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/job_posting_resolver.py", lines: 174, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/labelling.py", lines: 185, area: "application/services", tool: "T-019 gold labels", verdict: "reuse"}
+  - {path: "application/services/lifecycle_wording.py", lines: 269, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/location/haversine.py", lines: 43, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/mathematical_web_analyzer.py", lines: 343, area: "application/services", tool: "engine-facing T-008/T-010", verdict: "change", note: "thin service over tools"}
+  - {path: "application/services/page_action/clicking.py", lines: 338, area: "application/services", tool: "05 s17 interaction layer", verdict: "reuse", note: "the how: click ladder, typing, scrolling, probe, pacing, ADR-022 checkpoint"}
+  - {path: "application/services/page_action/pacing.py", lines: 121, area: "application/services", tool: "05 s17 interaction layer", verdict: "reuse", note: "the how: click ladder, typing, scrolling, probe, pacing, ADR-022 checkpoint"}
+  - {path: "application/services/page_action/probe.py", lines: 414, area: "application/services", tool: "05 s17 interaction layer", verdict: "reuse", note: "the how: click ladder, typing, scrolling, probe, pacing, ADR-022 checkpoint"}
+  - {path: "application/services/page_action/result.py", lines: 49, area: "application/services", tool: "05 s17 interaction layer", verdict: "reuse", note: "the how: click ladder, typing, scrolling, probe, pacing, ADR-022 checkpoint"}
+  - {path: "application/services/page_action/scrolling.py", lines: 474, area: "application/services", tool: "05 s17 interaction layer", verdict: "reuse", note: "the how: click ladder, typing, scrolling, probe, pacing, ADR-022 checkpoint"}
+  - {path: "application/services/page_action/service.py", lines: 463, area: "application/services", tool: "05 s17 interaction layer", verdict: "reuse", note: "the how: click ladder, typing, scrolling, probe, pacing, ADR-022 checkpoint"}
+  - {path: "application/services/page_action/state.py", lines: 121, area: "application/services", tool: "05 s17 interaction layer", verdict: "reuse", note: "the how: click ladder, typing, scrolling, probe, pacing, ADR-022 checkpoint"}
+  - {path: "application/services/page_action/text_input.py", lines: 181, area: "application/services", tool: "05 s17 interaction layer", verdict: "reuse", note: "the how: click ladder, typing, scrolling, probe, pacing, ADR-022 checkpoint"}
+  - {path: "application/services/page_analysis_router.py", lines: 294, area: "application/services", tool: "T-021 Profile", verdict: "change", note: "strategy selection"}
+  - {path: "application/services/page_copier.py", lines: 175, area: "application/services", tool: "T-018 L2", verdict: "reuse", note: "cleaned page copies"}
+  - {path: "application/services/page_feedback_service.py", lines: 116, area: "application/services", tool: "T-019/T-020", verdict: "change", note: "generalise (10 s2)"}
+  - {path: "application/services/profile_validator.py", lines: 454, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/query_builder.py", lines: 424, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/replay_service.py", lines: 75, area: "application/services", tool: "T-022 Replay", verdict: "reuse"}
+  - {path: "application/services/research_consent.py", lines: 564, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/search_preview.py", lines: 169, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/session_controller.py", lines: 2555, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/text_matching.py", lines: 345, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/ui_schema.py", lines: 234, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/uninstall/__init__.py", lines: 24, area: "application/services", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "application/services/uninstall/engine.py", lines: 866, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/uninstall/finisher.py", lines: 335, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/uninstall/guarded_delete.py", lines: 42, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/uninstall/model.py", lines: 124, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/uninstall/scoping.py", lines: 54, area: "application/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "application/services/webpage_analyzer.py", lines: 316, area: "application/services", tool: "engine-facing T-010", verdict: "change", note: "thin service over tools"}
+  - {path: "application/workflows/__init__.py", lines: 20, area: "application/workflows", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "application/workflows/applications_workflow.py", lines: 2973, area: "application/workflows", tool: "engines", verdict: "change (consumers)", note: "consume findings; keep the gate"}
+  - {path: "application/workflows/discovery_workflow.py", lines: 1030, area: "application/workflows", tool: "engines", verdict: "change (consumers)", note: "consume findings; keep the gate"}
+  - {path: "application/workflows/vetting_workflow.py", lines: 670, area: "application/workflows", tool: "engines", verdict: "change (consumers)", note: "consume findings; keep the gate"}
+  - {path: "domain/__init__.py", lines: 13, area: "domain/__init__.py", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "domain/applications/__init__.py", lines: 0, area: "domain/applications", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "domain/applications/field_classifier.py", lines: 133, area: "domain/applications", tool: "T-012", verdict: "keep both", note: "classifies live elements for Applications today"}
+  - {path: "domain/applications/fsm/base.py", lines: 27, area: "domain/applications", tool: "T-010 steps", verdict: "keep"}
+  - {path: "domain/applications/fsm/states.py", lines: 137, area: "domain/applications", tool: "T-010 steps", verdict: "keep"}
+  - {path: "domain/applications/semantic_filler.py", lines: 72, area: "domain/applications", tool: "engine (what to fill)", verdict: "reuse"}
+  - {path: "domain/config.py", lines: 355, area: "domain/config.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/constants.py", lines: 142, area: "domain/constants.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/events.py", lines: 439, area: "domain/events.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/exceptions.py", lines: 239, area: "domain/exceptions.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/__init__.py", lines: 0, area: "domain/models", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "domain/models/analysis_tier.py", lines: 42, area: "domain/models", tool: "T-021", verdict: "change"}
+  - {path: "domain/models/annotation.py", lines: 199, area: "domain/models", tool: "T-019", verdict: "reuse"}
+  - {path: "domain/models/application_evidence.py", lines: 169, area: "domain/models", tool: "T-018", verdict: "reuse"}
+  - {path: "domain/models/browser_candidates.py", lines: 110, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/capability_profile.py", lines: 107, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/consent.py", lines: 45, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/effective_config.py", lines: 116, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/environment.py", lines: 48, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/execution.py", lines: 102, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/job.py", lines: 57, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/location.py", lines: 17, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/math_dom.py", lines: 314, area: "domain/models", tool: "T-004 Doc (today)", verdict: "change", note: "NodeView later; control facts added in S4"}
+  - {path: "domain/models/math_webpage.py", lines: 268, area: "domain/models", tool: "T-010/T-011 findings", verdict: "reuse, extended", note: "LabeledField evidence, FormRecord"}
+  - {path: "domain/models/motion.py", lines: 75, area: "domain/models", tool: "05 s17 how", verdict: "reuse", note: "motion plans"}
+  - {path: "domain/models/motion_profile.py", lines: 206, area: "domain/models", tool: "05 s17 how", verdict: "reuse", note: "motion plans"}
+  - {path: "domain/models/page_advance.py", lines: 59, area: "domain/models", tool: "T-016", verdict: "reuse"}
+  - {path: "domain/models/page_copy.py", lines: 153, area: "domain/models", tool: "T-018 L2", verdict: "reuse"}
+  - {path: "domain/models/page_record.py", lines: 312, area: "domain/models", tool: "T-018 Trace", verdict: "reuse, extended", note: "page and form records"}
+  - {path: "domain/models/parsed_job_description.py", lines: 58, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/plan.py", lines: 0, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/policy.py", lines: 275, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/profile.py", lines: 888, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/replay.py", lines: 120, area: "domain/models", tool: "T-022", verdict: "reuse"}
+  - {path: "domain/models/resources.py", lines: 49, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/search_instruction.py", lines: 171, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/search_query.py", lines: 259, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/search_surface.py", lines: 200, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/session_plan.py", lines: 227, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/session_report.py", lines: 472, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/task_lifecycle.py", lines: 80, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/task_payloads.py", lines: 124, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/task_priority.py", lines: 50, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/timing.py", lines: 148, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/ui.py", lines: 165, area: "domain/models", tool: "T-002 legacy UIModel", verdict: "keep"}
+  - {path: "domain/models/ui_contract.py", lines: 868, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/models/work_unit.py", lines: 81, area: "domain/models", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/accessibility_port.py", lines: 49, area: "domain/ports", tool: "T-002 AX_TREE", verdict: "reuse"}
+  - {path: "domain/ports/annotation_port.py", lines: 107, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/ats_port.py", lines: 207, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/audit_port.py", lines: 99, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/browser_port.py", lines: 345, area: "domain/ports", tool: "T-001", verdict: "reuse"}
+  - {path: "domain/ports/browser_provider_port.py", lines: 74, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/consent_repository_port.py", lines: 52, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/discovery_port.py", lines: 110, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/environment_capabilities_port.py", lines: 41, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/event_publisher_port.py", lines: 50, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/extraction_observer_port.py", lines: 91, area: "domain/ports", tool: "T-018", verdict: "reuse"}
+  - {path: "domain/ports/feedback_repository_port.py", lines: 53, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/health_monitor_port.py", lines: 31, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/interaction_port.py", lines: 85, area: "domain/ports", tool: "05 s17 ports", verdict: "reuse"}
+  - {path: "domain/ports/interaction_primitives_port.py", lines: 89, area: "domain/ports", tool: "05 s17 ports", verdict: "reuse"}
+  - {path: "domain/ports/interrupt_policy_port.py", lines: 198, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/liveness_port.py", lines: 25, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/location_port.py", lines: 51, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/math_perception_port.py", lines: 51, area: "domain/ports", tool: "shim", verdict: "keep as shim"}
+  - {path: "domain/ports/math_reasoning_port.py", lines: 42, area: "domain/ports", tool: "shim", verdict: "keep as shim"}
+  - {path: "domain/ports/navigation_port.py", lines: 39, area: "domain/ports", tool: "05 s17 ports", verdict: "reuse"}
+  - {path: "domain/ports/page_advance_port.py", lines: 24, area: "domain/ports", tool: "05 s17 ports", verdict: "reuse"}
+  - {path: "domain/ports/page_copy_port.py", lines: 80, area: "domain/ports", tool: "T-018 L2", verdict: "reuse"}
+  - {path: "domain/ports/page_understanding_port.py", lines: 404, area: "domain/ports", tool: "shim (S6)", verdict: "keep as shim"}
+  - {path: "domain/ports/perception_port.py", lines: 76, area: "domain/ports", tool: "T-002 legacy", verdict: "keep"}
+  - {path: "domain/ports/profile_repository_port.py", lines: 82, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/raw_driver_port.py", lines: 39, area: "domain/ports", tool: "T-001", verdict: "keep"}
+  - {path: "domain/ports/reasoning_port.py", lines: 70, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/registry_port.py", lines: 78, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/replay_port.py", lines: 38, area: "domain/ports", tool: "T-022", verdict: "reuse"}
+  - {path: "domain/ports/repository_port.py", lines: 116, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/research_consent_port.py", lines: 266, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/research_port.py", lines: 493, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/resolution_port.py", lines: 30, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/serp_extraction_port.py", lines: 55, area: "domain/ports", tool: "T-008", verdict: "reuse"}
+  - {path: "domain/ports/text_generation_port.py", lines: 38, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/text_similarity_port.py", lines: 44, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/ui_port.py", lines: 360, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/ports/work_queue_port.py", lines: 132, area: "domain/ports", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/retry.py", lines: 53, area: "domain/retry.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/annotation_analysis.py", lines: 227, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/annotation_studies.py", lines: 181, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/apply_target.py", lines: 297, area: "domain/services", tool: "T-006 input", verdict: "reuse"}
+  - {path: "domain/services/card_static_resolution.py", lines: 541, area: "domain/services", tool: "T-009", verdict: "change"}
+  - {path: "domain/services/challenge_assessment.py", lines: 411, area: "domain/services", tool: "T-006", verdict: "reuse"}
+  - {path: "domain/services/convex_hull.py", lines: 68, area: "domain/services", tool: "T-007 helper", verdict: "keep"}
+  - {path: "domain/services/discovery_taxonomy.py", lines: 205, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/dom_segmentation.py", lines: 589, area: "domain/services", tool: "T-008 today; T-010 entry", verdict: "change / split", note: "form reading moved to form_fields; listings to S2"}
+  - {path: "domain/services/entropy.py", lines: 87, area: "domain/services", tool: "ALG-014 f5", verdict: "keep", note: "small weight, unused by the rule today"}
+  - {path: "domain/services/field_type_inference.py", lines: 155, area: "domain/services", tool: "T-012", verdict: "keep both", note: "FieldTypeClassifier used by mathematical_web_analyzer; form_fields types with autofill tokens first"}
+  - {path: "domain/services/form_fields.py", lines: 1272, area: "domain/services", tool: "T-010/T-011/T-012/T-013, ALG-014", verdict: "new in S4", note: "form reader"}
+  - {path: "domain/services/honeypot_detection.py", lines: 194, area: "domain/services", tool: "ALG-014", verdict: "retire candidate", note: "0 importers (reachability pin); superseded by form_fields.trap_decision; owner's call"}
+  - {path: "domain/services/html_elements.py", lines: 50, area: "domain/services", tool: "T-003/T-022", verdict: "reuse"}
+  - {path: "domain/services/job_lifecycle_tracker.py", lines: 185, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/label_input_pairing.py", lines: 281, area: "domain/services", tool: "T-011 solver", verdict: "reuse (solver)", note: "hungarian_assign used by form_fields; its own assign path stays for mathematical_web_analyzer"}
+  - {path: "domain/services/locale_normalization.py", lines: 197, area: "domain/services", tool: "T-003", verdict: "reuse"}
+  - {path: "domain/services/macro_analysis.py", lines: 237, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/motion_model.py", lines: 239, area: "domain/services", tool: "05 s17 how", verdict: "reuse"}
+  - {path: "domain/services/navigation_landing.py", lines: 84, area: "domain/services", tool: "T-001 landing", verdict: "new in S4 pass"}
+  - {path: "domain/services/occlusion.py", lines: 145, area: "domain/services", tool: "ALG-013", verdict: "change", note: "computed style input"}
+  - {path: "domain/services/page_assessment.py", lines: 444, area: "domain/services", tool: "T-006 Verdict", verdict: "reuse, extended", note: "HOME_PAGE, SERP family step"}
+  - {path: "domain/services/page_phrases.py", lines: 133, area: "domain/services", tool: "T-006 phrases", verdict: "reuse"}
+  - {path: "domain/services/page_redaction.py", lines: 152, area: "domain/services", tool: "T-018 L2", verdict: "reuse"}
+  - {path: "domain/services/posting_context.py", lines: 131, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/posting_observation.py", lines: 390, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/query_composer.py", lines: 551, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/replay.py", lines: 259, area: "domain/services", tool: "T-022", verdict: "reuse"}
+  - {path: "domain/services/research_consent_text.py", lines: 225, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/research_consent_wording.py", lines: 184, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/research_identity.py", lines: 246, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/research_statistics.py", lines: 518, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/salary_extraction.py", lines: 425, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/search_planner.py", lines: 447, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/signal_detectors/__init__.py", lines: 188, area: "domain/services", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "domain/services/signal_detectors/base.py", lines: 273, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/signal_detectors/dark_pattern_detectors.py", lines: 188, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/signal_detectors/discrimination_detectors.py", lines: 291, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/signal_detectors/extended_detectors.py", lines: 417, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/signal_detectors/ghost_job_detectors.py", lines: 209, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/signal_detectors/qualification_detectors.py", lines: 193, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/signal_detectors/regulatory_detectors.py", lines: 144, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/signal_detectors/salary_detectors.py", lines: 327, area: "domain/services", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/services/structural_hashing.py", lines: 254, area: "domain/services", tool: "T-008", verdict: "change"}
+  - {path: "domain/services/text_extraction.py", lines: 109, area: "domain/services", tool: "T-022", verdict: "reuse"}
+  - {path: "domain/services/transformations.py", lines: 105, area: "domain/services", tool: "T-007 helper", verdict: "keep"}
+  - {path: "domain/services/url_evidence.py", lines: 532, area: "domain/services", tool: "ALG-004", verdict: "reuse"}
+  - {path: "domain/services/url_templating.py", lines: 70, area: "domain/services", tool: "T-016 paging", verdict: "reuse"}
+  - {path: "domain/types.py", lines: 57, area: "domain/types.py", tool: "T-006 vocabulary", verdict: "reuse, extended", note: "PageType"}
+  - {path: "domain/vetting/base_filter.py", lines: 57, area: "domain/vetting", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/vetting/experience_filter.py", lines: 87, area: "domain/vetting", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/vetting/hard_skills_filter.py", lines: 102, area: "domain/vetting", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/vetting/logic_filters.py", lines: 108, area: "domain/vetting", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/vetting/role_alignment_filter.py", lines: 116, area: "domain/vetting", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/vetting/spatial_filter.py", lines: 178, area: "domain/vetting", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "domain/vetting/throttling_filter.py", lines: 177, area: "domain/vetting", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "infrastructure/__init__.py", lines: 1, area: "infrastructure/__init__.py", tool: "-", verdict: "n/a (package marker)"}
+  - {path: "infrastructure/browser_cascade.py", lines: 309, area: "infrastructure/browser_cascade.py", tool: "T-001/T-021", verdict: "reuse"}
+  - {path: "infrastructure/browser_lease_manager.py", lines: 60, area: "infrastructure/browser_lease_manager.py", tool: "T-001", verdict: "reuse"}
+  - {path: "infrastructure/composition_root.py", lines: 1906, area: "infrastructure/composition_root.py", tool: "wiring", verdict: "reuse"}
+  - {path: "infrastructure/driver_registry.py", lines: 75, area: "infrastructure/driver_registry.py", tool: "T-001", verdict: "reuse"}
+  - {path: "infrastructure/log_filter.py", lines: 149, area: "infrastructure/log_filter.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "infrastructure/logging_setup.py", lines: 201, area: "infrastructure/logging_setup.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "infrastructure/registry.py", lines: 897, area: "infrastructure/registry.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "infrastructure/resilient_driver.py", lines: 377, area: "infrastructure/resilient_driver.py", tool: "T-001", verdict: "keep, extend", note: "deadline per command (S0)"}
+  - {path: "main.py", lines: 1306, area: "main.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "resources/assets_manager.py", lines: 35, area: "resources/assets_manager.py", tool: "-", verdict: "n/a (not page-facing)"}
+  - {path: "resources/research/__init__.py", lines: 0, area: "resources/research", tool: "-", verdict: "n/a (package marker)"}

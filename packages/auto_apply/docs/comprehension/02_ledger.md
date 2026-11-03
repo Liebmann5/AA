@@ -19,15 +19,15 @@ The checklist of everything AA requires of page comprehension. **The machine-rea
 
 **Status legend.** `[x]` proven live on three independent sources by AA's own runs · `[~]` partial: code and/or fixture evidence, no three-source live proof · `[ ]` not capable · `[?]` unknown: evidence recorded, a human decides. **No row is `[x]`**: no built tool has been proven by AA's own live runs on three sources. Pass 2 observed pages live from a data centre (`cloud`); those observations are evidence for the design, never proof of AA's behaviour.
 
-**Source tags.** **O** observed live in pass 2, environment `cloud`, with specimen IDs (the evidence set, [08](08_evidence_and_research.md)) · **R** recorded in AA's own evidence (environment `owner` unless stated) · **K** recalled, unverified. Tool column: `T-nnn` is `CT-T-nnn`, `ALG-nnn` is `CT-ALG-nnn`. Verification codes: U unit pin on fixture · P property test · R replay · L live run · M measurement · A analysis · X experiment.
+**Source tags.** **O** observed live in pass 2, environment `cloud`, with specimen IDs (pass-2 observations; the archive was not retained, and each row records what was observed; [08](08_evidence_and_research.md) s9) · **R** recorded in AA's own evidence (environment `owner` unless stated) · **K** recalled, unverified. Tool column: `T-nnn` is `CT-T-nnn`, `ALG-nnn` is `CT-ALG-nnn`. Verification codes: U unit pin on fixture · P property test · R replay · L live run · M measurement · A analysis · X experiment.
 
 ## Summary (all parts)
 
 | Status | Rows |
 | --- | --- |
 | `[x]` | 0 |
-| `[~]` | 176 |
-| `[ ]` | 203 |
+| `[~]` | 189 |
+| `[ ]` | 190 |
 | `[?]` | 42 |
 | **Total** | **421** |
 
@@ -36,23 +36,23 @@ The checklist of everything AA requires of page comprehension. **The machine-rea
 | Phenomena: result lists | 1 | 21 | 0 | 9 | 10 | 2 |
 | Phenomena: careers pages and list movement | 1 | 10 | 0 | 8 | 2 | 0 |
 | Phenomena: job descriptions | 1 | 17 | 0 | 9 | 5 | 3 |
-| Phenomena: forms, controls and widgets | 1 | 20 | 0 | 8 | 8 | 4 |
-| Phenomena: how 'required' is signalled | 1 | 10 | 0 | 1 | 9 | 0 |
+| Phenomena: forms, controls and widgets | 1 | 20 | 0 | 9 | 7 | 4 |
+| Phenomena: how 'required' is signalled | 1 | 10 | 0 | 5 | 5 | 0 |
 | Phenomena: accounts and authentication | 1 | 12 | 0 | 3 | 5 | 4 |
 | Phenomena: defences and obstacles | 1 | 10 | 0 | 8 | 1 | 1 |
 | Phenomena: browser surfaces and transitions | 2 | 10 | 0 | 2 | 6 | 2 |
 | Phenomena: walls, error pages and page states | 2 | 10 | 0 | 4 | 1 | 5 |
-| Phenomena: content, encodings and languages | 2 | 19 | 0 | 8 | 10 | 1 |
+| Phenomena: content, encodings and languages | 2 | 19 | 0 | 9 | 9 | 1 |
 | Platforms, browsers, access mechanisms, resource profiles, containers | 2 | 20 | 0 | 10 | 6 | 4 |
 | Future capabilities | 2 | 10 | 0 | 0 | 8 | 2 |
-| Phenomena: edge cases and adversity (12) | 2 | 34 | 0 | 4 | 24 | 6 |
+| Phenomena: edge cases and adversity (12) | 2 | 34 | 0 | 8 | 20 | 6 |
 | Phenomena: toolbars and filter controls | 4 | 17 | 0 | 3 | 12 | 2 |
-| Phenomena: interaction patterns (WAI-ARIA APG) and HTML controls | 4 | 24 | 0 | 3 | 18 | 3 |
+| Phenomena: interaction patterns (WAI-ARIA APG) and HTML controls | 4 | 24 | 0 | 4 | 17 | 3 |
 | Phenomena: alternate views of the same record | 4 | 11 | 0 | 2 | 7 | 2 |
 | Engine needs: Discovery | 3 | 10 | 0 | 6 | 4 | 0 |
 | Engine needs: Vetting | 3 | 12 | 0 | 6 | 5 | 1 |
-| Engine needs: Applications | 3 | 14 | 0 | 10 | 4 | 0 |
-| Functional requirements (04) | 3 | 37 | 0 | 20 | 17 | 0 |
+| Engine needs: Applications | 3 | 14 | 0 | 11 | 3 | 0 |
+| Functional requirements (04) | 3 | 37 | 0 | 21 | 16 | 0 |
 | Non-functional requirements (04) | 3 | 27 | 0 | 9 | 18 | 0 |
 | Research and publishability criteria | 3 | 13 | 0 | 7 | 6 | 0 |
 | Toolkit invariants | 3 | 14 | 0 | 2 | 12 | 0 |
@@ -128,10 +128,10 @@ The checklist of everything AA requires of page comprehension. **The machine-rea
 | --- | --- | --- | --- | --- | --- | --- |
 | CT-PH-030 | Single-page form in a form element | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10); Oracle Taleo (O cloud: F11); Eightfold (O cloud: F12) | `[~]` | T-010/011/012 | U+L | WIRED; mock ATS fixtures; 0 live submissions (STATUS) |
 | CT-PH-031 | Multi-step wizard with next/back and step indicator | Jobvite (O cloud: F01 F14); Oracle Recruiting Cloud (O cloud: F10); Workday (K) | `[~]` | T-010; acts: ApplicationsWorkflow._navigate_multi_page_flow; DOMObserver states | U+L | ats descriptors multi_step flag |
-| CT-PH-032 | Formless single-page-app form (no form element) | Ashby (O cloud: F02 F03 F04); Google Forms (O cloud: L57); Notion (O cloud: L58 N58) | `[ ]` | ALG-007 | U+L | design only; pass 2: A: Ashby SPA forms F02-F04 are judged CAPTCHA_BLOCK by today's verdict (invisible reCAPTCHA, no <form>) |
+| CT-PH-032 | Formless single-page-app form (no form element) | Ashby (O cloud: F02 F03 F04); Google Forms (O cloud: L57); Notion (O cloud: L58 N58) | `[~]` | ALG-007 | U+L | design only; pass 2: A: Ashby SPA forms F02-F04 are judged CAPTCHA_BLOCK by today's verdict (invisible reCAPTCHA, no <form>); S4 (pass 4): formless Ashby forms read (fields, groups) and no longer judged CAPTCHA_BLOCK; R (owner capture form-radio-checkbox-questions/20261103-075245_jobs.ashbyhq.com) |
 | CT-PH-033 | Text/email/tel/url/number/password inputs with autofill tokens | Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10); Lever (K) | `[~]` | T-012; acts: TextInputHandler / Typer.type_text, pinned (test_handler_protocol) | U+L | classifier WIRED |
 | CT-PH-034 | Native select, multiple select, datalist | Jobvite (O cloud: F01 F14); Greenhouse (K); Lever (K) | `[~]` | T-014/012; acts: SelectInputHandler / Typer.select_option, pinned | U+L | handlers/select.py WIRED |
-| CT-PH-035 | Radio and checkbox groups with fieldset/legend or custom buttons | Ashby (O cloud: F02 F03 F04); Oracle Recruiting Cloud (O cloud: F10); Greenhouse (K) | `[~]` | T-011/014; acts: CheckableInputHandler / Typer.check_checkbox (browser pin) | U+L | partial |
+| CT-PH-035 | Radio and checkbox groups with fieldset/legend or custom buttons | Ashby (O cloud: F02 F03 F04); Oracle Recruiting Cloud (O cloud: F10); Greenhouse (K) | `[~]` | T-011/014; acts: CheckableInputHandler / Typer.check_checkbox (browser pin) | U+L | partial; S4 (pass 4): radio and checkbox groups become one question with options (legend, group heading, aria-labelledby, preceding text, shared wrapper); owner form captures: 30 groups, head 0 |
 | CT-PH-036 | Textarea, contenteditable and rich text editors | Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10); Eightfold (O cloud: F12) | `[ ]` | T-014; acts: TextInputHandler handles contenteditable (no pin) | U+L | handlers/text.py covers inputs |
 | CT-PH-037 | Date inputs: native, text with mask, custom pickers | Greenhouse (O cloud: F09); Workday (K); SmartRecruiters (K) | `[~]` | T-014; acts: DateInputHandler (three strategies; no pin) | U+L | handlers/date.py |
 | CT-PH-038 | Resume upload: file input, drop zone, hidden input behind a button | Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Lever (K) | `[~]` | T-014; acts: FileInputHandler (sets the file input directly), pinned | U+L | handlers/file.py |
@@ -151,11 +151,11 @@ The checklist of everything AA requires of page comprehension. **The machine-rea
 
 | ID | Item | Sources | Status | Tool | Verification | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| CT-PH-050 | Asterisk (with or without a legend defining it) | Greenhouse (O cloud: F09 P08); Eightfold (O cloud: F12); Google Forms (O cloud: L57) | `[ ]` | ALG-010 | U+L | design |
+| CT-PH-050 | Asterisk (with or without a legend defining it) | Greenhouse (O cloud: F09 P08); Eightfold (O cloud: F12); Google Forms (O cloud: L57) | `[~]` | ALG-010 | U+L | design; S4 (pass 4): asterisk +1.5, +4 with a legend, +2 red; CSS ::before/::after markers read; R (owner capture form-required-markers/20261103-080138_jobs.ashbyhq.com) |
 | CT-PH-051 | required / aria-required attribute | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10); Google Forms (O cloud: L57) | `[~]` | ALG-010 | U | is_required read; pass 2: [~] -> [ ] (A (stage 5, live, cloud): every field on Greenhouse, Ashby and Google Forms pages reported required (34/34, 40/40, 14/14), because _is_required tests get_attribute('required') is not None and get_attribute returns '' when absent); pass 3: [ ] -> [~] (presence test on the attribute tuple, unit-pinned (7701de8); no live proof yet) |
-| CT-PH-052 | Note at top: 'all fields required' / '* indicates required' | Greenhouse (O cloud: F09 P08); Oracle Taleo (O cloud: F11); Google Forms (O cloud: L57) | `[ ]` | ALG-010 | U+L | design |
-| CT-PH-053 | Optional marked instead of required ('(optional)') | Eightfold (O cloud: F12); Lever (K); Typeform (K) | `[ ]` | ALG-010 convention | U+L | design |
-| CT-PH-054 | Colour only (red label or border) | Ashby (O cloud: F02); custom forms (K); Workday (K) | `[ ]` | ALG-010 + computed style | U+L | needs computed style (defect 5) |
+| CT-PH-052 | Note at top: 'all fields required' / '* indicates required' | Greenhouse (O cloud: F09 P08); Oracle Taleo (O cloud: F11); Google Forms (O cloud: L57) | `[~]` | ALG-010 | U+L | design; S4 (pass 4): form legend '* indicates required' and 'all fields are required' detected; real-browser pin; R (owner capture form-one-page/20261103-074245_job-boards.greenhouse.io) |
+| CT-PH-053 | Optional marked instead of required ('(optional)') | Eightfold (O cloud: F12); Lever (K); Typeform (K) | `[~]` | ALG-010 convention | U+L | design; S4 (pass 4): '(optional)' -5 and the >50% optional convention; unit pins |
+| CT-PH-054 | Colour only (red label or border) | Ashby (O cloud: F02); custom forms (K); Workday (K) | `[~]` | ALG-010 + computed style | U+L | needs computed style (defect 5); S4 (pass 4): red marker colour read from computed style (+2, never alone); R (owner capture form-required-markers/20261103-080138_jobs.ashbyhq.com) |
 | CT-PH-055 | Nothing until submit; then inline errors | Workday (K); Greenhouse (K); Ashby (K) | `[ ]` | ALG-011/012 | U+L | ADR-012 gate |
 | CT-PH-056 | Error summary at top with links to fields | gov forms (K); Workday (K); iCIMS (K) | `[ ]` | ALG-012 | U+L | design |
 | CT-PH-057 | Toast / snackbar errors that disappear | Ashby (K); LinkedIn Easy Apply (K); Workable (K) | `[ ]` | ALG-012 + settle | U+L | timing-sensitive |
@@ -190,6 +190,6 @@ The checklist of everything AA requires of page comprehension. **The machine-rea
 | CT-PH-074 | Search-engine 'unusual traffic' page | Google /sorry (R); Google (O cloud: L01); Bing (K) | `[~]` | T-006 | U+L | R: LR-8, benched (ADR-020); pass 2: A: Google /sorry/ recognised (L01) |
 | CT-PH-075 | Rate limit (429, Retry-After, soft throttle) | Workable (O cloud: L24 L25 L26); Google (K); LinkedIn (K) | `[~]` | T-006 + pacing | U+L | HostPacer WIRED; pass 2: A: Workable 429 (L24-L26) judged UNKNOWN |
 | CT-PH-076 | Silent thinning of results after suspicion | Google (R); Bing (R); Indeed (R) | `[~]` | degradation detector | U+L | R: baseline guard LIVE path; read live today |
-| CT-PH-077 | Honeypot fields (hidden, off-screen, unlabelled, trap names) | Bing (O cloud: L02); Stripe careers (company site) (O cloud: L15); Eightfold (O cloud: L29) | `[~]` | ALG-013/014 | P+U | WIRED; entropy false-positive risk; pass 2: A: false positives on address2, attestation, latest_employer, extracurricular, email_verification_code, contest_entry; RTL label and label 70 px above also flagged; stage 5 (live, cloud): flagged on 13 of 34, 7 of 40 and 2 of 14 controls of real forms |
+| CT-PH-077 | Honeypot fields (hidden, off-screen, unlabelled, trap names) | Bing (O cloud: L02); Stripe careers (company site) (O cloud: L15); Eightfold (O cloud: L29) | `[~]` | ALG-013/014 | P+U | WIRED; entropy false-positive risk; pass 2: A: false positives on address2, attestation, latest_employer, extracurricular, email_verification_code, contest_entry; RTL label and label 70 px above also flagged; stage 5 (live, cloud): flagged on 13 of 34, 7 of 40 and 2 of 14 controls of real forms; S4 (pass 4): CT-ALG-014 rule: trap only when hidden; whole-token names never alone; HIDDEN for labelled fields in closed sections; owner form captures 59 -> 9 traps (7 reCAPTCHA token fields, 2 file inputs still misread) |
 | CT-PH-078 | Time-based traps and JS-issued tokens | custom forms (K); WordPress forms (K); ATS (K) | `[ ]` | pacing profile | L | not visible statically |
 | CT-PH-079 | DOM obfuscation: hashed classes, shuffled order, canvas text, CSS content, zero-width characters | Google (R); We Work Remotely (O cloud: C17); Workday (O cloud: F05 F06 L10 …); Bayt (O cloud: L40) | `[~]` | T-003/008 | U+L | R: class rotation in Bible |

@@ -1,8 +1,8 @@
 ---
 title: "Page Comprehension Toolkit: Evidence and Research"
 status: needs-review
-last_verified: 2026-11-02
-verified_against: "7701de8 + S1 reply files (pass 3)"
+last_verified: 2026-11-03
+verified_against: "bcb6c2c + S4 form reply files (pass 4)"
 audience: contributors
 ---
 
@@ -136,8 +136,10 @@ controls the owner saw on Notion pages were withheld from it.
 
 ## 9. The pass-2 evidence set
 
-Pass 2 kept its live observations outside AA, in the owner's evidence archive,
-directory `evidence/`:
+Pass-2 observations; the archive was not retained, and each row records what was
+observed. The ledger rows and the measurements in [10](10_gap_analysis_and_build_plan.md)
+s5 carry what each specimen showed (specimen IDs, source, outcome), so they stand
+without the files. The set was laid out as follows when it was taken:
 
 | Path | Contents |
 | --- | --- |
@@ -159,7 +161,9 @@ login were not saved beyond the wall itself.
 specimens is the first research-grade measurement of AA's perception on the open
 web. It is versioned (commit `1bf7935`), deterministic (a pure function over
 stored inputs), comparable (per family and source) and honest about environment
-(`cloud`). Its results are in [10](10_gap_analysis_and_build_plan.md) s5.
+(`cloud`). Its results are in [10](10_gap_analysis_and_build_plan.md) s5. From pass 4
+on, the owner's own captures (environment `owner`, `aa_capture.py`) are the primary
+specimens; ledger evidence cites them as `R (owner capture <page kind>/<folder>)`.
 
 ## 10. The per-page record as built in slice S1 (trace schema 1)
 

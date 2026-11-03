@@ -1,8 +1,8 @@
 ---
 title: "Page Comprehension Toolkit: Production Readiness"
 status: needs-review
-last_verified: 2026-11-02
-verified_against: "7701de8 + S1 reply files (pass 3)"
+last_verified: 2026-11-03
+verified_against: "bcb6c2c + S4 form reply files (pass 4)"
 audience: contributors
 ---
 
@@ -156,10 +156,17 @@ Scripts: `work/docs3/` in the evidence set (`build_docs3.py`, `build_plan.py`,
 
 ## 9. What remains, in order
 
+Pass 4 (slice S4 in part): the form reader (`form_fields.py`) is bounded by the
+residual cap (`m <= 120`, 8 candidates per control) and records every cap that fired
+in `FormRecord`; parameters `residual_cap`, `candidates_per_control`, `em`,
+`max_label_distance`, `section_gap` are tuning parameters in `FormReadingParams`;
+`trap_threshold` (0.09, `C_trap = 10 C_skip`) is a safety parameter (owner). Way back:
+the reply files' undo manifests restore the previous reader.
+
 | # | Item | Needs | Order reason |
 | --- | --- | --- | --- |
 | 1 | Measure every budget and cap on the owner's worst-case laptop; enforce caps at the tool boundary (G2) | a measurement on the owner's machine; slice S0 | every budget here is derived, not measured |
-| 2 | Cap label pairing on the forms path (defect 11) | slice S3 | a measured multi-minute stall on a real page; a hang risk in Applications today |
+| 2 | First owner run of the S4 form reader on three ATSs (Greenhouse, Ashby, Lever or Eightfold), observe-only, with the form record logged | the owner; `reply_files_forms` | the cap on label pairing (defect 11) and the trap rule are in place (pass 4) but proven only on owner captures replayed in `cloud`; the first real application waits on this |
 | 3 | The owner's Google results page as a fixture, and one live Google run with the S1 record | the owner; the skipping fixture pin names the path and the browser steps | settles the LR-1 jobs-widget hypothesis |
 | 4 | Owner rulings CT-Q-026 (robots), CT-Q-035 to CT-Q-038 | owner rulings | they gate which views and sources may be used |
 | 5 | Records tool with ranked runs (S2), replacing the S1 stopgaps | slice S2 | 28 specimen pages with records still resolve none |

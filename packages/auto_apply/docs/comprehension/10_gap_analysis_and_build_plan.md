@@ -1,8 +1,8 @@
 ---
 title: "Page Comprehension Toolkit: Gap Analysis and Build Plan"
 status: needs-review
-last_verified: 2026-11-02
-verified_against: "7701de8 + S1 reply files (pass 3)"
+last_verified: 2026-11-03
+verified_against: "bcb6c2c + S4 form reply files (pass 4)"
 audience: contributors
 ---
 
@@ -26,15 +26,15 @@ Retirement follows the repository rule: nothing is deleted; replaced files go to
 | 8 | One group only | `dom_segmentation.py:760-818` (`max` of groups) | read | ranked runs (S2) |
 | 9 | Decisions recorded as counts only | `dom_segmentation.py` logging; LR-6 | read | trace: **closed in S1** (per-page record, LR-6 log lines) |
 | 10 | Bible 9.3 describes a detector that is not the live one | Bible 9.3 vs `_detect_job_listings` | read | Bible edit, S6 |
-| 11 | Label pairing runs a square Hungarian over every visible text node in the container: cubic, no cap | `dom_segmentation.py` `_pair_labels_to_inputs`, `_collect_label_candidates`; A: 1.6 s at 2 inputs + 300 text nodes | probe (pass 2) | ladder + residual cap `m ≤ 120` (S3) |
-| 12 | Honeypot rule skips real fields: label on the right (RTL) or > 50 px above; substring trap names (`address2`, `attestation`, `latest_employer`, …) | `dom_segmentation.py` `_is_honeypot`, `_has_associated_label`; `honeypot_detection.py` `SUSPICIOUS_NAME_PATTERNS`; A | probe (pass 2) | CT-ALG-014 decision rule, token matching, computed direction (S3) |
-| 13 | A CSS-hidden required input has no geometry, so it is excluded from interactables and never reported; `HoneypotDetector` treats missing geometry as "not a honeypot" | adapter script `rect.width > 0 \|\| rect.height > 0`; `_is_visible`; `_check_geometry`; A | probe (pass 2) | requiredness from the DOM regardless of geometry (S3) |
+| 11 | Label pairing runs a square Hungarian over every visible text node in the container: cubic, no cap | `dom_segmentation.py` `_pair_labels_to_inputs`, `_collect_label_candidates`; A: 1.6 s at 2 inputs + 300 text nodes | probe (pass 2) | **Closed for forms in S4 (pass 4):** ladder first, residual Hungarian capped at `m <= 120` per section with 8 candidates per control, truncation in `FormRecord` (`domain/services/form_fields.py`). Remains: `mathematical_web_analyzer` still calls the old `assign_labels_to_inputs` |
+| 12 | Honeypot rule skips real fields: label on the right (RTL) or > 50 px above; substring trap names (`address2`, `attestation`, `latest_employer`, …) | `dom_segmentation.py` `_is_honeypot`, `_has_associated_label`; `honeypot_detection.py` `SUSPICIOUS_NAME_PATTERNS`; A | probe (pass 2) | **Closed in S4 (pass 4):** CT-ALG-014 rule, trap only when hidden, whole tokens never alone, computed direction. Narrowed, remains: 2 of 22 owner form captures still read a hidden file input inside a box-less wrapper as a trap; unlabelled inputs in a hidden panel read `TRAP`, not `HIDDEN` |
+| 13 | A CSS-hidden required input has no geometry, so it is excluded from interactables and never reported; `HoneypotDetector` treats missing geometry as "not a honeypot" | adapter script `rect.width > 0 \|\| rect.height > 0`; `_is_visible`; `_check_geometry`; A | probe (pass 2) | **Closed in S4 (pass 4):** every form control in the container is read, hidden ones flagged with the computed reason; requiredness tri-state from `valueMissing` first |
 | 14 | Extraction script: no node, byte or time cap; depth-50 truncation silent; shadow roots not walked; one frame level, all frames skipped on a count mismatch | `math_dom_adapter.py` `_EXTRACTION_SCRIPT`, `_stitch_iframes`; A: 30k rows 16.1 s, 11.1 MB; 0 anchors from a shadow root | probe (pass 2) | caps and flags (S0), shadow and frame capability (S3) |
 | 15 | `label_input_pairing.build_parent_map` keys by value: identical cards collapse, and every lookup re-hashes a subtree | `label_input_pairing.py:206-222`; used by `mathematical_web_analyzer.py:173`; A: 50 cards → 3 keys | probe (pass 2) | index identity (S2) |
 | 16 | Vetting's descriptor pairing runs Hungarian over every span/div/heading with text in the main area: cubic on a long posting | `mathematical_web_analyzer.py:160-181` | read (pass 2) | JD sections by structure (S5) |
 | 17 | `iter_nodes`, `_build_dom_node` and the structural hash recurse in Python; safe today only because the script stops at depth 50 | `math_dom.py` `iter_nodes`, `_compute_structural_hash`; A: `RecursionError` at depth 3,000 | probe (pass 2) | iterative traversal (S2) |
 | 18 | The verdict has no kind for plain block pages and rate limits; misreads a block after a login redirect as a login wall | `challenge_assessment.py`, `page_assessment.py`; A: 10 of 16 challenge/block pages not recognised as blocks | replay (pass 2) | block kind (S1) |
-| 19 | The verdict calls list pages with a search box application forms, an invisible reCAPTCHA on a formless form a gate, an empty page with JSON-LD a job description, and a sign-in page a confirmation | `page_assessment.py` precedence; `apply_target.page_has_fillable_form`; A | replay (pass 2) | family model as evidence, not first match (S1, S4) |
+| 19 | The verdict calls list pages with a search box application forms, an invisible reCAPTCHA on a formless form a gate, an empty page with JSON-LD a job description, and a sign-in page a confirmation | `page_assessment.py` precedence; `apply_target.page_has_fillable_form`; A | replay (pass 2) | **Narrowed in S4 (pass 4):** invisible badge on a formless form is `embedded`; query forms are not applications; sign-in choices outrank confirmation phrases; `HOME_PAGE` and `SERP` from a family step. Remains: confirmation, closed and JSON-LD kinds still first-match (S5) |
 | 20 | Closed and missing postings are not recognised in the wording and statuses met live | `page_phrases.py` tables; A: 0 of 4 | replay (pass 2) | phrases per locale plus structure (S5) |
 | 21 | `MathFormUnderstandingService` keeps per-call state on the instance (`_parent_map`, `_text_nodes_cache`, `_root_for_label_search`) although documented as stateless and thread-safe | `dom_segmentation.py` `analyze` | read (pass 2) | pure function over the `Doc` (S2) |
 | 22 | `MathPageUnderstandingAdapter` re-extracts the whole DOM in each of `analyze_serp`, `analyze_form` and `analyze_job_listing`; `analyze_form` reports confidence 0.9 whenever any field exists | `math_dom_adapter.py` | read (pass 2) | one observation per epoch; calibrated confidence (S2) |
@@ -129,6 +129,27 @@ Read in full for the contract of [05](05_architecture.md) s17. Verdict per file;
 | `navigation/page_advancer.py` | verified page advance ladder | `test_page_advancer.py`, real-browser pins | **Reuse** | the model for ALG-027's verification |
 | `applications_workflow.py` HITL: approval gate, `Checkpoint` enum, `_pause_for_challenge` (ruling A) | submission gate, in-place CAPTCHA pause | workflow pins | **Reuse** | `irreversible` requests and challenges route here unchanged |
 
+### Code inventory (pass 4)
+
+Pass 3 audited the blueprint against `page_action/` and the interaction adapters
+only. Pass 4 lists every module under `src/auto_apply/` (336 files) in
+[02_code_inventory.yaml](02_code_inventory.yaml), machine-readable, each with the
+blueprint tool it serves and a verdict (default **reuse**); 135 modules touch
+pages, browsers, navigation, forms or discovery. The ones the blueprint had not
+named, and what they change:
+
+| Module | Serves | Verdict | Evidence |
+| --- | --- | --- | --- |
+| `adapters/secondary/browser/context_manager.py` | T-016 window set, T-002 frames | **Reuse** | already finds and switches to a new tab, returns to the main window and searches frames; wired for Applications in `composition_root.py` |
+| `adapters/secondary/navigation/interruption.py` | T-006 consent kind, T-016 overlays | **Reuse** | dismisses cookie banners, consent walls and pop-ups through the interaction tool; used by navigators and the SERP strategy |
+| `adapters/secondary/browser/page_snapshot.py` | T-006 input | **Reuse** | the one `(url, title, html)` snapshot every verdict call takes |
+| `adapters/secondary/perception/aom_adapter.py` | T-002 `AX_TREE` | **Reuse** | the accessibility tree reaches shadow-DOM dialogs the DOM walk misses (owner capture `cookie-consent-banner`, Siemens) |
+| `adapters/secondary/browser/browser_monitor.py` | T-001 health | **Reuse** | health events for the deadline work of S0 |
+| `adapters/secondary/interaction/dom_observer.py` | T-010 steps, T-016 settle | **Keep both, then change** | `FormState` is live in Applications; it consumes `form_fields` findings after S4 acceptance |
+| `domain/services/honeypot_detection.py` | ALG-014 | **Retire candidate** | 0 importers (reachability pin); superseded by `form_fields.trap_decision`; owner's call |
+| `domain/services/field_type_inference.py`, `domain/applications/field_classifier.py` | T-012 | **Keep both** | each feeds a live path today (`mathematical_web_analyzer`, Applications) |
+| `domain/services/navigation_landing.py`, `domain/services/form_fields.py` | T-001 landing; T-010 to T-013 | **New (pass 4)** | slice S4 reply files |
+
 ## 3. Build slices (small, ordered)
 
 Each slice names acceptance criteria tied to ledger rows and is shippable alone. No slice
@@ -166,15 +187,27 @@ regression on Bing (the working source).
 
 **S3. Access port and `Doc`.** Capability model, `PageObservation`, columnar `Doc`,
 truncation flags, shadow/iframe traversal, optional layout snapshot (defects 5, 6).
+*Reuse (pass 4 inventory):* frame and window switching through `ContextManager`
+(`browser/context_manager.py`), the accessibility tree through `aom_adapter.py` as the
+`AX_TREE` capability; S3 adds the frame tree by identity and shadow piercing on top.
 *Accepts:* CT-FR-001/002/003; CT-NFR-005 measured; CT-PH-080..082.
 
 **S4. Forms tools.** Segmentation, pairing ladder, typing, requiredness (native
 `valueMissing` first), error mapping; `SubmitPredictor` advisory; widgets and the option-list
-protocol. *Accepts:* CT-FR-009..016; CT-PH-030..059 on CONTROL then observe-only on
+protocol. **Part delivered in pass 4** as `reply_files_forms` (59 tests): pairing ladder
+with the capped residual, the CT-ALG-014 trap rule, question groups, tri-state
+requiredness, and the verdict fixes of defect 19; error mapping, `SubmitPredictor`, widgets
+and option lists remain. *Reuse:* `DOMObserver` keeps step detection until it consumes
+the form findings; the handlers operate every control. *Accepts:* CT-FR-009..016; CT-PH-030..059 on CONTROL then observe-only on
 live; false-OPTIONAL rate reported.
 
 **S5. Transitions, windows, resume.** Settle, DocDiff, window set, OAuth pop-up
-classification, `PauseContext` and resume protocol. *Accepts:* CT-FR-019/020; CT-PH-062,
+classification, `PauseContext` and resume protocol. *Reuse (pass 4 inventory):* the window
+set is built on `ContextManager` (new-tab detection, switch and return already exist);
+pop-up and consent overlays stay with `InterruptionHandler`, which S5 calls when the
+verdict names an overlay; settle reuses `PageActionService.settle` and
+`DOMObserver.wait_for_dom_stable`; snapshots come from `browser_page_snapshot`. S5 adds
+the classification and the cap (4 new windows per action), not a second window manager. *Accepts:* CT-FR-019/020; CT-PH-062,
 080..089; the HITL edge-case table has a test per row.
 
 **S6. Library boundary, shims, Bible correction.** Import-boundary pin; `PageUnderstandingPort`

@@ -1,5 +1,5 @@
 # Master capability ledger (pass 2), part 3 of 3. Root, schema and categories: 02_ledger.yaml.
-# src tags: O = observed live in pass 2, environment cloud, with specimen IDs (evidence set: the owner's evidence archive, evidence/specimens);
+# src tags: O = observed live in pass 2, environment cloud, with specimen IDs (pass-2 observations; the archive was not retained, and each row records what was observed);
 #           R = recorded in AA's own evidence (environment owner unless stated); K = recalled, unverified.
 # tool column: T-nnn = CT-T-nnn, ALG-nnn = CT-ALG-nnn, FR-nnn = CT-FR-nnn.
 # ver codes: U unit pin on fixture, P property test, R replay, L live run on the frozen set, M measurement, A analysis, X experiment.
@@ -31,7 +31,7 @@ rows:
   - {id: CT-FR-121, cat: EN-app, item: "Form discovery and step flow", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)", "Oracle Taleo (O cloud: F11)", "Eightfold (O cloud: F12)"], st: "[~]", tool: "T-010", ver: "L", ev: "mock forms only"}
   - {id: CT-FR-122, cat: EN-app, item: "Label to control pairing", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)", "Oracle Taleo (O cloud: F11)", "Eightfold (O cloud: F12)"], st: "[~]", tool: "T-011", ver: "P+L", ev: "WIRED"}
   - {id: CT-FR-123, cat: EN-app, item: "Field type and option lists", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)", "Oracle Taleo (O cloud: F11)", "Eightfold (O cloud: F12)"], st: "[~]", tool: "T-012", ver: "U+L", ev: "WIRED"}
-  - {id: CT-FR-124, cat: EN-app, item: "Required fields known before submit", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)"], st: "[ ]", tool: "T-013", ver: "U+L", ev: "FR-012"}
+  - {id: CT-FR-124, cat: EN-app, item: "Required fields known before submit", src: ["Jobvite (O cloud: F01 F14)", "Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)", "Oracle Recruiting Cloud (O cloud: F10)"], st: "[~]", tool: "T-013", ver: "U+L", ev: "FR-012; S4 (pass 4): requiredness before submit, read without interacting (validity.valueMissing); R (owner capture form-one-page/20261103-074245_job-boards.greenhouse.io); cloud live check on Greenhouse, Ashby, Lever"}
   - {id: CT-FR-125, cat: EN-app, item: "Widget operation plans (combobox, picker, dropzone)", src: [], st: "[~]", tool: "T-014/015", ver: "U+L", ev: "partial"}
   - {id: CT-FR-126, cat: EN-app, item: "Resume upload", src: ["Ashby (O cloud: F02 F03 F04)", "Greenhouse (O cloud: F09 P08)"], st: "[~]", tool: "T-014", ver: "L", ev: "handler", acts: "FileInputHandler"}
   - {id: CT-FR-127, cat: EN-app, item: "Login/account gates detected and handed off", src: ["iCIMS (O cloud: F07)", "Oracle Recruiting Cloud (O cloud: F10)", "Oracle Taleo (O cloud: F11)", "Eightfold (O cloud: F12)"], st: "[~]", tool: "T-006", ver: "L", ev: "verdict; pass 2: A: account walls recognised on 1 of 4 apply steps (F07)"}
@@ -53,7 +53,7 @@ rows:
   - {id: CT-FR-009, cat: FR, item: "Form, step, section, field segmentation", src: [], st: "[~]", tool: "T-010", ver: "U,L", ev: "04"}
   - {id: CT-FR-010, cat: FR, item: "Label pairing ladder plus assignment", src: [], st: "[~]", tool: "T-011", ver: "P,U", ev: "04"}
   - {id: CT-FR-011, cat: FR, item: "Field typing with autofill tokens", src: [], st: "[~]", tool: "T-012", ver: "U", ev: "04"}
-  - {id: CT-FR-012, cat: FR, item: "Requiredness tri-state before submit", src: [], st: "[ ]", tool: "T-013", ver: "U,L", ev: "04; pass 2: [~] -> [ ] (same evidence as CT-PH-051: the requiredness answer is True for every field)"}
+  - {id: CT-FR-012, cat: FR, item: "Requiredness tri-state before submit", src: [], st: "[~]", tool: "T-013", ver: "U,L", ev: "04; pass 2: [~] -> [ ] (same evidence as CT-PH-051: the requiredness answer is True for every field); S4 (pass 4): tri-state REQUIRED/OPTIONAL/UNKNOWN from valueMissing, required/aria-required, label word, asterisk (+legend, +red, CSS-drawn), (optional), convention; unit and real-browser pins; R (owner capture form-required-markers/20261103-080138_jobs.ashbyhq.com); no live owner run yet"}
   - {id: CT-FR-013, cat: FR, item: "Submit-outcome prediction", src: [], st: "[ ]", tool: "T-026", ver: "P,U", ev: "04"}
   - {id: CT-FR-014, cat: FR, item: "Post-submit error mapping", src: [], st: "[ ]", tool: "T-013", ver: "U,L", ev: "04"}
   - {id: CT-FR-015, cat: FR, item: "Widget recognition and operation plans", src: [], st: "[~]", tool: "T-014", ver: "U,L", ev: "04"}

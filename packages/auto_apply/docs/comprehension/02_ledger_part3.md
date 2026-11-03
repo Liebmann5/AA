@@ -12,7 +12,7 @@ Part 3 of 3: engine needs, requirements, research criteria, invariants. Renderin
 
 **Status legend.** `[x]` proven live on three independent sources by AA's own runs · `[~]` partial: code and/or fixture evidence, no three-source live proof · `[ ]` not capable · `[?]` unknown: evidence recorded, a human decides. **No row is `[x]`**: no built tool has been proven by AA's own live runs on three sources. Pass 2 observed pages live from a data centre (`cloud`); those observations are evidence for the design, never proof of AA's behaviour.
 
-**Source tags.** **O** observed live in pass 2, environment `cloud`, with specimen IDs (the evidence set, [08](08_evidence_and_research.md)) · **R** recorded in AA's own evidence (environment `owner` unless stated) · **K** recalled, unverified. Tool column: `T-nnn` is `CT-T-nnn`, `ALG-nnn` is `CT-ALG-nnn`. Verification codes: U unit pin on fixture · P property test · R replay · L live run · M measurement · A analysis · X experiment.
+**Source tags.** **O** observed live in pass 2, environment `cloud`, with specimen IDs (pass-2 observations; the archive was not retained, and each row records what was observed; [08](08_evidence_and_research.md) s9) · **R** recorded in AA's own evidence (environment `owner` unless stated) · **K** recalled, unverified. Tool column: `T-nnn` is `CT-T-nnn`, `ALG-nnn` is `CT-ALG-nnn`. Verification codes: U unit pin on fixture · P property test · R replay · L live run · M measurement · A analysis · X experiment.
 
 ## Engine needs: Discovery
 
@@ -53,7 +53,7 @@ Part 3 of 3: engine needs, requirements, research criteria, invariants. Renderin
 | CT-FR-121 | Form discovery and step flow | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10); Oracle Taleo (O cloud: F11); Eightfold (O cloud: F12) | `[~]` | T-010 | L | mock forms only |
 | CT-FR-122 | Label to control pairing | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10); Oracle Taleo (O cloud: F11); Eightfold (O cloud: F12) | `[~]` | T-011 | P+L | WIRED |
 | CT-FR-123 | Field type and option lists | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10); Oracle Taleo (O cloud: F11); Eightfold (O cloud: F12) | `[~]` | T-012 | U+L | WIRED |
-| CT-FR-124 | Required fields known before submit | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10) | `[ ]` | T-013 | U+L | FR-012 |
+| CT-FR-124 | Required fields known before submit | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10) | `[~]` | T-013 | U+L | FR-012; S4 (pass 4): requiredness before submit, read without interacting (validity.valueMissing); R (owner capture form-one-page/20261103-074245_job-boards.greenhouse.io); cloud live check on Greenhouse, Ashby, Lever |
 | CT-FR-125 | Widget operation plans (combobox, picker, dropzone) | - | `[~]` | T-014/015 | U+L | partial |
 | CT-FR-126 | Resume upload | Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08) | `[~]` | T-014; acts: FileInputHandler | L | handler |
 | CT-FR-127 | Login/account gates detected and handed off | iCIMS (O cloud: F07); Oracle Recruiting Cloud (O cloud: F10); Oracle Taleo (O cloud: F11); Eightfold (O cloud: F12) | `[~]` | T-006 | L | verdict; pass 2: A: account walls recognised on 1 of 4 apply steps (F07) |
@@ -80,7 +80,7 @@ Part 3 of 3: engine needs, requirements, research criteria, invariants. Renderin
 | CT-FR-009 | Form, step, section, field segmentation | - | `[~]` | T-010 | U,L | 04 |
 | CT-FR-010 | Label pairing ladder plus assignment | - | `[~]` | T-011 | P,U | 04 |
 | CT-FR-011 | Field typing with autofill tokens | - | `[~]` | T-012 | U | 04 |
-| CT-FR-012 | Requiredness tri-state before submit | - | `[ ]` | T-013 | U,L | 04; pass 2: [~] -> [ ] (same evidence as CT-PH-051: the requiredness answer is True for every field) |
+| CT-FR-012 | Requiredness tri-state before submit | - | `[~]` | T-013 | U,L | 04; pass 2: [~] -> [ ] (same evidence as CT-PH-051: the requiredness answer is True for every field); S4 (pass 4): tri-state REQUIRED/OPTIONAL/UNKNOWN from valueMissing, required/aria-required, label word, asterisk (+legend, +red, CSS-drawn), (optional), convention; unit and real-browser pins; R (owner capture form-required-markers/20261103-080138_jobs.ashbyhq.com); no live owner run yet |
 | CT-FR-013 | Submit-outcome prediction | - | `[ ]` | T-026 | P,U | 04 |
 | CT-FR-014 | Post-submit error mapping | - | `[ ]` | T-013 | U,L | 04 |
 | CT-FR-015 | Widget recognition and operation plans | - | `[~]` | T-014 | U,L | 04 |
