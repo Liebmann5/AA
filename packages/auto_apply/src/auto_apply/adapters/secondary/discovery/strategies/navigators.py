@@ -226,6 +226,10 @@ class ResilientNavigator:
         #: Every checked landing of the navigations made, in order: the
         #: record of where each attempt ended (requested, landed, reason).
         self.landings: list[Landing] = []
+        #: The checked landing of the navigation that succeeded last, or
+        #: None when that strategy does not check its landing (typing into
+        #: a search box has no requested URL to compare against).
+        self._arrival: Landing | None = None
 
     def navigate_with_fallback(
         self,
@@ -246,6 +250,7 @@ class ResilientNavigator:
             ``True`` if a valid page was loaded, ``False`` if all strategies
             failed.
         """
+        self._arrival = None
         for i, strategy in enumerate(self.strategies):
             attempt_num = i + 1
             logger.info(
@@ -272,6 +277,7 @@ class ResilientNavigator:
                         "ResilientNavigation: %s successful and validated.",
                         strategy.name,
                     )
+                    self._arrival = landing
                     return True
 
                 logger.warning(
@@ -298,3 +304,30 @@ class ResilientNavigator:
             "ResilientNavigation: All strategies exhausted. Query failed."
         )
         return False
+
+    def confirm_arrival(self) -> Landing | None:
+        """Check AGAIN, now, that the page is still the one that was asked for.
+
+        A site may move the page by script seconds after it loaded: Bing's
+        retired jobs page loads, then moves itself to the home page
+        (``/?form=REDIRERR``). The check at load time passed; the page that
+        was read was the home page (owner run, 2026-11-03). Readers call this
+        right before reading. Pure URL comparison against the URL this
+        navigator requested: no network, no page parsing.
+
+        Returns:
+            The re-checked landing (also appended to :attr:`landings`), or
+            None when there is nothing to compare: no successful navigation,
+            a strategy that does not check its landing, or an unreadable URL.
+        """
+        if self._arrival is None:
+            return None
+        try:
+            now = self.browser.current_url
+        except Exception:
+            return None
+        if not isinstance(now, str) or not now:
+            return None
+        landing = check_landing(self._arrival.requested, now)
+        self.landings.append(landing)
+        return landing

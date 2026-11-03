@@ -10,6 +10,7 @@ import json
 import logging
 import time
 import urllib.parse
+from collections.abc import Callable
 from typing import Optional
 
 # Components
@@ -33,6 +34,7 @@ from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import JobSearchPreferences
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.page_advance_port import PageAdvancePort
+from auto_apply.domain.services.navigation_landing import Landing
 from auto_apply.domain.services.page_assessment import assess_page
 from auto_apply.domain.types import PageType
 
@@ -61,6 +63,19 @@ BLOCK_PAGE_TYPES = frozenset({
 #: benched, the query simply yields nothing.
 NOT_RESULTS_PAGE_TYPES = frozenset({
     PageType.HOME_PAGE,
+})
+
+
+#: Landing reasons that mean the page being read is not the page that was
+#: requested, whatever the page verdict says: the site's home page, an error
+#: redirect, another site, or no page. ``different-path`` is deliberately not
+#: here: sites legitimately canonicalise a search URL onto another path, so
+#: a moved path alone is not evidence that the results are wrong.
+LEFT_SURFACE_REASONS = frozenset({
+    "home-page",
+    "error-redirect",
+    "different-site",
+    "no-page",
 })
 
 
@@ -149,6 +164,7 @@ class GenericSERPStrategy:
         research_observer=None,
         page_action=None,
         baseline_scope: str = "",
+        arrival_check: Callable[[], Landing | None] | None = None,
     ):
         """Initializes the strategy with specific parsing tools.
 
@@ -159,6 +175,10 @@ class GenericSERPStrategy:
             research_observer: Optional ResearchObserverPort. Receives a
                 blocked-page observation when a block page is detected; the
                 null observer (default) makes that cost exactly nothing.
+            arrival_check: Optional callable re-checking, right before
+                reading, that the browser is still on the requested page
+                (``ResilientNavigator.confirm_arrival``). None (the default)
+                reads as before.
         """
         self.browser = browser
         self.prefs = search_prefs
@@ -198,6 +218,7 @@ class GenericSERPStrategy:
         # site-restricted harvest is judged against its own kind and never
         # moves the engine's generic baseline.
         self._baseline_scope = baseline_scope
+        self._arrival_check = arrival_check
 
         self.title_parser = title_parser or SmartTextExtractor()
         self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])
@@ -246,6 +267,44 @@ class GenericSERPStrategy:
             )
             return assessment.kind
         return None
+
+    def _left_requested_page(self) -> bool:
+        """True when the page has moved off the requested one since it loaded.
+
+        Asked right before reading, so a page that moved itself by script
+        after the load-time check (Bing's retired jobs page moving to its
+        home page) yields no records instead of 20 news headlines. Not a
+        block: the engine is not benched; the query yields nothing and the
+        log names where the page went.
+        """
+        if self._arrival_check is None:
+            return False
+        try:
+            landing = self._arrival_check()
+        except Exception as exc:
+            logger.debug("%s: arrival re-check failed: %s", self.source_tag, exc)
+            return False
+        if landing is None or landing.on_surface:
+            return False
+        if landing.reason not in LEFT_SURFACE_REASONS:
+            logger.info(
+                "%s: page path changed since it was requested (%s); reading it | "
+                "requested=%s now=%s",
+                self.source_tag,
+                landing.reason,
+                landing.requested,
+                landing.landed,
+            )
+            return False
+        logger.warning(
+            "%s: the page moved off the requested search page (%s) — no "
+            "records read | requested=%s now=%s",
+            self.source_tag,
+            landing.reason,
+            landing.requested,
+            landing.landed,
+        )
+        return True
 
     def _not_results_page(self) -> bool:
         """True when the verdict says this page is not a results list.
@@ -693,7 +752,7 @@ class GenericSERPStrategy:
         block_type = self._page_block_type()
         if block_type is not None:
             return self._abort_blocked(block_type, "execute")
-        if self._not_results_page():
+        if self._left_requested_page() or self._not_results_page():
             return []
 
         # 2. Clear Interruptions (Cookies/Popups)
@@ -735,7 +794,7 @@ class GenericSERPStrategy:
         block_type = self._page_block_type()
         if block_type is not None:
             return self._abort_blocked(block_type, "run")
-        if self._not_results_page():
+        if self._left_requested_page() or self._not_results_page():
             return []
 
         # Overlay dismissal: run() previously never dismissed popups at all

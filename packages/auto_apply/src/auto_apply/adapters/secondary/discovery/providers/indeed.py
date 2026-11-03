@@ -191,6 +191,7 @@ class IndeedProvider(BaseSearchProvider):
                 degradation_detector=self._degradation_detector,
                 research_observer=self._research_observer,
                 baseline_scope=self._baseline_scope_for(instruction),
+                arrival_check=self.navigator.confirm_arrival,
                 title_parser=SmartTextExtractor(
                     strategies=[
                         "h2.jobTitle",

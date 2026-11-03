@@ -176,6 +176,7 @@ class BingProvider(BaseSearchProvider):
             research_observer=self._research_observer,
             page_action=self._page_action,
             baseline_scope=self._baseline_scope_for(instruction),
+            arrival_check=self.navigator.confirm_arrival,
             title_parser=SmartTextExtractor(
                 strategies=[
                     "h2",
