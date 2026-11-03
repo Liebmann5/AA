@@ -253,6 +253,10 @@ class FormFieldInfo:
         placeholder: Placeholder text if present.
         is_required: Whether the field is required.
         is_honeypot: Whether this appears to be a honeypot trap.
+        is_hidden: Whether a person cannot see the control now (never
+            filled directly; a hidden backing input is operated through its
+            visible widget).
+        requiredness: ``"REQUIRED"``, ``"OPTIONAL"`` or ``"UNKNOWN"``.
         options: For select/radio fields, the available options.
     """
 
@@ -264,6 +268,8 @@ class FormFieldInfo:
     is_required: bool = False
     is_honeypot: bool = False
     options: tuple[str, ...] = field(default=())
+    is_hidden: bool = False
+    requiredness: str = "UNKNOWN"
 
 
 @dataclass(frozen=True)

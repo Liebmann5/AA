@@ -15,6 +15,7 @@ can benefit from the math subsystem without importing it directly.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import time
@@ -39,6 +40,18 @@ from auto_apply.domain.ports.page_understanding_port import (
 )
 from auto_apply.domain.services.card_static_resolution import resolve_card_group
 from auto_apply.domain.services.dom_segmentation import MathFormUnderstandingService
+
+def _control_state(raw: Any) -> dict[str, Any]:
+    """The form-control facts the script emits under ``cs`` (slice S4)."""
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        "hidden_reason": str(raw.get("h", "") or ""),
+        "value_missing": bool(raw.get("vm", 0)),
+        "rtl": bool(raw.get("rtl", 0)),
+        "aria_hidden": bool(raw.get("ah", 0)),
+    }
+
 
 # Sentinel type alias used only in _graft_iframes signature.
 _Expansions = dict[int, DOMNode]
@@ -101,6 +114,63 @@ class MathDOMAdapter(MathematicalPerceptionPort):
                 try { return window.getComputedStyle(el).display === 'none'; } catch (e) { return false; }
             }
             return false;
+        }
+        // Form controls (slice S4): read, never operated. The computed style
+        // decides whether a person can see the control (06 section 6); the
+        // honeypot rule needs that, not a name.
+        var CONTROL_ROLES = {textbox:1, searchbox:1, combobox:1, listbox:1, checkbox:1,
+            radio:1, switch:1, slider:1, spinbutton:1};
+        function isControl(el, role) {
+            var t = el.tagName;
+            if (t === 'INPUT') return String(el.type || '').toLowerCase() !== 'hidden';
+            if (t === 'SELECT' || t === 'TEXTAREA') return true;
+            if (CONTROL_ROLES[role] === 1) return true;
+            return el.getAttribute('contenteditable') !== null && el.isContentEditable === true;
+        }
+        function controlState(el, rect) {
+            var st = {}, h = '', cs = null;
+            try { cs = window.getComputedStyle(el); } catch (e) { cs = null; }
+            if (el.closest && el.closest('[hidden]')) h = 'hidden-attribute';
+            for (var a = el, n = 0; !h && a && a.nodeType === 1 && n < MAX_DEPTH; a = a.parentElement, n++) {
+                var as = null;
+                try { as = window.getComputedStyle(a); } catch (e) { break; }
+                if (as.display === 'none') h = 'display-none';
+                else if (parseFloat(as.opacity) === 0) h = 'opacity-zero';
+            }
+            if (!h && cs && cs.visibility !== 'visible') h = 'visibility-hidden';
+            if (!h && rect && rect.width * rect.height < 4) h = 'zero-size';
+            if (!h && rect && (rect.right + window.scrollX < -50 || rect.bottom + window.scrollY < -50))
+                h = 'off-screen';
+            if (h) st.h = h;
+            try { if (el.validity && el.validity.valueMissing) st.vm = 1; } catch (e) {}
+            if (cs && cs.direction === 'rtl') st.rtl = 1;
+            if (el.closest && el.closest('[aria-hidden="true"]')) st.ah = 1;
+            return st;
+        }
+        // Required markers drawn by CSS (::before/::after content) or set in
+        // red: read on label-like elements and on lone-asterisk elements.
+        var MARKER_TAGS = {LABEL:1, LEGEND:1, H1:1, H2:1, H3:1, H4:1, H5:1, H6:1};
+        function isRed(color) {
+            var m = /rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/.exec(color || '');
+            return !!m && +m[1] >= 150 && +m[2] <= 110 && +m[3] <= 110;
+        }
+        function markerState(el, direct) {
+            var out = {}, lone = /^[*\u2731\uff0a\u2217]$/.test(direct.trim());
+            if (MARKER_TAGS[el.tagName] === 1) {
+                var parts = ['::before', '::after'];
+                for (var i = 0; i < parts.length; i++) {
+                    var ps = null;
+                    try { ps = window.getComputedStyle(el, parts[i]); } catch (e) { ps = null; }
+                    if (ps && ps.content && ps.content.indexOf('*') >= 0) {
+                        out.mk = '*'; if (isRed(ps.color)) out.mr = 1;
+                    }
+                }
+            }
+            if (lone) {
+                out.mk = '*';
+                try { if (isRed(window.getComputedStyle(el).color)) out.mr = 1; } catch (e) {}
+            }
+            return out;
         }
         function labelledby(el) {
             var ids = (el.getAttribute('aria-labelledby') || '').split(/\\s+/), out = [];
@@ -176,6 +246,10 @@ class MathDOMAdapter(MathematicalPerceptionPort):
                 }
             }
             node.text = direct.trim();
+            if (element.getAttribute && (MARKER_TAGS[element.tagName] === 1 || node.text.length === 1)) {
+                var mks = markerState(element, direct);
+                if (mks.mk) { node.mk = mks.mk; if (mks.mr) node.mr = 1; }
+            }
             // Collapse whitespace but keep edge spaces, so inline neighbours
             // join as a reader sees them; trimmed when emitted.
             var fullText = skipSelf ? '' : collapse(full.join(''));
@@ -196,6 +270,7 @@ class MathDOMAdapter(MathematicalPerceptionPort):
                     label = norm(element.value || element.getAttribute('alt') || '');
             }
             if (skipSelf) label = '';
+            if (element.getAttribute && isControl(element, role)) node.cs = controlState(element, rect);
             node._label = cap(label)[0];
             var isNamed = NAMED_TAGS[element.tagName] === 1 || NAMED_ROLES[role] === 1 || label !== '';
             if (isNamed) {
@@ -409,16 +484,8 @@ class MathDOMAdapter(MathematicalPerceptionPort):
                 height=node.geometry.height,
             )
         new_children = tuple(self._offset_geometry(c, dx, dy) for c in node.children)
-        return DOMNode(
-            tag=node.tag,
-            attributes=node.attributes,
-            text=node.text,
-            geometry=new_geom,
-            children=new_children,
-            depth=node.depth,
-            full_text=node.full_text,
-            accessible_name=node.accessible_name,
-            text_truncated=node.text_truncated,
+        return dataclasses.replace(
+            node, geometry=new_geom, children=new_children, structural_hash=""
         )
 
     def _graft_iframes(self, node: DOMNode, expansions: _Expansions) -> DOMNode:
@@ -433,16 +500,8 @@ class MathDOMAdapter(MathematicalPerceptionPort):
         """
         if node.tag == "iframe" and id(node) in expansions:
             inner = expansions[id(node)]
-            return DOMNode(
-                tag=node.tag,
-                attributes=node.attributes,
-                text=node.text,
-                geometry=node.geometry,
-                children=inner.children,
-                depth=node.depth,
-                full_text=node.full_text,
-                accessible_name=node.accessible_name,
-                text_truncated=node.text_truncated,
+            return dataclasses.replace(
+                node, children=inner.children, structural_hash=""
             )
 
         new_children = tuple(self._graft_iframes(c, expansions) for c in node.children)
@@ -451,16 +510,8 @@ class MathDOMAdapter(MathematicalPerceptionPort):
         if new_children == node.children:
             return node
 
-        return DOMNode(
-            tag=node.tag,
-            attributes=node.attributes,
-            text=node.text,
-            geometry=node.geometry,
-            children=new_children,
-            depth=node.depth,
-            full_text=node.full_text,
-            accessible_name=node.accessible_name,
-            text_truncated=node.text_truncated,
+        return dataclasses.replace(
+            node, children=new_children, structural_hash=""
         )
 
     def _build_dom_node(self, data: dict[str, Any], depth: int) -> DOMNode:
@@ -504,6 +555,9 @@ class MathDOMAdapter(MathematicalPerceptionPort):
             full_text=str(data.get("full", text) or ""),
             accessible_name=str(data.get("name", "") or ""),
             text_truncated=bool(data.get("tt", 0)),
+            **_control_state(data.get("cs")),
+            marker=str(data.get("mk", "") or ""),
+            marker_red=bool(data.get("mr", 0)),
         )
 
         if self._observer.enabled and node.is_interactable and not node.has_geometry:
@@ -737,6 +791,8 @@ class MathPageUnderstandingAdapter:
                         is_required=field.is_required,
                         is_honeypot=field.is_honeypot,
                         options=options,
+                        is_hidden=field.is_hidden,
+                        requiredness=field.requiredness,
                     )
                 )
 

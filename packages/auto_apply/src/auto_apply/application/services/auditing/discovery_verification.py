@@ -81,6 +81,15 @@ def _is_navigation_chrome(job: Job, engine_hosts: tuple[str, ...]) -> str:
     return ""
 
 
+def job_identity(job: Job) -> str:
+    """The identity unique-job counts use: the same key the dedup check uses.
+
+    Public so the session counters ("Jobs discovered") count exactly what
+    this verifier counts: one job per identity, however many passes saw it.
+    """
+    return _dedup_key(job)
+
+
 def _dedup_key(job: Job) -> str:
     """The same identity a deduplicated feed collapses on: URL when present,
     else a title|company fallback for URL-less records."""

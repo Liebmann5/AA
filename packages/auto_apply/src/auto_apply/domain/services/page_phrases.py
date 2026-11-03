@@ -121,3 +121,13 @@ CLOSED_PHRASES: dict[str, tuple[str, ...]] = {
         "posting expired",
     ),
 }
+
+
+#: Accessible-name prefixes of third-party sign-in choices ("Sign in with
+#: Microsoft", "Continue with Google"). Two or more such controls are the
+#: sign-in-choices page shape (EC-42: F12 offered Microsoft and LinkedIn
+#: sign-in and was read as a confirmation). Lowercase; matched at the start
+#: of the name.
+SIGN_IN_CHOICE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "en": ("sign in with", "log in with", "login with", "continue with", "sign up with"),
+}

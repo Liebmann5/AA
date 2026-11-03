@@ -136,6 +136,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from auto_apply.application.agent.event_bus import unique_new_count
 from auto_apply.application.agent.orchestrator import AgentOrchestrator
 from auto_apply.application.agent.state_machine import AgentState
 from auto_apply.application.services.autonomy import (
@@ -536,6 +537,8 @@ class SessionController:
             ),
         )
         self._recent_events: deque[SessionEventRecord] = deque(maxlen=200)
+        #: Job identities already counted from JOBS_DISCOVERED.
+        self._discovered_keys: set[str] = set()
 
         # ── Approval evidence ────────────────────────────────────────────────
         self._approval_evidence: dict[str, ApprovalAnswer] = {}
@@ -713,13 +716,13 @@ class SessionController:
         )
 
     def _on_discovery_event(self, payload: Any) -> None:
-        """JOBS_DISCOVERED increments the raw-found counter and streams."""
-        count = 0
-        if isinstance(payload, dict):
-            try:
-                count = int(payload.get("count", 0))
-            except (TypeError, ValueError):
-                count = 0
+        """JOBS_DISCOVERED increments the raw-found counter and streams.
+
+        Counts unique jobs: identities already counted are not counted again.
+        """
+        count = unique_new_count(
+            payload, self.__dict__.setdefault("_discovered_keys", set())
+        )
         if count > 0:
             self._report.raw_results_found += count
         source = "discovery"

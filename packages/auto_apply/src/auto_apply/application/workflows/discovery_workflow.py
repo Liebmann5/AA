@@ -33,7 +33,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
-from auto_apply.application.services.auditing.discovery_verification import DiscoveryVerifier
+from auto_apply.application.services.auditing.discovery_verification import (
+    DiscoveryVerifier,
+    job_identity,
+)
 from auto_apply.domain.models.task_priority import TaskPriority
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.job import Job
@@ -910,7 +913,12 @@ class DiscoveryWorkflow:
         # JOBS_DISCOVERED carries the unique found count in every mode.
         try:
             self._event_bus.publish(
-                Event.JOBS_DISCOVERED, {"count": len(jobs), "source": "discovery"}
+                Event.JOBS_DISCOVERED,
+                {
+                    "count": len(jobs),
+                    "source": "discovery",
+                    "keys": [job_identity(job) for job in jobs],
+                },
             )
         except Exception:
             pass
@@ -997,9 +1005,17 @@ class DiscoveryWorkflow:
         # used to be published from _enqueue_vet_tasks with the vet enqueue
         # count, which is 0 when vetting is skipped — both the controller's
         # report and the live dashboard recorded zero for DISCOVER_ONLY.
+        # "keys" lets every counter count unique jobs across passes: a job
+        # seen by two discovery passes of one session is one job (the live
+        # run of 2026-11-02 reported 40 for 20 unique jobs).
         try:
             self._event_bus.publish(
-                Event.JOBS_DISCOVERED, {"count": len(all_jobs), "source": "discovery"}
+                Event.JOBS_DISCOVERED,
+                {
+                    "count": len(all_jobs),
+                    "source": "discovery",
+                    "keys": [job_identity(job) for job in all_jobs],
+                },
             )
         except Exception:
             pass

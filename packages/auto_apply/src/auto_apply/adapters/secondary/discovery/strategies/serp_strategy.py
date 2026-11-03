@@ -55,6 +55,15 @@ BLOCK_PAGE_TYPES = frozenset({
 })
 
 
+#: Verdict kinds on which a results reader must not run: the page is not a
+#: results list (Bing's error redirect to its home page, 2026-11-02, whose
+#: news cards were read as 20 job records). Not a block: the engine is not
+#: benched, the query simply yields nothing.
+NOT_RESULTS_PAGE_TYPES = frozenset({
+    PageType.HOME_PAGE,
+})
+
+
 def record_blocked_observation(
     *,
     source_tag: str,
@@ -205,6 +214,8 @@ class GenericSERPStrategy:
         # The miner is never replaced — only wrapped, and only when a provider
         # supplies a fast route. Unwired (fast_extractor=None) self.miner IS
         # the SemanticMiner instance, so discovery behaves exactly as before.
+        #: The verdict kind of the page last checked (one verdict per page).
+        self.last_page_kind: PageType | None = None
         self.miner = (
             FallbackSerpExtractor(fast_extractor, semantic_miner)
             if fast_extractor is not None
@@ -225,6 +236,7 @@ class GenericSERPStrategy:
         """
         url, title, html = browser_page_snapshot(self.browser)
         assessment = assess_page(url=url, title=title, html=html)
+        self.last_page_kind = assessment.kind
         if assessment.kind in BLOCK_PAGE_TYPES:
             logger.info(
                 "%s: page verdict %s | signals=%s",
@@ -234,6 +246,22 @@ class GenericSERPStrategy:
             )
             return assessment.kind
         return None
+
+    def _not_results_page(self) -> bool:
+        """True when the verdict says this page is not a results list.
+
+        Asked of the verdict already taken by :meth:`_page_block_type`
+        (one verdict per page). No records are read from such a page.
+        """
+        kind = self.last_page_kind
+        if kind is None or kind not in NOT_RESULTS_PAGE_TYPES:
+            return False
+        logger.warning(
+            "%s: page verdict %s — not a results page; no records read",
+            self.source_tag,
+            kind.name,
+        )
+        return True
 
     def _abort_blocked(self, page_type: PageType, context: str) -> list[Job]:
         """Log and record a blocked page, then return no jobs.
@@ -665,6 +693,8 @@ class GenericSERPStrategy:
         block_type = self._page_block_type()
         if block_type is not None:
             return self._abort_blocked(block_type, "execute")
+        if self._not_results_page():
+            return []
 
         # 2. Clear Interruptions (Cookies/Popups)
         self.interruption_handler.handle_interruptions()
@@ -705,6 +735,8 @@ class GenericSERPStrategy:
         block_type = self._page_block_type()
         if block_type is not None:
             return self._abort_blocked(block_type, "run")
+        if self._not_results_page():
+            return []
 
         # Overlay dismissal: run() previously never dismissed popups at all
         # (only execute() did). Both entry paths now dismiss once per page;

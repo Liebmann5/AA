@@ -42,7 +42,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from auto_apply.application.agent.context import ExecutionContext
-from auto_apply.application.agent.event_bus import EventBus
+from auto_apply.application.agent.event_bus import EventBus, unique_new_count
 from auto_apply.application.agent.state_machine import AgentState, StateMachine
 from auto_apply.application.services.data_processing.checkpoint_manager import (
     CheckpointManager,
@@ -306,6 +306,10 @@ class AgentOrchestrator:
         # (level 1 in _is_duplicate_task) tell a returning retry from a
         # genuinely new duplicate attempt of the same URL.
         self._accepted_apply_ids: set[str] = set()
+
+        # ── Job identities already counted as discovered this session, so
+        # "Jobs discovered" counts unique jobs across discovery passes.
+        self._discovered_keys: set[str] = set()
 
         # ── Wire EventBus subscriptions ───────────────────────────────────
         self._register_event_handlers()
@@ -1499,12 +1503,9 @@ class AgentOrchestrator:
             payload: Dict from DiscoveryWorkflow with key "count" (unique
                 jobs found this pass).
         """
-        count = 0
-        if isinstance(payload, dict):
-            try:
-                count = int(payload.get("count", 0))
-            except (TypeError, ValueError):
-                count = 0
+        count = unique_new_count(
+            payload, self.__dict__.setdefault("_discovered_keys", set())
+        )
         if count <= 0:
             return
         self.context.update_stats("discovered", count)

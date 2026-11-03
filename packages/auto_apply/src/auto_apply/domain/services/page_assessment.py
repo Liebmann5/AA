@@ -45,7 +45,15 @@ Composition, not duplication:
            confirmation URL marker — means SUCCESS_PAGE, and the verdict's
            signals name the phrase or marker that decided.
         7. JSON-LD JobPosting means the page describes a job.
-        8. Anything else is UNKNOWN — an honest answer, not a failure.
+        8. The page family (06 section 3) for what remains: a site's home or
+           landing page (HOME_PAGE) and a results list (SERP), each decided
+           only by a margin over the alternatives. HOME_PAGE is decided
+           before the confirmation step: a home page is not a confirmation.
+        9. Anything else is UNKNOWN — an honest answer, not a failure.
+
+    Sign-in evidence outranks confirmation phrases (EC-42): a page offering
+    two or more third-party sign-in choices is LOGIN_REQUIRED even when its
+    text carries a confirmation phrase.
 
 Debt, plainly labelled:
     - The 404 check reads the TITLE ("404" / "page not found") — the only
@@ -70,10 +78,17 @@ Structural verdicts are 0.80-0.95; the title-only 404 is 0.60; UNKNOWN is
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
+from urllib.parse import parse_qsl, urlparse
 
-from auto_apply.domain.services.apply_target import page_has_fillable_form
+from auto_apply.domain.services.apply_target import (
+    FormFacts,
+    form_facts,
+    page_controls,
+    page_has_fillable_form,
+)
 from auto_apply.domain.services.challenge_assessment import (
     ChallengeVerdict,
     assess_challenge,
@@ -85,6 +100,7 @@ from auto_apply.domain.services.page_phrases import (
     CLOSED_PHRASES,
     CONFIRMATION_PHRASES,
     CONFIRMATION_URL_MARKERS,
+    SIGN_IN_CHOICE_PREFIXES,
 )
 from auto_apply.domain.types import PageType
 
@@ -114,10 +130,117 @@ class PageAssessment:
     vendors: tuple[str, ...] = ()
 
 
+#: Leading title segments that name an error page ("Error | Careers
+#: Marketplace - Siemens", owner capture cookie-consent-banner, judged
+#: UNKNOWN before). Whole first segment only, so "Error Analyst" is a title.
+_ERROR_TITLE_SEGMENTS: frozenset[str] = frozenset(
+    {"error", "not found", "page not found", "page unavailable"}
+)
+_TITLE_SEGMENT_RE = re.compile(r"\s+[|\u2013\u2014-]\s+|\s*\|\s*")
+
+
 def _title_says_404(title: str) -> bool:
     """DEBT: title words are the only measured 404 evidence (module docstring)."""
     text = (title or "").lower()
-    return "404" in text or "page not found" in text
+    if "404" in text or "page not found" in text:
+        return True
+    first = _TITLE_SEGMENT_RE.split(text.strip(), maxsplit=1)[0].strip()
+    return first in _ERROR_TITLE_SEGMENTS
+
+
+_SIGN_IN_PREFIXES: tuple[str, ...] = tuple(
+    dict.fromkeys(p for table in SIGN_IN_CHOICE_PREFIXES.values() for p in table)
+)
+
+
+def _sign_in_choices(url: str, html: str) -> int:
+    """How many controls offer a third-party sign-in ("Sign in with X")."""
+    try:
+        controls = page_controls(url=url, html=html)
+    except Exception:
+        return 0
+    return sum(
+        1 for c in controls if c.label.lower().startswith(_SIGN_IN_PREFIXES)
+    )
+
+
+# ── Page family (06 section 3) ──────────────────────────────────────────────
+# A log-linear model over structural features, decided only by margin. The
+# weights are hand-set and documented here (06: "weights start hand-set and
+# documented, later fitted"); the temperature is 1. Only HOME_PAGE and SERP
+# are decided here: the kinds above keep their precedence (challenge, login,
+# 404, closed and the application form dominate, as 06 section 3 requires).
+
+#: URL query keys that carry a search query.
+_QUERY_KEYS: frozenset[str] = frozenset(
+    {"q", "query", "keyword", "keywords", "k", "kw", "search", "searchtext",
+     "text", "what", "term", "terms", "jobtitle", "title"}
+)
+#: Links in list items or articles at which a page has a result run.
+_RESULT_LINKS_MIN: int = 8
+_FAMILY_P_MIN: float = 0.6
+_FAMILY_MARGIN_MIN: float = 0.2
+
+
+@dataclass(frozen=True)
+class PageFamily:
+    """The family decision with its evidence (scores before the softmax)."""
+
+    kind: PageType | None
+    probability: float
+    margin: float
+    features: tuple[str, ...]
+
+
+def _url_features(url: str) -> tuple[bool, bool]:
+    """(home path, search query in the URL)."""
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return False, False
+    path = parsed.path.strip("/").lower()
+    home = path in ("", "index.html", "index.htm", "index.php", "home")
+    query = any(
+        key.lower() in _QUERY_KEYS and value.strip()
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+    )
+    return home, query
+
+
+def page_family(url: str, facts: FormFacts) -> PageFamily:
+    """Score the HOME_PAGE, SERP and OTHER families; decide by margin."""
+    home, query = _url_features(url)
+    run = facts.item_links >= _RESULT_LINKS_MIN
+    features = tuple(
+        name
+        for name, on in (
+            ("home-path", home),
+            ("url-query", query),
+            ("result-links", run),
+            ("search-form", facts.search_form),
+        )
+        if on
+    )
+    scores = {
+        # A home path alone ties with UNKNOWN (no margin): a home page needs
+        # the page structure of one too, a search form (here) or a run.
+        PageType.HOME_PAGE: 1.5 * home + 1.0 * facts.search_form + 0.5 * run - 2.0 * query,
+        PageType.SERP: 1.5 * query + 2.0 * run + 0.5 * facts.search_form - 2.0 * home,
+        PageType.UNKNOWN: 1.5,
+    }
+    peak = max(scores.values())
+    weights = {k: math.exp(v - peak) for k, v in scores.items()}
+    total = sum(weights.values())
+    ranked = sorted(((w / total, k) for k, w in weights.items()), reverse=True,
+                    key=lambda pair: pair[0])
+    (p1, k1), (p2, _k2) = ranked[0], ranked[1]
+    decided = k1 is not PageType.UNKNOWN and p1 >= _FAMILY_P_MIN and p1 - p2 >= _FAMILY_MARGIN_MIN
+    return PageFamily(
+        kind=k1 if decided else None,
+        probability=round(p1, 3),
+        margin=round(p1 - p2, 3),
+        features=features,
+    )
 
 
 def _has_job_posting_json_ld(html: str) -> bool:
@@ -246,8 +369,35 @@ def assess_page(*, url: str, title: str, html: str) -> PageAssessment:
     except Exception:
         pass
 
+    try:
+        family = page_family(url, form_facts(html or ""))
+    except Exception:
+        family = PageFamily(None, 0.0, 0.0, ())
+    if family.kind is PageType.HOME_PAGE:
+        signals.append("family:home-page")
+        signals.extend(f"family-feature:{f}" for f in family.features)
+        return PageAssessment(
+            kind=PageType.HOME_PAGE,
+            challenge=challenge.verdict,
+            signals=tuple(signals),
+            detail=f"family p={family.probability} margin={family.margin}; {detail}",
+            confidence=0.80,
+            vendors=vendors,
+        )
+
     confirmation = _matched(text, _CONFIRMATION_TEXT_PHRASES)
     url_markers = [marker for marker in CONFIRMATION_URL_MARKERS if marker in url_l]
+    if confirmation and not url_markers and _sign_in_choices(url, html) >= 2:
+        # Sign-in evidence outranks confirmation phrases (EC-42).
+        signals.append("sign-in-choices")
+        return PageAssessment(
+            kind=PageType.LOGIN_REQUIRED,
+            challenge=challenge.verdict,
+            signals=tuple(signals),
+            detail=detail,
+            confidence=0.80,
+            vendors=vendors,
+        )
     if confirmation or url_markers:
         signals.extend(f"confirmation-phrase:{phrase}" for phrase in confirmation)
         signals.extend(f"confirmation-url:{marker}" for marker in url_markers)
@@ -268,6 +418,18 @@ def assess_page(*, url: str, title: str, html: str) -> PageAssessment:
             signals=tuple(signals),
             detail=detail,
             confidence=0.80,
+            vendors=vendors,
+        )
+
+    if family.kind is PageType.SERP:
+        signals.append("family:results-list")
+        signals.extend(f"family-feature:{f}" for f in family.features)
+        return PageAssessment(
+            kind=PageType.SERP,
+            challenge=challenge.verdict,
+            signals=tuple(signals),
+            detail=f"family p={family.probability} margin={family.margin}; {detail}",
+            confidence=0.70,
             vendors=vendors,
         )
 

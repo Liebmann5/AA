@@ -138,6 +138,59 @@ class ListingDetectionFacts:
 
 
 @dataclass(frozen=True)
+class FormRecord:
+    """How one form was read (slice S4): counters and enumerations only.
+
+    Privacy as for the rest of this module: no page text. ``label_sources``
+    counts fields per pairing-ladder rung; ``trap_evidence`` counts each
+    evidence enumeration behind a trap decision; ``residual_size`` is the
+    largest residual pairing problem solved (``m`` = labels + controls);
+    ``pairing_truncated`` counts controls left unlabelled because a section
+    reached the residual cap (05 section 14: ``m <= 120``).
+    """
+
+    controls: int = 0
+    fields: int = 0
+    groups: int = 0
+    group_options: int = 0
+    unlabeled: int = 0
+    hidden: int = 0
+    traps: int = 0
+    hidden_labelled: int = 0
+    trap_unknown: int = 0
+    required: int = 0
+    optional: int = 0
+    required_unknown: int = 0
+    described: int = 0
+    duplicate_ids: int = 0
+    residual_size: int = 0
+    residual_sections: int = 0
+    pairing_truncated: int = 0
+    label_sources: tuple[tuple[str, int], ...] = ()
+    trap_evidence: tuple[tuple[str, int], ...] = ()
+
+    def truncations(self) -> list[tuple[str, int]]:
+        """Every cap that fired while the form was read."""
+        return [("pairing_cap", self.pairing_truncated)] if self.pairing_truncated else []
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain data for the trace."""
+        out: dict[str, Any] = {
+            name: getattr(self, name)
+            for name in (
+                "controls", "fields", "groups", "group_options", "unlabeled",
+                "hidden", "traps", "hidden_labelled", "trap_unknown", "required", "optional",
+                "required_unknown", "described", "duplicate_ids",
+                "residual_size", "residual_sections", "pairing_truncated",
+            )
+        }
+        out["label_sources"] = dict(self.label_sources)
+        out["trap_evidence"] = dict(self.trap_evidence)
+        out["truncations"] = [list(t) for t in self.truncations()]
+        return out
+
+
+@dataclass(frozen=True)
 class CardDecision:
     """One decision about one card. Holds no page text (see module doc)."""
 

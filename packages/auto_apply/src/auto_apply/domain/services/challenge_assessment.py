@@ -68,7 +68,13 @@ from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import urlparse
 
-from auto_apply.domain.services.apply_target import find_apply_controls
+from auto_apply.domain.services.apply_target import find_apply_controls, form_facts
+
+#: Fillable controls outside every ``<form>`` that make a page carry its own
+#: content (defect 19, EC-40). Ashby application pages have no ``<form>``
+#: element and no control named "apply"; their invisible reCAPTCHA anchor
+#: made all three measured forms read as challenge pages.
+_MIN_FORMLESS_CONTROLS: int = 2
 
 ChallengeVerdict = Literal["gated", "embedded", "clear"]
 
@@ -342,12 +348,22 @@ def assess_challenge(*, url: str, title: str, html: str) -> ChallengeAssessment:
         has_apply_control = bool(find_apply_controls(url=url, html=html))
     except Exception:
         has_apply_control = False
-    has_content = probe.form_count >= 1 or has_apply_control
+    # A page with its own fillable controls carries content even without a
+    # <form> element (single-page-app forms, 06 section 4).
+    try:
+        facts = form_facts(html)
+        has_controls = (
+            facts.has_fillable_form
+            or facts.formless_controls >= _MIN_FORMLESS_CONTROLS
+        )
+    except Exception:
+        has_controls = False
+    has_content = probe.form_count >= 1 or has_apply_control or has_controls
     signals.append("page-content" if has_content else "no-page-content")
     detail = (
         f"forms={probe.form_count} "
         f"visible_text_chars={probe.visible_text_chars} "
-        f"apply_control={has_apply_control} "
+        f"apply_control={has_apply_control} controls={has_controls} "
         f"iframe={probe.challenge_iframe} widget={probe.challenge_widget} "
         f"script={probe.challenge_script}"
     )

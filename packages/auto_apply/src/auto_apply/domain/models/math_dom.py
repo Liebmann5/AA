@@ -128,6 +128,21 @@ class DOMNode:
             ``aria-label``/``aria-labelledby``); empty otherwise.
         text_truncated: True when ``full_text`` or ``accessible_name`` was cut
             at :data:`TEXT_CAP`.
+        hidden_reason: For form controls only (slice S4): why a person cannot
+            see the control, from the computed style the extraction reads
+            (``display-none``, ``visibility-hidden``, ``opacity-zero``,
+            ``zero-size``, ``off-screen``, ``hidden-attribute``); empty when
+            visible or not read.
+        value_missing: For form controls: ``validity.valueMissing`` as read
+            without interacting (True only for an empty required control).
+        rtl: For form controls: the computed ``direction`` is ``rtl``.
+        marker: For label-like elements and lone-asterisk elements: a
+            required marker the page draws, including one drawn by CSS
+            (``::before``/``::after`` content), e.g. ``"*"``.
+        marker_red: The marker is drawn in red (06 section 5: colour signal).
+        aria_hidden: For form controls: the control or an ancestor carries
+            ``aria-hidden="true"`` (hidden from assistive technology, which is
+            not the same as hidden from sight).
         geometry: Bounding box, or ``None`` if not rendered.
         children: Tuple of child ``DOMNode`` objects.
         depth: Depth in the DOM tree (root = 0).
@@ -145,6 +160,12 @@ class DOMNode:
     full_text: str = ""
     accessible_name: str = ""
     text_truncated: bool = False
+    hidden_reason: str = ""
+    value_missing: bool = False
+    rtl: bool = False
+    aria_hidden: bool = False
+    marker: str = ""
+    marker_red: bool = False
 
     def __post_init__(self) -> None:
         """Ensure children depth is consistent and compute structural hash."""
@@ -271,9 +292,16 @@ class DOMNode:
         return self.subtree_text()[0]
 
     def iter_nodes(self) -> Iterator[DOMNode]:
-        yield self
-        for child in self.children:
-            yield from child.iter_nodes()
+        """Every node of the subtree in document order (pre-order).
+
+        Iterative, so a deep tree cannot exhaust the interpreter's recursion
+        limit (EC-38).
+        """
+        stack: list[DOMNode] = [self]
+        while stack:
+            node = stack.pop()
+            yield node
+            stack.extend(reversed(node.children))
 
     def find_by_tag(self, tag: str) -> list[DOMNode]:
         tag_lower = tag.lower()

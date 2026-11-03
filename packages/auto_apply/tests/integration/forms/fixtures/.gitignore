@@ -1,0 +1,4 @@
+# Saved third-party application forms used by the S4 fixture pins. Kept on
+# the owner's machine only, never committed (owner's ruling); a pin whose
+# page is absent skips.
+*.html

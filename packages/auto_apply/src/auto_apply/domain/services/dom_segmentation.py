@@ -4,9 +4,9 @@ This module provides `MathFormUnderstandingService`, a concrete
 implementation of `FormUnderstandingPort`. It performs:
   - Vision‑based page segmentation (VIPS‑inspired).
   - Geometric clustering of form fields.
-  - Bipartite matching of labels to inputs (Hungarian algorithm).
-  - Heuristic field type inference.
-  - Honeypot detection.
+  - Reading each form's fields (domain/services/form_fields.py, slice S4):
+    the label pairing ladder with a capped residual assignment, question
+    groups, tri-state requiredness and the honeypot decision rule.
   - Multi‑step form detection.
 
 All algorithms operate on the immutable `DOMNode` tree and require
@@ -16,12 +16,11 @@ no external machine‑learning libraries.
 from __future__ import annotations
 
 import logging
-import math
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
-from auto_apply.domain.models.math_dom import DOMNode, Geometry
+from auto_apply.domain.models.math_dom import DOMNode
 from auto_apply.domain.models.math_webpage import (
     FieldCluster,
     FieldType,
@@ -30,19 +29,19 @@ from auto_apply.domain.models.math_webpage import (
     WebpageStructure,
 )
 from auto_apply.domain.ports.math_reasoning_port import FormUnderstandingPort
-from auto_apply.domain.services.label_input_pairing import hungarian_assign
-from auto_apply.domain.models.page_record import ListingDetectionFacts
+from auto_apply.domain.models.page_record import FormRecord, ListingDetectionFacts
+from auto_apply.domain.services.form_fields import (
+    FormReadingParams,
+    build_index,
+    is_form_control,
+    read_form,
+)
 from auto_apply.domain.services.structural_hashing import (
     chrome_node_ids,
     has_semantic_marker,
     is_card_like,
 )
 
-# Penalty for dummy (padding) cells in the square Hungarian cost matrix. Must be
-# far larger than any real pairing cost (which is bounded by MAX_LABEL_DISTANCE
-# plus a small DOM-distance term) yet finite — +inf would make an all-dummy row
-# loop forever in the potentials-based solver.
-_DUMMY_PAIR_COST: float = 1e9
 
 
 class MathFormUnderstandingService(FormUnderstandingPort):
@@ -89,6 +88,8 @@ class MathFormUnderstandingService(FormUnderstandingPort):
 
         # Build parent map once for the entire tree (used in multiple places)
         self._parent_map = self._build_parent_map(dom_root)
+        # Ids, label[for] targets and document order, once per page (S4).
+        self._index = build_index(dom_root)
 
         # Step 1: Extract all interactable nodes (inputs, buttons, etc.)
         interactables = self._extract_interactables(dom_root)
@@ -278,14 +279,24 @@ class MathFormUnderstandingService(FormUnderstandingPort):
     def _analyze_form_container(
         self, container: DOMNode, all_interactables: list[DOMNode]
     ) -> FormRegion | None:
-        """Build a FormRegion from a container node."""
+        """Build a FormRegion from a container node.
+
+        The container is found from visible controls; its fields are every
+        form control inside it, visible or not, so a required control hidden
+        by CSS is still reported, flagged hidden (defect 13, EC-36).
+        """
         # Get inputs that are inside this container
         inputs = [inp for inp in all_interactables if self._is_descendant(inp, container)]
         if len(inputs) < self.MIN_INPUTS_FOR_FORM:
             return None
+        visible = {id(inp) for inp in inputs}
+        controls = list(inputs) + [
+            node for node in container.iter_nodes()
+            if id(node) not in visible and is_form_control(node)
+        ]
 
         # Pair labels with inputs
-        labeled_fields = self._pair_labels_to_inputs(inputs, container)
+        labeled_fields, record = self._read_fields(controls, container)
 
         # Cluster fields into sections
         clusters = self._cluster_fields(labeled_fields)
@@ -305,6 +316,7 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             next_button=next_btn,
             previous_button=prev_btn,
             is_multi_step=is_multi_step,
+            record=record,
         )
 
     def _is_descendant(self, node: DOMNode, ancestor: DOMNode) -> bool:
@@ -326,112 +338,34 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         return False
 
     # ======================================================================
-    # Label‑Input Pairing (Hungarian Algorithm)
+    # Label‑Input Pairing: the ladder, then geometry on the residual
     # ======================================================================
+
+    def _read_fields(
+        self, inputs: list[DOMNode], context: DOMNode
+    ) -> tuple[list[LabeledField], FormRecord]:
+        """Read the controls of one form (domain/services/form_fields.py).
+
+        The pairing ladder runs first (explicit associations are constraints);
+        geometry assigns only the residual, capped at ``m <= 120`` per
+        section; groups, requiredness and the trap decision follow. The
+        document index is the one built for this page by :meth:`analyze`,
+        or one built for ``context`` when called on its own.
+        """
+        index = getattr(self, "_index", None)
+        if index is None or id(context) not in index.order:
+            index = build_index(context)
+        params = FormReadingParams(
+            max_label_distance=self.MAX_LABEL_DISTANCE,
+            section_gap=self.SECTION_GAP_THRESHOLD,
+        )
+        return read_form(context, inputs, index, params)
 
     def _pair_labels_to_inputs(
         self, inputs: list[DOMNode], context: DOMNode
     ) -> list[LabeledField]:
-        """Associate each input with its most likely label.
-
-        Steps:
-          1. Collect candidate label nodes (text nodes, <label> elements).
-          2. Build cost matrix: distance + DOM penalty.
-          3. Solve assignment using Hungarian algorithm.
-          4. For unassigned inputs, use placeholder or nearby text.
-        """
-        # Build parent map for the context if not already global
-        # (global parent map already exists from analyze())
-        labels = self._collect_label_candidates(context)
-        # Cache text nodes for later use in _has_associated_label
-        self._text_nodes_cache = labels  # reuse the same list
-
-        if not labels:
-            # Fallback: create LabeledField with placeholder text
-            return [self._create_unlabeled_field(inp) for inp in inputs]
-
-        n_inputs = len(inputs)
-        n_labels = len(labels)
-
-        # Build cost matrix (n_inputs x n_labels)
-        cost = [[0.0] * n_labels for _ in range(n_inputs)]
-        for i, inp in enumerate(inputs):
-            for j, lbl in enumerate(labels):
-                cost[i][j] = self._pairing_cost(inp, lbl)
-
-        # Pad to a square matrix for the Hungarian solver. Dummy cells carry a
-        # large *finite* penalty (BUG-4): the misleading original used 0.0, but
-        # +inf is unusable here — an all-inf dummy row (when n_labels > n_inputs)
-        # makes the potentials-based solver loop forever. A finite penalty keeps
-        # dummy assignments maximally unattractive while remaining solvable; it
-        # cancels across perfect matchings, so real pairings are unaffected.
-        size = max(n_inputs, n_labels)
-        square_cost = [[_DUMMY_PAIR_COST] * size for _ in range(size)]
-        for i in range(n_inputs):
-            for j in range(n_labels):
-                square_cost[i][j] = cost[i][j]
-
-        row_ind, col_ind = hungarian_assign(square_cost)
-
-        labeled_fields: list[LabeledField] = []
-        assigned_inputs: set[int] = set()
-        assigned_labels: set[int] = set()
-
-        for i, j in zip(row_ind, col_ind):
-            if i < n_inputs and j < n_labels:
-                inp = inputs[i]
-                lbl = labels[j]
-                field = self._build_labeled_field(inp, lbl)
-                labeled_fields.append(field)
-                assigned_inputs.add(i)
-                assigned_labels.add(j)
-
-        # Handle unassigned inputs (fallback)
-        for i, inp in enumerate(inputs):
-            if i not in assigned_inputs:
-                labeled_fields.append(self._create_unlabeled_field(inp))
-
-        return labeled_fields
-
-    def _collect_label_candidates(self, context: DOMNode) -> list[DOMNode]:
-        """Return all visible text‑containing nodes that could serve as labels."""
-        candidates: list[DOMNode] = []
-        for node in context.iter_nodes():
-            if not self._is_visible(node, min_area=0):
-                continue
-            # Consider <label> elements, or any node with non‑empty text
-            if node.tag == "label" or (node.text and len(node.text.strip()) > 0):
-                candidates.append(node)
-        return candidates
-
-    def _pairing_cost(self, input_node: DOMNode, label_node: DOMNode) -> float:
-        """Compute cost (lower is better) for assigning label to input.
-
-        The cost is a weighted combination of:
-            - Euclidean distance between the centers of the two nodes.
-            - DOM tree distance (log‑scaled) to penalize labels far away in the hierarchy.
-
-        Missing geometry results in a high default cost.
-        """
-        # Spatial distance
-        spatial_cost = 1000.0  # default high cost
-        if input_node.geometry and label_node.geometry:
-            dist = input_node.geometry.distance_to(label_node.geometry)
-            spatial_cost = min(dist, self.MAX_LABEL_DISTANCE)
-
-        # DOM tree distance (using parent map)
-        dom_cost = 0.0
-        if hasattr(self, '_parent_map') and self._parent_map is not None:
-            try:
-                # Compute distance via lowest common ancestor
-                dist_tree = self._tree_distance(input_node, label_node)
-                # Use log to dampen; +1 ensures log(1) = 0
-                dom_cost = math.log1p(dist_tree) * 2.0  # weight factor 2.0
-            except Exception:
-                dom_cost = 10.0  # fallback penalty if LCA fails
-
-        # Combined cost: spatial dominates, but DOM proximity helps break ties
-        return spatial_cost + dom_cost
+        """Associate each input with its label (the fields of :meth:`_read_fields`)."""
+        return self._read_fields(inputs, context)[0]
 
     def _tree_distance(self, node_a: DOMNode, node_b: DOMNode) -> int:
         """Compute the number of edges between two nodes in the DOM tree."""
@@ -475,52 +409,6 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             depth += 1
             curr = parent
 
-    def _build_labeled_field(
-        self, input_node: DOMNode, label_node: DOMNode
-    ) -> LabeledField:
-        """Construct a LabeledField from paired nodes."""
-        label_text = label_node.text.strip() if label_node.text else ""
-        # Use placeholder or aria-label as fallback
-        if not label_text:
-            label_text = input_node.get_attribute("placeholder", "")
-        if not label_text:
-            label_text = input_node.get_attribute("aria-label", "")
-
-        field_type = self._infer_field_type(input_node, label_text)
-        is_required = self._is_required(input_node)
-        is_honeypot = self._is_honeypot(input_node)
-
-        options: list[str] = []
-        if input_node.tag == "select":
-            options = self._extract_select_options(input_node)
-
-        return LabeledField(
-            input_node=input_node,
-            label_node=label_node,
-            label_text=label_text,
-            inferred_type=field_type,
-            is_required=is_required,
-            is_honeypot=is_honeypot,
-            options=options,
-        )
-
-    def _create_unlabeled_field(self, input_node: DOMNode) -> LabeledField:
-        """Create a LabeledField without an associated label node."""
-        label_text = (
-            input_node.get_attribute("placeholder", "")
-            or input_node.get_attribute("aria-label", "")
-            or ""
-        )
-        field_type = self._infer_field_type(input_node, label_text)
-        return LabeledField(
-            input_node=input_node,
-            label_node=None,
-            label_text=label_text,
-            inferred_type=field_type,
-            is_required=self._is_required(input_node),
-            is_honeypot=self._is_honeypot(input_node),
-        )
-
     # ======================================================================
     # Field Clustering
     # ======================================================================
@@ -561,91 +449,6 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             return node.geometry.y + node.geometry.height
         return 0.0
 
-    # ======================================================================
-    # Field Type Inference (Mathematical Scoring)
-    # ======================================================================
-
-    def _infer_field_type(self, input_node: DOMNode, label_text: str) -> FieldType:
-        """Determine the semantic type of an input using scoring heuristics."""
-        scores: dict[FieldType, int] = defaultdict(int)
-
-        # Attributes
-        type_attr = input_node.get_attribute("type", "").lower()
-        name_attr = input_node.get_attribute("name", "").lower()
-        id_attr = input_node.get_attribute("id", "").lower()
-        placeholder = input_node.get_attribute("placeholder", "").lower()
-        autocomplete = input_node.get_attribute("autocomplete", "").lower()
-
-        combined = f"{label_text} {name_attr} {id_attr} {placeholder} {autocomplete}".lower()
-
-        # Email patterns
-        if type_attr == "email" or "email" in combined:
-            scores[FieldType.EMAIL] += 20
-        if "e-mail" in combined or "email" in name_attr:
-            scores[FieldType.EMAIL] += 10
-
-        # Telephone
-        if type_attr == "tel" or "phone" in combined or "mobile" in combined:
-            scores[FieldType.TELEPHONE] += 20
-
-        # Name fields
-        if "first" in combined and "name" in combined:
-            scores[FieldType.FIRST_NAME] += 25
-        if "last" in combined and "name" in combined:
-            scores[FieldType.LAST_NAME] += 25
-        if ("full" in combined or "your name" in combined) and "name" in combined:
-            scores[FieldType.FULL_NAME] += 20
-
-        # Address
-        if "address" in combined:
-            scores[FieldType.STREET_ADDRESS] += 15
-        if "city" in combined:
-            scores[FieldType.CITY] += 20
-        if "state" in combined or "province" in combined:
-            scores[FieldType.STATE] += 20
-        if "zip" in combined or "postal" in combined:
-            scores[FieldType.ZIP_CODE] += 20
-
-        # File uploads
-        if type_attr == "file":
-            if "resume" in combined or "cv" in combined:
-                scores[FieldType.RESUME_UPLOAD] += 30
-            elif "cover" in combined:
-                scores[FieldType.COVER_LETTER_UPLOAD] += 30
-
-        # URLs
-        if "linkedin" in combined:
-            scores[FieldType.LINKEDIN_URL] += 25
-        if "github" in combined:
-            scores[FieldType.GITHUB_URL] += 25
-        if "portfolio" in combined or "website" in combined:
-            scores[FieldType.PORTFOLIO_URL] += 20
-
-        # Legal
-        if "authorized" in combined or "eligibility" in combined:
-            scores[FieldType.WORK_AUTHORIZATION] += 15
-        if "sponsor" in combined:
-            scores[FieldType.SPONSORSHIP] += 15
-
-        # Select boxes
-        if input_node.tag == "select":
-            scores[FieldType.SELECT] += 10
-
-        # Determine highest scoring type
-        if scores:
-            best_type = max(scores.items(), key=lambda x: x[1])[0]
-            return best_type
-
-        # Fallbacks based on input type
-        if type_attr == "email":
-            return FieldType.EMAIL
-        if type_attr == "tel":
-            return FieldType.TELEPHONE
-        if type_attr == "file":
-            return FieldType.RESUME_UPLOAD  # default assumption
-
-        return FieldType.TEXT
-
     @staticmethod
     def _is_required(input_node: DOMNode) -> bool:
         """Check for 'required' attribute or aria-required."""
@@ -653,95 +456,6 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             any(name == "required" for name, _ in input_node.attributes)
             or input_node.get_attribute("aria-required", "").lower() == "true"
         )
-
-    # ======================================================================
-    # Honeypot Detection
-    # ======================================================================
-
-    def _is_honeypot(self, input_node: DOMNode) -> bool:
-        """Return True if the input is likely a security trap."""
-        # Hidden via CSS (zero size)
-        if input_node.geometry and not input_node.geometry.is_visible(min_area=1.0):
-            return True
-
-        # Off‑screen (far left/top)
-        if input_node.geometry:
-            if input_node.geometry.x < -1000 or input_node.geometry.y < -1000:
-                return True
-
-        # Suspicious name patterns
-        name = input_node.get_attribute("name", "").lower()
-        suspicious = {"fax", "confirm_email", "extra", "hidden", "url2", "email2"}
-        if any(bad in name for bad in suspicious):
-            return True
-
-        # No label and no placeholder
-        if not input_node.get_attribute("placeholder") and not self._has_associated_label(input_node):
-            return True
-
-        return False
-
-    def _has_associated_label(self, input_node: DOMNode) -> bool:
-        """Heuristic: check if there is any visible text near the input."""
-        if not input_node.geometry:
-            return False
-
-        # We'll use a pre‑collected list of text nodes in the current context.
-        # For simplicity, we assume the caller (e.g., `_pair_labels_to_inputs`)
-        # passes a list of candidate label nodes. However, this method is called
-        # during honeypot detection where we may not have the full label list.
-        # Fallback: search for any text node within a generous bounding box.
-        candidates = getattr(self, '_text_nodes_cache', [])
-        if not candidates:
-            # If cache not built, build it from the root (expensive; do once)
-            candidates = self._collect_visible_text_nodes(self._root_for_label_search)
-            self._text_nodes_cache = candidates
-
-        input_geom = input_node.geometry
-        # Define a search region: above and to the left of the input
-        search_rect = Geometry(
-            x=input_geom.x - 150,               # extend left
-            y=input_geom.y - 50,                # extend up
-            width=300,                          # wide enough for typical labels
-            height=input_geom.height + 50,      # cover input and area above
-        )
-
-        for node in candidates:
-            if node.geometry is None:
-                continue
-            # Check if node's center is within the search rectangle
-            cx, cy = node.geometry.center
-            if (search_rect.x <= cx <= search_rect.x + search_rect.width and
-                search_rect.y <= cy <= search_rect.y + search_rect.height):
-                # Also ensure node has non‑empty text
-                if node.text and len(node.text.strip()) > 0:
-                    return True
-        return False
-
-    def _collect_visible_text_nodes(self, root: DOMNode) -> list[DOMNode]:
-        """Return all visible nodes that contain text and could serve as labels."""
-        result = []
-        for node in root.iter_nodes():
-            if not self._is_visible(node, min_area=0):
-                continue
-            if node.text and len(node.text.strip()) > 0:
-                result.append(node)
-        return result
-
-    # ======================================================================
-    # Select Option Extraction
-    # ======================================================================
-
-    @staticmethod
-    def _extract_select_options(select_node: DOMNode) -> list[str]:
-        """Extract visible text of <option> children."""
-        options: list[str] = []
-        for child in select_node.children:
-            if child.tag == "option":
-                text = child.text.strip()
-                if text:
-                    options.append(text)
-        return options
 
     # ======================================================================
     # Button Identification

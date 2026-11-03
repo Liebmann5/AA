@@ -12,7 +12,29 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from auto_apply.domain.models.math_dom import DOMNode, Geometry
-from auto_apply.domain.models.page_record import ListingDetectionFacts
+from auto_apply.domain.models.page_record import FormRecord, ListingDetectionFacts
+
+
+class LabelSource:
+    """Where a field's label came from: the rungs of the pairing ladder.
+
+    Strongest first (06 section 4, CT-ALG-008). Plain strings, so the page
+    record can count them without holding page text.
+    """
+
+    LABEL_FOR = "label-for"
+    WRAPPING_LABEL = "wrapping-label"
+    ARIA_LABELLEDBY = "aria-labelledby"
+    ARIA_LABEL = "aria-label"
+    ACCESSIBLE_NAME = "accessible-name"
+    LEGEND = "legend"
+    GROUP_LABELLEDBY = "group-aria-labelledby"
+    GROUP_HEADING = "group-heading"
+    PRECEDING_TEXT = "preceding-text"
+    GEOMETRY = "geometry"
+    TITLE = "title"
+    PLACEHOLDER = "placeholder"
+    NONE = "none"
 
 
 class FieldType(Enum):
@@ -76,8 +98,25 @@ class LabeledField:
         label_text: Cleaned text content of the label (or placeholder/aria).
         inferred_type: Best guess of the field's semantic type.
         is_required: True if field appears mandatory (based on attributes).
-        is_honeypot: True if the field is likely a security trap.
+        is_honeypot: True if the field is a security trap: decided only on
+            evidence that a person cannot see it (CT-ALG-014), never on a name.
         options: For select/radio, list of possible values.
+        label_source: The rung of the pairing ladder that gave the label
+            (:class:`LabelSource` value), ``"none"`` when no label was found.
+        description: Help text (``aria-describedby``, a hint line below the
+            field). Never the label.
+        requiredness: ``"REQUIRED"``, ``"OPTIONAL"`` or ``"UNKNOWN"``
+            (CT-FR-012). ``is_required`` is ``requiredness == "REQUIRED"``.
+        required_signals: The signals that decided requiredness.
+        hidden_reason: Why a person cannot see the control ("" when visible).
+        trap_verdict: ``"TRAP"``, ``"CLEAR"``, ``"UNKNOWN"`` (visible and
+            unlabelled: recorded, never filled) or ``"HIDDEN"`` (hidden now
+            but labelled like a real field: never filled, re-observed).
+        trap_evidence: The evidence behind ``trap_verdict``.
+        option_nodes: For a question group, the option controls in order;
+            ``options`` holds their labels in the same order.
+        topic: For a question group or a checkbox, what the question is about
+            (work authorization, sponsorship, EEO), when the label says so.
     """
 
     input_node: DOMNode
@@ -87,11 +126,30 @@ class LabeledField:
     is_required: bool = False
     is_honeypot: bool = False
     options: list[str] = field(default_factory=list)
+    label_source: str = "none"
+    description: str = ""
+    requiredness: str = "UNKNOWN"
+    required_signals: tuple[str, ...] = ()
+    hidden_reason: str = ""
+    trap_verdict: str = "UNKNOWN"
+    trap_evidence: tuple[str, ...] = ()
+    option_nodes: tuple[DOMNode, ...] = ()
+    topic: FieldType = FieldType.UNKNOWN
 
     @property
     def input_id(self) -> str:
         """Return a stable identifier for the input (based on structural hash)."""
         return self.input_node.structural_hash
+
+    @property
+    def is_group(self) -> bool:
+        """True for a radio or checkbox question with its options."""
+        return bool(self.option_nodes)
+
+    @property
+    def is_hidden(self) -> bool:
+        """True when a person cannot see the control."""
+        return bool(self.hidden_reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +206,9 @@ class FormRegion:
     next_button: LabeledField | None = None
     previous_button: LabeledField | None = None
     is_multi_step: bool = False
+    #: Counters, enumerations and flags about how the form was read (the
+    #: form part of the page record, CT-T-018); None when not built.
+    record: FormRecord | None = None
 
     @property
     def all_fields(self) -> list[LabeledField]:

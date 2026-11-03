@@ -22,6 +22,7 @@ from auto_apply.adapters.secondary.navigation.interruption import InterruptionHa
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.interaction_primitives_port import PageActionPrimitives
+from auto_apply.domain.services.navigation_landing import Landing, check_landing
 from auto_apply.domain.types import Keys, Locator
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,8 @@ class NavigationStrategy(ABC):
     ) -> None:
         self.browser = browser
         self._page_action = page_action
+        #: Where the last navigation ended, when the strategy checks it.
+        self.last_landing: Landing | None = None
 
     @property
     def name(self) -> str:
@@ -80,12 +83,35 @@ class DirectURLNavigation(NavigationStrategy):
     ) -> bool:
         url = engine_strategy.build_search_url(instruction)
         logger.info("Navigating via %s: %s", self.name, url)
+        self.last_landing = None
         try:
             self.browser.get(url)
-            return True
         except Exception as exc:
             logger.error("%s failed: %s", self.name, exc)
             return False
+        # A get() that returns is not a navigation that arrived: a site may
+        # redirect to another surface (Bing's /jobs to its home page with
+        # form=REDIRERR, 2026-11-02). Landing elsewhere is a failed
+        # navigation, and the landed URL is recorded.
+        try:
+            landed = self.browser.current_url
+        except Exception:
+            landed = None
+        if not isinstance(landed, str) or not landed:
+            logger.debug("%s: landed URL unreadable; landing not verified", self.name)
+            return True
+        landing = check_landing(url, landed)
+        self.last_landing = landing
+        if not landing.on_surface:
+            logger.warning(
+                "%s landed on a different surface (%s) | requested=%s landed=%s",
+                self.name,
+                landing.reason,
+                url,
+                landed,
+            )
+            return False
+        return True
 
 
 class HumanSearchNavigation(NavigationStrategy):
@@ -197,6 +223,9 @@ class ResilientNavigator:
         """
         self.browser = browser
         self.strategies = strategies
+        #: Every checked landing of the navigations made, in order: the
+        #: record of where each attempt ended (requested, landed, reason).
+        self.landings: list[Landing] = []
 
     def navigate_with_fallback(
         self,
@@ -231,6 +260,9 @@ class ResilientNavigator:
 
             # 2. If navigation command worked, check if the page is actually
             #    valid (not blocked).
+            landing = getattr(strategy, "last_landing", None)
+            if landing is not None:
+                self.landings.append(landing)
             if success:
                 # Give it a moment to settle/render before validation.
                 time.sleep(2)

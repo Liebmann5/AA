@@ -28,6 +28,7 @@ not render an employer URL, AA does not go looking for one.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
@@ -37,6 +38,25 @@ _APPLY_LABEL_KEYWORDS: tuple[str, ...] = ("apply",)
 #: textareas — not hidden/submit/button) is substantial enough to BE the
 #: application. A posting's search box (1) and sign-in form (2) stay below.
 _MIN_FORM_CONTROLS: int = 3
+
+#: Control names that make a form a QUERY form (a search box with its
+#: location and radius fields), never an application (defect 19, EC-41: a
+#: results page with a three-field search form was called an application
+#: form). Whole names, compared after lowercasing.
+_SEARCH_CONTROL_NAMES: frozenset[str] = frozenset(
+    {"q", "query", "keyword", "keywords", "k", "kw", "search", "searchtext",
+     "search_text", "what", "where", "l", "location_search"}
+)
+
+#: Fillable control types (``<input type>``) that never occur in a query
+#: form. One of them in a form is evidence for an application form.
+_NON_QUERY_INPUT_TYPES: frozenset[str] = frozenset(
+    {"file", "email", "tel", "password"}
+)
+
+_NOT_FILLABLE_INPUT_TYPES: tuple[str, ...] = (
+    "hidden", "submit", "button", "image", "reset",
+)
 
 
 @dataclass(frozen=True)
@@ -70,9 +90,20 @@ class _ApplyProbe(HTMLParser):
         self.controls: list[ApplyControl] = []
         self.has_fillable_form: bool = False
         self.auth_dialog: bool = False
+        #: Fillable controls outside any ``<form>`` (single-page-app forms,
+        #: 06 section 4: Ashby has no form element at all).
+        self.formless_controls: int = 0
+        #: True when any query form was seen (role=search, a search input).
+        self.search_form: bool = False
+        #: Links inside list items or articles: the result-list feature of
+        #: the page family (06 section 3).
+        self.item_links: int = 0
         self._open_controls: list[dict] = []
-        self._form_stack: list[int] = []
+        # Per open form: [fillable controls, is a query form, has a
+        # non-query control].
+        self._form_stack: list[list] = []
         self._dialog_stack: list[str] = []
+        self._item_depth: int = 0
 
     # ------------------------------------------------------------------
     # HTMLParser hooks
@@ -89,7 +120,19 @@ class _ApplyProbe(HTMLParser):
             self._dialog_stack.append(tag)
 
         if tag == "form":
-            self._form_stack.append(0)
+            query_form = role == "search" or "search" in attr.get("action", "").lower()
+            self._form_stack.append([0, query_form, False])
+            if query_form:
+                self.search_form = True
+        if role == "search":
+            self.search_form = True
+
+        # Only elements whose end tag closes them are counted, so the depth
+        # cannot drift on a role attribute carried by a <div>.
+        if tag in ("li", "article"):
+            self._item_depth += 1
+        if tag == "a" and attr.get("href") and self._item_depth > 0:
+            self.item_links += 1
 
         if tag == "input":
             itype = attr.get("type", "text").lower()
@@ -98,19 +141,18 @@ class _ApplyProbe(HTMLParser):
             if itype == "file":
                 # A file upload is an application form by itself.
                 self.has_fillable_form = True
-            if self._form_stack and itype not in (
-                "hidden",
-                "submit",
-                "button",
-                "image",
-                "reset",
-            ):
-                self._form_stack[-1] += 1
+            name = attr.get("name", "").lower()
+            if itype == "search" or name in _SEARCH_CONTROL_NAMES:
+                self.search_form = True
+                if self._form_stack:
+                    self._form_stack[-1][1] = True
+            if itype not in _NOT_FILLABLE_INPUT_TYPES:
+                self._count_fillable(itype in _NON_QUERY_INPUT_TYPES)
             if itype in ("submit", "button"):
                 self._add_control(tag, attr, "")
 
-        if tag in ("select", "textarea") and self._form_stack:
-            self._form_stack[-1] += 1
+        if tag in ("select", "textarea"):
+            self._count_fillable(tag == "textarea")
 
         if tag in ("a", "button") or role == "button":
             self._open_controls.append({"tag": tag, "attr": attr, "text": []})
@@ -122,8 +164,14 @@ class _ApplyProbe(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if self._dialog_stack and self._dialog_stack[-1] == tag:
             self._dialog_stack.pop()
+        if tag in ("li", "article") and self._item_depth > 0:
+            self._item_depth -= 1
         if tag == "form" and self._form_stack:
-            if self._form_stack.pop() >= _MIN_FORM_CONTROLS:
+            count, query_form, non_query = self._form_stack.pop()
+            # A query form (search box, location, radius) is never the
+            # application, however many fields it has, unless it also holds
+            # a control no query form has (an upload, an email field).
+            if count >= _MIN_FORM_CONTROLS and (not query_form or non_query):
                 self.has_fillable_form = True
         # Finish the most recently opened control of this tag. Nested
         # controls of mixed tags are invalid HTML; stack order is good
@@ -132,6 +180,14 @@ class _ApplyProbe(HTMLParser):
             if self._open_controls[i]["tag"] == tag:
                 self._finish_control(self._open_controls.pop(i))
                 break
+
+    def _count_fillable(self, non_query: bool) -> None:
+        if self._form_stack:
+            self._form_stack[-1][0] += 1
+            if non_query:
+                self._form_stack[-1][2] = True
+        else:
+            self.formless_controls += 1
 
     # ------------------------------------------------------------------
     # Control assembly
@@ -171,8 +227,14 @@ class _ApplyProbe(HTMLParser):
         )
 
 
+@lru_cache(maxsize=4)
 def _parse(url: str, html: str) -> _ApplyProbe:
-    """Parse one page. A malformed page yields partial facts; never raises."""
+    """Parse one page. A malformed page yields partial facts; never raises.
+
+    Cached for the last few snapshots: one verdict asks several questions of
+    the same snapshot (apply controls, fillability, formless controls), and
+    the parse is the whole cost. Callers only read the probe.
+    """
     probe = _ApplyProbe(url)
     try:
         probe.feed(html or "")
@@ -187,12 +249,43 @@ def find_apply_controls(*, url: str, html: str) -> tuple[ApplyControl, ...]:
     return tuple(c for c in _parse(url, html).controls if is_apply_label(c.label))
 
 
+def page_controls(*, url: str, html: str) -> tuple[ApplyControl, ...]:
+    """Every link and button on the page with its accessible name."""
+    return tuple(_parse(url, html).controls)
+
+
 def page_has_fillable_form(html: str) -> bool:
     """True when the page carries a form substantial enough to BE the
     application (>= _MIN_FORM_CONTROLS fillable controls in one form, or any
     file input). Checked BEFORE any apply-control search, so a real form
     whose submit button says "Apply" is never misread as a posting."""
     return _parse("", html).has_fillable_form
+
+
+@dataclass(frozen=True)
+class FormFacts:
+    """The form facts the page verdict reads (06 sections 3 and 4).
+
+    ``formless_controls`` counts fillable controls outside every ``<form>``;
+    ``search_form`` says a query form is present; ``item_links`` counts links
+    inside list items and articles (the result-list feature).
+    """
+
+    has_fillable_form: bool
+    formless_controls: int
+    search_form: bool
+    item_links: int
+
+
+def form_facts(html: str) -> FormFacts:
+    """The page's form facts from the same single parse. Never raises."""
+    probe = _parse("", html)
+    return FormFacts(
+        has_fillable_form=probe.has_fillable_form,
+        formless_controls=probe.formless_controls,
+        search_form=probe.search_form,
+        item_links=probe.item_links,
+    )
 
 
 def auth_dialog_present(html: str) -> bool:
