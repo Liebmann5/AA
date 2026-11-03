@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Evidence and Research"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -160,3 +160,36 @@ specimens is the first research-grade measurement of AA's perception on the open
 web. It is versioned (commit `1bf7935`), deterministic (a pure function over
 stored inputs), comparable (per family and source) and honest about environment
 (`cloud`). Its results are in [10](10_gap_analysis_and_build_plan.md) s5.
+
+## 10. The per-page record as built in slice S1 (trace schema 1)
+
+Slice S1 builds the discovery part of the trace as the start of ADR-022's
+per-page record, not a parallel log: `domain/models/page_record.py`.
+
+| Type | Fields | Level |
+| --- | --- | --- |
+| `PageRecord` | `pass_kind` (`harvest`, `finalize`), `pass_index`, `page_index`, `observation`, `detection`, `record_level`, `identity_level`, `identity_attributes` (a count), `analyze_ms`, `decisions` | L0 view: counters and timings; L1 view: everything |
+| `ObservationFacts` | node count, payload bytes, script, build and stitch times, `text_capped`, `text_budget_hit`, `depth_cut` → `truncations()` | L0 |
+| `ListingDetectionFacts` | candidates, `chrome_excluded`, ranked `group_sizes` | L1 |
+| `CardDecision` | card index, `stage` (`found`, `fate`, `opened`), `reason` (enumerated), `fate` (`kept`, `dropped`, `deferred`), resolution state, candidate and rejection counts, `title_source`, `title_truncated`, `url_ref` | L1 |
+
+Every card a pass sees has one `found` and exactly one `fate` decision; every
+click in the finalize pass is one `opened` decision. Reasons are enumerated
+(`title_and_link`, `no_title`, `multi_route`, `no_eligible_link`, `no_link`,
+`invalid_job`, `already_resolved`, `no_identity`, `click_budget`,
+`opaque_stop`, `no_activator`, `opened_*`). The record holds **no page text by
+construction**: no titles, URLs, hosts, attribute names or values; a pin
+checks it. A destination is referred to by `url_ref`, the first 16 hex digits
+of SHA-256 of its canonical URL. `url_ref` is an unkeyed commitment, so it is
+**local only** (a guessable URL could be recovered by hashing candidates); it
+is never exported to research, where the keyed identities of
+`research_identity` apply.
+
+**Where it goes today.** One JSON line per pass to the session log at DEBUG
+under logger `auto_apply.trace` (`page record <source> {…}`), the L1 view.
+LR-6 is met by DEBUG lines from the extractor's logger, one per URL found,
+kept or dropped, with the fate, reason, outcome, score, `url_ref` and the URL
+itself (local session log only, never the console). The append-only JSON
+Lines trace file of section 1 (`trace_schema: 1`, binary-mode writer) is the
+next step (slice S0's writer, [10](10_gap_analysis_and_build_plan.md) s3); the
+record type does not change when it moves there.

@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Edge Cases and Adversity"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -259,3 +259,39 @@ CT-FR-109, CT-FR-110, CT-FR-116 to CT-FR-119, CT-FR-135 to CT-FR-137,
 CT-NFR-025, CT-NFR-026, CT-INV-013, CT-INV-014. The category **Phenomena: edge
 cases and adversity** is in [ledger part 2](02_ledger_part2.md). Coverage per row,
 with the gaps and what was tried, is in the evidence set (`coverage.md`).
+
+## 8. Edge cases added in pass 3
+
+### 8.1 Toolbars and filter controls
+
+| EC | Case | Rows | Tools | Evidence | Handling |
+| --- | --- | --- | --- | --- | --- |
+| EC-46 | Filter accepts a choice and the results do not change | PH-226 | T-027, ALG-027 | R: LR-2 (owner, Bing site:); O: L02 | `NO_EFFECT` after two queries benches the channel; the piece is applied through the next channel or reported as not applied |
+| EC-47 | Filter resets on pagination or back navigation | PH-227 | T-027, ALG-027 | K | `RESET` revises earlier pages' outcome; the learned URL parameter, when there is one, is carried on every page instead |
+| EC-48 | Facet counts that disagree with the results | PH-228, FR-109 | ALG-027 | O: counts on 6 sources | `count_mismatch` recorded; the completeness check uses the results, never the facet count |
+| EC-49 | Filter reachable only after scrolling or behind a "Filters" drawer | PH-229 | T-027, T-016 | O: 5 sources | the binding records `apply_mode=drawer`; the drawer is opened through the interaction layer, then re-observed |
+| EC-50 | Rich-text editor toolbar above an answer box | PH-224 | T-014 | O: F03 | the toolbar is never operated; plain text is typed into the editable region |
+| EC-51 | Filter applied by default (IP location, "Recommended" sort) | PH-225 | T-027 | O: chips on first load | the default is read and recorded as `current` before any piece is applied; never assumed absent |
+| EC-52 | Slider or two-thumb range with no text input | PH-221, PH-244 | T-014 | O: 3 sources | keyboard operation on the focused thumb only; no script value injection; `UNKNOWN` if the value cannot be read back |
+
+### 8.2 Alternate views
+
+| EC | Case | Rows | Tools | Evidence | Handling |
+| --- | --- | --- | --- | --- | --- |
+| EC-53 | Two views of one record disagree | PH-264, PH-162 | ALG-028 | O: L49, L50 | `compatible` with the fields that differ; the record keeps both values and the source of each |
+| EC-54 | A view lags or vanishes (feed 410, sitemap 404, closed posting still listed) | PH-265 | ALG-028, T-006 | O: X01, USAJOBS sitemap, L34-L36 | the view is re-verified before use and dropped from the `ViewMap` on failure |
+| EC-55 | Struck or inserted text (`del`, `ins`, `s`) inside a record | PH-251 | T-003, T-009 | K | struck text is excluded from field values and kept as evidence; to build with T-003 |
+| EC-56 | A view needs sign-in or a key | PH-266 | T-006, T-028 | O: X02, L55, L56 | never chosen; an apply control behind sign-in is the existing sign-in-wall handling |
+| EC-57 | Canonical link points at another host that redirects back | PH-256, PH-192 | T-028 | O: 8 sources declare a canonical on another host | followed once; a loop is recorded and the current view kept |
+
+### 8.3 Cases slice S1 touched, now pinned
+
+| EC | Pin |
+| --- | --- |
+| EC-02 (one record) | the link-named title needs two or more records (`anchor_titles`) |
+| Identical cards | `test_identical_cards_are_separate_records`, `test_identical_cards_get_one_fate_each` |
+| Empty list | `test_empty_list_returns_no_records`, `test_empty_list_records_a_pass_with_no_decisions` |
+| Link without `href` | `test_link_without_href_is_never_a_resolved_link` |
+| Title nested deeper than one element | `test_heading_title_nested_in_span_teeth`, `..._two_levels_..._teeth`, the Chrome pin |
+| Text cap | `test_text_cap_truncates_and_flags` (Chrome), `test_python_subtree_text_is_capped_and_flagged` |
+| Dead-end words inside a real title ("Help Desk") | `test_dead_end_words_inside_job_titles_are_not_dead_ends_teeth` |

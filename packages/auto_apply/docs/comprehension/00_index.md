@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Index"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -178,3 +178,48 @@ What changed from pass 1, and why. Each item cites its evidence.
    carry. One ID space, one schema, the root lists the parts.
 9. **New owner rulings** CT-Q-026 to CT-Q-034, including every host whose
    `robots.txt` disallowed a path that was opened ([01](01_charter.md)).
+
+## Changes in pass 3
+
+1. **Slice S1 built** (reply files outside this suite, applied to AA): full-subtree
+   text and accessible names in the extraction script (defect 4), the per-page
+   record of every card's fate (trace L0/L1, LR-6), the record-root rule and
+   link-tier titles (stopgaps S2 replaces), one route per destination, a
+   title-relation link term, chrome landmarks excluded from records, and
+   listings-only discovery (no label pairing on results pages). Live (cloud):
+   417 of 417 records on six boards; 2,201 of 2,959 on the 55 list specimens
+   (137 at the branch head). See [10](10_gap_analysis_and_build_plan.md) s1 and
+   [09](09_verification.md) s9.
+2. **A completeness audit that stays in force.** Seven frozen reference lists
+   (APG patterns, WAI-ARIA 1.2 roles, HTML input types and form elements,
+   engine steps, recognition signatures, alternate views) are mapped to the
+   ledger in [02_ledger_coverage.yaml](02_ledger_coverage.yaml). Before: 120 of
+   228 items mapped, 24 not applicable, **84 gaps** (toolbars among them, as
+   the owner found). After: 204 mapped, 24 not applicable, 0 gaps. The check
+   that keeps it so is specified in [09](09_verification.md) s8.
+3. **Ledger part 4** ([02_ledger_part4.md](02_ledger_part4.md)): 52 phenomenon
+   rows in three new categories (toolbars and filter controls; interaction
+   patterns and HTML controls; alternate views) plus CT-FR-035 to CT-FR-037
+   and CT-NFR-027. 29 of the 52 have three or more observed sources (pattern
+   scan of 129 pages and pass-3 live views); the rest name their gap.
+4. **Toolbars and filter controls** ([05](05_architecture.md) s15,
+   [06](06_mathematics.md) s13, [07](07_footprint_and_defences.md) s10,
+   [12](12_edge_cases_and_adversity.md) s8.1): recognise, map to a search piece,
+   operate through the existing interaction layer, verify the effect
+   (ADR-021), learn the URL parameter.
+5. **Alternate views** ([05](05_architecture.md) s16, [06](06_mathematics.md)
+   s14-15, [12](12_edge_cases_and_adversity.md) s8.2): recognition, the
+   `ViewMap`, equivalence, selection by cost and footprint; learned mappings
+   live in a verified view catalog beside domain memory, behind the Source
+   Channel seam.
+6. **The contract between understanding and acting** ([05](05_architecture.md)
+   s17) and the interaction layer file by file ([10](10_gap_analysis_and_build_plan.md)
+   s2): the toolkit says what, the existing layer decides how; reuse by
+   default, with every overlap ruled. Each ledger row that operates something
+   names the existing tool (`acts:`).
+7. **Statuses from evidence.** CT-PH-051 `[~]` (defect 23 fixed in `7701de8`);
+   CT-PH-006, 012, 013, 014, 153, CT-FR-108 and CT-PH-005 `[~]`; no row is `[x]`.
+   Owner ruling CT-Q-030 recorded; new questions CT-Q-035 to CT-Q-038.
+8. **Production readiness** ([13](13_production_readiness.md)): the review of
+   this suite as the team that builds, ships and maintains it, with what was
+   changed and what still stands between the blueprint and a production build.

@@ -1,0 +1,278 @@
+# Ledger coverage against frozen reference lists (pass 3).
+# Every item of every list maps to ledger rows, or to a reasoned 'na' entry. An item with
+# neither is a gap. The check in 09 section 8 fails the build on any gap or unknown row ID.
+# After pass 3: every gap of the Step 1 audit filled by a part-4 row.
+schema: 1
+frozen: "2026-11-02"
+counts: {mapped: 204, not_applicable: 24, gap: 0, total: 228}
+lists:
+  - list: apg
+    title: "APG patterns"
+    source: "ARIA Authoring Practices Guide, patterns index"
+    url: "https://www.w3.org/WAI/ARIA/apg/patterns/"
+    frozen: "fetched 2026-11-02"
+    items:
+      - {item: "accordion", rows: [CT-PH-232]}
+      - {item: "alert", rows: [CT-PH-057, CT-PH-248]}
+      - {item: "alertdialog", rows: [CT-PH-235]}
+      - {item: "breadcrumb", rows: [CT-PH-236]}
+      - {item: "button", rows: [CT-PH-024, CT-PH-170]}
+      - {item: "carousel", rows: [CT-PH-234]}
+      - {item: "checkbox", rows: [CT-PH-035, CT-PH-046]}
+      - {item: "combobox", rows: [CT-PH-039, CT-PH-041]}
+      - {item: "dialog-modal", rows: [CT-PH-048, CT-PH-090]}
+      - {item: "disclosure", rows: [CT-PH-233]}
+      - {item: "feed", rows: [CT-PH-018, CT-PH-161]}
+      - {item: "grid", rows: [CT-PH-243]}
+      - {item: "landmarks", rows: [CT-PH-247]}
+      - {item: "link", rows: [CT-PH-024, CT-PH-186]}
+      - {item: "listbox", rows: [CT-PH-034, CT-PH-040]}
+      - {item: "menubar", rows: [CT-PH-237]}
+      - {item: "menu-button", rows: [CT-PH-237]}
+      - {item: "meter", rows: [CT-PH-246]}
+      - {item: "radio", rows: [CT-PH-035]}
+      - {item: "slider", rows: [CT-PH-244, CT-PH-221]}
+      - {item: "slider-multithumb", rows: [CT-PH-244, CT-PH-221]}
+      - {item: "spinbutton", rows: [CT-PH-244]}
+      - {item: "switch", rows: [CT-PH-245, CT-PH-220, CT-PH-222]}
+      - {item: "table", rows: [CT-PH-153]}
+      - {item: "tabs", rows: [CT-PH-242]}
+      - {item: "toolbar", rows: [CT-PH-215, CT-PH-224]}
+      - {item: "tooltip", rows: [CT-PH-238]}
+      - {item: "treeview", rows: [CT-PH-239]}
+      - {item: "treegrid", rows: [CT-PH-240]}
+      - {item: "windowsplitter", rows: [CT-PH-241, CT-PH-157]}
+  - list: aria
+    title: "WAI-ARIA 1.2 roles"
+    source: "WAI-ARIA 1.2, W3C Recommendation 6 June 2023, section 5.4 (roles)"
+    url: "https://www.w3.org/TR/wai-aria-1.2/"
+    frozen: "fetched 2026-11-02"
+    items:
+      - {item: "command", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "composite", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "input", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "landmark", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "range", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "roletype", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "section", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "sectionhead", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "select", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "structure", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "widget", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "window", na: "abstract role: WAI-ARIA 1.2 forbids it in content (5.3); only its concrete subclasses appear, each mapped"}
+      - {item: "alert", rows: [CT-PH-057, CT-PH-248]}
+      - {item: "alertdialog", rows: [CT-PH-235]}
+      - {item: "application", rows: [CT-PH-249]}
+      - {item: "article", rows: [CT-PH-009, CT-PH-161]}
+      - {item: "banner", rows: [CT-PH-247]}
+      - {item: "blockquote", rows: [CT-PH-021]}
+      - {item: "button", rows: [CT-PH-024, CT-PH-170]}
+      - {item: "caption", rows: [CT-PH-153]}
+      - {item: "cell", rows: [CT-PH-153, CT-PH-243]}
+      - {item: "checkbox", rows: [CT-PH-035]}
+      - {item: "code", na: "text-level semantics with no operation; read by the full-subtree text rule (06 s2) as part of its record or section"}
+      - {item: "columnheader", rows: [CT-PH-153, CT-PH-243]}
+      - {item: "combobox", rows: [CT-PH-039]}
+      - {item: "complementary", rows: [CT-PH-247]}
+      - {item: "contentinfo", rows: [CT-PH-247]}
+      - {item: "definition", rows: [CT-PH-021]}
+      - {item: "deletion", rows: [CT-PH-251]}
+      - {item: "dialog", rows: [CT-PH-048, CT-PH-090]}
+      - {item: "directory", na: "deprecated in WAI-ARIA 1.2 (treated as list); lists of records are CT-PH-015 and CT-PH-153"}
+      - {item: "document", rows: [CT-PH-249]}
+      - {item: "emphasis", na: "text-level semantics with no operation; read by the full-subtree text rule (06 s2) as part of its record or section"}
+      - {item: "feed", rows: [CT-PH-018, CT-PH-161]}
+      - {item: "figure", rows: [CT-PH-021]}
+      - {item: "form", rows: [CT-PH-030, CT-PH-032]}
+      - {item: "generic", rows: [CT-PH-250]}
+      - {item: "grid", rows: [CT-PH-243]}
+      - {item: "gridcell", rows: [CT-PH-243]}
+      - {item: "group", rows: [CT-PH-035, CT-PH-043]}
+      - {item: "heading", rows: [CT-PH-001, CT-PH-021]}
+      - {item: "img", rows: [CT-PH-214]}
+      - {item: "insertion", rows: [CT-PH-251]}
+      - {item: "link", rows: [CT-PH-024, CT-PH-186]}
+      - {item: "list", rows: [CT-PH-015, CT-PH-153]}
+      - {item: "listbox", rows: [CT-PH-040]}
+      - {item: "listitem", rows: [CT-PH-015]}
+      - {item: "log", rows: [CT-PH-248]}
+      - {item: "main", rows: [CT-PH-247]}
+      - {item: "marquee", rows: [CT-PH-189, CT-PH-234]}
+      - {item: "math", na: "MathML or role=math carries no posting or form data AA reads; its text, if any, is read as text"}
+      - {item: "menu", rows: [CT-PH-237]}
+      - {item: "menubar", rows: [CT-PH-237]}
+      - {item: "menuitem", rows: [CT-PH-237]}
+      - {item: "menuitemcheckbox", rows: [CT-PH-237]}
+      - {item: "menuitemradio", rows: [CT-PH-237]}
+      - {item: "meter", rows: [CT-PH-246]}
+      - {item: "navigation", rows: [CT-PH-247, CT-PH-016]}
+      - {item: "none", rows: [CT-PH-250]}
+      - {item: "note", rows: [CT-PH-021]}
+      - {item: "option", rows: [CT-PH-034, CT-PH-040]}
+      - {item: "paragraph", na: "text-level semantics with no operation; read by the full-subtree text rule (06 s2) as part of its record or section"}
+      - {item: "presentation", rows: [CT-PH-250]}
+      - {item: "progressbar", rows: [CT-PH-246]}
+      - {item: "radio", rows: [CT-PH-035]}
+      - {item: "radiogroup", rows: [CT-PH-035]}
+      - {item: "region", rows: [CT-PH-247]}
+      - {item: "row", rows: [CT-PH-153, CT-PH-243]}
+      - {item: "rowgroup", rows: [CT-PH-153]}
+      - {item: "rowheader", rows: [CT-PH-153, CT-PH-243]}
+      - {item: "scrollbar", rows: [CT-PH-157, CT-PH-241]}
+      - {item: "search", rows: [CT-PH-247, CT-PH-199]}
+      - {item: "searchbox", rows: [CT-PH-199]}
+      - {item: "separator", rows: [CT-PH-241]}
+      - {item: "slider", rows: [CT-PH-244]}
+      - {item: "spinbutton", rows: [CT-PH-244]}
+      - {item: "status", rows: [CT-PH-248]}
+      - {item: "strong", na: "text-level semantics with no operation; read by the full-subtree text rule (06 s2) as part of its record or section"}
+      - {item: "subscript", na: "text-level semantics with no operation; read by the full-subtree text rule (06 s2) as part of its record or section"}
+      - {item: "superscript", na: "text-level semantics with no operation; read by the full-subtree text rule (06 s2) as part of its record or section"}
+      - {item: "switch", rows: [CT-PH-245]}
+      - {item: "tab", rows: [CT-PH-242]}
+      - {item: "table", rows: [CT-PH-153]}
+      - {item: "tablist", rows: [CT-PH-242]}
+      - {item: "tabpanel", rows: [CT-PH-242]}
+      - {item: "term", rows: [CT-PH-021]}
+      - {item: "textbox", rows: [CT-PH-033, CT-PH-036]}
+      - {item: "time", rows: [CT-PH-168]}
+      - {item: "timer", rows: [CT-PH-248, CT-PH-141]}
+      - {item: "toolbar", rows: [CT-PH-215]}
+      - {item: "tooltip", rows: [CT-PH-238]}
+      - {item: "tree", rows: [CT-PH-239]}
+      - {item: "treegrid", rows: [CT-PH-240]}
+      - {item: "treeitem", rows: [CT-PH-239]}
+  - list: input
+    title: "HTML input types"
+    source: "HTML Living Standard, 4.10.5 the input element, type keywords"
+    url: "https://html.spec.whatwg.org/multipage/input.html"
+    frozen: "fetched 2026-11-02"
+    items:
+      - {item: "hidden", rows: [CT-PH-077, CT-PH-095]}
+      - {item: "text", rows: [CT-PH-033]}
+      - {item: "search", rows: [CT-PH-199]}
+      - {item: "tel", rows: [CT-PH-033, CT-PH-042]}
+      - {item: "url", rows: [CT-PH-033]}
+      - {item: "email", rows: [CT-PH-033]}
+      - {item: "password", rows: [CT-PH-033, CT-PH-060]}
+      - {item: "date", rows: [CT-PH-037]}
+      - {item: "month", rows: [CT-PH-253]}
+      - {item: "week", rows: [CT-PH-253]}
+      - {item: "time", rows: [CT-PH-253]}
+      - {item: "datetime-local", rows: [CT-PH-253]}
+      - {item: "number", rows: [CT-PH-033, CT-PH-244]}
+      - {item: "range", rows: [CT-PH-244]}
+      - {item: "color", na: "no job-search or application form asks for a colour; if one is met, the unknown-unknown rule applies (CT-PH-212)"}
+      - {item: "checkbox", rows: [CT-PH-035]}
+      - {item: "radio", rows: [CT-PH-035]}
+      - {item: "file", rows: [CT-PH-038]}
+      - {item: "submit", rows: [CT-FR-130]}
+      - {item: "image", rows: [CT-FR-130]}
+      - {item: "reset", rows: [CT-PH-254]}
+      - {item: "button", rows: [CT-PH-024]}
+  - list: html
+    title: "HTML interactive and form elements"
+    source: "HTML Living Standard, index: element content categories (interactive, form-associated, listed, labelable, submittable) and the form elements of 4.10"
+    url: "https://html.spec.whatwg.org/multipage/indices.html"
+    frozen: "fetched 2026-11-02"
+    items:
+      - {item: "a[href]", rows: [CT-PH-024, CT-PH-186]}
+      - {item: "area/img[usemap]", rows: [CT-PH-186]}
+      - {item: "audio[controls]", na: "media players carry no posting or form data; a recorded-video interview step is CT-PH-141"}
+      - {item: "video[controls]", na: "as audio; video interview steps are CT-PH-141"}
+      - {item: "button", rows: [CT-PH-024]}
+      - {item: "details", rows: [CT-PH-233]}
+      - {item: "summary", rows: [CT-PH-233]}
+      - {item: "embed", rows: [CT-PH-086]}
+      - {item: "object", rows: [CT-PH-086]}
+      - {item: "iframe", rows: [CT-PH-080, CT-PH-155]}
+      - {item: "input", rows: [CT-PH-033]}
+      - {item: "label", rows: [CT-FR-122]}
+      - {item: "select", rows: [CT-PH-034]}
+      - {item: "textarea", rows: [CT-PH-036]}
+      - {item: "fieldset", rows: [CT-PH-035]}
+      - {item: "legend", rows: [CT-PH-035]}
+      - {item: "output", rows: [CT-PH-248]}
+      - {item: "meter", rows: [CT-PH-246]}
+      - {item: "progress", rows: [CT-PH-246]}
+      - {item: "datalist", rows: [CT-PH-034]}
+      - {item: "optgroup", rows: [CT-PH-034]}
+      - {item: "option", rows: [CT-PH-034]}
+      - {item: "form", rows: [CT-PH-030]}
+      - {item: "dialog", rows: [CT-PH-048, CT-PH-235]}
+      - {item: "del/ins/s", rows: [CT-PH-251]}
+      - {item: "[contenteditable]", rows: [CT-PH-036, CT-PH-224]}
+      - {item: "form-associated custom element", rows: [CT-PH-252]}
+  - list: workflow
+    title: "Engine steps as page interactions"
+    source: "05_architecture.md section 4 (workflow) and the engine steps, written as the page interactions each step needs"
+    url: "05_architecture.md"
+    frozen: "this blueprint"
+    items:
+      - {item: "access: open a URL and follow redirects", rows: [CT-PH-089, CT-PH-192]}
+      - {item: "observe: scroll to render lazy content", rows: [CT-PH-117, CT-PH-018]}
+      - {item: "observe: dismiss or work around an overlay only per user policy", rows: [CT-PH-090, CT-PH-099]}
+      - {item: "break down: none (reads only)", na: "verdict, regions and family scores read the observation and operate nothing"}
+      - {item: "discovery records: advance pages", rows: [CT-PH-016, CT-PH-017, CT-PH-223]}
+      - {item: "discovery records: operate filter and sort controls", rows: [CT-PH-215, CT-PH-216, CT-PH-217, CT-PH-218, CT-FR-035]}
+      - {item: "discovery records: switch to the jobs tab or view", rows: [CT-PH-242, CT-PH-256]}
+      - {item: "discovery fields: click a card to reveal its link", rows: [CT-PH-005, CT-FR-105]}
+      - {item: "discovery fields: reveal hover-only actions", rows: [CT-PH-255]}
+      - {item: "discovery: choose a cheaper view of the same records", rows: [CT-PH-261, CT-PH-262, CT-PH-263, CT-FR-036]}
+      - {item: "vetting: expand truncated description", rows: [CT-PH-233]}
+      - {item: "vetting: open accordion or tab sections of a posting", rows: [CT-PH-232, CT-PH-242]}
+      - {item: "vetting: follow the apply entry", rows: [CT-PH-024, CT-PH-171]}
+      - {item: "applications: step through next and back", rows: [CT-PH-031]}
+      - {item: "applications: open an apply dialog", rows: [CT-PH-048]}
+      - {item: "applications: type, select, check, pick a date, upload", rows: [CT-PH-033, CT-PH-034, CT-PH-035, CT-PH-037, CT-PH-038]}
+      - {item: "applications: operate comboboxes, trees, sliders, spinbuttons, switches", rows: [CT-PH-039, CT-PH-239, CT-PH-244, CT-PH-245]}
+      - {item: "applications: type into a rich-text box with a toolbar", rows: [CT-PH-224, CT-PH-036]}
+      - {item: "applications: add another repeating section", rows: [CT-PH-043]}
+      - {item: "applications: read help text and tooltips", rows: [CT-PH-238]}
+      - {item: "transitions: pop-ups, new tabs, dialogs, alert dialogs, downloads", rows: [CT-PH-083, CT-PH-084, CT-PH-085, CT-PH-235, CT-PH-086]}
+      - {item: "required (errors): read error summaries, toasts, live regions", rows: [CT-PH-056, CT-PH-057, CT-PH-248]}
+      - {item: "submit: press submit only through the gate; never press reset", rows: [CT-FR-130, CT-PH-254]}
+      - {item: "pause and resume (HITL)", rows: [CT-FR-020, CT-PH-062]}
+  - list: signature
+    title: "Recognition signatures (07 s7)"
+    source: "07_footprint_and_defences.md section 7, recognition signatures"
+    url: "07_footprint_and_defences.md"
+    frozen: "this blueprint"
+    items:
+      - {item: "reCAPTCHA v2 checkbox/image", rows: [CT-PH-070]}
+      - {item: "reCAPTCHA v3 score only", rows: [CT-PH-070, CT-PH-197]}
+      - {item: "hCaptcha, Cloudflare Turnstile", rows: [CT-PH-071]}
+      - {item: "Arkose/FunCaptcha, GeeTest", rows: [CT-PH-072]}
+      - {item: "interstitial checking-your-browser", rows: [CT-PH-073, CT-PH-198]}
+      - {item: "search-engine unusual traffic", rows: [CT-PH-074]}
+      - {item: "rate limits (429, Retry-After)", rows: [CT-PH-075, CT-PH-194]}
+      - {item: "silent throttling / thinning", rows: [CT-PH-076]}
+      - {item: "login walls", rows: [CT-PH-060, CT-PH-196]}
+      - {item: "account creation, email verification, codes, passkeys", rows: [CT-PH-061, CT-PH-063, CT-PH-064, CT-PH-175]}
+      - {item: "sign-in-with pop-up window", rows: [CT-PH-062]}
+      - {item: "consent walls", rows: [CT-PH-090]}
+      - {item: "age gate, geo-block, closed posting, already applied", rows: [CT-PH-091, CT-PH-023, CT-PH-097]}
+      - {item: "honeypot fields", rows: [CT-PH-077]}
+      - {item: "time-based traps, JS tokens", rows: [CT-PH-078]}
+      - {item: "DOM obfuscation", rows: [CT-PH-079, CT-PH-104]}
+      - {item: "session expiry, CSRF, single-use apply links", rows: [CT-PH-095, CT-PH-096]}
+  - list: views
+    title: "Alternate and machine-readable views"
+    source: "Machine-readable and alternate views of a posting: RSS 2.0 (rssboard.org), Atom (RFC 4287), Sitemaps 0.9 (sitemaps.org), schema.org JobPosting, AMP, print media, mobile hosts, vendor posting APIs"
+    url: "https://www.rssboard.org/rss-specification ; https://www.rfc-editor.org/rfc/rfc4287 ; https://www.sitemaps.org/protocol.html ; https://schema.org/JobPosting"
+    frozen: "standards"
+    items:
+      - {item: "RSS 2.0 feed", rows: [CT-PH-261]}
+      - {item: "Atom feed", rows: [CT-PH-261]}
+      - {item: "sitemap / sitemap index", rows: [CT-PH-262]}
+      - {item: "schema.org JobPosting (JSON-LD)", rows: [CT-PH-020, CT-PH-162]}
+      - {item: "schema.org JobPosting (microdata)", rows: [CT-PH-020]}
+      - {item: "AMP view", rows: [CT-PH-260]}
+      - {item: "print view", rows: [CT-PH-260]}
+      - {item: "mobile host (m.)", rows: [CT-PH-259]}
+      - {item: "vendor public posting API", rows: [CT-PH-263, CT-PH-140]}
+      - {item: "embedded view (form or board in a host page)", rows: [CT-PH-257]}
+      - {item: "guest and signed-in views", rows: [CT-PH-256]}
+      - {item: "database view vs parent page", rows: [CT-PH-258]}
+      - {item: "board redirected to the company's site", rows: [CT-PH-192]}
+      - {item: "mirror hosts", rows: [CT-PH-158]}

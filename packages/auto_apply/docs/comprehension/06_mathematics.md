@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Mathematics"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -141,7 +141,11 @@ and no link scored eligible (LR-1). The evidence available (counts only) cannot
 discriminate hypotheses H1 (containment relation missed because the anchor wraps
 the heading in a sibling branch), H2 (eligibility floor rejects direct same-host
 links), H3 (a wrapper redirect form). Slice 1 captures a fixture and the first
-trace, per defect 9, before any threshold is changed.
+trace, per defect 9, before any threshold is changed. *Pass 3 (S1, cloud):* the
+trace on the reachable fixtures confirmed H1 (the detected node sits below the
+record: defect 28) and H2 (a same-host posting link scores 0: defect 26), and
+found a fourth cause, two links to one destination counted as two routes
+(defect 25). H3 was not observed. Section 16 states the S1 rules.
 
 *Failure modes.* Returns `Abstain(no-title)` / `Abstain(no-link)` with candidates
 listed; never raises; loops are over the record's nodes (`O(r)`).
@@ -476,6 +480,9 @@ section 6. Symbols as above, plus `N` = node cap (default 30,000), `B` = byte ca
 | 024 resume | O(n) | page replaced during pause | O(n) | `N` | `PAGE_GONE` |
 | 025 windows | O(windows) | window storm (pop-ups opening pop-ups) | unbounded windows | 4 new windows per action | close AA-opened extras, `WINDOWS_CHANGED` |
 | 026 failure classes | O(trace) | n/a | O(trace) | trace caps | `UNKNOWN_PHENOMENON` |
+| 027 filter effect | O(r) | page re-ranks on every load | O(r) | `S` records, 2 confirmations | `UNKNOWN`; parameter not learned |
+| 028 view equivalence | O(fields + tokens) | huge descriptions | O(B) | byte cap | `compatible` with the cut field flagged |
+| 029 view selection | O(V·F) | many views | O(V·F) | views per record 16 | conservative choice: the page view |
 
 **Lemma 4 (every tool terminates).** Each loop above iterates over a finite,
 capped collection (`N`, `S`, `m`, `h`, a page or wait count) or polls with a
@@ -498,3 +505,139 @@ in the container (cubic, no cap); `iter_nodes` recurses. So G2 does not hold at
 from three page shapes seen in the specimens: very long lists (C14: 38,000 nodes
 after scrolling), text-heavy containers around forms (L16), and pages served as
 one large script payload. Budgets are set on those shapes, not on the median.
+
+## 13. Filter effect verification and parameter learning (CT-ALG-027; tool CT-T-027)
+
+**Input.** Two observations of the same surface, `O_b` before and `O_a` after
+one `ActionRequest` on a control bound to piece `p` with intended option `v`;
+their record sets `R_b`, `R_a` (record identities from CT-T-008/009: the
+canonical URL of each record's link, else its identity attribute value),
+their total-count texts `c_b`, `c_a` (parsed integers or none), and URLs
+`u_b`, `u_a`.
+
+**Statement.** Let `J = |R_a ∩ R_b| / |R_a ∪ R_b|` (Jaccard, 1 when both are
+empty). Let `Δq` be the query-string difference between `u_b` and `u_a`
+(keys added, removed or with changed values; the fragment is ignored).
+Decide, in order:
+
+1. `|R_a| = 0` and the verdict on `O_a` is an empty-results state →
+   `APPLIED` with `empty=true` (a filter can legitimately empty a list).
+2. `J = 1` and `c_a = c_b` and `Δq = ∅` → `NO_EFFECT`.
+3. `J = 1` and (`Δq ≠ ∅` or `c_a ≠ c_b`) → `NO_EFFECT` with
+   `url_changed`/`count_changed` evidence (the CT-PH-226 case: the URL moved,
+   the results did not; the `VerifiedPageAdvancer` lesson).
+4. `J < 1` → `APPLIED`; additionally, when every record of `R_a` that carries
+   the filtered field (date, remote flag, pay) satisfies `v`, the check is
+   `APPLIED+consistent`; when some contradict `v`, `CONTRADICTED` with the
+   count of contradicting records.
+5. If `c_a` is present and `|R_a| > c_a` on a page that shows all results,
+   or the facet count shown for `v` differs from `c_a` by more than the page
+   size, add `count_mismatch` (CT-PH-228).
+
+`RESET` is decided on the next page: after `advance_page`, if the control's
+`current` value (CT-DS-014) is back to its default, the outcome of the
+earlier `APPLIED` is revised to `RESET` for pages after the first.
+
+**Parameter learning (step 4).** On `APPLIED` with `|Δq| = 1` (one key, or
+one value) the pair `(key, value)` is a candidate for `(host, p, v)`. With
+`|Δq| > 1`, keys present in both before and after with tracking-shaped
+names (the tokens of `url_evidence`) are dropped first; if one key remains it
+is the candidate, else no candidate. A candidate is confirmed by navigating
+to `u_b` with only that change applied and observing `J ≥ 0.9` against
+`R_a` (pagination and ads perturb a little). Two confirmations on different
+queries promote it to the catalog with provenance `learned`.
+
+**Proof sketch (soundness of `NO_EFFECT`).** If the filter had taken effect
+on the first page, the record set would change unless every record on the
+page already satisfied `v`. That case is indistinguishable from no effect on
+one page; the check therefore reports `NO_EFFECT` only as a page-level fact,
+and the channel is benched only after the same outcome on two queries
+(ADR-021's verifier rule). False `APPLIED` requires `R_a ≠ R_b` without the
+filter acting, which happens when the page re-ranks on every load; the
+learning step's direct-URL confirmation catches it with probability equal to
+the chance two independent reloads agree, measured per host in S0.
+
+**Termination and cost.** No loops beyond set operations over the records of
+two pages (`r ≤ 2,000`, the sibling cap): `O(r)` with hashing. One extra
+navigation per confirmation, two per learned parameter, once per host and
+piece. Budget on the worst-case machine: the observation dominates (S1
+measured 32 to 281 ms per pass on live boards in the cloud; times 8 for the
+reference machine), the decision itself under 1 ms.
+
+**Failure modes.** Returns `UNKNOWN` when either observation is truncated,
+blocked or a challenge (the verdict decides), or when record identity is
+unavailable (no links, no identity attribute). Never raises; never retries
+on its own (the engine decides, under ADR-021's bench rule).
+
+## 14. View equivalence (CT-ALG-028; tool CT-T-028)
+
+**Input.** Two views `A`, `B` claimed to show the same record, each reduced
+to fields `f ∈ {title, company, location, pay, date_posted, valid_through,
+apply_target, description}` with values from CT-T-009/017 (page views) or
+the parsed payload (feed, API, sitemap).
+
+**Statement.** Per field, compare normalised values (text key `K(s)` of
+s10; locations by the normalised place tuple; pay as intervals; dates as
+calendar days in the view's stated zone; apply targets by canonical URL;
+descriptions by token-set Jaccard). Field `f` *agrees* if equal (`J ≥ 0.8`
+for descriptions, interval overlap for pay, `|Δdays| ≤ 1` for dates). The
+views are **equivalent** when the identity fields (title, and one of company
+or apply target) agree and no present field disagrees; **compatible** when
+identity agrees and some fields differ (reported, never averaged); **distinct**
+otherwise. The record's value for a field comes from the view with the
+higher field confidence, and the disagreement stays in the record.
+
+**Sampling.** A learned `ViewTemplate` is re-verified on a random sample
+(seeded) of `max(3, ⌈0.05·n⌉)` records per run; a single `distinct` result
+quarantines the template (domain-memory rule, s10).
+
+**Termination and cost.** `O(|f| + description tokens)` per pair, bounded by
+the byte cap; feeds and APIs are parsed once. No network inside the
+algorithm.
+
+## 15. View selection (CT-ALG-029)
+
+**Statement.** For a record with needed fields `F` and verified views `V`
+(ALG-028 `equivalent` or `compatible` on `F`), choose
+`argmin_{v ∈ V, access(v) = public, F ⊆ fields(v)} (footprint_class(v), requests(v), bytes(v))`
+lexicographically; ties by view kind order (`api`, `feed`, `jsonld`,
+`page_guest`, `print`, `amp`, `mobile`, `embedded`, `own_url`), then by
+locator. If no view carries all of `F`, choose the cover with the fewest
+views by the same order (greedy set cover; `|F| ≤ 8` makes the greedy bound
+irrelevant in practice). Deterministic. `O(|V|·|F|)`.
+
+**Why footprint first.** A plain GET of a feed or API is one request with no
+script execution and no input events ([07](07_footprint_and_defences.md) s3);
+the page view costs a browser load. Accuracy is not traded: only verified
+views are candidates.
+
+## 16. The S1 record reading, as built (CT-ALG-003 and 004, smallest form)
+
+Slice S1 implements the record-root rule and the title rule in the smallest
+form that slice S2's records tool replaces. Precisely:
+
+1. **Levels.** The climb keeps levels `ℓ = 0..h` while the lifted nodes stay
+   one per card (`h ≤ 12`, Lemma 3).
+2. **Heading tier.** Choose the smallest `ℓ` at which at least 80% of the
+   nodes are pairwise disjoint and hold a heading with text (accessible name,
+   else full-subtree text) **and** a primary link related to it: the link
+   contains the heading or sits inside it, or its name or URL carries at
+   least half of the title's tokens. A block holding a title and only an
+   unrelated link (a company link) does not qualify.
+3. **Link tier.** Only if no level qualifies in step 2: the smallest `ℓ` at
+   which 80% hold a primary link with a name. Records there take the link's
+   name as title when they are outside chrome landmarks and the names and
+   destinations are each at least 80% distinct across the group (a column
+   of "Apply" links fails).
+4. **Fallback.** No level qualifies: read the cards at the identity level
+   (today's behaviour), so anchorless cards keep their identity for click
+   activation.
+5. **Link choice.** Candidates are scored by `url_evidence` plus a
+   title-relation term of 0.5; candidates with one canonical destination are
+   merged before the resolution state is decided.
+
+*Termination:* at most two passes over at most 13 levels; each level's test
+walks disjoint subtrees once, so the cost is `O(13·n)` worst case, measured
+at under 35 ms on 1,147-node live boards (cloud). *Proven by:* the pins of
+`tests/domain/test_s1_record_reading.py` and the four fixture pins;
+*replaced by:* S2's ranked runs, run score and chrome penalty.

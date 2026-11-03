@@ -1,0 +1,428 @@
+# Build plan per ledger row (pass 3): the slice that delivers it, the tools, and where its
+# time and memory bound and its failure behaviour are specified. Generated from the ledger.
+# bound: 06 section 12 (worst case and caps per algorithm), 05 section 14 (caps), 12 section 6 (tail budgets)
+# failure: 12 section 4 (per-tool handling: returns, raises, never hangs); every tool returns Abstain or Timeout, never raises (05 s2)
+# cross-cutting rows (invariants, NFRs, 'all') are checked by the release checks of 10 s4 in every slice.
+schema: 1
+rows:
+  - {id: CT-PH-001, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-002, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-003, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-004, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-005, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-006, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-007, slice: "S2 + S5", tools: "T-008, T-016"}
+  - {id: CT-PH-008, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-009, slice: "S1/S2 + S2", tools: "T-007, T-009"}
+  - {id: CT-PH-150, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-151, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-152, slice: "S2 + S5", tools: "T-008, T-016"}
+  - {id: CT-PH-153, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-154, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-PH-155, slice: "S0/S3 + S3", tools: "T-002, T-004"}
+  - {id: CT-PH-156, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-PH-157, slice: "S2 + S5", tools: "T-007, T-016"}
+  - {id: CT-PH-158, slice: "S2", tools: "-", note: "records with provenance; dedup by canonical URL"}
+  - {id: CT-PH-159, slice: "S2", tools: "T-007, T-008"}
+  - {id: CT-PH-160, slice: "S2", tools: "T-007"}
+  - {id: CT-PH-161, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-010, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-011, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-012, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-013, slice: "S2 + S5", tools: "T-008, T-016"}
+  - {id: CT-PH-014, slice: "S2 + S5", tools: "T-008, T-016"}
+  - {id: CT-PH-015, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-016, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-017, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-018, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-019, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-020, slice: "S5", tools: "T-017"}
+  - {id: CT-PH-021, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-PH-022, slice: "S3", tools: "T-004"}
+  - {id: CT-PH-023, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-024, slice: "S1/S2 + S5", tools: "T-009, T-016"}
+  - {id: CT-PH-162, slice: "S1/S2 + S5", tools: "T-009, T-017"}
+  - {id: CT-PH-163, slice: "S1/S2 + S5", tools: "T-009, T-017"}
+  - {id: CT-PH-164, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-PH-165, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-166, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-PH-167, slice: "S1/S2 + S5", tools: "T-009, T-017"}
+  - {id: CT-PH-168, slice: "S5", tools: "T-003, T-017"}
+  - {id: CT-PH-169, slice: "S2 + S4", tools: "T-007, T-010"}
+  - {id: CT-PH-170, slice: "S1/S2 + S5", tools: "T-009, T-016"}
+  - {id: CT-PH-171, slice: "S5", tools: "-", note: "apply target with transitions"}
+  - {id: CT-PH-172, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-PH-173, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-030, slice: "S4", tools: "T-010"}
+  - {id: CT-PH-031, slice: "S4", tools: "T-010"}
+  - {id: CT-PH-032, slice: "S4", tools: "T-010"}
+  - {id: CT-PH-033, slice: "S4", tools: "T-012"}
+  - {id: CT-PH-034, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-035, slice: "S4", tools: "T-011"}
+  - {id: CT-PH-036, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-037, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-038, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-039, slice: "S4", tools: "T-015"}
+  - {id: CT-PH-040, slice: "S4", tools: "T-015"}
+  - {id: CT-PH-041, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-042, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-043, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-044, slice: "S4 + S5", tools: "T-010, T-016"}
+  - {id: CT-PH-045, slice: "S4", tools: "T-012"}
+  - {id: CT-PH-046, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-047, slice: "S4", tools: "T-010"}
+  - {id: CT-PH-048, slice: "S4", tools: "T-010, T-014"}
+  - {id: CT-PH-049, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-050, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-051, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-052, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-053, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-054, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-055, slice: "S4", tools: "T-026"}
+  - {id: CT-PH-056, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-057, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-058, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-059, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-060, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-061, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-062, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-063, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-064, slice: "S5", tools: "-", note: "pause/resume protocol"}
+  - {id: CT-PH-174, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-175, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-176, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-177, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-178, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-179, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-180, slice: "S1 (block kind)/S4 + S5", tools: "T-006, T-016"}
+  - {id: CT-PH-070, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-071, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-072, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-073, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-074, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-075, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-076, slice: "live", tools: "-", note: "exists (degradation_detector.py); measured in S0"}
+  - {id: CT-PH-077, slice: "S3", tools: "T-005"}
+  - {id: CT-PH-078, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-PH-079, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-080, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-081, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-082, slice: "S3", tools: "-", note: "access capability model"}
+  - {id: CT-PH-083, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-084, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-085, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-086, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-087, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-088, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-089, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-090, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-091, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-092, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-093, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-094, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-095, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-096, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-097, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-098, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-099, slice: "S3", tools: "T-005"}
+  - {id: CT-PH-100, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-101, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-102, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-103, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-104, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-105, slice: "S4 + S5", tools: "T-003, T-011"}
+  - {id: CT-PH-106, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-107, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-108, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-109, slice: "S5", tools: "-", note: "text tool notices"}
+  - {id: CT-PH-110, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-PH-111, slice: "S4", tools: "T-012"}
+  - {id: CT-PH-112, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-113, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-PH-114, slice: "S2", tools: "T-007"}
+  - {id: CT-PH-115, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-116, slice: "S2", tools: "T-007"}
+  - {id: CT-PH-117, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-118, slice: "S3", tools: "T-005"}
+  - {id: CT-PH-120, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-PH-121, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-PH-122, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-PH-123, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-124, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-125, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-126, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-127, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-128, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-129, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-130, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-131, slice: "S0", tools: "T-022"}
+  - {id: CT-PH-132, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-133, slice: "S7", tools: "T-021"}
+  - {id: CT-PH-134, slice: "S7", tools: "T-021"}
+  - {id: CT-PH-135, slice: "S0/S3", tools: "-", note: "environment facts on every observation"}
+  - {id: CT-PH-136, slice: "S0/S3", tools: "-", note: "environment facts on every observation"}
+  - {id: CT-PH-137, slice: "S0/S3", tools: "-", note: "environment facts on every observation"}
+  - {id: CT-PH-138, slice: "S0/S3", tools: "-", note: "environment facts on every observation"}
+  - {id: CT-PH-139, slice: "S3", tools: "-", note: "geometry relative to the page"}
+  - {id: CT-PH-140, slice: "S9", tools: "-", note: "channel seam"}
+  - {id: CT-PH-141, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-142, slice: "S5", tools: "-", note: "structured data and signals"}
+  - {id: CT-PH-143, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-144, slice: "S1/S0", tools: "-", note: "record built in S1; JSONL writer in S0"}
+  - {id: CT-PH-145, slice: "outside toolkit", tools: "-", note: "an engine or platform concern; tracked in the Bible"}
+  - {id: CT-PH-146, slice: "S6", tools: "-", note: "library and registry"}
+  - {id: CT-PH-147, slice: "S3", tools: "T-001"}
+  - {id: CT-PH-148, slice: "outside toolkit", tools: "-", note: "an engine or platform concern; tracked in the Bible"}
+  - {id: CT-PH-149, slice: "S5", tools: "-", note: "pause/resume protocol"}
+  - {id: CT-PH-181, slice: "S1 (block kind)/S4 + S5", tools: "T-006, T-016"}
+  - {id: CT-PH-182, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-183, slice: "S0/S3 + S2", tools: "T-002, T-008"}
+  - {id: CT-PH-184, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-PH-185, slice: "S4", tools: "T-011"}
+  - {id: CT-PH-186, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-PH-187, slice: "S3", tools: "T-004"}
+  - {id: CT-PH-188, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-189, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-190, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-191, slice: "S1 (block kind)/S4 + S5", tools: "T-006, T-016"}
+  - {id: CT-PH-192, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-193, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-194, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-195, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-196, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-197, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-198, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-199, slice: "S2", tools: "T-007"}
+  - {id: CT-PH-200, slice: "S3", tools: "T-005"}
+  - {id: CT-PH-201, slice: "S3 + S4", tools: "T-005, T-011"}
+  - {id: CT-PH-202, slice: "S4", tools: "T-011"}
+  - {id: CT-PH-203, slice: "S4", tools: "T-013"}
+  - {id: CT-PH-204, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-PH-205, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-PH-206, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-207, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-208, slice: "S5", tools: "T-003"}
+  - {id: CT-PH-209, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-210, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-PH-211, slice: "S7", tools: "T-021"}
+  - {id: CT-PH-212, slice: "S0", tools: "-", note: "unknown-unknown hook at every tool boundary"}
+  - {id: CT-PH-213, slice: "owner ruling", tools: "-", note: "decided by the owner; no code until ruled"}
+  - {id: CT-PH-214, slice: "S1/S2 + S5", tools: "T-003, T-009"}
+  - {id: CT-FR-101, slice: "S2", tools: "T-008"}
+  - {id: CT-FR-102, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-FR-103, slice: "S2 + S5", tools: "T-008, T-016"}
+  - {id: CT-FR-104, slice: "S2", tools: "T-008"}
+  - {id: CT-FR-105, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-FR-106, slice: "S9", tools: "-", note: "feed channel"}
+  - {id: CT-FR-107, slice: "S1/S0", tools: "-", note: "record built in S1; JSONL writer in S0"}
+  - {id: CT-FR-108, slice: "S1/S0", tools: "-", note: "record built in S1; JSONL writer in S0"}
+  - {id: CT-FR-109, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-FR-110, slice: "S2", tools: "-", note: "records with provenance; dedup by canonical URL"}
+  - {id: CT-FR-111, slice: "S5", tools: "T-017"}
+  - {id: CT-FR-112, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-FR-113, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-FR-114, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-FR-115, slice: "S5", tools: "T-003"}
+  - {id: CT-FR-116, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-FR-117, slice: "S5", tools: "T-017"}
+  - {id: CT-FR-118, slice: "S1/S2 + S5", tools: "T-009, T-017"}
+  - {id: CT-FR-119, slice: "S5", tools: "T-003, T-017"}
+  - {id: CT-FR-135, slice: "S5", tools: "-", note: "apply target with transitions"}
+  - {id: CT-FR-136, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-FR-137, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-FR-121, slice: "S4", tools: "T-010"}
+  - {id: CT-FR-122, slice: "S4", tools: "T-011"}
+  - {id: CT-FR-123, slice: "S4", tools: "T-012"}
+  - {id: CT-FR-124, slice: "S4", tools: "T-013"}
+  - {id: CT-FR-125, slice: "S4", tools: "T-014"}
+  - {id: CT-FR-126, slice: "S4", tools: "T-014"}
+  - {id: CT-FR-127, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-FR-128, slice: "S5", tools: "-", note: "pause context"}
+  - {id: CT-FR-129, slice: "S5", tools: "T-016"}
+  - {id: CT-FR-130, slice: "S4", tools: "T-026"}
+  - {id: CT-FR-131, slice: "S4", tools: "T-013"}
+  - {id: CT-FR-132, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-FR-133, slice: "S2", tools: "T-008"}
+  - {id: CT-FR-134, slice: "S3", tools: "T-005"}
+  - {id: CT-FR-001, slice: "S3", tools: "T-001"}
+  - {id: CT-FR-002, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-FR-003, slice: "S3", tools: "T-004"}
+  - {id: CT-FR-004, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-FR-005, slice: "S2", tools: "T-008"}
+  - {id: CT-FR-006, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-FR-007, slice: "S5", tools: "T-016"}
+  - {id: CT-FR-008, slice: "S1/S2", tools: "T-009"}
+  - {id: CT-FR-009, slice: "S4", tools: "T-010"}
+  - {id: CT-FR-010, slice: "S4", tools: "T-011"}
+  - {id: CT-FR-011, slice: "S4", tools: "T-012"}
+  - {id: CT-FR-012, slice: "S4", tools: "T-013"}
+  - {id: CT-FR-013, slice: "S4", tools: "T-026"}
+  - {id: CT-FR-014, slice: "S4", tools: "T-013"}
+  - {id: CT-FR-015, slice: "S4", tools: "T-014"}
+  - {id: CT-FR-016, slice: "S4", tools: "T-015"}
+  - {id: CT-FR-017, slice: "S3", tools: "T-005"}
+  - {id: CT-FR-018, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-FR-019, slice: "S5", tools: "T-016"}
+  - {id: CT-FR-020, slice: "S5", tools: "T-016"}
+  - {id: CT-FR-021, slice: "S5", tools: "T-003"}
+  - {id: CT-FR-022, slice: "S1/S0", tools: "T-018"}
+  - {id: CT-FR-023, slice: "S0", tools: "T-022"}
+  - {id: CT-FR-024, slice: "S7", tools: "T-019"}
+  - {id: CT-FR-025, slice: "S7", tools: "T-020"}
+  - {id: CT-FR-026, slice: "S7", tools: "T-021"}
+  - {id: CT-FR-027, slice: "S6", tools: "T-023"}
+  - {id: CT-FR-028, slice: "S8", tools: "T-024"}
+  - {id: CT-FR-029, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-FR-030, slice: "S6", tools: "-", note: "compatibility shims"}
+  - {id: CT-FR-031, slice: "S2", tools: "T-007"}
+  - {id: CT-FR-032, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-FR-033, slice: "S1 (block kind)/S4 + S1/S0 + S6", tools: "T-006, T-018, T-023"}
+  - {id: CT-FR-034, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-001, slice: "S6", tools: "-", note: "library boundary"}
+  - {id: CT-NFR-002, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-003, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-004, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-NFR-005, slice: "S3", tools: "T-004"}
+  - {id: CT-NFR-006, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-007, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-008, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-009, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-010, slice: "S0", tools: "-", note: "caps enforced at the tool boundary"}
+  - {id: CT-NFR-011, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-012, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-NFR-013, slice: "S0/S3", tools: "-", note: "environment facts on every observation"}
+  - {id: CT-NFR-014, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-015, slice: "S1/S0", tools: "T-018"}
+  - {id: CT-NFR-016, slice: "S8", tools: "T-024"}
+  - {id: CT-NFR-017, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-018, slice: "S0", tools: "-", note: "caps enforced at the tool boundary"}
+  - {id: CT-NFR-019, slice: "S7", tools: "T-019"}
+  - {id: CT-NFR-020, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-021, slice: "S5", tools: "T-003"}
+  - {id: CT-NFR-022, slice: "S6", tools: "T-023"}
+  - {id: CT-NFR-023, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-024, slice: "S1/S0", tools: "T-018"}
+  - {id: CT-NFR-025, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-026, slice: "S0/S3", tools: "T-002"}
+  - {id: CT-NFR-101, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-102, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-103, slice: "S1/S0", tools: "-", note: "record built in S1; JSONL writer in S0"}
+  - {id: CT-NFR-104, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-105, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-106, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-107, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-108, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-109, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-110, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-111, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-112, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-NFR-113, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-001, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-002, slice: "S6", tools: "-", note: "library boundary"}
+  - {id: CT-INV-003, slice: "S5", tools: "T-016"}
+  - {id: CT-INV-004, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-005, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-006, slice: "S7", tools: "T-019"}
+  - {id: CT-INV-007, slice: "S0", tools: "-", note: "caps enforced at the tool boundary"}
+  - {id: CT-INV-008, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-009, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-010, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-011, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-012, slice: "S7", tools: "T-020"}
+  - {id: CT-INV-013, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-014, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-101, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-INV-102, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-103, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-104, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-105, slice: "S6", tools: "-", note: "library boundary"}
+  - {id: CT-INV-106, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-107, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-108, slice: "S3", tools: "T-001"}
+  - {id: CT-INV-109, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-110, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-111, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-112, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-113, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-114, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-115, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-116, slice: "S0", tools: "-", note: "caps enforced at the tool boundary"}
+  - {id: CT-INV-117, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-118, slice: "S1 (block kind)/S4", tools: "T-006"}
+  - {id: CT-INV-119, slice: "S1/S0", tools: "T-018"}
+  - {id: CT-INV-120, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-201, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-INV-202, slice: "S1/S0", tools: "-", note: "record built in S1; JSONL writer in S0"}
+  - {id: CT-INV-203, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-204, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-205, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-206, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-207, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-208, slice: "S1/S0", tools: "-", note: "record built in S1; JSONL writer in S0"}
+  - {id: CT-INV-209, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-210, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-211, slice: "S7", tools: "-", note: "resource profiles"}
+  - {id: CT-INV-212, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-213, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-214, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-215, slice: "live", tools: "-", note: "existing submission gate"}
+  - {id: CT-INV-216, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-217, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-218, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-INV-219, slice: "cross-cutting", tools: "-", note: "release checks, every slice"}
+  - {id: CT-PH-215, slice: "S4 + S9a", tools: "T-014, T-027"}
+  - {id: CT-PH-216, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-217, slice: "S2 + S9a", tools: "T-007, T-027"}
+  - {id: CT-PH-218, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-219, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-220, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-221, slice: "S4 + S9a", tools: "T-014, T-027"}
+  - {id: CT-PH-222, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-223, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-224, slice: "S4", tools: "T-010, T-014"}
+  - {id: CT-PH-225, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-226, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-227, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-228, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-229, slice: "S5 + S9a", tools: "T-016, T-027"}
+  - {id: CT-PH-230, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-231, slice: "S9a", tools: "T-027"}
+  - {id: CT-PH-232, slice: "S4 + S5", tools: "T-014, T-016"}
+  - {id: CT-PH-233, slice: "S1/S2 + S4", tools: "T-009, T-014"}
+  - {id: CT-PH-234, slice: "S2 + S5", tools: "T-008, T-016"}
+  - {id: CT-PH-235, slice: "S5", tools: "T-016"}
+  - {id: CT-PH-236, slice: "S2", tools: "T-007"}
+  - {id: CT-PH-237, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-238, slice: "S4", tools: "T-011, T-013"}
+  - {id: CT-PH-239, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-240, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-241, slice: "S2", tools: "T-007"}
+  - {id: CT-PH-242, slice: "S4 + S5", tools: "T-014, T-016"}
+  - {id: CT-PH-243, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-244, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-245, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-246, slice: "S4", tools: "T-010"}
+  - {id: CT-PH-247, slice: "S2", tools: "T-007"}
+  - {id: CT-PH-248, slice: "S4 + S5", tools: "T-013, T-016"}
+  - {id: CT-PH-249, slice: "S4", tools: "T-014"}
+  - {id: CT-PH-250, slice: "S2", tools: "T-008"}
+  - {id: CT-PH-251, slice: "S1/S2 + S5", tools: "T-003, T-009"}
+  - {id: CT-PH-252, slice: "S0/S3 + S4", tools: "T-002, T-010"}
+  - {id: CT-PH-253, slice: "S4", tools: "T-012, T-014"}
+  - {id: CT-PH-254, slice: "S4", tools: "T-026"}
+  - {id: CT-PH-255, slice: "S3 + S5", tools: "T-005, T-016"}
+  - {id: CT-PH-256, slice: "S9b", tools: "T-028"}
+  - {id: CT-PH-257, slice: "S0/S3 + S9b", tools: "T-002, T-028"}
+  - {id: CT-PH-258, slice: "S2 + S9b", tools: "T-007, T-028"}
+  - {id: CT-PH-259, slice: "S9b", tools: "T-028"}
+  - {id: CT-PH-260, slice: "S9b", tools: "T-028"}
+  - {id: CT-PH-261, slice: "S9b", tools: "T-028"}
+  - {id: CT-PH-262, slice: "S9b", tools: "T-028"}
+  - {id: CT-PH-263, slice: "S9b", tools: "T-028"}
+  - {id: CT-PH-264, slice: "S9b", tools: "T-028"}
+  - {id: CT-PH-265, slice: "S1 (block kind)/S4 + S9b", tools: "T-006, T-028"}
+  - {id: CT-PH-266, slice: "S1 (block kind)/S4 + S9b", tools: "T-006, T-028"}
+  - {id: CT-FR-035, slice: "S9a", tools: "T-027"}
+  - {id: CT-FR-036, slice: "S9b", tools: "T-028"}
+  - {id: CT-FR-037, slice: "S6", tools: "T-023"}
+  - {id: CT-NFR-027, slice: "S9a + S9b", tools: "T-027, T-028"}

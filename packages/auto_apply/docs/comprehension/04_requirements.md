@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Requirements"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -55,6 +55,9 @@ IDs 001-099 are defined on this page. IDs 101 and above (engine needs `CT-FR-1xx
 | CT-FR-032 | Detect login, sign-up, verification-code and "sign in with …" gates, and hand off without entering third-party credentials | U, L | `[PARTIAL]` login wall verdict `[LIVE]` |
 | CT-FR-033 | Unknown-unknown capture: an unrecognised state fails closed, is recorded as a `[?]` row candidate with evidence, is handed to the human, and is contained to its unit of work so other safe work continues ([12](12_edge_cases_and_adversity.md) section 2) | U (property test on random DOMs: no silent default), L | `[ ]` (pass 2) |
 | CT-FR-034 | Edge-case contract: every tool declares and pins its behaviour on the catalogue of [12](12_edge_cases_and_adversity.md) (returns, raises, never hangs), its caps, and its trace record | U, P | `[ ]` (pass 2) |
+| CT-FR-035 | Filter and toolbar controls: recognised, mapped to search pieces, operated through the existing interaction layer, verified (ADR-021), learned as URL parameters ([05](05_architecture.md) s15) | U, L | `[ ]` (pass 3) |
+| CT-FR-036 | Alternate views of one record: recognised, mapping learned, equivalence verified, cheapest sufficient view chosen ([05](05_architecture.md) s16) | U, L | `[ ]` (pass 3) |
+| CT-FR-037 | Ledger coverage: every item of the frozen reference lists maps to a row or a reasoned not-applicable entry ([09](09_verification.md) s8) | U | `[ ]` (pass 3; the check is specified, not built) |
 
 ## Non-functional requirements
 
@@ -86,3 +89,4 @@ IDs 001-099 are defined on this page. IDs 101 and above (engine needs `CT-FR-1xx
 | CT-NFR-024 | Lifetime budget: tool registry lookups, trace and memory writes are O(1) amortised and bounded in size | M | `[ ]` |
 | CT-NFR-025 | Tail budgets: p95, p99 and maximum per tool on the worst-case machine and on adversarial input ([12](12_edge_cases_and_adversity.md) section 6), the maximum enforced as a hard cap | M (slice 0 on the specimen shapes) | `[ ]` (pass 2) |
 | CT-NFR-026 | Bounded acquisition: node, byte, depth, frame and time caps on every observation, each recorded as a truncation flag | U, M | `[ ]` (pass 2; A: no cap today) |
+| CT-NFR-027 | Operating filters and fetching alternate views within the footprint budget: one verified operation per piece, then the learned URL; views by plain GET after `robots.txt` ([07](07_footprint_and_defences.md) s10) | M | `[ ]` (pass 3) |

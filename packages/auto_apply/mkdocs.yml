@@ -146,6 +146,7 @@ nav:
       - Capability ledger: comprehension/02_ledger.md
       - Ledger part 2: comprehension/02_ledger_part2.md
       - Ledger part 3: comprehension/02_ledger_part3.md
+      - Ledger part 4: comprehension/02_ledger_part4.md
       - Philosophy and Bible conformance: comprehension/03_philosophy_and_bible_conformance.md
       - Requirements: comprehension/04_requirements.md
       - Architecture: comprehension/05_architecture.md
@@ -156,6 +157,7 @@ nav:
       - Gap analysis and build plan: comprehension/10_gap_analysis_and_build_plan.md
       - Risks and open questions: comprehension/11_risks_and_open_questions.md
       - Edge cases and adversity: comprehension/12_edge_cases_and_adversity.md
+      - Production readiness: comprehension/13_production_readiness.md
 
   - Research:
       - Overview: research_module/index.md

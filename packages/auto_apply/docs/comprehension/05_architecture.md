@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Architecture"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -55,6 +55,8 @@ Hang paths are listed per tool in [06](06_mathematics.md).
 | CT-T-022 | **Replay** | stored observation + parameters → results | = tools | `[PARTIAL]` |
 | CT-T-023 | **Ledger** | YAML → coverage, UNKNOWN capture | O(rows) | `[PLANNED]` |
 | CT-T-024 | **Workbench** | traces + ledger → review and explore UI | UI | `[PLANNED]` |
+| CT-T-027 | **Controls** | Doc, regions, piece vocabulary → `ControlBinding` per filter, sort, toolbar or pagination control (s15) | O(n) | `[PLANNED]` |
+| CT-T-028 | **Views** | observation, catalog → `ViewMap` of alternate views, equivalence, choice (s16) | O(n) + plain GETs | `[PLANNED]` |
 | CT-T-026 | **SubmitPredictor** | form + state → BLOCKED / WILL_SUBMIT / UNKNOWN (advisory) | O(c) | `[PLANNED]` |
 
 *Seam rule.* Tools depend on `Doc`/`Observation` and on each other only through
@@ -76,6 +78,9 @@ the same ID with a declared version; the registry records which one ran.
 | CT-DS-009 | `LedgerRow` | the YAML row of [02](02_ledger.md) | `[PLANNED]` |
 | CT-DS-010 | `CapabilitySet` | Frozen set of capability names (section 5) | `[PLANNED]` |
 | CT-DS-011 | `ResourceProfile` | Named bundle: read mode, node cap, duty cycle, copies, concurrency | `[PLANNED]` |
+| CT-DS-013 | `ViewMap` / `ViewTemplate` | record key → views (kind, locator, access, cost, fields, verified); per-host templates (s16) | `[PLANNED]` |
+| CT-DS-014 | `ControlBinding` | control key, widget kind, search piece, options, current value, apply mode, region (s15) | `[PLANNED]` |
+| CT-DS-015 | `ActionRequest` / `ActionOutcome` / `EffectCheck` | the contract between understanding and acting (s17); `ActionOutcome` is today's `ActionResult` | `[PLANNED]` |
 | CT-DS-012 | `PauseContext` | Observation id, epoch, findings, intended actions, confidence, human-edit log | `[PLANNED]` |
 
 *Why struct-of-arrays and not objects.* `DOMNode` is a frozen slotted object with
@@ -293,6 +298,8 @@ The caps are parameters in `ParameterSet` (CT-DS-007), chosen per resource profi
 | Sibling cap `S` | 2,000 per parent | T-008, ALG-005 | O: 803 rows on one board (L18) |
 | Residual pairing `m` | 120 per section, 8 nearest candidates per control | T-011 | A: cubic growth, 1.6 s at 302 |
 | Script deadline | 10 s per call | T-001, T-002 | R: one command blocked 87 s (LR-5) |
+| Text cap per node | 256 characters of full-subtree text or accessible name, flagged `text_truncated` | T-002 | S1: longest heading or link name on the S1 fixtures under 200 characters |
+| Text budget per observation | 2,000,000 characters of full text and names, then direct text only, flagged | T-002 | the 2 MB visible-text cap above |
 | Settle `T_max` | 10 s | T-016 | O: pages that never render (L50, F05) |
 | Scroll rounds `P_max` | 10 | T-016 | O: endless growth (C14) |
 | New windows per action | 4 | T-016 | design |
@@ -310,3 +317,186 @@ GPU and proxy rules (O: C09, the proxy accepts HTTPS only). The
 version, headless or not, font set hash, device scale factor, viewport) and
 an environment tag (`cloud`, `owner`, or another named host). Evidence from one
 environment never ticks a ledger box for another.
+
+## 15. Toolbars and filter controls (pass 3; CT-T-027, CT-FR-035)
+
+The family covers the WAI-ARIA toolbar pattern, filter bars and chips, facet
+sidebars with counts, sort controls, date-posted, remote, salary and
+"Easy Apply" filters, pagination and page-size controls, and toolbars inside
+forms (a rich-text editor above a cover-letter box). Ledger rows CT-PH-215 to
+CT-PH-231. ADR-021 already names filter controls as a channel for a search
+piece; this section is how the toolkit serves that channel.
+
+**What already exists, reused.** `ToolbarElementLocator` (YAML selectors with
+a Math-DOM fallback) finds Google's toolbar items for
+`SearchEngineStrategy.apply_toolbar_filters`; `VerifiedPageAdvancer` advances
+pages through a verified ladder (URL template, `rel=next`, structural,
+numbered, load-more, scroll) and verifies by result-list identity; the query
+builder writes known URL parameters from the catalog (ADR-019). None of these
+is rebuilt. The toolkit adds recognition where no selector exists, the
+mapping from a control to a search piece, verification of a filter's effect,
+and learning the URL parameter a control writes.
+
+**CT-T-027 Controls.** `(Doc, regions, piece vocabulary) -> [ControlBinding]`.
+Pure, `O(n)`, no I/O. For each candidate control (native `select`, checkbox
+and radio groups, `role=switch|menu|listbox|slider|toolbar`, buttons with
+`aria-expanded`/`aria-haspopup`, chips with a remove action) it returns a
+`ControlBinding` (CT-DS-014):
+
+| Field | Meaning |
+| --- | --- |
+| `control_key` | stable key of the control in the `Doc` (path + accessible name), valid for one epoch |
+| `widget_kind` | APG pattern: `select`, `checkbox_group`, `radio_group`, `switch`, `menu_button`, `listbox`, `slider`, `range`, `chip`, `link_set`, `toolbar` |
+| `piece` | search piece it maps to: `date_posted`, `remote`, `salary`, `sort`, `easy_apply`, `location`, `page_size`, `facet:<name>`, or `unknown` |
+| `options` | option names and values as shown (bounded, 200 per control) |
+| `current` | the value the page shows as selected now (default filters, CT-PH-225) |
+| `apply_mode` | `instant`, `apply_button`, `drawer` (behind a "Filters" button) |
+| `region` | `toolbar`, `facet_sidebar`, `chip_bar`, `pagination`, `form` |
+| `confidence`, `evidence` | as every finding (CT-DS-005) |
+
+Mapping a control to a piece uses the accessible name and option names
+against a small, locale-keyed vocabulary (the piece names of ADR-019's
+catalog), and structure (a `role=switch` labelled "Remote" is `remote`). An
+unmatched control is `piece=unknown` and is never operated: it is recorded so
+the catalog can grow (unknown-unknown rule, [12](12_edge_cases_and_adversity.md) s2).
+
+**Operating a control.** The toolkit never operates anything. It hands an
+`ActionRequest` (section 17) to the existing interaction layer, which picks
+the method (pointer, keyboard, native) and the pacing. Every widget kind of the
+table maps to an existing `PageActionService` operation except `slider` and
+`range`, for which the smallest extension is a keyboard operation (arrow and
+Page keys on the focused thumb) on the existing keyboard rung of the click
+ladder; no script value injection.
+
+**Verifying the effect (ADR-021).** After the action, the existing settle
+runs, the page is re-observed (`epoch++`), and ALG-027
+([06](06_mathematics.md) s13) compares before and after: the result set
+(record identities), the total-count text, and the URL. The outcome is
+`APPLIED`, `NO_EFFECT` (a filter that silently does nothing, CT-PH-226),
+`RESET` (state lost on pagination, CT-PH-227), `CONTRADICTED` (counts that
+lie, CT-PH-228) or `UNKNOWN`. Only `APPLIED` lets the engine count the piece
+as applied; the others are recorded and the channel is benched for the
+session (ADR-021 decision 4).
+
+**Learning the URL parameter.** When `APPLIED` and the URL changed, the
+query-string difference that is new or changed (one key, or one value of a
+key) is a candidate parameter for `(host, piece, option)`. It becomes a
+catalog proposal only after a second, independent verification: applying the
+learned URL directly must reproduce the same result set (ALG-027 step 4).
+Learned parameters live in the catalog ADR-019 already defines, as entries
+with provenance `learned`, never in domain memory (they are facts about a
+surface, not hints about a layout). Later runs then apply the piece through
+the URL: one navigation, no clicks, lower footprint ([07](07_footprint_and_defences.md) s10).
+
+## 16. Alternate views of the same record (pass 3; CT-T-028, CT-FR-036)
+
+The same posting, list or form is often reachable through more than one
+view: the guest view and the signed-in view (LinkedIn, Notion); a Google Form
+embedded in a page and at its own URL; a Notion database view and its parent
+page; a Greenhouse board redirected to the company's site; DirectEmployers'
+mirror hosts; JSON-LD `JobPosting` inside the page; RSS and Atom feeds;
+sitemaps; vendor posting APIs; print, AMP and mobile views. Ledger rows
+CT-PH-256 to CT-PH-266, with CT-PH-020, 140, 158, 162 and 192. The owner's
+ruling (pass 3): guest views are useful and supported, not a problem to work
+around.
+
+**Recognise.** CT-T-028 Views reads, from one observation, every advertised
+alternative: `link rel=alternate` (feeds, mobile, hreflang), `link
+rel=canonical` on another host, `link rel=amphtml`, print stylesheets and
+print links, embedded frames whose source is a known form or board host,
+`JobPosting` structured data, and `Sitemap:` lines in `robots.txt` (already
+fetched for policy, CT-Q-026). Vendor posting APIs are not discovered from
+pages; they come from the catalog, keyed by the vendor the verdict recognised.
+
+**The view mapping (CT-DS-013 `ViewMap`).**
+
+| Field | Meaning |
+| --- | --- |
+| `record_key` | the record's identity: canonical URL, else vendor posting id, else `(host, normalised title, location)` |
+| `views` | list of `View(kind, locator, access, cost, fields, observed_at, verified)` |
+| `kind` | `page_guest`, `page_signed_in`, `embedded`, `own_url`, `db_view`, `parent_page`, `jsonld`, `feed`, `sitemap`, `api`, `print`, `amp`, `mobile`, `mirror` |
+| `access` | `public`, `needs_sign_in`, `needs_key`, `refused` (robots, 401, 403) |
+| `cost` | expected bytes, requests and footprint class (07 s3) |
+| `fields` | which of title, company, location, pay, dates, description, apply target the view carries |
+| `verified` | result of ALG-028 against another view of the same record, with the fields that disagree |
+
+Per host, a `ViewTemplate` generalises a mapping once it has held on
+`n_min` records (default 3): for example "`/p/<id>` page ↔ database row with
+the same id", or "board slug ↔ API `boards/<slug>/jobs`".
+
+**Where learned mappings live.** In a sibling of domain memory, the view
+catalog: the same bounded, verified, expiring store as CT-T-020 (section 8),
+keyed by `(registrable domain, view template)`, because a view mapping is a
+verified hint about a surface that can rot. It is never authoritative: a view
+is used only after ALG-028 verifies it again on the record at hand, at the
+sampling rate of ALG-028. The seam is the Source Channel seam of section 9:
+feeds, sitemaps and APIs are non-HTML channels behind the same `Finding`
+contract, so an engine asks "give me this record's fields" and the toolkit
+answers from the cheapest view that verified.
+
+**Choose.** ALG-029 ([06](06_mathematics.md) s15) picks, per record, the view
+that carries the needed fields at the lowest cost and footprint, subject to
+access (`public` only, unless the user's own browser session is the view)
+and to verification. A view that needs sign-in is never chosen; an apply
+control behind sign-in is the existing sign-in-wall handling (`LOGIN_REQUIRED`,
+hand-off), not a new case.
+
+**Edge cases** ([12](12_edge_cases_and_adversity.md) s9): views that disagree
+(the disagreement is reported field by field, never averaged), views that lag
+(a feed or sitemap that still lists a closed posting; a feed that returns
+410), views that need sign-in, a mirror that serves 404 with content, a
+canonical link pointing at a page that redirects back.
+
+## 17. The contract between understanding and acting (pass 3)
+
+The toolkit says **what**: the target, the kind of widget, the intent, the
+expected effect and the confidence. The existing interaction layer decides
+**how**: the method (pointer, keyboard, native, script as last rung), the
+pacing, the footprint. Nothing in the toolkit imports a browser type or calls
+a browser method; nothing in the interaction layer interprets a page.
+
+**Types that cross the boundary (CT-DS-015).**
+
+| Type | Direction | Fields | Maps onto today's code |
+| --- | --- | --- | --- |
+| `ActionRequest` | toolkit → engine → interaction layer | `epoch`, `control_key`, `widget_kind`, `intent` (`click`, `open`, `choose(option)`, `set_text`, `set_checked`, `set_value`, `scroll_into_view`, `expand`, `advance_page`), `value`, `expected_effect` (`navigation`, `dom-change`, `results-change`, `value-change`, `none`), `confidence`, `irreversible` | `PlannedAction` (target id, action type, value, reasoning, confidence, `is_critical`) for Applications; direct `PageActionService` calls for Discovery |
+| element resolution | engine | `control_key` → `ElementInterface` via the locator the finding names (the path, or an identity attribute as card activation does) | `PageActionService.find`/`find_all`; `CardActivator` relocation |
+| `ActionOutcome` | interaction layer → toolkit | `success`, `reason`, `rung`, `effect`, plus the new `epoch` | `ActionResult(success, reason, element, rung, effect)` unchanged; the epoch is the engine's counter |
+| `EffectCheck` | toolkit | before and after observations → `APPLIED`, `NO_EFFECT`, `RESET`, `CONTRADICTED`, `UNKNOWN` | new (ALG-027); replaces nothing |
+
+**Errors.** A stale `epoch` makes the engine refuse the request (`Stale`,
+section 4, CT-INV-003). An element that cannot be resolved returns
+`ActionResult(False, "not found")` today; the engine records it as the
+finding's failure and re-observes. `irreversible=True` routes through the
+existing submission gate and the approval checkpoint
+(`Checkpoint.BEFORE_FORM_SUBMIT`); the toolkit's `SubmitPredictor` is advisory
+input to that gate, never a replacement. A challenge recognised after an
+action goes to the in-place pause (`ApplicationsWorkflow._pause_for_challenge`,
+ruling A of 2026-09-09) exactly as today.
+
+**Ports.** The interaction layer keeps its ports: `PageActionPrimitives`,
+`PageNavigationPort` and `DomReadinessPort` (domain), `InteractionPort` and
+`InteractionPlan`/`PlannedAction` (Applications). The boundary pin
+`tests/architecture/test_page_action_boundary.py` stays in force; the
+toolkit adds one architecture pin of its own: no module under the toolkit
+imports `application.services.page_action` or a browser adapter.
+
+**Overlaps and rulings.** Default is reuse (ENGINEERING_PHILOSOPHY: single
+source of truth, DRY).
+
+| Blueprint piece | Existing code | Ruling | Reason |
+| --- | --- | --- | --- |
+| Operating any control (click, type, select, check, scroll, hover) | `PageActionService` and its components | **reuse** | meets the contract: typed result, rung and effect, pacing, probe |
+| Widget operation plans (CT-T-014) | handlers `text`, `select`, `checkable`, `date`, `file` behind `UnifiedInteractor` | **reuse**; **change** for sliders and ranges (keyboard operation on the existing rung) | the handlers dispatch on tag and type; the plan names the handler |
+| Settle after an action (CT-T-016 settle) | `PageActionService.settle`, `DOMObserver.wait_for_dom_stable`, `DomReadinessPort` | **reuse**; **change**: return the settle outcome (`stable`, `timeout`) instead of a bare bool where needed | one settle, one cap |
+| Page advance (Discovery) | `VerifiedPageAdvancer` | **reuse** | already verifies by result-list identity, the ALG-027 idea for pages |
+| Toolbar element finding | `ToolbarElementLocator` | **keep both**, YAML first | YAML selectors are the lowest-memory tier and are measured per selector; CT-T-027 is the fallback for surfaces without YAML. Cost: one extra observation only when YAML misses |
+| Form state classification | `DOMObserver.get_current_state` (`FormState`) | **keep both** until S4, then **change** to consume CT-T-010 findings | the observer is live in Applications; replacing it needs S4's forms tool and its pins |
+| Page verdict after an action | `page_assessment` via ADR-022 checkpoint in `page_action/` | **reuse** | one verdict |
+| Card activation clicks | `CardActivator` | **reuse**; **change** (value pinning R-20, verdict after each click LR-4) | as in section 2 of [10](10_gap_analysis_and_build_plan.md) |
+| Headless direct-API interaction | `adapters/secondary/interaction/api_direct_adapter.py` (empty file, marked PLANNED in the reachability pin) | **keep** as a placeholder; no ruling to retire | an empty planned module costs nothing and is pinned as planned; retiring it is the owner's call (Bible 7.4) |
+
+**Which existing tool operates each ledger row.** Recorded per row in the
+ledger (`acts:` in the *Tool* column; key `acts` in the YAML). Status follows
+evidence only: the code and its tests count toward `[~]`; `[x]` still needs
+a live run on three sources.

@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Verification"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -180,3 +180,36 @@ Each measurement names its machine (pass 2: 4-core Intel Xeon at 2.8 GHz,
 Python 3.14.6, Chromium 153 headless). Worst-case budgets are stated on the
 reference machine by the 8× assumption until slice 0 measures the owner's
 worst-case laptop.
+
+## 8. The ledger coverage check (pass 3; CT-FR-037; to build in a code slice)
+
+`02_ledger_coverage.yaml` holds seven frozen reference lists, each with its
+source and freeze date (APG patterns, WAI-ARIA 1.2 roles, HTML input types,
+HTML interactive and form elements, the engine steps of 05 s4 as page
+interactions, the recognition signatures of 07 s7, alternate and
+machine-readable views), and maps every item to ledger rows or to a reasoned
+`na`. The check, to be built as a unit test beside the ledger agreement pin
+of [10](10_gap_analysis_and_build_plan.md) s4, fails when:
+
+1. any item has neither `rows` nor `na` (a gap);
+2. any `rows` entry names an ID that no ledger part defines;
+3. any `na` entry has an empty reason;
+4. the `counts` block disagrees with the items;
+5. a reference list changed (its item set differs from the frozen set) without
+   the `frozen` date changing; refreshing a list is a reviewed change, so a new
+   APG pattern or ARIA role shows up as a gap instead of being missed.
+
+Pass 3 result: 228 items; 204 mapped, 24 not applicable, 0 gaps (before
+pass 3: 120 mapped, 24 not applicable, 84 gaps; the audit is in the evidence
+set, `work/docs3/audit_step1/`).
+
+## 9. Slice S1 verification (pass 3)
+
+| What | Pin or run | Result |
+| --- | --- | --- |
+| Defect 4 in the extraction script | `tests/integration/result_lists/test_extraction_full_text.py` (real Chrome) | red at `7701de8`, green after |
+| Record reading (record root, titles, links, chrome, dead-end text, edge cases) | `tests/domain/test_s1_record_reading.py` | 10 teeth pins red at `7701de8` |
+| Page record and LR-6 | `tests/adapters/test_s1_discovery_trace.py` | 8 pins red at `7701de8` |
+| Fixtures (Bing, Jobvite, LinkedIn guest list, Ashby) | `tests/integration/result_lists/test_result_list_fixtures.py` | each resolves records with title and link; red at `7701de8` |
+| Google and Lever pages | owner-supplied fixture pin | skips until supplied |
+| Live check (cloud) | six boards, four vendors | 417 of 417 resolved; head 94 of 317 on the same DOMs |

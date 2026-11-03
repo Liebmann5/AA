@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Ledger Part 3"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -22,10 +22,10 @@ Part 3 of 3: engine needs, requirements, research criteria, invariants. Renderin
 | CT-FR-102 | Site-restricted results: off-platform cards dropped before any click (LR-4) | Bing (O cloud: L02) | `[ ]` | T-009 + url_evidence | U+L | ADR-022 slice |
 | CT-FR-103 | Job-board lists with pagination | Tencent (O cloud: C12); Amazon Jobs (O cloud: C18); Jobvite (O cloud: L06 L07); Workday (O cloud: L10 L11 L12); iCIMS (O cloud: L13 L14 P24); Oracle Recruiting Cloud (O cloud: L27); Oracle Taleo (O cloud: L28); Eightfold (O cloud: L29 L30); NEOGOV (O cloud: L31 L32 L33); DirectEmployers (O cloud: L34 L35 L36); Arbeitsagentur (O cloud: L38); StepStone (O cloud: L39); LinkedIn (O cloud: L43); Dice (O cloud: L45) | `[~]` | T-008 + T-016 | L | Bing only |
 | CT-FR-104 | Careers-page mining (all postings on a company page) | Jobvite (O cloud: L06 L07 L08 …); Stripe careers (company site) (O cloud: L15); Databricks careers (company site) (O cloud: L16); Figma careers (company site) (O cloud: L17); Ashby (O cloud: L18 L19 L20); SmartRecruiters (O cloud: L21 L23); Bosch careers (company site) (O cloud: L22); Tencent (O cloud: L41 P23); Notion (O cloud: L60 L61 N60) | `[~]` | T-008 | L | analyzer exists |
-| CT-FR-105 | Card destination resolution without clicking off-platform | - | `[~]` | T-009 | U+L | card_activation clicks |
+| CT-FR-105 | Card destination resolution without clicking off-platform | - | `[~]` | T-009; acts: CardActivator (click-free first, then bounded clicks) | U+L | card_activation clicks |
 | CT-FR-106 | Feed posts as candidates | Hacker News (O cloud: L37 P19) | `[ ]` | FR-031 | L | none |
 | CT-FR-107 | Yield and page-size signals for the degradation guard | - | `[~]` | Trace | U | baselines read live |
-| CT-FR-108 | Per-record provenance: query, page, rank, URL, reason kept or dropped (LR-6) | DirectEmployers (O cloud: P25) | `[ ]` | Trace L1 | U | defect 9 |
+| CT-FR-108 | Per-record provenance: query, page, rank, URL, reason kept or dropped (LR-6) | DirectEmployers (O cloud: P25) | `[~]` | Trace L1 | U | defect 9; pass 3: [ ] -> [~] (S1: every card's fate with an enumerated reason in the page record; every URL found, kept or dropped in the session log (DEBUG) joined by url_ref; unit-pinned) |
 | CT-FR-109 | Completeness check: records read against the page's own total count | Oracle Taleo (O cloud: L28); Dice (O cloud: L45); Tencent (O cloud: P23) | `[ ]` | T-009 + FR-107 | U+L | O: totals printed on three sources |
 | CT-FR-110 | Duplicate postings across hosts and boards collapsed with provenance kept | DirectEmployers (O cloud: L34 P18 P25) | `[~]` | FR-108 + dedup | U+L | O: same posting ID on dejobs.org and a partner host |
 
@@ -55,14 +55,14 @@ Part 3 of 3: engine needs, requirements, research criteria, invariants. Renderin
 | CT-FR-123 | Field type and option lists | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10); Oracle Taleo (O cloud: F11); Eightfold (O cloud: F12) | `[~]` | T-012 | U+L | WIRED |
 | CT-FR-124 | Required fields known before submit | Jobvite (O cloud: F01 F14); Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08); Oracle Recruiting Cloud (O cloud: F10) | `[ ]` | T-013 | U+L | FR-012 |
 | CT-FR-125 | Widget operation plans (combobox, picker, dropzone) | - | `[~]` | T-014/015 | U+L | partial |
-| CT-FR-126 | Resume upload | Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08) | `[~]` | T-014 | L | handler |
+| CT-FR-126 | Resume upload | Ashby (O cloud: F02 F03 F04); Greenhouse (O cloud: F09 P08) | `[~]` | T-014; acts: FileInputHandler | L | handler |
 | CT-FR-127 | Login/account gates detected and handed off | iCIMS (O cloud: F07); Oracle Recruiting Cloud (O cloud: F10); Oracle Taleo (O cloud: F11); Eightfold (O cloud: F12) | `[~]` | T-006 | L | verdict; pass 2: A: account walls recognised on 1 of 4 apply steps (F07) |
-| CT-FR-128 | In-place CAPTCHA pause hook with understanding exposed | Greenhouse (O cloud: P08) | `[~]` | PauseContext | U+L | pause exists; no context |
-| CT-FR-129 | New tab / pop-up handling with epoch | - | `[~]` | T-016 | U+L | tab switch |
+| CT-FR-128 | In-place CAPTCHA pause hook with understanding exposed | Greenhouse (O cloud: P08) | `[~]` | PauseContext; acts: ApplicationsWorkflow._pause_for_challenge | U+L | pause exists; no context |
+| CT-FR-129 | New tab / pop-up handling with epoch | - | `[~]` | T-016; acts: card activation tab handling | U+L | tab switch |
 | CT-FR-130 | Submit prediction as input to the gate (never a replacement) | - | `[ ]` | T-026 | P+U | ADR-012 |
 | CT-FR-131 | Error mapping and corrective retry | - | `[ ]` | ALG-012 | U+L | FR-014 |
 | CT-FR-132 | Confirmation detection | - | `[~]` | T-006 | L | SUCCESS_PAGE |
-| CT-FR-133 | Repeating sections filled in order | - | `[ ]` | ALG-002 | U+L | design |
+| CT-FR-133 | Repeating sections filled in order | - | `[ ]` | ALG-002; acts: none | U+L | design |
 | CT-FR-134 | Honeypots skipped, recorded | - | `[~]` | ALG-014 | U | WIRED |
 
 ## Functional requirements (04)
@@ -74,7 +74,7 @@ Part 3 of 3: engine needs, requirements, research criteria, invariants. Renderin
 | CT-FR-003 | Columnar Doc with shadow/iframe and truncation flags | - | `[~]` | T-004 | U,L | 04 |
 | CT-FR-004 | Page family and verdict with abstention | - | `[~]` | T-006/007 | U,R,L | 04; pass 2: A: today's verdict on 119 cloud specimens: see 10 s5 baseline |
 | CT-FR-005 | Ranked record runs, tolerant of variants | - | `[~]` | T-008 | P,U,L | 04; pass 2: A (stage 5): 124 of 136 records detected; one group per page |
-| CT-FR-006 | Per-record title, link, company, location, date with evidence | - | `[~]` | T-009 | U,L | 04; pass 2: A (stage 5, live, cloud): 0 of 136 list records came back with both a title and a resolved link (Jobvite, Ashby, Taleo, HN) |
+| CT-FR-006 | Per-record title, link, company, location, date with evidence | - | `[~]` | T-009 | U,L | 04; pass 2: A (stage 5, live, cloud): 0 of 136 list records came back with both a title and a resolved link (Jobvite, Ashby, Taleo, HN); pass 3: S1: 2,201 of 2,959 records with title and link on 55 specimens (head 137 of 3,101); live cloud 417/417 on six boards |
 | CT-FR-007 | List movement and virtualization guard | - | `[ ]` | ALG-018 | U,L | 04 |
 | CT-FR-008 | JD sections and structured data | - | `[~]` | T-009/017 | U,L | 04 |
 | CT-FR-009 | Form, step, section, field segmentation | - | `[~]` | T-010 | U,L | 04 |
@@ -90,7 +90,7 @@ Part 3 of 3: engine needs, requirements, research criteria, invariants. Renderin
 | CT-FR-019 | Transitions, windows, dialogs, downloads | - | `[~]` | T-016 | U,L | 04 |
 | CT-FR-020 | HITL pause exposure and resume re-observation | - | `[ ]` | ALG-024 | U,L | 04 |
 | CT-FR-021 | Text, encodings, languages with notices | - | `[~]` | T-003 | P,U | 04 |
-| CT-FR-022 | Trace of every tool run at levels | - | `[~]` | T-018 | U,R | 04 |
+| CT-FR-022 | Trace of every tool run at levels | - | `[~]` | T-018 | U,R | 04; pass 3: S1: per-page record (trace L0/L1) built in the discovery extractor, schema 1, unit-pinned; no page text by construction |
 | CT-FR-023 | Replay bit-identical | - | `[~]` | T-022 | R | 04 |
 | CT-FR-024 | Tuning under the significance rule | - | `[ ]` | T-019 | P,U | 04 |
 | CT-FR-025 | Domain memory, bounded and verified | - | `[ ]` | T-020 | U | 04 |

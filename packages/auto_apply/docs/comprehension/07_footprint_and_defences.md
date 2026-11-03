@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Footprint and Defences"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -242,3 +242,19 @@ at all. Every disallowed host is listed as owner ruling CT-Q-026 in
 | www.smartr.me | none (404) | - | F13 |
 | www.stepstone.de | allowed | - | L39 P21 |
 | www.work.ua | allowed | - | C08 |
+
+## 10. Footprint of operating filters and fetching alternate views (pass 3, CT-NFR-027)
+
+| Action | Footprint | Lowest alternative | Rule |
+| --- | --- | --- | --- |
+| Operate a filter control (click, select, toggle) | trusted input events through the interaction layer, one settle, one re-observation; each operation is one more page state the site sees | the learned URL parameter (06 s13): one navigation, no input events | a control is operated once per piece and query; after a parameter is learned and confirmed, later runs use the URL |
+| Verify a filter's effect | no extra request: it compares the two observations the engine already takes | none needed | never reload to verify; never apply the same piece through two channels at once (ADR-021) |
+| Confirm a learned parameter | one extra navigation per confirmation, two per parameter, once per host and piece | none | paced by `HostPacer`; skipped on a host that has refused AA (bench rule) |
+| Fetch a feed, sitemap or posting API | one plain GET, no script, no input events, small payload (pass 3: 11 KB to 1.7 MB) | already the lowest | `robots.txt` read first (CT-Q-026 open: disallowed paths are never fetched); an API host that answers 401 or disallows all agents is never read (pass 3: Ashby API, SmartRecruiters API) |
+| Open a second view of the same record (embedded vs own URL, print, mobile) | one more page load | the cheapest verified view (ALG-029) | only when the first view lacks a needed field; never to cross-check every record (ALG-028 samples) |
+
+Pass-3 measurements (cloud, 2026-11-02): posting APIs answered with 141, 20 and
+27 postings in one request each (Greenhouse, The Muse, Recruitee); feeds with
+25, 30 and 200 items (We Work Remotely, Hacker News, Jobicy). One feed had
+been retired (Remote OK, HTTP 410) and one sitemap named in `robots.txt`
+returned 404 (USAJOBS): views vanish, so a view is re-verified before use.

@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Gap Analysis and Build Plan"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -19,12 +19,12 @@ Retirement follows the repository rule: nothing is deleted; replaced files go to
 | 1 | Grouping hash includes CSS classes, contradicting the code's own rule | `math_dom.py:171-177` vs `structural_hashing.py:39`; probe: equal structure + one extra class → different hash | reproduced locally | CT-ALG-001/002 (S2) |
 | 2 | Marker fraction counts any non-tracking `data-*` on any descendant; rarely separates groups | `structural_hashing.py:34-49` | read | CT-ALG-003 identity-by-distinctness (S2) |
 | 3 | Climb picks the lowest level with an identity attribute, not the level holding heading and link | `card_static_resolution.py:152-172` | read | record-root rule, Lemma 3 (S2) |
-| 4 | Extraction keeps only direct text; `<h3><span>T</span></h3>` has an empty heading | `math_dom_adapter.py:87-95`; probe: `'Engineer 1'` vs `''` | reproduced locally | full-subtree text rule (S1) |
+| 4 | Extraction keeps only direct text; `<h3><span>T</span></h3>` has an empty heading | `math_dom_adapter.py:87-95`; probe: `'Engineer 1'` vs `''` | reproduced locally | full-subtree text rule: **closed in S1** (reply files `reply_files_s1`) |
 | 5 | No computed style | adapter script has none; `occlusion.py` reads inline style only | read | `SNAPSHOT_LAYOUT` / style batch (S3) |
 | 6 | No shadow-DOM traversal; depth cap 50 silent | `math_dom_adapter.py:62,72` | read | truncation flags, shadow capability (S3) |
 | 7 | Card guard excludes `<a>` and custom elements; area floor a constant | `structural_hashing.py:21-22,74` | read | CT-ALG-003 (S2) |
 | 8 | One group only | `dom_segmentation.py:760-818` (`max` of groups) | read | ranked runs (S2) |
-| 9 | Decisions recorded as counts only | `dom_segmentation.py` logging; LR-6 | read | trace (S1) |
+| 9 | Decisions recorded as counts only | `dom_segmentation.py` logging; LR-6 | read | trace: **closed in S1** (per-page record, LR-6 log lines) |
 | 10 | Bible 9.3 describes a detector that is not the live one | Bible 9.3 vs `_detect_job_listings` | read | Bible edit, S6 |
 | 11 | Label pairing runs a square Hungarian over every visible text node in the container: cubic, no cap | `dom_segmentation.py` `_pair_labels_to_inputs`, `_collect_label_candidates`; A: 1.6 s at 2 inputs + 300 text nodes | probe (pass 2) | ladder + residual cap `m ≤ 120` (S3) |
 | 12 | Honeypot rule skips real fields: label on the right (RTL) or > 50 px above; substring trap names (`address2`, `attestation`, `latest_employer`, …) | `dom_segmentation.py` `_is_honeypot`, `_has_associated_label`; `honeypot_detection.py` `SUSPICIOUS_NAME_PATTERNS`; A | probe (pass 2) | CT-ALG-014 decision rule, token matching, computed direction (S3) |
@@ -38,9 +38,17 @@ Retirement follows the repository rule: nothing is deleted; replaced files go to
 | 20 | Closed and missing postings are not recognised in the wording and statuses met live | `page_phrases.py` tables; A: 0 of 4 | replay (pass 2) | phrases per locale plus structure (S5) |
 | 21 | `MathFormUnderstandingService` keeps per-call state on the instance (`_parent_map`, `_text_nodes_cache`, `_root_for_label_search`) although documented as stateless and thread-safe | `dom_segmentation.py` `analyze` | read (pass 2) | pure function over the `Doc` (S2) |
 | 22 | `MathPageUnderstandingAdapter` re-extracts the whole DOM in each of `analyze_serp`, `analyze_form` and `analyze_job_listing`; `analyze_form` reports confidence 0.9 whenever any field exists | `math_dom_adapter.py` | read (pass 2) | one observation per epoch; calibrated confidence (S2) |
-| 23 | Every control is reported required: `_is_required` tests `get_attribute("required") is not None`, but `get_attribute` returns `""` when the attribute is absent | `dom_segmentation.py` `_is_required`, `math_dom.py` `get_attribute`; A (stage 5): 34/34, 40/40, 14/14 on three live forms | live run (pass 2, cloud) | presence test on the attribute tuple (S3) |
+| 23 | Every control is reported required: `_is_required` tests `get_attribute("required") is not None`, but `get_attribute` returns `""` when the attribute is absent | `dom_segmentation.py` `_is_required`, `math_dom.py` `get_attribute`; A (stage 5): 34/34, 40/40, 14/14 on three live forms | live run (pass 2, cloud) | presence test on the attribute tuple: **fixed in `7701de8`** (unit-pinned; no live proof yet) |
 
-*Live observations not explained by the code reading* (LR-1): "6 selected, all dropped
+| 24 | Discovery's `analyze_serp` ran the whole form analysis (label pairing, defect 11) to obtain the listings | S1 specimen run (cloud): 165 s on C13, 356 s on C05, 5.4 s on a live SmartRecruiters board | measured (S1) | listings-only detection: **closed in S1** |
+| 25 | Two links in one card to the same destination (title link and URL line) counted as two routes: `multi_route`, card dropped | S1 trace: Bing fixture 10/10 | trace (S1) | merge by canonical URL: **closed in S1** |
+| 26 | A direct same-host posting link with an opaque slug scores 0 and is never eligible (H2) | S1 trace: Jobvite 106/106 `deferred` | trace (S1) | title-relation link term: **closed in S1** |
+| 27 | Dead-end text matched as a substring: with full link names, "Help Desk Technician" or "Reporting Analyst" would be rejected | `url_evidence.evaluate_candidates`; S1 pin | read (S1) | phrase covering half of a short name: **closed in S1** |
+| 28 | The climb reads cards at the lowest level with an identity attribute, below the record (H1, defect 3); heading-only titles drop link-titled rows | S1 trace: Ashby, LinkedIn, Bing; Jobvite | trace (S1) | record-root rule and link-tier title: **stopgap in S1**, replaced by S2 |
+
+*S1 finding on LR-1* (cloud, from the trace on reachable fixtures; Google itself unreachable): the "6 dropped for no title" case is defect 4 or a link-titled row (defects 4, 28); the "8 with a heading, no link eligible" case matches defects 25, 26 and 28 on Bing and the boards, and, for Google, the one resolved click going to ZipRecruiter under a `site:jobs.jobvite.com` query points at the jobs widget (anchorless `role=button` cards) being the selected group. The S1 record now names the group sizes, title sources and per-card reasons, so the owner's next Google run settles it ([evidence: `s1_live_check.md`]).
+
+*Live observations not explained by the code reading* (LR-1, as written in pass 2): "6 selected, all dropped
 for no title" is consistent with defect 4; "8 selected, each with a heading, no link
 eligible" is **not** explained by any defect above (H1-H3 in 06 section 2). The first
 slice captures a fixture and a trace before changing a threshold.
@@ -83,7 +91,7 @@ padding avoids that.
 | `application/services/page_analysis_router.py`, `domain/models/analysis_tier.py` | **Change** | = CT-T-021 strategy selection |
 | `application/services/page_feedback_service.py` and repository | **Change** | generalise; n_min from the tuning rule; read at run start |
 | harvest baseline repository, `degradation_detector.py` | **Change** | snapshot at start (replayable) |
-| `application/services/page_action/` | Keep, extend | footprint-aware method choice; ADR-022 checkpoint lives here |
+| `application/services/page_action/` | Keep, extend | footprint-aware method choice; ADR-022 checkpoint lives here; file by file below (pass 3) |
 | `adapters/secondary/discovery/components/card_activation.py` | **Change** | value pinning (R-20); verdict after each click (LR-4) |
 | `adapters/secondary/discovery/strategies/selector_loader.py` | Keep | lowest memory tier |
 | `adapters/secondary/browser/*`, `infrastructure/browser_cascade.py`, `resilient_driver.py` | Keep, extend | declare capabilities; deadline on every command (LR-5, S0) |
@@ -93,6 +101,33 @@ padding avoids that.
 | `resources/ats/*.yaml`, `resources/engines/*.yaml` | Keep | memory/selector tier; sampling frame |
 | `tests/benchmarks/ats_forms/` | Reuse | CONTROL set |
 | Static fetch path | stays retired ([ADR-013](../adr/013_static_path_retirement.md), `old_retired_files`) | replay is not browsing |
+
+### The interaction layer, file by file (pass 3)
+
+Read in full for the contract of [05](05_architecture.md) s17. Verdict per file; *how* stays here, *what* comes from the toolkit.
+
+| File | What it does | Tests | Verdict | Plan |
+| --- | --- | --- | --- | --- |
+| `page_action/service.py` | facade: navigate (bounded retries, warm-up), find and wait, delegates the rest | boundary pin, many unit pins | **Reuse** | executes `ActionRequest`s; no toolkit logic enters it |
+| `page_action/result.py` | `ActionResult(success, reason, element, rung, effect)` | used everywhere | **Reuse** | is the `ActionOutcome` of the contract; the engine adds the epoch |
+| `page_action/state.py` | shared `PageActionContext` (config, RNGs, pacer) | boundary pin | **Reuse** | unchanged |
+| `page_action/probe.py` | geometry, reachability, panes, frames, effect after action | real-browser pins (`test_probe_real_browser.py`, skipped without Chrome) | **Reuse** | its effect field feeds `EffectCheck` as a first signal; the toolkit's comparison of observations decides |
+| `page_action/clicking.py` | click ladder (pointer, keyboard, native, JS last), hover | unit pins | **Reuse**; **change** (small) | a keyboard operation for slider and range thumbs on the existing keyboard rung (CT-PH-244) |
+| `page_action/scrolling.py` | into view (pane-aware), container, feed, reveal | unit and real-browser pins | **Reuse** | split panes and feeds (CT-PH-018, 157, 241) |
+| `page_action/text_input.py` | text entry, select and checkbox values | unit pins | **Reuse** | typing, select and check intents |
+| `page_action/pacing.py` | settle, macro pause, warm-up, idle | unit pins | **Reuse**; **change** (small) | settle returns its outcome where the toolkit needs `stable` vs `timeout` |
+| `interaction/human_like_adapter.py` | `UnifiedInteractor` dispatch to handlers; `InteractionExecutor` runs `InteractionPlan`s | `test_handler_protocol.py`, `test_fill_evidence.py` | **Reuse** | executes plans whose actions come from toolkit findings |
+| `interaction/handlers/text.py` | text, contenteditable | protocol pin (contenteditable unpinned) | **Reuse**; pin contenteditable in S4 | CT-PH-036, 224 |
+| `interaction/handlers/select.py` | native select and comboboxes, semantic option match | none-attribute guard pins | **Reuse** | CT-PH-034, 039; the async option-list protocol (CT-T-015) plans the steps, the handler acts |
+| `interaction/handlers/checkable.py` | radio and checkbox with state verification | none found by name | **Reuse**; add a pin in S4 | CT-PH-035, 245 |
+| `interaction/handlers/date.py` | three strategies (JS value + events, send keys, type and Tab) | none found by name | **Reuse**; **change** in S4: script value injection moves to the last rung (footprint, 07 s4) | CT-PH-037, 253 |
+| `interaction/handlers/file.py` | sets the file input directly | guard pins | **Reuse** | CT-PH-038 |
+| `interaction/handlers/base.py` | handler contract | protocol pin | **Reuse** | unchanged |
+| `interaction/dom_observer.py` | `FormState` classification, DOM stability wait | `test_page_state_agreement.py` | **Keep both** until S4, then **change** to consume CT-T-010 findings | two classifiers of one state are a single-source-of-truth risk; S4 resolves it |
+| `interaction/api_direct_adapter.py` | empty, marked PLANNED in the reachability pin | reachability pin | **Keep** (placeholder) | retiring is the owner's call (Bible 7.4) |
+| `discovery/strategies/toolbar_locator.py` | YAML selectors with Math-DOM fallback for engine toolbars | `test_discovery_providers.py` | **Keep both** with CT-T-027 (YAML first) | the lowest-memory tier stays; CT-T-027 covers surfaces without YAML |
+| `navigation/page_advancer.py` | verified page advance ladder | `test_page_advancer.py`, real-browser pins | **Reuse** | the model for ALG-027's verification |
+| `applications_workflow.py` HITL: approval gate, `Checkpoint` enum, `_pause_for_challenge` (ruling A) | submission gate, in-place CAPTCHA pause | workflow pins | **Reuse** | `irreversible` requests and challenges route here unchanged |
 
 ## 3. Build slices (small, ordered)
 
@@ -112,7 +147,7 @@ fault-injection pin per cap; footprint table cells measured; every catalogue ent
 [12](12_edge_cases_and_adversity.md) that names a cap has a pin.
 
 **S1. First slice: read result lists on real pages from three sources.** *(the slice that
-unblocks LR-1)*
+unblocks LR-1)* **Delivered in pass 3** as reply files `reply_files_s1` (36 tests; live cloud 417/417 on six boards; see 09 s9). The Google fixture waits for the owner; Lever was not captured (its `robots.txt` names the capturing agent).
 1. Trace (CT-T-018, L0-L1) and URL-level discovery logging (LR-6): every card found,
    kept, dropped, opened, with reason.
 2. Full-subtree text and accessible-name rule in the extraction (defect 4).
@@ -153,6 +188,25 @@ CT-FR-027/028; failure classification on recorded failures.
 
 **S9. Capabilities.** Feed/Source Channel seam use, additional access adapters, AI-era
 rows.
+
+**S9a. Filters and toolbars (pass 3; after S2).** CT-T-027 Controls, ALG-027 effect
+verification and parameter learning, the keyboard operation for sliders. *Accepts:*
+CT-FR-035 and CT-PH-215..231 `[~]` with fixture pins (a control per widget kind,
+recorded before and after observations for each ALG-027 outcome); on the owner's
+machine, three sources where a filter is applied, verified and its parameter learned
+and confirmed; footprint measured (CT-NFR-027).
+
+**S9b. Alternate views (pass 3).** CT-T-028 Views, `ViewMap`, ALG-028 and ALG-029, the
+view catalog beside domain memory. *Accepts:* CT-FR-036 and CT-PH-256..266 `[~]` with
+replay pins over stored view pairs (page and feed, page and API, embedded and own
+URL); a live run on three sources choosing a cheaper verified view.
+
+*Way back.* Every slice lands as reply files applied by `kimicli.py`, which writes an
+undo manifest; a slice that fails on the owner's machine is reverted with
+`kimicli.py --undo <manifest>` (or a revert of its commit). From S2 on, the new
+record reading sits behind one configuration key (`perception.records`, values
+`legacy` and `runs`, default `legacy` until the S2 acceptance run passes), so the
+owner can switch back without a code change ([13](13_production_readiness.md) s3).
 
 Ordering rationale: S0 first because every budget in this suite is derived, not measured;
 S1 because the owner's run found zero records and a trace makes every later slice

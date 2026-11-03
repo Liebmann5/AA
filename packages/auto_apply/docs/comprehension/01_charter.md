@@ -2,7 +2,7 @@
 title: "Page Comprehension Toolkit: Charter"
 status: needs-review
 last_verified: 2026-11-02
-verified_against: "1bf7935"
+verified_against: "7701de8 + S1 reply files (pass 3)"
 audience: contributors
 ---
 
@@ -172,8 +172,12 @@ decisions.
 | CT-Q-027 | May specimens captured from a data centre (`cloud`) be frozen as ANCHOR fixtures? | Yes, as unit-test inputs that guard code, tagged with their environment; never as proof of AA's behaviour | 09 |
 | CT-Q-028 | A host that rate-limits the first request (Workable 429, Cloudflare 1015) | Bench the host for the session at once, the same as a challenge (ADR-020 decision 6); never retry in-session | T-006, Discovery |
 | CT-Q-029 | Notion-hosted careers pages render controls only to some clients (Start Test and Apply were absent signed out) | Treat Notion as a page family. Read in the user's own browser profile only if the owner allows; otherwise report "control not visible" and hand off | CT-PH-180, CT-PH-205 |
-| CT-Q-030 | LinkedIn guest pages loaded although `robots.txt` disallows all; the Easy Apply modal needs a signed-in session | Covered by CT-Q-006. Guest pages are not evaluation material; the modal stays `[?]` for the owner's machine | CT-PH-048 |
+| CT-Q-030 | LinkedIn guest pages loaded although `robots.txt` disallows all; the Easy Apply modal needs a signed-in session | **Ruled by the owner (pass 3):** guest views are a supported view in their own right, handled by the alternate-views family ([05](05_architecture.md) s16). An apply control that needs sign-in leads to a sign-in prompt, which is the existing sign-in-wall handling, not a new edge case | CT-PH-048, CT-PH-256, CT-PH-266 |
 | CT-Q-031 | Third-party forms that require the provider's account (a Google Form behind Google sign-in) | Hand off; AA never signs in to a third party on the user's behalf | CT-PH-176 |
 | CT-Q-032 | Assessments before an application ("Start Test") and other non-standard actions | Never start an assessment; recognise it and hand off with the posting saved | CT-PH-172 |
 | CT-Q-033 | Pressing a control whose only effect is to reveal a state (the Rackhouse "Apply" that shows "applications paused") | Allowed only when the control has no form, no navigation target and no submit semantics, under the CT-Q-015 policy, and re-observed after | CT-PH-173 |
 | CT-Q-034 | Identity-first steps (Oracle's email screen with hCaptcha; iCIMS and Taleo logins) | A checkpoint, never an auto-fill: entering the user's email creates an account record on a third party (CT-Q-014) | CT-PH-175, FR-127 |
+| CT-Q-035 | Lever's `robots.txt` allows `*` but adds stricter rules for some named automated agents and asks that content not be used for model training; no Lever page was captured | Whether AA's `robots.txt` handling (CT-Q-026) follows only the `*` group, which is the one that applies to AA's browser, or also the strictest named group. Options: (a) the `*` group only (recommended: AA does not identify as any named agent); (b) also the strictest named group; (c) ignore | CT-PH-010 |
+| CT-Q-036 | Operating filter controls on a results page is one more page state per piece | Operate once per piece and query, verify, then use the learned URL parameter (07 s10). Options: (a) as recommended; (b) URL parameters only, never controls; (c) controls whenever no parameter is known, without learning | CT-FR-035, CT-NFR-027 |
+| CT-Q-037 | Vendor posting APIs and feeds are public but some hosts refuse them (401 on robots, `Disallow: /`) and their terms differ | Read only hosts whose `robots.txt` allows the path; never send a key; record the vendor's terms URL in the catalog. Options: (a) as recommended; (b) pages only; (c) APIs only where the vendor documents public use | CT-PH-263, CT-PH-261 |
+| CT-Q-038 | `url_ref` in the page record is an unkeyed hash of the URL | Local only, never exported; research uses keyed identities. Options: (a) as recommended; (b) key it with the research key now | CT-FR-108 |
