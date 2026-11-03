@@ -2,7 +2,7 @@
 title: Project Status
 status: reviewed
 last_verified: 2026-10-30
-verified_against: "suite 2545 passed / 5 skipped / 1 xfailed on Windows; live runs 2026-10-30"
+verified_against: "suite 2580 passed / 6 skipped / 1 xfailed on Windows; live runs 2026-10-30"
 audience: everyone
 ---
 
@@ -158,7 +158,7 @@ a defect in that document.**
 
 | Gate | State |
 | --- | --- |
-| Test suite | **2545 passed, 5 skipped, 1 xfailed** |
+| Test suite | **2580 passed, 6 skipped, 1 xfailed** |
 | `ruff check src --select F821` | Clean |
 | `mypy src/auto_apply` | Clean across 264 files |
 | `mypy --explicit-package-bases tests` | Clean |

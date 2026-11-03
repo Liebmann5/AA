@@ -31,7 +31,12 @@ from auto_apply.domain.models.math_webpage import (
 )
 from auto_apply.domain.ports.math_reasoning_port import FormUnderstandingPort
 from auto_apply.domain.services.label_input_pairing import hungarian_assign
-from auto_apply.domain.services.structural_hashing import has_semantic_marker, is_card_like
+from auto_apply.domain.models.page_record import ListingDetectionFacts
+from auto_apply.domain.services.structural_hashing import (
+    chrome_node_ids,
+    has_semantic_marker,
+    is_card_like,
+)
 
 # Penalty for dummy (padding) cells in the square Hungarian cost matrix. Must be
 # far larger than any real pairing cost (which is bounded by MAX_LABEL_DISTANCE
@@ -100,7 +105,7 @@ class MathFormUnderstandingService(FormUnderstandingPort):
                 forms.append(region)
 
         # Step 4: Detect job listings (structural similarity based on hashes)
-        job_listings = self._detect_job_listings(dom_root)
+        job_listings, listing_facts = self._detect_job_listings_with_facts(dom_root)
 
         # No step 5: page identity (challenge / login wall) is answered by the
         # ONE page verdict (domain/services/page_assessment.py). This service
@@ -111,6 +116,7 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             dom_root=dom_root,
             forms=forms,
             job_listings=job_listings,
+            listing_facts=listing_facts,
         )
 
     # ======================================================================
@@ -756,6 +762,19 @@ class MathFormUnderstandingService(FormUnderstandingPort):
     # Job Listing Detection
     # ======================================================================
 
+    def detect_job_listings(
+        self, root: DOMNode
+    ) -> tuple[list[DOMNode], ListingDetectionFacts]:
+        """Detect the listing group only, with its numbers; no form analysis.
+
+        Discovery needs the listings and nothing else. :meth:`analyze` also
+        segments forms and pairs labels, whose cost is cubic in the visible
+        text nodes of a form's container (defect 11): 165 s on one Hacker
+        News item page in the S1 specimen run, where the listings took under
+        a second. Pure; same result as ``analyze(root).job_listings``.
+        """
+        return self._detect_job_listings_with_facts(root)
+
     def _detect_job_listings(self, root: DOMNode) -> list[DOMNode]:
         """Return the single best group of structurally-identical card containers.
 
@@ -786,7 +805,25 @@ class MathFormUnderstandingService(FormUnderstandingPort):
         group identically within a single page load; unifying them is tracked
         as the P3 detector-sub-fork item and is out of scope here.
         """
-        candidates = [n for n in root.iter_nodes() if self._is_likely_card(n)]
+        return self._detect_job_listings_with_facts(root)[0]
+
+    def _detect_job_listings_with_facts(
+        self, root: DOMNode
+    ) -> tuple[list[DOMNode], ListingDetectionFacts]:
+        """:meth:`_detect_job_listings` plus the numbers the S1 trace records.
+
+        S1 adds one rule: card-like nodes inside a chrome landmark (navigation,
+        banner, footer, complementary, search, menu, tab list, toolbar) are
+        not candidates. Measured on a LinkedIn guest list (fixture): the
+        footer's link list out-ranked the job cards whenever the cards split
+        into small exact-hash groups. This is the chrome penalty of the
+        blueprint's Algorithm 003 in its smallest form; slice S2's ranked runs
+        replace the whole selection.
+        """
+        chrome = chrome_node_ids(root)
+        card_like = [n for n in root.iter_nodes() if self._is_likely_card(n)]
+        candidates = [n for n in card_like if id(n) not in chrome]
+        excluded = len(card_like) - len(candidates)
 
         hash_groups: dict[str, list[DOMNode]] = defaultdict(list)
         for node in candidates:
@@ -794,7 +831,9 @@ class MathFormUnderstandingService(FormUnderstandingPort):
 
         groups = [nodes for nodes in hash_groups.values() if len(nodes) >= 2]
         if not groups:
-            return []
+            return [], ListingDetectionFacts(
+                candidate_count=len(candidates), chrome_excluded=excluded
+            )
 
         def _marker_fraction(nodes: list[DOMNode]) -> float:
             return sum(1 for n in nodes if has_semantic_marker(n)) / len(nodes)
@@ -803,9 +842,15 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             areas = [n.geometry.area for n in nodes if n.geometry is not None]
             return sum(areas) / len(areas) if areas else 0.0
 
-        best = max(
-            groups,
-            key=lambda ns: (_marker_fraction(ns), len(ns), _mean_area(ns)),
+        def _rank(ns: list[DOMNode]) -> tuple[float, int, float]:
+            return (_marker_fraction(ns), len(ns), _mean_area(ns))
+
+        ranked = sorted(groups, key=_rank, reverse=True)
+        best = max(groups, key=_rank)
+        facts = ListingDetectionFacts(
+            candidate_count=len(candidates),
+            chrome_excluded=excluded,
+            group_sizes=(len(best),) + tuple(len(g) for g in ranked if g is not best),
         )
 
         logger.info(
@@ -816,7 +861,7 @@ class MathFormUnderstandingService(FormUnderstandingPort):
             len(best),
             _marker_fraction(best),
         )
-        return best
+        return best, facts
 
     @staticmethod
     def _is_likely_card(node: DOMNode) -> bool:

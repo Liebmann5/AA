@@ -26,6 +26,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar, Protocol, runtime_checkable
 
+from auto_apply.domain.models.page_record import (
+    ListingDetectionFacts,
+    ObservationFacts,
+)
+
 
 class CardResolutionState(str, Enum):
     """Why a card has, or does not have, a selected destination URL."""
@@ -95,6 +100,8 @@ class JobCardInfo:
         resolution_state: resolved | multi_route | deferred | no_destination.
         identity_attribute: Learned per-card identity attribute name, if any.
         identity_value: That attribute's value on this card, if any.
+        title_source: ``heading`` | ``anchor_name`` | ``none`` (S1 trace).
+        title_truncated: True when the title was cut at the text cap.
     """
 
     title: str = ""
@@ -111,6 +118,8 @@ class JobCardInfo:
     resolution_state: str = CardResolutionState.NO_DESTINATION.value
     identity_attribute: str = ""
     identity_value: str = ""
+    title_source: str = "none"
+    title_truncated: bool = False
 
     @property
     def has_ad_rejection(self) -> bool:
@@ -126,6 +135,12 @@ class SerpResolutionReport:
     chosen_level: str = "detected"
     detected_parent_count: int = 0
     note: str = ""
+    #: Level the records were read at under the record-root rule ("" when
+    #: no level satisfied it and the identity level was used instead).
+    record_level: str = ""
+    #: Level the identity attributes were learned at.
+    identity_level: str = ""
+    level_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -150,6 +165,10 @@ class SERPStructure:
     pagination_present: bool = False
     total_results_text: str = ""
     resolution_report: SerpResolutionReport = field(default_factory=SerpResolutionReport)
+    #: S1 trace inputs: extraction facts, detection numbers, analysis time.
+    observation: ObservationFacts | None = None
+    listing_facts: ListingDetectionFacts | None = None
+    analyze_ms: float = 0.0
 
     @property
     def total_cards(self) -> int:

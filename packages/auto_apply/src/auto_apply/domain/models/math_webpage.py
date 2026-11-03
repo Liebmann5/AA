@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from auto_apply.domain.models.math_dom import DOMNode, Geometry
+from auto_apply.domain.models.page_record import ListingDetectionFacts
 
 
 class FieldType(Enum):
@@ -189,6 +190,8 @@ class WebpageStructure:
     dom_root: DOMNode | None = None
     forms: list[FormRegion] = field(default_factory=list)
     job_listings: list[DOMNode] = field(default_factory=list)
+    #: Numbers from card detection for the S1 trace (None when not run).
+    listing_facts: ListingDetectionFacts | None = None
 
     def get_main_form(self) -> FormRegion | None:
         """Return the largest form region (by field count) or None."""

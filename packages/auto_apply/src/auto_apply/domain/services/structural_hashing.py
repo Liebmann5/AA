@@ -32,6 +32,49 @@ _CARD_MARKER_ROLES = frozenset({"button", "link", "article", "listitem"})
 _TRACKING_DATA_ATTRS = frozenset({"data-hveid", "data-ved", "data-hd", "data-lht"})
 
 
+# Landmarks and widgets that hold page chrome, never result records (WAI-ARIA
+# landmark roles; HTML-AAM element mappings). ``header``/``footer`` are the
+# banner/contentinfo landmarks only when not inside sectioning content or
+# main, and ``aside`` is complementary only outside article/section/aside/nav.
+_CHROME_ROLES = frozenset({
+    "navigation", "banner", "contentinfo", "complementary", "search",
+    "menubar", "menu", "tablist", "toolbar",
+})
+_CHROME_TAGS = frozenset({"nav"})
+_SCOPED_CHROME_TAGS = frozenset({"header", "footer"})
+_SECTIONING = frozenset({"article", "aside", "main", "nav", "section"})
+_ASIDE_SCOPE = frozenset({"article", "aside", "nav", "section"})
+
+
+def chrome_node_ids(root: DOMNode) -> set[int]:
+    """Return ``id()`` of every node inside a chrome landmark (iterative walk).
+
+    The chrome penalty of the blueprint's record ranking (06 section 1,
+    Algorithm 003) in its smallest form: card-like nodes inside navigation,
+    banner, footer, complementary, search, menu, tab-list or toolbar regions
+    are not result records. Cost O(n); no recursion.
+    """
+    chrome: set[int] = set()
+    stack: list[tuple[DOMNode, bool, bool, bool]] = [(root, False, False, False)]
+    while stack:
+        node, in_chrome, in_sectioning, in_aside_scope = stack.pop()
+        role = node.get_attribute("role", "").strip().lower()
+        is_chrome = (
+            role in _CHROME_ROLES
+            or node.tag in _CHROME_TAGS
+            or (node.tag in _SCOPED_CHROME_TAGS and not in_sectioning and not role)
+            or (node.tag == "aside" and not in_aside_scope and not role)
+        )
+        now_chrome = in_chrome or is_chrome
+        if now_chrome:
+            chrome.add(id(node))
+        child_sectioning = in_sectioning or node.tag in _SECTIONING
+        child_aside_scope = in_aside_scope or node.tag in _ASIDE_SCOPE
+        for child in node.children:
+            stack.append((child, now_chrome, child_sectioning, child_aside_scope))
+    return chrome
+
+
 def has_semantic_marker(node: DOMNode) -> bool:
     """Return True if the node or any descendant carries a semantic marker.
 

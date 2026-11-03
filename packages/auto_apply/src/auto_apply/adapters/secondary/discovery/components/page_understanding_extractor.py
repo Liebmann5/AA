@@ -20,6 +20,7 @@ that has worked for years catches it if it comes up empty.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import urllib.parse
@@ -27,6 +28,16 @@ from dataclasses import replace
 from typing import Any
 
 from auto_apply.domain.models.job import Job
+from auto_apply.domain.models.page_record import (
+    CardDecision,
+    CardFate,
+    CardReason,
+    DecisionStage,
+    PageRecord,
+    PassKind,
+    TitleSource,
+    url_ref,
+)
 from auto_apply.domain.ports.page_understanding_port import (
     CardResolutionState,
     JobCardInfo,
@@ -40,6 +51,7 @@ from auto_apply.domain.ports.research_port import (
     NullResearchObserver,
 )
 from auto_apply.domain.services.url_evidence import (
+    canonical_url,
     decide_resolution_state,
     merge_candidates,
     merge_rejections,
@@ -49,6 +61,90 @@ from auto_apply.adapters.secondary.discovery.components.card_activation import (
 )
 
 logger = logging.getLogger(__name__)
+#: The per-page record (S1 trace, level L1), one JSON line per pass. Holds no
+#: page text by construction; goes to the session log file (DEBUG).
+trace_logger = logging.getLogger("auto_apply.trace")
+
+
+def _title_source(card: Any) -> TitleSource:
+    try:
+        return TitleSource(getattr(card, "title_source", "none") or "none")
+    except ValueError:
+        return TitleSource.NONE
+
+
+def _card_url_ref(card: Any) -> str:
+    """Commitment to the selected URL, else to the best candidate's."""
+    url = (getattr(card, "url", "") or "").strip()
+    if url:
+        return url_ref(canonical_url(url))
+    candidates = tuple(getattr(card, "candidates", ()) or ())
+    if candidates:
+        best = candidates[0]
+        return url_ref(getattr(best, "canonical_url", "") or getattr(best, "url", ""))
+    return ""
+
+
+def _decision(
+    card: Any,
+    index: int,
+    stage: DecisionStage,
+    reason: CardReason,
+    fate: CardFate | None = None,
+) -> CardDecision:
+    state = getattr(card, "resolution_state", "") or ""
+    return CardDecision(
+        card_index=index,
+        stage=stage,
+        reason=reason,
+        fate=fate,
+        resolution_state=state if isinstance(state, str) else "",
+        candidates=len(getattr(card, "candidates", ()) or ()),
+        rejections=len(getattr(card, "rejections", ()) or ()),
+        title_source=_title_source(card),
+        title_truncated=bool(getattr(card, "title_truncated", False)),
+        url_ref=_card_url_ref(card),
+    )
+
+
+def _log_card_urls(source_name: str, pass_kind: PassKind, index: int,
+                   decision: CardDecision, card: Any) -> None:
+    """LR-6: every URL found, kept or dropped, with its reason, to the log.
+
+    Local session log only (DEBUG reaches the log file, not the console).
+    The ``url_ref`` joins each line to the page record.
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    fate = decision.fate.value if decision.fate else decision.stage.value
+    selected = (getattr(card, "url", "") or "").strip()
+    for candidate in tuple(getattr(card, "candidates", ()) or ()):
+        url = getattr(candidate, "url", "")
+        outcome = "selected" if url and url == selected else "candidate"
+        logger.debug(
+            "discovery url: %s %s card=%d fate=%s reason=%s outcome=%s "
+            "score=%.2f url_ref=%s url=%s",
+            source_name, pass_kind.value, index, fate, decision.reason.value,
+            outcome, float(getattr(candidate, "score", 0.0) or 0.0),
+            url_ref(getattr(candidate, "canonical_url", "") or url), url,
+        )
+    for rejection in tuple(getattr(card, "rejections", ()) or ()):
+        url = getattr(rejection, "resolved_url", "") or getattr(rejection, "original_url", "")
+        logger.debug(
+            "discovery url: %s %s card=%d fate=%s reason=%s outcome=rejected "
+            "rejection=%s url_ref=%s url=%s",
+            source_name, pass_kind.value, index, fate, decision.reason.value,
+            getattr(rejection, "reason", ""), url_ref(canonical_url(url)) if url else "",
+            url,
+        )
+
+
+def _emit_record(source_name: str, record: PageRecord) -> None:
+    if trace_logger.isEnabledFor(logging.DEBUG):
+        trace_logger.debug(
+            "page record %s %s", source_name,
+            json.dumps(record.to_level(1), sort_keys=True, separators=(",", ":")),
+        )
 
 # Hard bound on clicks per page during deferred resolution. A bound, not a
 # knob: it exists so a click architecture that yields nothing cannot consume
@@ -140,6 +236,33 @@ class PageUnderstandingExtractor:
         self.last_card_count: int = 0
         self.last_resolution_report: SerpResolutionReport | None = None
         self._activator: CardActivator | None = None
+        # The per-page record of the most recent pass (S1 trace), and the
+        # number of passes made, so records of one harvest are ordered.
+        self.last_page_record: PageRecord | None = None
+        self._pass_count = 0
+
+    def _record(
+        self,
+        kind: PassKind,
+        structure: Any,
+        decisions: list[CardDecision],
+        *,
+        page_index: int,
+    ) -> PageRecord:
+        """Build the page record of one pass from the structure and decisions."""
+        report = getattr(structure, "resolution_report", None)
+        return PageRecord(
+            pass_kind=kind,
+            pass_index=self._pass_count,
+            page_index=page_index,
+            observation=getattr(structure, "observation", None),
+            detection=getattr(structure, "listing_facts", None),
+            record_level=getattr(report, "record_level", "") or "",
+            identity_level=getattr(report, "identity_level", "") or "",
+            identity_attributes=len(getattr(report, "learned_identity", ()) or ()),
+            analyze_ms=float(getattr(structure, "analyze_ms", 0.0) or 0.0),
+            decisions=tuple(decisions),
+        )
 
     def _context(self) -> PageContext:
         """Build the page context, tolerating a browser that will not answer."""
@@ -181,10 +304,14 @@ class PageUnderstandingExtractor:
         self.last_resolution_report = getattr(structure, "resolution_report", None)
 
         jobs: list[Job] = []
+        decisions: list[CardDecision] = []
         seen = dropped_no_title = dropped_no_url = 0
         dropped_multi_route = dropped_deferred = 0
-        for card in cards:
+        for index, card in enumerate(cards):
             seen += 1
+            decisions.append(
+                _decision(card, index, DecisionStage.FOUND, CardReason.DETECTED)
+            )
             # Defensive reads: a port consumer must not require fields the
             # protocol did not previously carry (stub cards, older adapters).
             title = (getattr(card, "title", "") or "").strip()
@@ -193,11 +320,16 @@ class PageUnderstandingExtractor:
             state = getattr(card, "resolution_state", "") or ""
             candidate_count = len(getattr(card, "candidates", ()) or ())
 
+            fate: CardDecision
             if not (title and url):
                 if not title:
                     dropped_no_title += 1
+                    fate = _decision(card, index, DecisionStage.FATE,
+                                     CardReason.NO_TITLE, CardFate.DROPPED)
                 elif state == CardResolutionState.MULTI_ROUTE.value:
                     dropped_multi_route += 1
+                    fate = _decision(card, index, DecisionStage.FATE,
+                                     CardReason.MULTI_ROUTE, CardFate.DEFERRED)
                     self._audit(
                         {"title": title, "candidates": candidate_count},
                         False,
@@ -205,6 +337,8 @@ class PageUnderstandingExtractor:
                     )
                 elif state == CardResolutionState.DEFERRED.value:
                     dropped_deferred += 1
+                    fate = _decision(card, index, DecisionStage.FATE,
+                                     CardReason.NO_ELIGIBLE_LINK, CardFate.DEFERRED)
                     self._audit(
                         {"title": title, "candidates": candidate_count},
                         False,
@@ -212,7 +346,11 @@ class PageUnderstandingExtractor:
                     )
                 else:
                     dropped_no_url += 1
+                    fate = _decision(card, index, DecisionStage.FATE,
+                                     CardReason.NO_LINK, CardFate.DEFERRED)
                     self._audit({"title": title, "url": url}, False, "missing title or url")
+                decisions.append(fate)
+                _log_card_urls(source_name, PassKind.HARVEST, index, fate, card)
                 continue
 
             try:
@@ -220,9 +358,23 @@ class PageUnderstandingExtractor:
                     Job(title=title, company=company, url=url, source=source_name)
                 )
             except Exception as exc:  # noqa: BLE001
+                fate = _decision(card, index, DecisionStage.FATE,
+                                 CardReason.INVALID_JOB, CardFate.DROPPED)
+                decisions.append(fate)
+                _log_card_urls(source_name, PassKind.HARVEST, index, fate, card)
                 self._audit({"title": title, "url": url}, False, f"invalid job: {exc}")
                 continue
+            fate = _decision(card, index, DecisionStage.FATE,
+                             CardReason.TITLE_AND_LINK, CardFate.KEPT)
+            decisions.append(fate)
+            _log_card_urls(source_name, PassKind.HARVEST, index, fate, card)
             self._audit({"title": title, "company": company, "url": url}, True)
+
+        self._pass_count += 1
+        self.last_page_record = self._record(
+            PassKind.HARVEST, structure, decisions, page_index=-1
+        )
+        _emit_record(source_name, self.last_page_record)
 
         # Say what was thrown away, in the console, once per harvest. The
         # per-card audit rows go to the observer and never reach the log a
@@ -293,84 +445,129 @@ class PageUnderstandingExtractor:
         opaque_stop = False
 
         activator = self._get_activator()
-        if activator is not None and self._max_card_activations > 0:
-            updated: list[JobCardInfo] = []
-            for card in cards:
-                if (
-                    opaque_stop
-                    or activation_attempts >= self._max_card_activations
-                    or card.resolution_state == CardResolutionState.RESOLVED.value
-                    or not card.identity_attribute
-                    or not card.identity_value
-                ):
-                    updated.append(card)
-                    continue
+        can_click = activator is not None and self._max_card_activations > 0
+        decisions: list[CardDecision] = []
 
-                outcome = activator.activate(
-                    identity_attribute=card.identity_attribute,
-                    identity_value=card.identity_value,
-                    title=card.title,
-                    serp_host=serp_host,
-                    page_url=context.url,
-                )
-                activation_attempts += 1
+        def _fate(card: JobCardInfo, index: int, reason: CardReason, fate: CardFate) -> None:
+            decision = _decision(card, index, DecisionStage.FATE, reason, fate)
+            decisions.append(decision)
+            _log_card_urls(source_name, PassKind.FINALIZE, index, decision, card)
 
-                if outcome.error:
-                    updated.append(card)
-                    continue
-                if not outcome.candidates and not outcome.rejections and not outcome.navigated:
-                    updated.append(card)
-                    continue
-
-                merged_candidates = merge_candidates(card.candidates, outcome.candidates)
-                merged_rejections = merge_rejections(card.rejections, outcome.rejections)
-                state, selected = decide_resolution_state(
-                    merged_candidates,
-                    merged_rejections,
-                    material_seen=True,
-                )
-                card = replace(
-                    card,
-                    candidates=merged_candidates,
-                    rejections=merged_rejections,
-                    resolution_state=state.value,
-                    url=selected.url if selected else "",
-                )
+        updated: list[JobCardInfo] = []
+        for index, card in enumerate(cards):
+            decisions.append(_decision(card, index, DecisionStage.FOUND, CardReason.DETECTED))
+            if card.resolution_state == CardResolutionState.RESOLVED.value:
                 updated.append(card)
+                if card.title:
+                    _fate(card, index, CardReason.ALREADY_RESOLVED, CardFate.KEPT)
+                else:
+                    _fate(card, index, CardReason.NO_TITLE, CardFate.DROPPED)
+                continue
+            if not can_click or activator is None:
+                updated.append(card)
+                _fate(card, index, CardReason.NO_ACTIVATOR, CardFate.DROPPED)
+                continue
+            if not card.identity_attribute or not card.identity_value:
+                updated.append(card)
+                _fate(card, index, CardReason.NO_IDENTITY, CardFate.DROPPED)
+                continue
+            if opaque_stop:
+                updated.append(card)
+                _fate(card, index, CardReason.OPAQUE_STOP, CardFate.DROPPED)
+                continue
+            if activation_attempts >= self._max_card_activations:
+                updated.append(card)
+                _fate(card, index, CardReason.CLICK_BUDGET, CardFate.DROPPED)
+                continue
 
-                if selected is not None and card.title:
-                    activation_resolved += 1
-                    try:
-                        new_jobs.append(
-                            Job(
-                                title=card.title,
-                                company=(card.company or "").strip() or "Unknown",
-                                url=selected.url,
-                                source=source_name,
-                            )
-                        )
-                        self._audit(
-                            {"title": card.title, "url": selected.url},
-                            True,
-                            "resolved via activation",
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        self._audit(
-                            {"title": card.title, "url": selected.url},
-                            False,
-                            f"invalid job: {exc}",
-                        )
+            outcome = activator.activate(
+                identity_attribute=card.identity_attribute,
+                identity_value=card.identity_value,
+                title=card.title,
+                serp_host=serp_host,
+                page_url=context.url,
+            )
+            activation_attempts += 1
 
-                if _is_opaque_uniform(outcome, serp_host):
-                    opaque_stop = True
-                    logger.info(
-                        "%s: activation reveals an opaque redirect architecture "
-                        "(no decodable or direct external destination) — "
-                        "stopping further activations on this page.",
-                        source_name,
+            if outcome.error:
+                updated.append(card)
+                decisions.append(_decision(card, index, DecisionStage.OPENED,
+                                           CardReason.OPENED_ERROR))
+                _fate(card, index, CardReason.OPENED_ERROR, CardFate.DROPPED)
+                continue
+            if not outcome.candidates and not outcome.rejections and not outcome.navigated:
+                updated.append(card)
+                decisions.append(_decision(card, index, DecisionStage.OPENED,
+                                           CardReason.OPENED_NOTHING))
+                _fate(card, index, CardReason.OPENED_NOTHING, CardFate.DROPPED)
+                continue
+
+            merged_candidates = merge_candidates(card.candidates, outcome.candidates)
+            merged_rejections = merge_rejections(card.rejections, outcome.rejections)
+            state, selected = decide_resolution_state(
+                merged_candidates,
+                merged_rejections,
+                material_seen=True,
+            )
+            card = replace(
+                card,
+                candidates=merged_candidates,
+                rejections=merged_rejections,
+                resolution_state=state.value,
+                url=selected.url if selected else "",
+            )
+            updated.append(card)
+
+            if selected is None:
+                decisions.append(_decision(card, index, DecisionStage.OPENED,
+                                           CardReason.OPENED_UNRESOLVED))
+                _fate(card, index, CardReason.OPENED_UNRESOLVED, CardFate.DROPPED)
+            elif not card.title:
+                decisions.append(_decision(card, index, DecisionStage.OPENED,
+                                           CardReason.OPENED_NO_TITLE))
+                _fate(card, index, CardReason.OPENED_NO_TITLE, CardFate.DROPPED)
+            else:
+                decisions.append(_decision(card, index, DecisionStage.OPENED,
+                                           CardReason.OPENED_RESOLVED))
+                activation_resolved += 1
+                try:
+                    new_jobs.append(
+                        Job(
+                            title=card.title,
+                            company=(card.company or "").strip() or "Unknown",
+                            url=selected.url,
+                            source=source_name,
+                        )
+                    )
+                    _fate(card, index, CardReason.OPENED_RESOLVED, CardFate.KEPT)
+                    self._audit(
+                        {"title": card.title, "url": selected.url},
+                        True,
+                        "resolved via activation",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _fate(card, index, CardReason.INVALID_JOB, CardFate.DROPPED)
+                    self._audit(
+                        {"title": card.title, "url": selected.url},
+                        False,
+                        f"invalid job: {exc}",
                     )
 
-            cards = updated
+            if _is_opaque_uniform(outcome, serp_host):
+                opaque_stop = True
+                logger.info(
+                    "%s: activation reveals an opaque redirect architecture "
+                    "(no decodable or direct external destination) — "
+                    "stopping further activations on this page.",
+                    source_name,
+                )
+
+        cards = updated
+        self._pass_count += 1
+        self.last_page_record = self._record(
+            PassKind.FINALIZE, structure, decisions, page_index=page_index
+        )
+        _emit_record(source_name, self.last_page_record)
 
         self._emit_observation(
             source_name,

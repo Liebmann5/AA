@@ -572,6 +572,11 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     # research key with its own context label, so it can never coincide
     # with a company_id. None of them is a company or posting identity.
     "domain/models/page_copy.py": ["hashlib.sha256", "hmac.new"],
+    # Page record (slice S1 trace): url_ref, a 16-hex commitment to a
+    # canonical URL so a local log line (LR-6) joins its decision without the
+    # record holding the URL. Local L0/L1 only; unkeyed, so never exported to
+    # research (a guessable URL could be recovered); not a posting identity.
+    "domain/models/page_record.py": ["hashlib.sha256"],
     "domain/models/timing.py": ["hashlib.sha256"],
     # Replay (item 7): corpus and artifact digests, the text digest in each
     # record, and replay signal ids derived from (copy, type, index). Result
