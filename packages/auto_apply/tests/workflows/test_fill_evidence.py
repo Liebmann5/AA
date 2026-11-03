@@ -272,10 +272,17 @@ def test_failed_required_field_blocks_submission():
 
 def test_optional_field_failure_does_not_block_submission():
     """Optional failures are recorded (FORM_FIELD_FAILED) but never block."""
-    wf = _workflow(fill_result=False)
+    wf = _workflow()
+    # One field fills, the optional one fails: something was filled, so the
+    # submit step is reached (nothing filled ends as FAILED_NOTHING_FILLED).
+    wf._interaction_port.fill.side_effect = [True, False]
     wf._submit_application = MagicMock(return_value=MagicMock())
 
-    _drive_run_with_fields(wf, {_Field(is_required=False): "TEXT"})
+    _drive_run_with_fields(
+        wf,
+        {_Field(is_required=False, label="ok"): "TEXT",
+         _Field(is_required=False, label="bad"): "TEXT"},
+    )
 
     assert wf._submit_application.called, (
         "an optional-field failure blocked submission — only REQUIRED field "

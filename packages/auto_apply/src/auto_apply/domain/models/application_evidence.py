@@ -110,6 +110,7 @@ class ApplicationEvidence(BaseModel):
         "PROBABLY_SUBMITTED",       # Likely: URL changed, no clear confirmation phrase
         "AMBIGUOUS",                # Uncertain: submit clicked, no clear post-state
         "FAILED_NO_SUBMIT_BUTTON",  # No submit button found
+        "FAILED_NOTHING_FILLED",    # Reached a page but filled no field: nothing to submit
         "FAILED_NAVIGATION",        # Could not navigate to the form
         "FAILED_REQUIRED_FIELD",    # Blocked by unknown required field
         "FAILED_FILE_UPLOAD",       # Required file upload failed

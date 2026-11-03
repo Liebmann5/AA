@@ -284,6 +284,7 @@ _OUTCOME_KIND_MAP: dict[str, ActivityKind] = {
     "ACCOUNT_REQUIRED": ActivityKind.BLOCKED,
     "AMBIGUOUS": ActivityKind.FAILED,
     "FAILED_NO_SUBMIT_BUTTON": ActivityKind.FAILED,
+    "FAILED_NOTHING_FILLED": ActivityKind.FAILED,
     "FAILED_NAVIGATION": ActivityKind.FAILED,
     "FAILED_REQUIRED_FIELD": ActivityKind.FAILED,
     "FAILED_FILE_UPLOAD": ActivityKind.FAILED,

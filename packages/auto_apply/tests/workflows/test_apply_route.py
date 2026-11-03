@@ -155,7 +155,7 @@ def test_off_host_apply_route_through_one_redirector(
     assert result.apply_target_host == "publisher.example"
     assert result.landed_host == "employer.example"
     assert result.apply_route_hops == 1
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"
+    assert result.outcome == "FAILED_NOTHING_FILLED"
 
 
 def test_posting_with_off_host_link_is_routed_not_filled(
@@ -203,7 +203,7 @@ def test_posting_with_off_host_link_is_routed_not_filled(
     assert result.landed_host == "employer.example"
     assert result.apply_route_hops == 1
     mock_interaction_port.fill.assert_not_called()
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"
+    assert result.outcome == "FAILED_NOTHING_FILLED"
 
 
 def test_apply_opening_a_new_tab_is_followed_and_closed(
@@ -252,7 +252,7 @@ def test_apply_opening_a_new_tab_is_followed_and_closed(
 
     context_manager.switch_to_new_tab.assert_called_once()
     assert result.landed_host == "employer.example"
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"
+    assert result.outcome == "FAILED_NOTHING_FILLED"
     context_manager.close_current_tab_and_return.assert_called_once()
 
 
@@ -362,7 +362,7 @@ def test_hidden_signin_modal_does_not_block_a_revealed_form(
     result = wf.run(sample_job)
 
     assert result.outcome != "ACCOUNT_REQUIRED"
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"  # reached the form stage
+    assert result.outcome == "FAILED_NOTHING_FILLED"  # reached the form stage
 
 
 def test_visible_signin_dialog_after_click_is_account_required(
@@ -455,7 +455,7 @@ def test_onsite_apply_modal_is_proceeded_with_not_account_required(
 
     assert result.outcome != "ACCOUNT_REQUIRED"
     assert result.outcome != "CAPTCHA_BLOCKED"
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"
+    assert result.outcome == "FAILED_NOTHING_FILLED"
 
 
 def test_redirect_loop_ends_honestly_never_hangs(

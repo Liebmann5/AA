@@ -170,6 +170,8 @@ def test_a_three_page_walk_is_counted_in_the_evidence():
 def test_the_gate_blocked_outcome_still_carries_the_counters():
     """Gate-blocked is the DEFAULT for an install with no approver wired."""
     workflow = _workflow(_WizardBrowser(pages=3))
+    # The gate is reached only when something was filled.
+    workflow._fill_standard_fields = lambda classifications: 1
 
     evidence = workflow.run(_JOB, session_id="test")
 

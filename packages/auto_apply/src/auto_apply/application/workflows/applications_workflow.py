@@ -447,10 +447,8 @@ class ApplicationsWorkflow:
                 pass
 
         # ── Attempt 3: Shadow DOM (Web Components) ─────────────────────────
-        shadow_structure = self._scan_shadow_dom_for_form()
-        if shadow_structure and self._has_fillable_fields(shadow_structure):
-            logger.info("Form found inside Shadow DOM | url=%s", job.url[:60])
-            return shadow_structure
+        # Reported only: no shadow-DOM reader or filler exists yet (S3).
+        self._scan_shadow_dom_for_form()
 
         logger.warning(
             "No form found in main frame, iFrames, or Shadow DOM | url=%s",
@@ -458,58 +456,54 @@ class ApplicationsWorkflow:
         )
         return None
 
-    def _scan_shadow_dom_for_form(self):
+    def _scan_shadow_dom_for_form(self) -> None:
         """Attempt to pierce Shadow DOM and find form elements.
 
-        Web Component-based ATS (some modern platforms) put their forms inside
-        a Shadow DOM that Selenium cannot access directly. We use JavaScript
-        to pierce it.
-
-        Returns the form structure if found, or None.
+        Web Component-based ATS (SmartRecruiters' application form, for
+        one) put their forms inside open shadow roots. This counts the
+        controls inside shadow roots and reports them. No shadow-DOM reader
+        or filler exists yet (comprehension slice S3), so it always returns
+        None: a structure no filler reads must not count as a form.
         """
         try:
             # Pierce the shadow DOM and extract form elements via JavaScript
+            # Counts controls INSIDE shadow roots only. The previous script
+            # started at the document, so ordinary light-DOM inputs were
+            # reported as "Shadow DOM contains N inputs" on pages with no
+            # shadow root (Greenhouse, owner run 3, 2026-11-03).
             result = self._browser.execute_script("""
-                function queryShadowAll(root, selector) {
-                    let elements = Array.from(root.querySelectorAll(selector));
+                const sel = 'input:not([type=hidden]),textarea,select';
+                function countShadow(root) {
+                    let n = 0;
                     root.querySelectorAll('*').forEach(el => {
                         if (el.shadowRoot) {
-                            elements = elements.concat(
-                                queryShadowAll(el.shadowRoot, selector)
-                            );
+                            n += el.shadowRoot.querySelectorAll(sel).length;
+                            n += countShadow(el.shadowRoot);
                         }
                     });
-                    return elements;
+                    return n;
                 }
-                const inputs = queryShadowAll(
-                    document,
-                    'input:not([type=hidden]),textarea,select'
-                );
-                return inputs.length;
+                return countShadow(document);
             """)
 
-            if result and result > 0:
-                logger.info(
-                    "Shadow DOM contains %d form inputs — "
-                    "attempting JavaScript fill strategy",
+            if isinstance(result, int) and result > 0:
+                # No fill strategy for shadow-DOM forms exists yet
+                # (comprehension slice S3). Say so instead of returning a
+                # marker no filler reads.
+                logger.warning(
+                    "Shadow DOM holds %d form control(s); AA cannot read or "
+                    "fill shadow-DOM forms yet",
                     result,
                 )
-                # Shadow DOM forms require a JS-based fill strategy.
-                # Return a marker structure indicating shadow DOM mode.
-                return {"shadow_dom_mode": True, "input_count": result}
 
         except Exception as exc:
             logger.debug("Shadow DOM scan failed: %s", exc)
-
-        return None
 
     @staticmethod
     def _has_fillable_fields(form_structure) -> bool:
         """Returns True if the form structure contains at least one fillable field."""
         if not form_structure:
             return False
-        if isinstance(form_structure, dict) and form_structure.get("shadow_dom_mode"):
-            return True
         # Check for actual field pairs in the math subsystem's structure
         label_pairs = getattr(form_structure, "label_field_pairs", None) or {}
         return len(label_pairs) > 0
@@ -604,6 +598,15 @@ class ApplicationsWorkflow:
             # route and filled the posting's alert form, because that form
             # crossed the fillable bar (probe_item12, 2026-09).
             href = self._find_apply_href(url, html, visited)
+            # A same-host apply link (a posting's own "/apply" or
+            # "/application" page) is followed only when this page carries no
+            # application form. Before this, only OFF-host links were
+            # followed and same-host ones were never clicked either (they have
+            # a navigable href), so every ATS posting stayed on the posting.
+            if href is None and not page_has_fillable_form(html):
+                href = self._find_apply_href(
+                    url, html, visited, off_host_only=False
+                )
             if href is not None:
                 if hops >= max_hops:
                     return self._route_failed(
@@ -628,8 +631,12 @@ class ApplicationsWorkflow:
             # A substantial form means this page IS the application. It is
             # checked after the href on purpose: a form page's own submit
             # has no off-host href, so a real form page never reaches this
-            # line via the route.
-            if page_has_fillable_form(html) or ats_matched:
+            # line via the route. A known ATS host is NOT by itself "this
+            # page is the form": that rule stopped on every ATS posting before
+            # its Apply control (owner run 3, 2026-11-03: 0 of 5 forms
+            # reached). The ATS match is used below, only once nothing is
+            # left to follow.
+            if page_has_fillable_form(html):
                 break
 
             # ── Then a target-less apply control: click, as a person would ─
@@ -670,6 +677,10 @@ class ApplicationsWorkflow:
 
             # ── Nothing left to follow ───────────────────────────────────
             if hops > 0 or clicks > 0:
+                # A known application host is a destination even when its
+                # form markup is unusual: attempt it rather than give up.
+                if ats_matched:
+                    break
                 # A route was attempted and ended on a page with no form.
                 # Filling whatever this page is would be the pre-12B defect,
                 # so the route fails honestly instead.
@@ -823,9 +834,18 @@ class ApplicationsWorkflow:
         return evidence.model_copy(update={"ats_platform": descriptor.name}), True
 
     def _find_apply_href(
-        self, page_url: str, html: str, visited: set[str]
+        self,
+        page_url: str,
+        html: str,
+        visited: set[str],
+        *,
+        off_host_only: bool = True,
     ) -> str | None:
-        """The first off-host apply href on this page that is not yet visited.
+        """The first apply href on this page that is not yet visited.
+
+        Off-host hrefs only by default (they outrank an on-page form). With
+        ``off_host_only=False`` a same-host href qualifies too, unless it
+        points at this same page (a fragment or the page itself).
 
         Read from the page's markup by the SAME pure parser vetting learns
         from, so the target learned and the target followed cannot be two
@@ -838,9 +858,15 @@ class ApplicationsWorkflow:
                 "ApplicationsWorkflow: apply-control parse failed: %s", exc
             )
             return None
+        here = page_url.split("#", 1)[0]
         for control in controls:
-            if control.href and control.off_host and control.href not in visited:
-                return control.href
+            if not control.href or control.href in visited:
+                continue
+            if off_host_only and not control.off_host:
+                continue
+            if control.href.split("#", 1)[0] == here:
+                continue
+            return control.href
         return None
 
     def _click_apply_control(self, job: Job) -> bool:
@@ -1185,7 +1211,14 @@ class ApplicationsWorkflow:
             return False
 
         element = getattr(action, "ui_element", None)
-        reference = element.get_reference() if element is not None else None
+        try:
+            reference = element.get_reference() if element is not None else None
+        except ValueError:
+            # UIElement.get_reference raises when no live element is
+            # attached (the math perception adapter attaches none). Not
+            # being able to inspect is a reason to skip, never to crash the
+            # whole attempt (owner run 3: Greenhouse, 2026-11-03).
+            return False
         if reference is None:
             return False
 
@@ -1859,12 +1892,12 @@ class ApplicationsWorkflow:
             )
 
         try:
-            page_source = getattr(self._browser, "page_source", "") or ""
-            form_count = page_source.lower().count("<form")
-            job_link_count = page_source.lower().count("job")
-
-            if form_count == 0 and job_link_count > 5:
-                current_url = getattr(self._browser, "current_url", "")
+            # A redirect to a list is the page verdict's answer (a results
+            # page), not a word count. The old rule (no "<form" and the word
+            # "job" more than 5 times) fired on every posting, so each pasted
+            # link asked "Suspicious redirect?" and spawned a company
+            # discovery task (owner run 3, 2026-11-03).
+            if page is not None and page.kind is PageType.SERP:
                 logger.info(
                     "ApplicationsWorkflow: suspicious redirect detected | url=%s",
                     current_url,
@@ -2746,7 +2779,30 @@ class ApplicationsWorkflow:
                 self._record_application_outcome(evidence)
                 return evidence
 
-            evidence = self._submit_application(job, evidence)
+            # ── Nothing filled: nothing to submit (no prompt) ────────────
+            # The submit checkpoint is for an application AA actually filled.
+            # Asking "Submit application?" over 0 filled fields was measured
+            # on 4 of 5 links (owner run 3, 2026-11-03).
+            if self._fields_filled == 0:
+                logger.warning(
+                    "ApplicationsWorkflow: no field was filled, so there is "
+                    "nothing to submit; the submit checkpoint is skipped | "
+                    "job=%s url=%s",
+                    job.title,
+                    self._current_url(default=job.url),
+                )
+                evidence = evidence.model_copy(update={
+                    "outcome": "FAILED_NOTHING_FILLED",
+                    "submit_clicked": False,
+                    "confidence": 0.95,
+                    "error_message": (
+                        "no form field was filled on the application page, "
+                        "so nothing was submitted and no submit prompt was shown"
+                    ),
+                    **self._run_statistics(),
+                })
+            else:
+                evidence = self._submit_application(job, evidence)
             self._record_application_outcome(evidence)
 
             # ❯❯❯ Close the tab that was opened for the application if any
