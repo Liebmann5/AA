@@ -1,36 +1,34 @@
-"""Pins for the arrival re-check at read time (owner run, 2026-11-03 11:11).
+"""Pins for "is this still the page I asked for?" as a capability of every browser.
 
-``https://www.bing.com/jobs?q=...`` loaded, passed the landing check made the
-instant ``get()`` returned, and then moved itself by script to Bing's home
-page (``/?form=REDIRERR``) within seconds. The reader then read the home
-page's 20 news headlines as jobs, and all 20 were saved and vetted. The page
-verdict did not stop it: on the real page it does not answer HOME_PAGE.
+Owner run, 2026-11-03 11:11: ``https://www.bing.com/jobs?q=...`` loaded, passed
+the landing check made the instant ``get()`` returned, then moved itself by
+script to Bing's home page (``/?form=REDIRERR``). The reader read 20 news
+headlines as jobs; all 20 were saved and vetted.
 
-The fix re-checks the URL right before reading, with the same pure URL rule
-(``check_landing``) the navigator applied at load time. No network, no DNS,
-no page parsing.
+The check lives where every page AA opens passes: ``ResilientDriver``, the
+wrapper every production browser is built inside (``browser_cascade``). Any
+caller, on any page (a search engine, a careers page, a posting, a form, a
+next page), asks the browser it already holds; nothing is wired per engine.
+The rule is the pure URL comparison ``check_landing``: no network, no DNS.
 
-Pins marked ``_teeth`` fail on the code before the fix (``f5392d6``).
+Pins marked ``_teeth`` fail on the code before this change (``945d416``).
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from auto_apply.adapters.secondary.discovery.strategies import navigators as nav
-from auto_apply.adapters.secondary.discovery.strategies.navigators import (
-    DirectURLNavigation,
-    ResilientNavigator,
-)
 from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (
     GenericSERPStrategy,
 )
+from auto_apply.domain.ports.browser_port import BrowserInterface
+from auto_apply.infrastructure.resilient_driver import ResilientDriver
 
 _REQUESTED = "https://www.bing.com/jobs?q=Backend+Engineer+Chicago%2C+IL"
 _MOVED = "https://www.bing.com/?form=REDIRERR"
 
 # A page the verdict cannot place (no search form, no list): the home-page
-# gate does not fire on it, so only the arrival re-check can stop the read.
+# gate does not fire on it, so only the arrival check can stop the read.
 _UNPLACEABLE = (
     "<html><head><title>Search - Microsoft Bing</title></head><body>"
     + "".join(f"<div><a href='/news/{i}'><h3>Story {i}</h3></a></div>" for i in range(20))
@@ -38,8 +36,8 @@ _UNPLACEABLE = (
 )
 
 
-class _MovingBrowser:
-    """get() lands on the requested URL; the site later moves the page."""
+class _InnerDriver:
+    """The wrapped adapter: get() lands; the site may later move the page."""
 
     def __init__(self) -> None:
         self.current_url = "about:blank"
@@ -52,23 +50,19 @@ class _MovingBrowser:
     def move_by_script(self, url: str) -> None:
         self.current_url = url
 
+    def execute_script(self, script, *args):
+        return "complete" if "readyState" in script else None
+
     def find_elements(self, by, selector):
         return []
-
-    def execute_script(self, script, *args):
-        return None
 
     def switch_to_default_content(self):
         return None
 
 
-class _Engine:
-    homepage_url = "https://www.bing.com"
-    search_bar_selectors: list[str] = []
-    engine_name = "bing"
-
-    def build_search_url(self, instruction) -> str:
-        return _REQUESTED
+def _browser() -> tuple[ResilientDriver, _InnerDriver]:
+    inner = _InnerDriver()
+    return ResilientDriver(inner), inner
 
 
 class _CountingExtractor:
@@ -79,7 +73,7 @@ class _CountingExtractor:
         self.mine_calls += 1
         return [SimpleNamespace(url="https://www.bing.com/news/1", title="Story")]
 
-    def finalize_harvest(self, source_name):
+    def finalize_harvest(self, source_name, **_kwargs):
         return []
 
 
@@ -97,15 +91,7 @@ class _Degradation:
         self.blocked.append((provider, reason))
 
 
-def _navigated(monkeypatch) -> tuple[_MovingBrowser, ResilientNavigator]:
-    monkeypatch.setattr(nav.time, "sleep", lambda s: None)
-    browser = _MovingBrowser()
-    navigator = ResilientNavigator(browser, [DirectURLNavigation(browser)])
-    assert navigator.navigate_with_fallback(_Engine(), SimpleNamespace(), lambda: True)
-    return browser, navigator
-
-
-def _strategy(browser, arrival_check):
+def _strategy(browser):
     fast, degradation = _CountingExtractor(), _Degradation()
     strategy = GenericSERPStrategy(
         browser=browser,
@@ -115,52 +101,74 @@ def _strategy(browser, arrival_check):
         scroller=None,
         fast_extractor=fast,
         degradation_detector=degradation,
-        arrival_check=arrival_check,
     )
     return strategy, fast, degradation
 
 
-def test_navigator_sees_a_page_that_moved_after_loading_teeth(monkeypatch) -> None:
-    browser, navigator = _navigated(monkeypatch)
-    assert navigator.confirm_arrival().on_surface is True
-    browser.move_by_script(_MOVED)
-    landing = navigator.confirm_arrival()
+def test_every_browser_sees_a_page_that_moved_after_loading_teeth() -> None:
+    browser, inner = _browser()
+    browser.get(_REQUESTED)
+    assert browser.confirm_arrival().on_surface is True
+    inner.move_by_script(_MOVED)
+    landing = browser.confirm_arrival()
     assert landing.on_surface is False
     assert landing.reason == "error-redirect"
     assert landing.requested == _REQUESTED
-    assert navigator.landings[-1] == landing
+    assert landing.landed == _MOVED
 
 
-def test_reader_reads_nothing_after_the_page_moved_teeth(monkeypatch) -> None:
+def test_reader_reads_nothing_after_the_page_moved_teeth() -> None:
     for entry in ("execute", "run"):
-        browser, navigator = _navigated(monkeypatch)
-        browser.move_by_script(_MOVED)
-        strategy, fast, degradation = _strategy(browser, navigator.confirm_arrival)
+        browser, inner = _browser()
+        browser.get(_REQUESTED)
+        inner.move_by_script(_MOVED)
+        strategy, fast, degradation = _strategy(browser)
         assert getattr(strategy, entry)() == [], entry
         assert fast.mine_calls == 0, entry
         # A moved page is not a block: the engine is not benched.
         assert degradation.blocked == [], entry
 
 
-def test_reader_still_reads_when_the_page_stayed(monkeypatch) -> None:
+def test_a_blank_page_clears_the_request_teeth() -> None:
+    """A blank page between attempts is not a request to compare against."""
+    browser, _inner = _browser()
+    browser.get(_REQUESTED)
+    browser.get("about:blank")
+    assert browser.confirm_arrival() is None
+
+
+def test_the_port_answers_unknown_by_default() -> None:
+    """GUARD: a browser that does not track navigations says "unknown"
+    (None), never "fine" and never "moved"."""
+    assert BrowserInterface.confirm_arrival(SimpleNamespace()) is None
+
+
+def test_reader_still_reads_when_the_page_stayed() -> None:
     """GUARD: an unmoved page is read exactly as before."""
-    browser, navigator = _navigated(monkeypatch)
-    strategy, fast, _deg = _strategy(browser, navigator.confirm_arrival)
+    browser, _inner = _browser()
+    browser.get(_REQUESTED)
+    strategy, fast, _deg = _strategy(browser)
     strategy.execute()
     assert fast.mine_calls >= 1
 
 
-def test_a_changed_path_alone_is_read_not_refused(monkeypatch) -> None:
+def test_a_changed_path_alone_is_read_not_refused() -> None:
     """GUARD: sites canonicalise search URLs onto another path; a moved path
     on the same site is logged and read, never refused."""
-    browser, navigator = _navigated(monkeypatch)
-    browser.move_by_script("https://www.bing.com/search?q=Backend+Engineer")
-    strategy, fast, _deg = _strategy(browser, navigator.confirm_arrival)
+    browser, inner = _browser()
+    browser.get(_REQUESTED)
+    inner.move_by_script("https://www.bing.com/search?q=Backend+Engineer")
+    strategy, fast, _deg = _strategy(browser)
     strategy.execute()
     assert fast.mine_calls >= 1
 
 
-def test_no_recheck_without_a_checked_navigation() -> None:
-    """GUARD: typing into a search box has no requested URL to compare."""
-    navigator = ResilientNavigator(_MovingBrowser(), [])
-    assert navigator.confirm_arrival() is None
+def test_a_browser_without_the_capability_is_read_as_before() -> None:
+    """GUARD: test doubles and future adapters without the method degrade to
+    today's behaviour (capability detection, not an assumption)."""
+    inner = _InnerDriver()
+    inner.get(_REQUESTED)
+    inner.move_by_script(_MOVED)
+    strategy, fast, _deg = _strategy(inner)
+    strategy.execute()
+    assert fast.mine_calls >= 1

@@ -88,9 +88,6 @@ class BingProvider(BaseSearchProvider):
             HumanSearchNavigation(browser, page_action=self._page_action),
         ])
 
-    def _is_page_healthy(self) -> bool:
-        return True
-
     def _fast_extractor(self):
         """The single-script extraction route, or None if unavailable.
 
@@ -140,9 +137,7 @@ class BingProvider(BaseSearchProvider):
 
         self._pace_for(instruction)
 
-        if not self.navigator.navigate_with_fallback(
-            self._engine_strategy, instruction, self._is_page_healthy
-        ):
+        if not self._navigate(instruction):
             logger.warning(
                 "BingProvider: navigation/health check failed — returning empty"
             )
@@ -176,7 +171,6 @@ class BingProvider(BaseSearchProvider):
             research_observer=self._research_observer,
             page_action=self._page_action,
             baseline_scope=self._baseline_scope_for(instruction),
-            arrival_check=self.navigator.confirm_arrival,
             title_parser=SmartTextExtractor(
                 strategies=[
                     "h2",

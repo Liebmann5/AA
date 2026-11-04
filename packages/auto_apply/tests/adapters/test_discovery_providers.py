@@ -291,7 +291,7 @@ class TestGoogleProviderDelegation:
         captured_strategy = None
         captured_instruction = None
 
-        def fake_navigate_with_fallback(strategy, instruction, validator):
+        def fake_navigate_with_fallback(strategy, instruction, validator, should_stop=None):
             nonlocal captured_strategy, captured_instruction
             captured_strategy = strategy
             captured_instruction = instruction
@@ -362,7 +362,7 @@ class TestBingProviderDelegation:
         captured_strategy = None
         captured_instruction = None
 
-        def fake_navigate_with_fallback(strategy, instruction, validator):
+        def fake_navigate_with_fallback(strategy, instruction, validator, should_stop=None):
             nonlocal captured_strategy, captured_instruction
             captured_strategy = strategy
             captured_instruction = instruction
@@ -405,7 +405,7 @@ class TestIndeedProviderDelegation:
         captured_strategy = None
         captured_instruction = None
 
-        def fake_navigate_with_fallback(strategy, instruction, validator):
+        def fake_navigate_with_fallback(strategy, instruction, validator, should_stop=None):
             nonlocal captured_strategy, captured_instruction
             captured_strategy = strategy
             captured_instruction = instruction

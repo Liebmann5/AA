@@ -106,4 +106,6 @@ result shows only postings from that platform's hosts.
 - **gitjobs.dev, techjobsforgood.com** — job boards, not ATS platforms. If
   their search URLs are verified, they become catalog surfaces
   (`resources/search_surfaces/`), not ATS descriptors.
-- **Bing jobs vertical** — already a catalog surface (`bing.surface.yaml`).
+- **Bing jobs vertical** — a catalog surface (`bing.surface.yaml`), retired by
+  Bing in early November 2026 (the page moves itself to Bing's home page);
+  see the Bible's issue register, LR-17.

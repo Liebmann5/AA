@@ -9,10 +9,22 @@ underlying complexity.
 import logging
 from abc import abstractmethod
 
+from auto_apply.adapters.secondary.browser.page_snapshot import browser_page_snapshot
+from auto_apply.adapters.secondary.discovery.strategies.engine_strategies import (
+    SearchEngineStrategy,
+)
+from auto_apply.adapters.secondary.discovery.strategies.navigators import (
+    ResilientNavigator,
+)
+from auto_apply.adapters.secondary.discovery.strategies.serp_strategy import (
+    BLOCK_PAGE_TYPES,
+    record_blocked_observation,
+)
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.discovery_port import DiscoveryProviderPort
+from auto_apply.domain.services.page_assessment import assess_page
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +35,13 @@ class BaseSearchProvider(DiscoveryProviderPort):
     A Provider acts as a 'Foreman'. It knows the specific URLs, navigation
     quirks, and CSS selectors for a specific website, but delegates the actual
     heavy lifting of scraping to reusable Strategies.
+
+    Every engine provider sets ``navigator`` and ``_engine_strategy`` in its
+    constructor; the shared navigation sequence (:meth:`_navigate`) uses them.
     """
+
+    navigator: ResilientNavigator
+    _engine_strategy: SearchEngineStrategy
 
     def __init__(
         self,
@@ -87,6 +105,71 @@ class BaseSearchProvider(DiscoveryProviderPort):
                 getattr(instruction, "title", ""),
             )
             return True
+        return False
+
+    def _navigate(self, instruction) -> bool:
+        """Load the search page for *instruction*: the ONE navigation sequence.
+
+        Every engine runs the same sequence: the navigator's strategies in
+        order, each landing judged by :meth:`_is_page_healthy`, and no
+        further strategy once the engine is benched. Before this, each
+        provider passed its own health check (Google's and Bing's always
+        answered "healthy") and a blocked engine was retried through its
+        home page (Indeed, owner run 2026-11-03).
+        """
+        self._blocked_observation_emitted = False
+        return self.navigator.navigate_with_fallback(
+            self._engine_strategy,
+            instruction,
+            self._is_page_healthy,
+            should_stop=self._is_benched,
+        )
+
+    def _is_benched(self) -> bool:
+        """True once this engine is benched for the session."""
+        detector = getattr(self, "_degradation_detector", None)
+        if detector is None:
+            return False
+        try:
+            return bool(detector.is_benched(self.name))
+        except Exception:
+            return False
+
+    def _is_page_healthy(self) -> bool:
+        """Is the page this engine just loaded usable? The ONE page verdict.
+
+        A CAPTCHA interstitial, a login wall or a 404 is a *blocked* page,
+        not an empty result set. A blocked page records one research
+        observation per instruction (the navigator may ask twice) and
+        benches the engine for the session; any other verdict is healthy
+        here, and what the page IS (results, home page) is the reader's
+        question, asked of the same verdict.
+        """
+        url, title, html = browser_page_snapshot(self.browser)
+        assessment = assess_page(url=url, title=title, html=html)
+        if assessment.kind not in BLOCK_PAGE_TYPES:
+            return True
+        tag = self.name.capitalize()
+        logger.warning(
+            "%s: page blocked | kind=%s signals=%s",
+            tag,
+            assessment.kind.name,
+            ",".join(assessment.signals),
+        )
+        if not getattr(self, "_blocked_observation_emitted", False):
+            self._blocked_observation_emitted = True
+            record_blocked_observation(
+                source_tag=tag,
+                browser=self.browser,
+                research_observer=getattr(self, "_research_observer", None),
+                page_type=assessment.kind,
+            )
+        detector = getattr(self, "_degradation_detector", None)
+        if detector is not None:
+            try:
+                detector.mark_blocked(self.name, assessment.kind.name)
+            except Exception:
+                pass
         return False
 
     def _pace_for(self, instruction) -> None:

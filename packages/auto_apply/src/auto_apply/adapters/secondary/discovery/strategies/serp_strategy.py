@@ -10,7 +10,6 @@ import json
 import logging
 import time
 import urllib.parse
-from collections.abc import Callable
 from typing import Optional
 
 # Components
@@ -164,7 +163,6 @@ class GenericSERPStrategy:
         research_observer=None,
         page_action=None,
         baseline_scope: str = "",
-        arrival_check: Callable[[], Landing | None] | None = None,
     ):
         """Initializes the strategy with specific parsing tools.
 
@@ -175,10 +173,6 @@ class GenericSERPStrategy:
             research_observer: Optional ResearchObserverPort. Receives a
                 blocked-page observation when a block page is detected; the
                 null observer (default) makes that cost exactly nothing.
-            arrival_check: Optional callable re-checking, right before
-                reading, that the browser is still on the requested page
-                (``ResilientNavigator.confirm_arrival``). None (the default)
-                reads as before.
         """
         self.browser = browser
         self.prefs = search_prefs
@@ -218,7 +212,6 @@ class GenericSERPStrategy:
         # site-restricted harvest is judged against its own kind and never
         # moves the engine's generic baseline.
         self._baseline_scope = baseline_scope
-        self._arrival_check = arrival_check
 
         self.title_parser = title_parser or SmartTextExtractor()
         self.company_parser = company_parser or SmartTextExtractor(strategies=["div.company", "span.company", "a.company"])
@@ -277,10 +270,11 @@ class GenericSERPStrategy:
         block: the engine is not benched; the query yields nothing and the
         log names where the page went.
         """
-        if self._arrival_check is None:
+        check = getattr(self.browser, "confirm_arrival", None)
+        if not callable(check):
             return False
         try:
-            landing = self._arrival_check()
+            landing: Landing | None = check()
         except Exception as exc:
             logger.debug("%s: arrival re-check failed: %s", self.source_tag, exc)
             return False

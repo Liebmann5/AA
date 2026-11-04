@@ -100,10 +100,12 @@ class _ApplyProbe(HTMLParser):
         self.item_links: int = 0
         self._open_controls: list[dict] = []
         # Per open form: [fillable controls, is a query form, has a
-        # non-query control].
+        # non-query control, radio/checkbox group names counted].
         self._form_stack: list[list] = []
         self._dialog_stack: list[str] = []
         self._item_depth: int = 0
+        #: Radio/checkbox group names already counted outside any form.
+        self._formless_groups: set[str] = set()
 
     # ------------------------------------------------------------------
     # HTMLParser hooks
@@ -121,7 +123,7 @@ class _ApplyProbe(HTMLParser):
 
         if tag == "form":
             query_form = role == "search" or "search" in attr.get("action", "").lower()
-            self._form_stack.append([0, query_form, False])
+            self._form_stack.append([0, query_form, False, set()])
             if query_form:
                 self.search_form = True
         if role == "search":
@@ -146,7 +148,9 @@ class _ApplyProbe(HTMLParser):
                 self.search_form = True
                 if self._form_stack:
                     self._form_stack[-1][1] = True
-            if itype not in _NOT_FILLABLE_INPUT_TYPES:
+            if itype not in _NOT_FILLABLE_INPUT_TYPES and not self._repeat_of_group(
+                itype, name
+            ):
                 self._count_fillable(itype in _NON_QUERY_INPUT_TYPES)
             if itype in ("submit", "button"):
                 self._add_control(tag, attr, "")
@@ -167,7 +171,7 @@ class _ApplyProbe(HTMLParser):
         if tag in ("li", "article") and self._item_depth > 0:
             self._item_depth -= 1
         if tag == "form" and self._form_stack:
-            count, query_form, non_query = self._form_stack.pop()
+            count, query_form, non_query, _groups = self._form_stack.pop()
             # A query form (search box, location, radius) is never the
             # application, however many fields it has, unless it also holds
             # a control no query form has (an upload, an email field).
@@ -180,6 +184,23 @@ class _ApplyProbe(HTMLParser):
             if self._open_controls[i]["tag"] == tag:
                 self._finish_control(self._open_controls.pop(i))
                 break
+
+    def _repeat_of_group(self, itype: str, name: str) -> bool:
+        """True for the second and later option of one radio/checkbox group.
+
+        A group of radio buttons (or same-named checkboxes) is ONE question
+        with several options, so it counts as one control. Counting each
+        option made a hidden 9-option feedback form on a search engine's
+        home page an "application form" (Yahoo capture, 2026-11-03). Per
+        form, or across the formless part of the page.
+        """
+        if itype not in ("radio", "checkbox") or not name:
+            return False
+        groups = self._form_stack[-1][3] if self._form_stack else self._formless_groups
+        if name in groups:
+            return True
+        groups.add(name)
+        return False
 
     def _count_fillable(self, non_query: bool) -> None:
         if self._form_stack:

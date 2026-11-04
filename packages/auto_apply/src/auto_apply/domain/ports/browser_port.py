@@ -11,9 +11,12 @@ This is a fundamental application of the Dependency Inversion Principle.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from auto_apply.domain.models.motion import MotionCapabilities, MotionPlan
+
+if TYPE_CHECKING:
+    from auto_apply.domain.services.navigation_landing import Landing
 
 
 class ElementInterface(ABC):
@@ -176,6 +179,26 @@ class BrowserInterface(ABC):
             url: The fully qualified URL to navigate to.
         """
         ...
+
+    def confirm_arrival(self) -> "Landing | None":
+        """Is the page, NOW, still the one the last ``get()`` asked for?
+
+        One capability for every page AA opens, whatever opened it (a search
+        engine, a careers page, a posting, a form, a next page): a site may
+        move a page by script after it loads (Bing's retired jobs page moves
+        itself to the home page within seconds), so a check made only when
+        ``get()`` returned is not enough. Callers ask right before they rely
+        on the page. The rule is the pure URL comparison
+        ``domain.services.navigation_landing.check_landing``: no network, no
+        page parsing.
+
+        Returns:
+            The landing (requested URL, current URL, verdict, reason), or
+            None when this browser does not track navigations or nothing was
+            requested since the last blank page. None means "unknown", never
+            "fine" and never "moved".
+        """
+        return None
 
     @abstractmethod
     def close(self) -> None:

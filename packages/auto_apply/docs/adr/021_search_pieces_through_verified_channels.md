@@ -287,6 +287,12 @@ attributed to a channel.
    location filter, with this capability only reporting.
 5. Whether the parentheses the composer adds (`("Backend Engineer")`) change
    Google's behaviour — measure before deciding.
+6. Graceful degradation of the search address itself (Bible issue register,
+   LR-16 and LR-17): which address of an engine is a channel for the "where"
+   piece; how the catalog orders an engine's addresses and declares what kind
+   of results each gives (jobs tab or web results); when an address is marked
+   unavailable for the session; and how the report says so. A blocked host is
+   never a reason to fall back: it benches the engine.
 
 ## References
 
