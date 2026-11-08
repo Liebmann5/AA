@@ -103,6 +103,10 @@ class JobCardInfo:
         identity_value: That attribute's value on this card, if any.
         title_source: ``heading`` | ``anchor_name`` | ``none`` (S1 trace).
         title_truncated: True when the title was cut at the text cap.
+        shown_destination: For a link that hides its destination (Google's
+            ``/goto`` redirect), the destination the results page itself
+            shows next to it (``jobs.jobvite.com/acme/job/oX1``, as
+            displayed): page evidence, confirmed only by the visit.
     """
 
     title: str = ""
@@ -121,6 +125,7 @@ class JobCardInfo:
     identity_value: str = ""
     title_source: str = "none"
     title_truncated: bool = False
+    shown_destination: str = ""
 
     @property
     def has_ad_rejection(self) -> bool:

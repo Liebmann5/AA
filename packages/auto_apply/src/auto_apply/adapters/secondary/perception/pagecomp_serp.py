@@ -286,8 +286,13 @@ class PagecompSerpAdapter:
             heading = node >= 0 and doc.kind[node] == ELEMENT and (
                 doc.tag_name(node) in _HEADINGS or doc.attr(node, "role") == "heading")
             company, location = _card_fields(rec.lines, title)
+            shown = ""
+            if link is not None and link.kind == L.OPAQUE and link.expected_host:
+                shown = link.expected_host + (
+                    "/" + link.expected_path.strip("/ ") if link.expected_path.strip("/ ") else "")
             cards.append(JobCardInfo(
                 title=title, company=company, location=location, url=url,
                 confidence=1.0, card_index=index, candidates=candidates,
-                resolution_state=state, title_source="heading" if heading else "anchor_name"))
+                resolution_state=state, title_source="heading" if heading else "anchor_name",
+                shown_destination=shown))
         return cards, skipped

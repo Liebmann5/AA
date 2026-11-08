@@ -358,9 +358,14 @@ class PageUnderstandingExtractor:
                 continue
 
             try:
-                jobs.append(
-                    Job(title=title, company=company, url=url, source=source_name)
-                )
+                job = Job(title=title, company=company, url=url, source=source_name)
+                shown = (getattr(card, "shown_destination", "") or "").strip()
+                if shown:
+                    # The destination the results page displays for a link
+                    # that hides its own (an opaque redirect). The site-search
+                    # shape check reads it; the visit confirms it.
+                    job.metadata["shown_destination"] = shown
+                jobs.append(job)
             except Exception as exc:  # noqa: BLE001
                 fate = _decision(card, index, DecisionStage.FATE,
                                  CardReason.INVALID_JOB, CardFate.DROPPED)

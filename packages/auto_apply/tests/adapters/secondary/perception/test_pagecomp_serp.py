@@ -164,3 +164,22 @@ def test_query_and_card_fields() -> None:
     assert _card_fields(["DoorDash USA", "Los Angeles, CA"], "Engineer") == ("DoorDash USA", "Los Angeles, CA")
     assert _card_fields(["Acme", "Remote"], "Engineer") == ("Acme", "Remote")
     assert _card_fields(["https://x.breezy.hr › p › 1", "Posted today"], "T") == ("", "")
+
+
+GOOGLE_URL = "https://www.google.com/search?q=site%3Ajobs.jobvite.com+%28%22Backend+Engineer%22%29"
+GOOGLE = "<html><body><div id=search>" + "".join(
+    f'<div class="g"><a href="https://www.google.com/goto?url=CAESaQHEIkXX{k}ps5J-FMErPI3-uLvCN34nwjoVgXqYGg-rMNPtp4yhpzJ36ASZ7vZvcej" jsname="UWckNb">'
+    f'<h3>Backend Engineer {k} - Acme {k}</h3><div><cite>https://jobs.jobvite.com › acme{k} › job › oX{k}abcdE</cite>'
+    f'</div></a><div>Acme {k} is hiring a Backend Engineer to build APIs.</div></div>'
+    for k in range(6)) + "</div></body></html>"
+
+
+def test_opaque_results_carry_the_destination_the_page_shows() -> None:
+    """Google's /goto hides the destination; the card keeps the destination the
+    page shows beside it, so the site-search shape check can use it."""
+    s = PagecompSerpAdapter(Legacy(), FakeBrowser(GOOGLE, GOOGLE_URL), access_factory=_no_access,
+                            posting_hosts=["jobvite.com"]).analyze_serp(PageContext(url=GOOGLE_URL))
+    assert len(s.job_cards) == 6
+    assert all(c.url.startswith("https://www.google.com/goto?url=") for c in s.job_cards)
+    assert all(c.shown_destination.startswith("jobs.jobvite.com") for c in s.job_cards), \
+        [c.shown_destination for c in s.job_cards]

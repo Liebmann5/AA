@@ -715,7 +715,7 @@ class DiscoveryWorkflow:
         mining is enabled it becomes a DISCOVER_COMPANY task; otherwise it is
         dropped. Each outcome is counted and reported.
         """
-        counts = {"dropped": 0, "terminal": 0, "mined": 0}
+        counts = {"dropped": 0, "terminal": 0, "mined": 0, "shown": 0}
         if self._ats_registry is None:
             return jobs, counts
         kept: list[Job] = []
@@ -742,6 +742,19 @@ class DiscoveryWorkflow:
                 kept.append(job)
                 continue
             if descriptor is not None and descriptor.name == platform:
+                kept.append(job)
+                continue
+            if descriptor is None and self._shown_on_platform(job, platform):
+                # An opaque route (Google's /goto) hides its destination; the
+                # results page shows it next to the link. Owner ruling
+                # 2026-11-04: opaque routes count. The visit confirms it.
+                counts["shown"] += 1
+                logger.info(
+                    "DiscoveryWorkflow: opaque hit kept on its shown destination "
+                    "| platform=%s shown=%s",
+                    platform,
+                    job.metadata.get("shown_destination"),
+                )
                 kept.append(job)
                 continue
             if (
@@ -783,6 +796,18 @@ class DiscoveryWorkflow:
                     job.url,
                 )
         return kept, counts
+
+    def _shown_on_platform(self, job: Job, platform: str) -> bool:
+        """True when the page-shown destination of an opaque hit is on the
+        target platform's hosts (``ATSRegistry.platform_for_host``)."""
+        shown = str(job.metadata.get("shown_destination") or "").strip()
+        if not shown or self._ats_registry is None:
+            return False
+        host = shown.split("/", 1)[0].split("\u203a", 1)[0].strip().lower()
+        try:
+            return self._ats_registry.platform_for_host(host) == platform
+        except Exception:  # noqa: BLE001 - a registry fault keeps the old behaviour
+            return False
 
     def _emit_search_plan_frame(
         self,

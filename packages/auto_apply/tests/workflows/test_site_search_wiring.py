@@ -305,7 +305,7 @@ def test_a_terminal_hit_is_dropped_and_never_followed():
         [_hit("https://jobs.jobvite.com/acme/job/1/apply/success")]
     )
     assert kept == []
-    assert counts == {"dropped": 0, "terminal": 1, "mined": 0}
+    assert counts == {"dropped": 0, "terminal": 1, "mined": 0, "shown": 0}
     registry.match.assert_not_called()
     workflow._task_queue.queue_task.assert_not_called()
 
@@ -320,7 +320,7 @@ def test_an_off_shape_hit_is_dropped_and_counted_by_default():
         [_hit("https://jobs.jobvite.com/acme")]
     )
     assert kept == []
-    assert counts == {"dropped": 1, "terminal": 0, "mined": 0}
+    assert counts == {"dropped": 1, "terminal": 0, "mined": 0, "shown": 0}
     workflow._task_queue.queue_task.assert_not_called()
 
 
@@ -335,7 +335,7 @@ def test_an_off_shape_hit_routes_to_company_mining_when_enabled():
         [_hit("https://jobs.jobvite.com/acme")]
     )
     assert kept == []
-    assert counts == {"dropped": 0, "terminal": 0, "mined": 1}
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 1, "shown": 0}
     workflow._task_queue.queue_task.assert_called_once()
     task = workflow._task_queue.queue_task.call_args.args[0]
     assert task.task_type == TaskType.DISCOVER_COMPANY
@@ -352,7 +352,26 @@ def test_an_on_shape_posting_is_kept():
     hit = _hit("https://jobs.jobvite.com/acme/job/123")
     kept, counts = workflow._handle_off_shape_hits([hit])
     assert kept == [hit]
-    assert counts == {"dropped": 0, "terminal": 0, "mined": 0}
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 0, "shown": 0}
+
+
+def test_an_opaque_hit_is_kept_on_its_shown_destination():
+    """Google's /goto hides the destination; the results page shows it.
+    Live run 2026-11-08: all 9 Google results for site:jobs.jobvite.com were
+    dropped as off-shape because the shape check read the /goto address.
+    Owner ruling 2026-11-04: opaque routes count. A shown destination on
+    another platform is still dropped."""
+    from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
+
+    workflow = _off_shape_workflow(ATSRegistry())
+    on = _hit("https://www.google.com/goto?url=CAESaQHEIkXXps5J")
+    on.metadata["shown_destination"] = "jobs.jobvite.com/acme/job/oX1abc"
+    off = _hit("https://www.google.com/goto?url=CAESbQHEIkXXnzIl")
+    off.metadata["shown_destination"] = "job-boards.greenhouse.io/acme/jobs/5394128008"
+    bare = _hit("https://www.google.com/goto?url=CAESawHEIkXX")
+    kept, counts = workflow._handle_off_shape_hits([on, off, bare])
+    assert kept == [on]
+    assert counts == {"dropped": 2, "terminal": 0, "mined": 0, "shown": 1}
 
 
 def test_unstamped_jobs_pass_untouched():
@@ -362,7 +381,7 @@ def test_unstamped_jobs_pass_untouched():
     job = Job(title="Engineer", company="Acme", url="https://acme.example/1", source="bing")
     kept, counts = workflow._handle_off_shape_hits([job])
     assert kept == [job]
-    assert counts == {"dropped": 0, "terminal": 0, "mined": 0}
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 0, "shown": 0}
     registry.is_terminal_page.assert_not_called()
 
 
