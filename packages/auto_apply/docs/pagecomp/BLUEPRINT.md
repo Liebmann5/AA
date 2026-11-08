@@ -6,7 +6,7 @@ verified_against: "every claim names its evidence (tests, owner captures, measur
 audience: contributors
 ---
 
-# pagecomp v0.5.0: blueprint, evidence and hand-off
+# pagecomp v0.5.1: blueprint, evidence and hand-off
 
 Status: draft for the three-reviewer loop. Every claim below names its
 evidence: **T** a test in `tests/`, **C** the owner-capture corpus
@@ -384,6 +384,22 @@ Found while wiring pagecomp into AA (2026-11-08):
     the family now uses `joblist.job_related_list` (the pre-0.3.0 reading,
     without the specificity test), so page kinds are unchanged on all 97
     captures while discovery gets the stricter list.
+
+Found in the first live run with pagecomp in AA (2026-11-08):
+
+42. **(joblist 0.4.0) Decoy cards.** Indeed plants a hidden copy of a real
+    card: the copy's container is `aria-hidden="true"` and `tabindex="-1"`,
+    and its link carries a made-up identifier (`jk=456789abcdef0123`,
+    `jk=abcdef0123456789`, and `jk=fedcba9876543210` in the owner capture
+    of 2026-11-03: rotations of the hex alphabet, not Indeed's random ids).
+    A person never reaches it; a program that follows it identifies itself.
+    The live run kept two and visited them (one twice, through vetting and
+    applying). A record hidden from assistive technology whose title is
+    also a visible record's title is now a **clone**, never job-like
+    (`joblist.decoy_clones`); a hidden record with no visible twin is left
+    alone, because carousels hide real slides. `JobList.record_jobness`
+    now covers every record, merged runs included, so a consumer can skip
+    clones wherever they sit (T `test_hidden_copies_of_visible_cards_are_decoys_not_jobs`).
 
 ## 4a. Opaque links solved as record linkage (owner ruling 2026-11-04: opaque routes count)
 

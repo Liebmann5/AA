@@ -12,7 +12,7 @@ from pagecomp.observation import PageObservation, observe_cdp, observe_html
 from pagecomp.results import Abstain, Evidence, Ok, Stale, Timeout
 from pagecomp.trace import Trace
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "Abstain", "Analysis", "Analyzer", "Evidence", "Ok", "PageObservation", "ResultCache",

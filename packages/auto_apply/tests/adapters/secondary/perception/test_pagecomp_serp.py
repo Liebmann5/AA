@@ -36,7 +36,12 @@ CARDS = "".join(
 RELATED = "".join(
     f'<li><a href="/q-backend-engineer-{w}-l-chicago,-il-jobs.html">backend engineer {w}</a></li>'
     for w in ("remote", "entry level", "senior", "python", "java", "intern"))
-INDEED = (f"<html><body><main><ul class='jobsearch-ResultsList'>{CARDS}</ul></main>"
+# Indeed's decoy: a hidden copy of a visible card with a made-up id (live run
+# 2026-11-08 visited two of these: jk=456789abcdef0123, jk=abcdef0123456789).
+DECOY = ('<li><div class="job_seen_beacon" aria-hidden="true" tabindex="-1"><h2 class="jobTitle">'
+         '<a href="/viewjob?jk=456789abcdef0123">Backend Engineer 3</a></h2>'
+         '<div><span>Acme Corp 3</span><div>Chicago, IL</div></div></div></li>')
+INDEED = (f"<html><body><main><ul class='jobsearch-ResultsList'>{CARDS}{DECOY}</ul></main>"
           f"<aside><h3>People also searched</h3><ul>{RELATED}</ul></aside></body></html>")
 ONLY_RELATED = f"<html><body><main><h1>Searches</h1><ul>{RELATED}</ul></main></body></html>"
 
@@ -83,7 +88,7 @@ def test_indeed_cards_are_read_with_visible_titles_company_and_routes() -> None:
     assert not any(t.startswith("full details of") for t in titles)
     assert [c.company for c in s.job_cards] == [f"Acme Corp {k}" for k in range(8)]
     assert all(c.location == "Chicago, IL" for c in s.job_cards)
-    assert all(c.url.startswith("https://www.indeed.com/rc/clk?jk=") for c in s.job_cards)
+    assert all(c.url.startswith("https://www.indeed.com/rc/clk?jk=") for c in s.job_cards)  # no decoy
     assert all(c.resolution_state == "resolved" for c in s.job_cards)
     assert legacy.serp_calls == 0 and s.page_verdict == ""
 

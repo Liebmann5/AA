@@ -32,6 +32,7 @@ human (or the Workbench) can see why.
 
 from __future__ import annotations
 
+import dataclasses
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -66,10 +67,11 @@ class RecordJobness:
     echo: bool
     role: bool
     specific: bool = True   # the destination names one item (identifier) or is a posting host
+    clone: bool = False     # a hidden copy (aria-hidden) of a visible record: a decoy
 
     @property
     def job_like(self) -> bool:
-        return self.score >= 1.0 and self.specific
+        return self.score >= 1.0 and self.specific and not self.clone
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,12 @@ class JobList:
     per_record: tuple[RecordJobness, ...]
     others: tuple[int, ...]      # indexes of further passing runs (lists split by ads/sections)
     merged: tuple[RecordReading, ...] = ()   # the chosen run plus same-shaped passing runs
+    merged_jobness: tuple[RecordJobness, ...] = ()   # one per ``records`` entry
+
+    @property
+    def record_jobness(self) -> tuple[RecordJobness, ...]:
+        """Jobness for every entry of ``records``, in the same order."""
+        return self.merged_jobness or self.per_record
 
     @property
     def records(self) -> tuple[RecordReading, ...]:
@@ -158,8 +166,49 @@ def job_related_list(listing: Any, query: str | None) -> tuple[float, int]:
     return best
 
 
+def _norm_title(t: str) -> str:
+    return " ".join(t.casefold().split())
+
+
+def _hidden_from_assistive_tech(rec: RecordReading, vis: Any) -> bool:
+    if vis is None:
+        return False
+    nodes = list(rec.nodes) + ([rec.title_node] if rec.title_node >= 0 else [])
+    return any(vis.aria_hidden[n] for n in nodes)
+
+
+def decoy_clones(listing: Any, vis: Any) -> set[tuple[int, int]]:
+    """(run, record) positions of hidden copies of visible records.
+
+    A results page can carry decoy cards: a copy of a real card, hidden from
+    assistive technology (``aria-hidden="true"``, often ``tabindex="-1"``),
+    whose link carries a made-up identifier. A person never reaches it; a
+    bot that follows it identifies itself. Measured on Indeed (owner capture
+    2026-11-03: ``job_fedcba9876543210``; live run 2026-11-08: ``jk=
+    456789abcdef0123`` and ``jk=abcdef0123456789``, each a copy of a visible
+    card, two of them visited). A hidden record whose title is also a
+    visible record's title is such a copy. Hidden records with no visible
+    twin are left alone (a carousel may hide real slides)."""
+    if vis is None:
+        return set()
+    visible: set[str] = set()
+    hidden: list[tuple[int, int, str]] = []
+    for k, rr in enumerate(listing.runs):
+        for j, rec in enumerate(rr.records):
+            t = _norm_title(rec.title)
+            if not t:
+                continue
+            if _hidden_from_assistive_tech(rec, vis):
+                hidden.append((k, j, t))
+            else:
+                visible.add(t)
+    return {(k, j) for k, j, t in hidden if t in visible}
+
+
 def _run(q: Any, params: Mapping[str, Any]) -> Ok[JobList] | Abstain:
     listing = q.need_ok("listing")
+    clones = decoy_clones(listing, q.maybe("visibility"))
+    per_run: dict[int, tuple[RecordJobness, ...]] = {}
     hosts = tuple(h.strip().lower() for h in str(params["posting_hosts"]).split(",") if h.strip())
     qwords = _query_words(q.obs.query)
     best: tuple[float, JobList] | None = None
@@ -174,10 +223,12 @@ def _run(q: Any, params: Mapping[str, Any]) -> Ok[JobList] | Abstain:
         if rr.run.feature("nested_share") >= 0.5:
             seen.append(f"run {k}: a list of lists, its members are not records")
             continue
-        per = tuple(jobness(r, qwords, hosts) for r in rr.records)
+        per = tuple(dataclasses.replace(jobness(r, qwords, hosts), clone=(k, j) in clones)
+                    for j, r in enumerate(rr.records))
         share = sum(1 for p in per if p.job_like) / len(per)
         routed = sum(1 for r in rr.records if r.state == L.RESOLVED) / len(per)
         seen.append(f"run {k}: job-like {share:.2f}, routed {routed:.2f}, n={len(per)}")
+        per_run[k] = per
         if share >= float(params["min_share"]) and routed >= float(params["min_routed"]) \
                 and len(per) >= int(params["min_records"]):
             passing.append(k)
@@ -190,20 +241,24 @@ def _run(q: Any, params: Mapping[str, Any]) -> Ok[JobList] | Abstain:
     if best is None:
         return Abstain("no-job-list", ev)
     chosen = best[1]
+    if clones:
+        ev += (Evidence("decoy-clones", f"{len(clones)} hidden copies of visible records, not job-like"),)
     others = tuple(k for k in passing if k != chosen.run_index)
     tau = float(params["merge_tau"])
     merged = list(chosen.reading.records)
+    merged_per = list(chosen.per_record)
     for k in others:
         rr = listing.runs[k]
         if signature_similarity(chosen.reading.run, rr.run) >= tau:
             merged.extend(rr.records)
+            merged_per.extend(per_run[k])
     chosen = JobList(chosen.run_index, chosen.reading, chosen.share, chosen.routed_share,
-                     chosen.per_record, others, tuple(merged))
+                     chosen.per_record, others, tuple(merged), tuple(merged_per))
     return Ok(chosen, confidence=min(1.0, best[1].share), evidence=ev)
 
 
 TOOL = ToolSpec(
-    id="joblist", ct_id="CT-T-008/G", version="0.3.0", run=_run, needs=("listing",),
+    id="joblist", ct_id="CT-T-008/G", version="0.4.0", run=_run, needs=("listing", "visibility"),
     params=(
         ParamSpec("min_share", 0.5, 0.0, 1.0, doc="share of records that must look like postings"),
         ParamSpec("min_routed", 0.5, 0.0, 1.0, doc="share of records with a usable route"),

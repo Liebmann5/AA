@@ -259,11 +259,12 @@ class PagecompSerpAdapter:
     def _cards(self, obs: PageObservation, joblist: Any) -> tuple[list[JobCardInfo], int]:
         doc = obs.doc
         records = joblist.records
-        per = list(joblist.per_record)
+        per = list(joblist.record_jobness)   # one per record, merged runs included
         cards: list[JobCardInfo] = []
         skipped = 0
         for index, rec in enumerate(records):
-            # per_record covers the chosen run; merged runs passed the gate whole.
+            # Not job-like: an ad, a related search, or a decoy (a hidden copy
+            # of a visible card; visiting it identifies a bot).
             if index < len(per) and not per[index].job_like:
                 skipped += 1
                 continue
