@@ -300,9 +300,12 @@ def test_platform_offers_labels_unverified_only__teeth(tmp_path) -> None:
     vendor-verified carry none. Mutation caught: badges inverted or absent.
     Label text is compared against the locale lookup, not hardcoded."""
     offers = {o.name: o for o in _service(tmp_path).query_platforms()}
-    assert offers["workday"].status == "unverified"
-    assert offers["workday"].label == get_text("builder.platform.unverified")
-    assert offers["workday"].label
+    # Workday was measured on 2026-11-08; iCIMS is still unverified.
+    assert offers["icims"].status == "unverified"
+    assert offers["icims"].label == get_text("builder.platform.unverified")
+    assert offers["icims"].label
+    assert offers["workday"].status == "measured"
+    assert offers["workday"].label == ""
     assert offers["jobvite"].status == "measured"
     assert offers["jobvite"].label == ""
 

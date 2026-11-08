@@ -220,6 +220,9 @@ def _build_search_planner(plan, ats_registry):
                     name=descriptor.name,
                     restriction=descriptor.search_restriction,
                     status=descriptor.search_restriction_status,
+                    engines=tuple(
+                        getattr(descriptor, "search_restriction_engines", ()) or ()
+                    ),
                 )
 
         return SearchPlanner(

@@ -88,6 +88,11 @@ class ATSDescriptor:
     search_restriction_status: str = "unverified"
     search_restriction_verified_on: str = ""
     search_restriction_source: str = ""
+    # The engines on which the restriction was measured to hold. Empty means
+    # no per-engine evidence: the status applies to every engine (vendor
+    # documentation). Engines differ: on 2026-11-08 Google honoured
+    # site:jobs.lever.co while Bing answered it with Greenhouse postings.
+    search_restriction_engines: tuple[str, ...] = ()
     # URL shapes that are terminal pages (success / confirm / closed): never
     # an apply-route destination, never a builder suggestion.
     terminal_patterns: tuple[str, ...] = ()

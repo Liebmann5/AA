@@ -46,9 +46,10 @@ multi_step: false
 
 tenancy: path
 search_restriction: "jobs.lever.co"
-search_restriction_status: unverified
-search_restriction_verified_on: ""
-search_restriction_source: "Host declared in this descriptor; not yet hand-measured (docs/developer_guide/verifying_platform_search.md)"
+search_restriction_status: measured
+search_restriction_verified_on: "2026-11-08"
+search_restriction_source: "Measured 2026-11-08 by the owner on Google: site:jobs.lever.co (\"Software Engineer\") returned 9 of 9 organic results on the platform's hosts (owner capture 20261108-175751). Bing (same day) returned one identical list of boards.greenhouse.io results for all seven platform searches, so Bing is not admitted"
+search_restriction_engines: [google]
 terminal_patterns: []
 
 notes: >

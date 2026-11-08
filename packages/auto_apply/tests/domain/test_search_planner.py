@@ -450,3 +450,21 @@ def test_engines_and_platforms_preserve_the_caller_order() -> None:
         ("alpha", "engtwo"),
         ("alpha", "engone"),
     ]
+
+
+def test_a_platform_measured_on_one_engine_is_planned_only_there() -> None:
+    """TEETH. Owner captures 2026-11-08: Google honoured site:jobs.lever.co
+    and five more platform restrictions; Bing answered all of them with the
+    same boards.greenhouse.io list. A restriction measured on one engine is
+    planned on that engine only; no per-engine evidence plans everywhere."""
+    planner = _planner(
+        platform_targets={
+            "oneco": PlatformTarget(name="oneco", restriction="jobs.oneco.example",
+                                    status="measured", engines=("engone",)),
+            "allco": _target("allco", "vendor"),
+        }
+    )
+    out = _plan(planner, engines=("engone", "engtwo"), platforms=("oneco", "allco"))
+    planned = sorted((q.platform, q.engine) for q in out.queries)
+    assert planned == [("allco", "engone"), ("allco", "engtwo"), ("oneco", "engone")]
+    assert any("oneco on engtwo: not planned" in n.message for n in out.notes)

@@ -10,8 +10,9 @@ multi_step: false
 tenancy: path
 search_restriction: "jobs.jobvite.com"
 search_restriction_status: measured
-search_restriction_verified_on: "2026-10-27"
-search_restriction_source: "Reported reliable on Google by Nick on 2026-10-27: site:jobs.jobvite.com (\"Software Engineer\"); date of his original check not recorded"
+search_restriction_verified_on: "2026-11-08"
+search_restriction_source: "Reported reliable on Google by Nick on 2026-10-27: site:jobs.jobvite.com (\"Software Engineer\"); date of his original check not recorded. Re-measured 2026-11-08 on Google: site:jobs.jobvite.com (\"Backend Engineer\") and the same without brackets each returned 9 of 9 results on jobs.jobvite.com (owner captures 20261108-180054, 20261108-180113). Bing drops this restriction (issue register LR-2; 2026-11-08: 3,090 Greenhouse results)"
+search_restriction_engines: [google]
 # A removed posting redirects to the company's list with error=404 (live run
 # 2026-11-08: jobs.jobvite.com/leantechio/job/otsNAfw2, still in Google's
 # index, landed on jobs.jobvite.com/careers/leantechio/jobs?error=404).

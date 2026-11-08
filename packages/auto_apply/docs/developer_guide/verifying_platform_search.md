@@ -84,6 +84,32 @@ Count them; do not trust a non-empty page.
    the platform → `measured` for that engine; some → note the share; none
    → the engine does not honour the restriction for that platform.
 
+## Recording which engines a restriction holds on
+
+`search_restriction_engines: [google]` in a descriptor limits automation to
+the engines the restriction was measured on. Leave it out only when the
+evidence covers every engine (vendor documentation). The planner notes every
+platform and engine it leaves out, and those searches do not use the
+session's search budget.
+
+## Results, 2026-11-08 (owner captures, `site:<restriction> ("Software Engineer")`)
+
+| Platform | Google | Bing |
+|---|---|---|
+| greenhouse (`boards.greenhouse.io`) | 9 of 9 on the host | 10 of 10 (see note) |
+| greenhouse (`job-boards.greenhouse.io`) | 9 of 9 on the host | the `boards.` list again |
+| lever | 9 of 9 | 0 of 10: the `boards.greenhouse.io` list |
+| ashby | 9 of 9 | 0 of 10: same list |
+| workday | 9 of 9 (one a careers page) | 0 of 10: same list |
+| smartrecruiters | 9 of 9 | 0 of 10: same list |
+| workable | 8 of 8 | 0 of 10: same list |
+| jobvite (`("Backend Engineer")`, and without brackets) | 9 of 9 each | not run (LR-2) |
+
+Note: Bing returned one identical list of ten `boards.greenhouse.io`
+results for all seven searches, whatever the `site:` value. Its result for
+Greenhouse is therefore no evidence either. All seven platforms are
+`measured` on Google only.
+
 ## Two measurements that apply to many platforms
 
 1. **Subdomain tenancy + shared path.** For platforms like BambooHR

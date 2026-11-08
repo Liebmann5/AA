@@ -222,3 +222,19 @@ def test_real_posting_addresses_match_their_platform(url, expected):
 @pytest.mark.parametrize("url", ["https://jobs.lever.co/lendbuzz", "https://jobs.eu.lever.co/leverdemo"])
 def test_a_lever_tenant_list_is_not_a_posting(url):
     assert ATSRegistry().match(url) is None
+
+
+def test_measured_platforms_carry_their_engines_and_evidence():
+    """GUARD (the 2026-11-08 measurements). Every measured restriction names
+    a date, a source, and the engines it was measured on; the six measured
+    that day hold on Google only."""
+    registry = ATSRegistry()
+    by_name = {d.name: d for d in registry.all_descriptors()}
+    for name in ("jobvite", "greenhouse", "lever", "ashby", "workday", "smartrecruiters", "workable"):
+        d = by_name[name]
+        assert d.search_restriction_status == "measured", name
+        assert d.search_restriction_verified_on and d.search_restriction_source, name
+        assert d.search_restriction_engines == ("google",), name
+    for d in registry.all_descriptors():
+        if d.search_restriction_status == "measured":
+            assert d.search_restriction_verified_on, d.name

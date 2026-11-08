@@ -280,6 +280,11 @@ def _build_descriptor(data: dict, filename: str) -> ATSDescriptor:
         search_restriction_source=str(
             data.get("search_restriction_source") or ""
         ).strip(),
+        search_restriction_engines=tuple(
+            str(e).strip().lower()
+            for e in (data.get("search_restriction_engines") or [])
+            if str(e).strip()
+        ),
         terminal_patterns=tuple(str(p).strip() for p in raw_terminal if p),
     )
 

@@ -71,11 +71,18 @@ class PlatformTarget:
             ``"boards.greenhouse.io"``).
         status: The descriptor's restriction status (a
             :class:`VerificationStatus` value).
+        engines: The engines the restriction was measured on. Empty: the
+            status holds for every engine. Otherwise the platform is planned
+            only on these engines: an engine that drops the restriction
+            returns other sites' pages, which costs a search and finds
+            nothing (Bing, 2026-11-08: Greenhouse postings for
+            site:jobs.lever.co, site:jobs.ashbyhq.com and four more).
     """
 
     name: str
     restriction: str
     status: str
+    engines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -233,6 +240,7 @@ class SearchPlanner:
             )
             strategy = self._strategies[PerPlatformStrategy.name]
 
+        admitted = self._admitted_pairs(usable_platforms, usable_engines, notes)
         for title, location, workplace_type in clean_bases:
             groups = strategy.group(list(usable_platforms))
             if any(len(group) != 1 for group in groups):
@@ -248,6 +256,8 @@ class SearchPlanner:
             for group in groups:
                 target = group[0]
                 for engine in usable_engines:
+                    if (target.name, engine) not in admitted:
+                        continue
                     label = f"{target.name} on {engine} ({title})"
                     if len(queries) >= budget:
                         dropped.append(label)
@@ -280,6 +290,44 @@ class SearchPlanner:
     # ------------------------------------------------------------------
     # Admission
     # ------------------------------------------------------------------
+
+    def _admitted_pairs(
+        self,
+        platforms: Sequence[PlatformTarget],
+        engines: Sequence[str],
+        notes: list[PlannerNote],
+    ) -> set[tuple[str, str]]:
+        """The (platform, engine) pairs that may be searched, each refusal
+        noted once.
+
+        Decided before the budget is spent, so a pair that can never be
+        searched neither uses nor appears in the budget: an engine with no
+        form for site-restricted searches, and an engine on which the
+        platform's restriction was not measured (``PlatformTarget.engines``).
+        """
+        admitted: set[tuple[str, str]] = set()
+        for target in platforms:
+            for engine in engines:
+                if self._engine_specs[engine].site_template is None:
+                    notes.append(
+                        PlannerNote(
+                            "warning",
+                            f"Engine {engine!r} declares no form for site-restricted "
+                            f"searches; {target.name} is not planned on it.",
+                        )
+                    )
+                    continue
+                if target.engines and engine not in target.engines:
+                    notes.append(
+                        PlannerNote(
+                            "info",
+                            f"{target.name} on {engine}: not planned — the site: "
+                            f"restriction is measured on {', '.join(target.engines)} only.",
+                        )
+                    )
+                    continue
+                admitted.add((target.name, engine))
+        return admitted
 
     def _usable_engines(
         self, engines: Sequence[str], notes: list[PlannerNote]
