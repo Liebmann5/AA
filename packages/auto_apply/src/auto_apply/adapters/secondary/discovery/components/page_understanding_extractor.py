@@ -235,6 +235,9 @@ class PageUnderstandingExtractor:
         # deferred resolution".
         self.last_card_count: int = 0
         self.last_resolution_report: SerpResolutionReport | None = None
+        # The reader's whole-page judgment from the most recent pass ("" or
+        # "not-a-job-list"); FallbackSerpExtractor will not overrule it.
+        self.last_page_verdict: str = ""
         self._activator: CardActivator | None = None
         # The per-page record of the most recent pass (S1 trace), and the
         # number of passes made, so records of one harvest are ordered.
@@ -302,6 +305,7 @@ class PageUnderstandingExtractor:
         cards = list(getattr(structure, "job_cards", ()) or ())
         self.last_card_count = len(cards)
         self.last_resolution_report = getattr(structure, "resolution_report", None)
+        self.last_page_verdict = str(getattr(structure, "page_verdict", "") or "")
 
         jobs: list[Job] = []
         decisions: list[CardDecision] = []
@@ -763,6 +767,9 @@ class FallbackSerpExtractor:
     The decision is taken once per instance, on the first harvest, and logged:
 
     * fast path returns jobs        -> use it for the rest of the page
+    * fast path judged the page as  -> stay fast and return nothing
+      holding no job list               (``fast:not-a-job-list``): the reader's
+      (``last_page_verdict``)           whole-page verdict is not overruled
     * fast path returns nothing BUT -> stay fast: a card group exists, so the
       detected cards are real, and      URLs may only need deferred resolution
       ``last_card_count > 0``           (``fast:deferred``)
@@ -808,6 +815,17 @@ class FallbackSerpExtractor:
                 "this page.", source_name, len(jobs),
             )
             return jobs
+
+        # The reader judged the whole page: it holds no list of job postings.
+        # The DOM miner must not overrule that; on such pages its output was
+        # related searches, salary pages and advice (live run 2026-11-07).
+        if getattr(self._fast, "last_page_verdict", "") == "not-a-job-list":
+            self._commit(self._fast, "fast:not-a-job-list")
+            logger.info(
+                "%s: the page reader found no list of job postings on this "
+                "page; the DOM miner is not asked to find one.", source_name,
+            )
+            return []
 
         # A card group exists but nothing yielded a URL yet. The cards are
         # real (the detector found them); the destinations need deferred

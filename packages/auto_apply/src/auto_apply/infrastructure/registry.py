@@ -146,6 +146,7 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "company_batch_threshold": 3,
     "discovery_strategy": "live_browser",
     "perception_strategy": "math",
+    "serp_reader": "pagecomp",
     "store_session_logs": True,
     "log_retention_days": 30,
     "page_copy_keep_days": 90,
@@ -198,6 +199,23 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "max_tokens": 512,
         "temperature": 0.7,
         "device": "cpu",
+    },
+    "comprehension_access": {
+        "level": "dom",
+        "max_nodes": 29000,
+        "max_bytes": 8000000,
+        "max_depth": 256,
+        "max_frame_depth": 3,
+        "frame_cap": 16,
+        "script_deadline_ms": 10000,
+        "wall_ms": 20000,
+        "prefer_cdp": True,
+    },
+    "comprehension_transitions": {
+        "settle_quiet_reads": 2,
+        "settle_t_max_s": 10.0,
+        "new_windows_per_action": 4,
+        "error_skeleton_tau": 0.7,
     },
 }
 

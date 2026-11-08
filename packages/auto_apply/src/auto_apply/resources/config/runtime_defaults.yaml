@@ -110,6 +110,10 @@ company_batch_threshold: 3
 discovery_strategy: live_browser
 # "math" | "dom" | "aom" | "heuristic" | "auto"
 perception_strategy: math
+# Who reads search-results pages: "pagecomp" (the page-comprehension library;
+# the math reader answers when pagecomp cannot read a page) or "legacy" (the
+# math reader alone). Settings for its page reads: comprehension_access below.
+serp_reader: pagecomp
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data handling
@@ -223,3 +227,38 @@ gpt4all:
   temperature: 0.7
   # Inference device. "cpu" always works; "gpu" requires CUDA/Metal.
   device: "cpu"
+
+# ─── pagecomp access (S3) and transitions (S5) ──────────────────────────────
+# Read by the PagecompAccess adapter (adapters/secondary/perception/
+# pagecomp_access.py) into a pagecomp ObservationRequest, for every page
+# pagecomp reads (serp_reader above).
+comprehension_access:
+  # "html" (markup only), "dom" (pierced tree) or "layout" (tree + boxes/styles).
+  level: "dom"
+  # Node cap N per observation; extra nodes are cut and recorded. Measured on
+  # the owner's 2-CPU laptop (python -m pagecomp bench, 2026-11-08): 29,000
+  # nodes fit the 3 s ceiling; the largest real page seen is 12,899 nodes.
+  max_nodes: 29000
+  # Byte cap B: characters of text and attribute values per observation.
+  max_bytes: 8000000
+  # Depth cap; traversal is iterative, deeper subtrees are cut and recorded.
+  # The deepest real page seen is 54 levels.
+  max_depth: 256
+  # Nested frame depth read.
+  max_frame_depth: 3
+  # Frames read per observation (cross-origin switches included).
+  frame_cap: 16
+  # Deadline per in-page script call, milliseconds.
+  script_deadline_ms: 10000
+  # Wall-time budget for the whole observation, all frames, milliseconds.
+  wall_ms: 20000
+  # Try the CDP rung first on Chromium; false forces the script walk.
+  prefer_cdp: true
+comprehension_transitions:
+  # Settle: consecutive equal readings needed, and the cap T_max in seconds.
+  settle_quiet_reads: 2
+  settle_t_max_s: 10.0
+  # New windows classified per action; the rest are closed (06 s10, ALG-025).
+  new_windows_per_action: 4
+  # Error template similarity threshold tau for learned error nodes (ALG-001 Ruzicka).
+  error_skeleton_tau: 0.7

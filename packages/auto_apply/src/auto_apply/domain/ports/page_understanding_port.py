@@ -16,6 +16,7 @@ Correct usage:
             jobs = self._extract_from_structure(structure)
 
 Adapters that implement this port:
+    PagecompSerpAdapter            — search pages read by pagecomp; wraps the math adapter
     MathPageUnderstandingAdapter   — uses Math DOM + Hungarian + VIPS
     BS4PageUnderstandingAdapter    — uses BeautifulSoup (fallback, no browser needed)
     NullPageUnderstandingAdapter   — no-op, returns empty structures (worst-case)
@@ -169,6 +170,10 @@ class SERPStructure:
     observation: ObservationFacts | None = None
     listing_facts: ListingDetectionFacts | None = None
     analyze_ms: float = 0.0
+    #: The reader's judgment of the page as a whole, when it has one.
+    #: ``"not-a-job-list"``: the page holds no list of job postings, so no
+    #: other route may re-read it as one (FallbackSerpExtractor honours it).
+    page_verdict: str = ""
 
     @property
     def total_cards(self) -> int:
@@ -319,6 +324,8 @@ class PageUnderstandingPort(Protocol):
     """Contract for all page analysis capabilities.
 
     Implementations:
+        PagecompSerpAdapter          — search pages via pagecomp (serp_reader:
+                                       pagecomp); wraps the math adapter
         MathPageUnderstandingAdapter — primary, uses JS DOM + math algorithms
         BS4PageUnderstandingAdapter  — fallback, uses BeautifulSoup HTML parsing
         NullPageUnderstandingAdapter — no-op, returns empty structures

@@ -114,6 +114,8 @@ nav:
       - Evasion Framework: architecture/evasion_framework.md
       - Engineering Philosophy: ENGINEERING_PHILOSOPHY.md
       - Architecture Bible: AA_ARCHITECTURE_BIBLE.md
+      - "pagecomp: overview": pagecomp/README.md
+      - "pagecomp: blueprint and evidence": pagecomp/BLUEPRINT.md
 
   - Decisions:
       - Overview: adr/index.md

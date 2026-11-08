@@ -1,0 +1,11 @@
+<!doctype html><html><head><title>shadow</title><style>.hide{display:none}</style></head><body>
+<open-host id="o"></open-host>
+<closed-host id="c"></closed-host>
+<decl-host><template shadowrootmode="open"><label for="d">Declared</label><input id="d" name="decl"><slot name="s"></slot></template><span slot="s">slotted light</span></decl-host>
+<p class="hide">class hidden</p>
+<script>
+customElements.define('open-host', class extends HTMLElement { constructor(){ super(); const r=this.attachShadow({mode:'open'});
+  r.innerHTML='<label for="e">Email</label><input id="e" name="email"><inner-host></inner-host><iframe id="sf" srcdoc="<p>in shadow frame</p>"></iframe>';
+  r.querySelector('inner-host').attachShadow({mode:'open'}).innerHTML='<input name="nested">'; }});
+customElements.define('closed-host', class extends HTMLElement { constructor(){ super(); const r=this.attachShadow({mode:'closed'}); r.innerHTML='<input name="secret">'; }});
+</script></body></html>

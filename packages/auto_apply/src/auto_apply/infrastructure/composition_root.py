@@ -939,6 +939,23 @@ def build_orchestrator(  # noqa: PLR0914
             math_dom = math_perception_port if math_perception_port is not None else MathDOMAdapter(browser=driver, observer=_extraction_observer)
             form_svc = MathFormUnderstandingService()
             page_understanding_port = MathPageUnderstandingAdapter(math_dom, form_svc)
+            # Search-results pages read by pagecomp (S6 step 1), the math
+            # adapter answering everything else and any page pagecomp cannot
+            # read. "legacy" in serp_reader turns it off.
+            _effective = registry.get_all_effective_config()
+            if str(_effective.get("serp_reader", "pagecomp")).strip().lower() == "pagecomp":
+                from auto_apply.adapters.secondary.perception.pagecomp_serp import (  # noqa: PLC0415
+                    PagecompSerpAdapter,
+                )
+                _posting_hosts = [h for d in (_ats_registry.all_descriptors() if _ats_registry else ())
+                          for h in (getattr(d, "hosts", ()) or ())]
+                page_understanding_port = PagecompSerpAdapter(
+                    page_understanding_port, driver,
+                    access=_effective.get("comprehension_access") or {},
+                    posting_hosts=_posting_hosts,
+                )
+                logger.info("build_orchestrator: search pages are read by pagecomp "
+                            "(serp_reader: pagecomp; %d posting hosts)", len(set(_posting_hosts)))
         except Exception as _exc:
             # WARNING, not debug. Substituting the Null adapter silently
             # disables single-script SERP extraction for the whole session and
