@@ -552,8 +552,14 @@ class ApplicationsWorkflow:
         if not isinstance(apply_url, str) or not apply_url.strip():
             apply_url = ""
 
-        posting_host = _host_of(job.url)
-        start_url = apply_url or job.url
+        # An opaque route (a search engine's /goto link) was resolved and
+        # confirmed by vetting: start from the posting's real address, not
+        # from the engine's route.
+        posting_url = metadata.get("resolved_url")
+        if not isinstance(posting_url, str) or not posting_url.strip():
+            posting_url = job.url
+        posting_host = _host_of(posting_url)
+        start_url = apply_url or posting_url
         evidence = evidence.model_copy(update={
             "posting_host": posting_host,
             "apply_target_host": _host_of(apply_url) if apply_url else "",
@@ -574,7 +580,7 @@ class ApplicationsWorkflow:
                 **self._run_statistics(),
             })
 
-        visited: set[str] = {job.url, start_url}
+        visited: set[str] = {job.url, posting_url, start_url}
         current = self._current_url(default=start_url)
         visited.add(current)
         max_hops = self._cfg("applications.max_apply_hops", 3)

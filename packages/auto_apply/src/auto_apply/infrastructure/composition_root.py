@@ -1384,6 +1384,7 @@ def build_orchestrator(  # noqa: PLR0914
             research_active=not isinstance(research_observer, NullResearchObserver),
         ),
         host_pacer=_host_pacer,
+        ats_registry=_ats_registry,
     )
 
     # ── Context manager — tab/window switching for offsite apply clicks ────

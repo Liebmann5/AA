@@ -579,3 +579,36 @@ def test_jsless_fallback_needs_a_dialog_to_appear():
     )
     assert wf._auth_dialog_blocking(before_html=modal, after_html=modal) is False
     assert wf._auth_dialog_blocking(before_html=empty, after_html=modal) is True
+
+
+def test_an_opaque_route_confirmed_by_vetting_starts_from_its_real_address(
+    mock_profile,
+    sample_job,
+    mock_event_bus,
+    mock_job_repo,
+    mock_task_queue,
+    mock_text_matcher,
+    mock_interaction_port,
+):
+    """TEETH: a Google /goto hit, resolved and confirmed by vetting's arrival
+    check (metadata["resolved_url"]), was opened again through Google and
+    recorded with google.com as its posting host."""
+    posting = "https://jobs.jobvite.com/brahma/job/oAbCdEfG"
+    sample_job.url = "https://www.google.com/goto?url=CAESaQHEIkXXo_WqMhp-QAnfytxyPIc3nz1rqUjgMcnlZef"
+    sample_job.metadata["resolved_url"] = posting
+    browser = _RouteBrowser(pages={posting: _form_html()}, start="about:blank")
+    wf = _make_route_workflow(
+        browser,
+        mock_event_bus,
+        mock_job_repo,
+        mock_task_queue,
+        mock_text_matcher,
+        mock_interaction_port,
+        mock_profile,
+    )
+
+    result = wf.run(sample_job)
+
+    assert browser.get_calls[0] == posting
+    assert not any("google.com" in url for url in browser.get_calls)
+    assert result.posting_host == "jobs.jobvite.com"

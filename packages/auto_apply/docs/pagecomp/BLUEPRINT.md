@@ -6,7 +6,7 @@ verified_against: "every claim names its evidence (tests, owner captures, measur
 audience: contributors
 ---
 
-# pagecomp v0.5.1: blueprint, evidence and hand-off
+# pagecomp v0.5.2: blueprint, evidence and hand-off
 
 Status: draft for the three-reviewer loop. Every claim below names its
 evidence: **T** a test in `tests/`, **C** the owner-capture corpus
@@ -400,6 +400,26 @@ Found in the first live run with pagecomp in AA (2026-11-08):
     alone, because carousels hide real slides. `JobList.record_jobness`
     now covers every record, merged runs included, so a consumer can skip
     clones wherever they sit (T `test_hidden_copies_of_visible_cards_are_decoys_not_jobs`).
+
+
+Found in the owner's captures of 2026-11-08 (Bing and Google, typed by hand):
+
+43. **(links, listing 0.2.2, joblist 0.4.1) Paid results are never routes.**
+    Bing's paid results link through `/aclk?ld=...&u=<base64 address>`.
+    The unwrap ladder decoded the advertiser's address, and on the plain
+    Bing search for "backend engineer jobs chicago" the gate chose the two
+    paid results as the job list (the six organic results were five job
+    boards' search pages and one posting). `aclk` and `pagead` are now
+    advertising tokens and `googleadservices` an advertising host, so an
+    ad's route is rejected before unwrapping. A program that clicks an ad
+    charges the advertiser for a click no person made. On all 72 captures
+    the only reading that changed is that page, now "no job list"
+    (T `test_search_engine_ad_clicks_are_advertising`,
+    `test_paid_results_are_never_the_job_list`; C).
+44. **(links) A search page is not a posting.** A path with a `search` or
+    `results` segment and no identifier names a search
+    (`builtinchicago.org/jobs/dev-engineering/search/backend-engineer` was
+    read as one item) (T `test_specific_destination_names_one_item_not_a_search`).
 
 ## 4a. Opaque links solved as record linkage (owner ruling 2026-11-04: opaque routes count)
 

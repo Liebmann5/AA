@@ -374,6 +374,25 @@ def test_an_opaque_hit_is_kept_on_its_shown_destination():
     assert counts == {"dropped": 2, "terminal": 0, "mined": 0, "shown": 1}
 
 
+def test_a_shown_destination_is_read_as_a_host_not_a_suffix():
+    """GUARD (review of 2ef7019). The old cut at the first "/" happened to
+    read these right; the registry underneath did not (it claimed
+    "evil.com/jobs.jobvite.com" for Jobvite: TEETH in
+    tests/domain/test_route_arrival.py). Pinned so a later "simplification"
+    cannot pass a raw shown string to the registry."""
+    from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
+
+    workflow = _off_shape_workflow(ATSRegistry())
+    hits = []
+    for shown in ("evil.com/jobs.jobvite.com", "evil.com/x@jobs.jobvite.com",
+                  "jobs.jobvite.com@evil.com", "https:"):
+        hit = _hit("https://www.google.com/goto?url=CAESaQHEIkXXps5J" + str(len(hits)))
+        hit.metadata["shown_destination"] = shown
+        hits.append(hit)
+    kept, counts = workflow._handle_off_shape_hits(hits)
+    assert kept == [] and counts["shown"] == 0
+
+
 def test_unstamped_jobs_pass_untouched():
     """The default path never stamps target_platform — it is never filtered."""
     registry = MagicMock()
@@ -396,3 +415,29 @@ def test_off_shape_counts_reach_the_completion_summary():
     assert payload["off_shape_dropped"] == 2
     assert payload["terminal_dropped"] == 1
     assert payload["routed_to_mining"] == 1
+
+
+def test_the_shown_count_reaches_the_completion_summary_and_the_feed():
+    """Kept-on-shown-destination hits are reported, not only logged."""
+    from auto_apply.application.services.session_controller import _render_discovery_complete
+
+    workflow = _off_shape_workflow(MagicMock())
+    workflow._emit_completion_summary(_DiscoveryStats(kept_on_shown_destination=9))
+    payload = workflow._event_bus.publish.call_args.args[1]
+    assert payload["kept_on_shown_destination"] == 9
+    assert "9 kept on the destination the page shows" in _render_discovery_complete(payload)
+
+
+def test_a_kept_opaque_route_is_not_reported_as_navigation_chrome():
+    """TEETH: the discovery verifier flagged every kept /goto hit as "job
+    URL is hosted on a search engine" and failed the run's report."""
+    from auto_apply.application.services.auditing.discovery_verification import (
+        DiscoveryVerifier,
+    )
+
+    hit = _hit("https://www.google.com/goto?url=CAESaQHEIkXXps5J")
+    hit.metadata["shown_destination"] = "jobs.jobvite.com/acme/job/oX1abc"
+    plain = _hit("https://www.google.com/search?q=x")
+    report = DiscoveryVerifier(engine_hosts=("google.com",)).verify([hit])
+    assert report.passed, report.details()
+    assert not DiscoveryVerifier(engine_hosts=("google.com",)).verify([plain]).passed

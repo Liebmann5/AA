@@ -319,6 +319,11 @@ def _render_discovery_complete(p: dict) -> str:
         extras.append(f"{p['terminal_dropped']} terminal skipped")
     if p.get("routed_to_mining"):
         extras.append(f"{p['routed_to_mining']} routed to company pages")
+    if p.get("kept_on_shown_destination"):
+        extras.append(
+            f"{p['kept_on_shown_destination']} kept on the destination the page "
+            "shows (confirmed on arrival)"
+        )
     if p.get("budget_skipped"):
         extras.append(f"{p['budget_skipped']} over budget")
     if extras:

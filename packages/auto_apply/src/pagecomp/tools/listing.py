@@ -197,7 +197,7 @@ def _run(q: Any, params: Mapping[str, Any]) -> Ok[Listing] | Abstain:
 
 
 TOOL = ToolSpec(
-    id="listing", ct_id="CT-T-009", version="0.2.1", run=_run, needs=("records", "visibility"),
+    id="listing", ct_id="CT-T-009", version="0.2.2", run=_run, needs=("records", "visibility"),
     params=(ParamSpec("max_runs", 8, 1, 100), ParamSpec("max_records", 200, 1, 5000)),
     summary="title, destination and resolution state per record",
 )

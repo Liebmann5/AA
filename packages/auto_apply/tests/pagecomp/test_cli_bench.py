@@ -72,7 +72,7 @@ def test_cli_analyze_review_version(tmp_path, capsys):
     assert cli.main(["review", str(page), "--url", "https://jobs.example/", "--out", str(rv)]) == 0
     assert rv.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
     capsys.readouterr()
-    assert cli.main(["version"]) == 0 and capsys.readouterr().out.strip() == "0.5.1"
+    assert cli.main(["version"]) == 0 and capsys.readouterr().out.strip() == "0.5.2"
 
 
 def test_package_metadata_version_matches_the_code():

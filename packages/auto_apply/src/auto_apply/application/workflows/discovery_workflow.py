@@ -49,6 +49,7 @@ from auto_apply.domain.ports.research_port import (
     ResearchObserverPort,
     SearchPlanObservation,
 )
+from auto_apply.domain.services.route_arrival import shown_host
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class _DiscoveryStats:
     off_shape_dropped: int = 0
     terminal_dropped: int = 0
     routed_to_mining: int = 0
+    kept_on_shown_destination: int = 0
 
 
 class DiscoveryWorkflow:
@@ -803,7 +805,12 @@ class DiscoveryWorkflow:
         shown = str(job.metadata.get("shown_destination") or "").strip()
         if not shown or self._ats_registry is None:
             return False
-        host = shown.split("/", 1)[0].split("\u203a", 1)[0].strip().lower()
+        # Read as a URL authority: "evil.com/jobs.jobvite.com" is evil.com.
+        # The claim is confirmed again where the visit lands (vetting's
+        # ArrivalCheck, domain/services/route_arrival.py).
+        host = shown_host(shown)
+        if not host:
+            return False
         try:
             return self._ats_registry.platform_for_host(host) == platform
         except Exception:  # noqa: BLE001 - a registry fault keeps the old behaviour
@@ -913,6 +920,7 @@ class DiscoveryWorkflow:
             "off_shape_dropped": stats.off_shape_dropped,
             "terminal_dropped": stats.terminal_dropped,
             "routed_to_mining": stats.routed_to_mining,
+            "kept_on_shown_destination": stats.kept_on_shown_destination,
         }
         try:
             self._event_bus.publish(Event.DISCOVERY_COMPLETE, payload)
@@ -1001,6 +1009,7 @@ class DiscoveryWorkflow:
         stats.off_shape_dropped = off_shape["dropped"]
         stats.terminal_dropped = off_shape["terminal"]
         stats.routed_to_mining = off_shape["mined"]
+        stats.kept_on_shown_destination = off_shape["shown"]
 
         # ── Persist before the mode branch (C1) ─────────────────────────────
         # A job is persisted the moment it is known, so results survive

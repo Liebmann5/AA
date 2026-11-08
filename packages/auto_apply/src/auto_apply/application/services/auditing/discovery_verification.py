@@ -65,12 +65,19 @@ def _is_navigation_chrome(job: Job, engine_hosts: tuple[str, ...]) -> str:
     * a job URL hosted on a search engine — a posting is never served from
       google.com or bing.com. Matching is suffix-exact (``evilgoogle.com``
       does not match ``google.com``). Indeed is deliberately absent from the
-      host set: real Indeed postings *do* live on indeed.com.
+      host set: real Indeed postings *do* live on indeed.com. The one
+      exception is an opaque route kept on the destination its results page
+      shows (``metadata["shown_destination"]``, Google's ``/goto``): its URL
+      is the engine's route by construction, and vetting confirms where it
+      lands (``domain/services/route_arrival.py``).
     """
     title = (job.title or "").strip()
     company = (job.company or "").strip()
     if title and company and title.casefold() == company.casefold():
         return f"title equals company ({title!r})"
+    metadata = getattr(job, "metadata", None)
+    if isinstance(metadata, dict) and str(metadata.get("shown_destination") or "").strip():
+        return ""
     try:
         host = urlparse((job.url or "").strip()).netloc.lower()
     except ValueError:

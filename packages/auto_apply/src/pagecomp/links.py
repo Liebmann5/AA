@@ -50,9 +50,15 @@ DEAD_END_PHRASES = (
 DEAD_END_MAX_TOKENS = 5
 AD_HOST_LABELS = frozenset(
     {"ads", "adservice", "adserver", "adlibrary", "adtech", "adsystem", "advertising",
-     "doubleclick", "choice", "adnxs", "criteo", "taboola", "outbrain"}
+     "doubleclick", "choice", "adnxs", "criteo", "taboola", "outbrain", "googleadservices"}
 )
-AD_TOKENS = frozenset({"ad", "ads", "advert", "advertisement", "sponsored", "promoted"})
+#: ``aclk`` ("ad click") is the click route of a search engine's paid results:
+#: Bing's ``/aclk?ld=...&u=<base64 destination>`` (18 links on the owner's
+#: plain Bing search, 2026-11-08, every one under a "Sponsored" label) and
+#: Google's ``/aclk`` and ``/pagead/aclk``. A bot that follows one charges the
+#: advertiser for a click no person made.
+AD_TOKENS = frozenset({"ad", "ads", "advert", "advertisement", "sponsored", "promoted",
+                       "aclk", "pagead"})
 WRAPPER_KEYS = ("url", "u", "q", "uddg", "target", "dest", "destination", "r", "redirect")
 OPAQUE_PAYLOAD_MIN_LEN = 40
 
@@ -271,6 +277,8 @@ _TRACKING_KEYS = frozenset({
 })
 #: Query keys that make a URL a *search*: its results, not one item.
 _SEARCH_KEYS = frozenset({"q", "query", "keywords", "keyword", "search", "text", "p", "k", "term"})
+#: Path segments that make a URL a *search* page.
+_SEARCH_SEGMENTS = frozenset({"search", "results", "search-results", "searchresults"})
 
 
 def specific_destination(url: str) -> bool:
@@ -284,7 +292,10 @@ def specific_destination(url: str) -> bool:
       ``/rc/clk?jk=…``), unless the URL is itself a search (``?q=…``).
 
     Related-search and category links (``/q-junior-web-developer-…-jobs.html``,
-    ``/c/audit-jobs``, ``/search?q=…&ved=…``) are not specific.
+    ``/c/audit-jobs``, ``/search?q=…&ved=…``) are not specific, and neither is
+    a path with a search segment (``/jobs/dev-engineering/search/backend-engineer``,
+    Built In's results page on the owner's Google search of 2026-11-08) unless
+    it carries an identifier.
     """
     try:
         parts = urllib.parse.urlsplit(url)
@@ -295,6 +306,8 @@ def specific_destination(url: str) -> bool:
     if has_identifier(parts.path):
         return True
     segs = [x for x in parts.path.split("/") if x]
+    if any(seg.lower() in _SEARCH_SEGMENTS for seg in segs):
+        return False
     for i, seg in enumerate(segs[:-1]):
         if seg.lower() in POSTING_PATH_TOKENS:
             nxt = segs[i + 1]

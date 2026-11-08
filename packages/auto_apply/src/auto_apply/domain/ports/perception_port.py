@@ -74,3 +74,17 @@ class PerceptionPort(ABC):
             string when it cannot be read. Never raises.
         """
         return ""
+
+    def get_current_url(self) -> str:
+        """Returns the address of the page the browser shows now.
+
+        Read after :meth:`navigate` to learn where a navigation actually
+        ended: a route (a search engine's ``/goto`` link, a job board's
+        redirect) can land somewhere other than the address requested.
+        Not abstract: a perception mode with no live page returns "".
+
+        Returns:
+            The current page address, or an empty string when it cannot be
+            read. Never raises.
+        """
+        return ""

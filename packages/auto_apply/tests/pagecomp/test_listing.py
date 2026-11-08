@@ -59,3 +59,26 @@ def test_hidden_copies_of_visible_cards_are_decoys_not_jobs():
     assert not by_url["https://www.indeed.com/viewjob?jk=fedcba9876543210"].job_like
     assert not by_url["https://www.indeed.com/rc/clk?jk=00000000000000aa"].clone   # no visible twin
     assert sum(1 for p in v.record_jobness if p.job_like) == 7   # 6 cards + the lone hidden slide
+
+
+def test_paid_results_are_never_the_job_list():
+    """Owner's plain Bing search, 2026-11-08: the organic results were job
+    boards' search pages (not postings) and two paid results sat below
+    them. v0.5.1 unwrapped the paid results' /aclk routes and chose them as
+    the job list; a paid result is never followed."""
+    import base64
+    from pagecomp import Analyzer
+    from pagecomp.results import Abstain
+
+    def ad(k: int) -> str:
+        dest = base64.urlsafe_b64encode(f"https://jobsite.example/jobs/view/{k}234567".encode()).decode()
+        return (f'<li><div><h2><a href="https://www.bing.com/aclk?ld=e8Ab{k}&amp;u={dest}&amp;ntb=1">'
+                f'Backend Engineer Jobs Chicago {k}</a></h2><span>Sponsored</span></div></li>')
+    organic = "".join(
+        f'<li><div><h2><a href="https://board{k}.example/q-backend-engineer-l-chicago-jobs.html">'
+        f'Backend Engineer jobs in Chicago {k}</a></h2><span>Browse jobs</span></div></li>' for k in range(4))
+    html = f"<main><ol>{organic}</ol><ol>{ad(1)}{ad(2)}</ol></main>"
+    an = Analyzer(observe_html(html, url="https://www.bing.com/search?q=backend+engineer+jobs+chicago",
+                               query="backend engineer jobs chicago"))
+    res = an.get("joblist").result
+    assert isinstance(res, Abstain), [r.link.url for r in res.value.records]

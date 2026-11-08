@@ -51,6 +51,20 @@ def test_ads_rejected_with_evidence_tokens_not_text():
     assert rejs and rejs[0].reason == "advertising evidence"
 
 
+def test_search_engine_ad_clicks_are_advertising():
+    """pagecomp 0.5.2: a paid result's click route is never a destination.
+    Bing's /aclk carries the advertiser's address base64-encoded in u=, so
+    v0.5.1 unwrapped it and the job-list gate took the ads (owner's plain
+    Bing search, 2026-11-08: 18 /aclk links, each under "Sponsored")."""
+    dest = base64.urlsafe_b64encode(b"https://www.ziprecruiter.com/jobs/view/1234567").decode()
+    for href in (f"https://www.bing.com/aclk?ld=e8AbCdEf&u={dest}&rlid=abc&ntb=1",
+                 "https://www.google.com/aclk?sa=l&ai=DChcSEwjAbC&adurl=",
+                 "https://www.googleadservices.com/pagead/aclk?sa=L&ai=DChcSEwjAbC&adurl="):
+        cands, rejs = L.evaluate([(1, href, "Backend Engineer Jobs", "title-structural")],
+                                 title="Backend Engineer Jobs", page_url=GOOGLE)
+        assert not cands and rejs and rejs[0].reason == "advertising evidence", href
+
+
 def test_structural_title_link_beats_textual_echo():
     items = [(1, "/rc/clk?jk=080a02944a4afd88", "full details of Software Engineer I", "title-structural"),
              (2, "/career/software-engineer/salaries/LA", "Software Engineer I salaries", "title")]
@@ -96,6 +110,8 @@ def test_specific_destination_names_one_item_not_a_search():
           "https://www.example.com/c/audit-jobs",
           "https://www.google.com/search?q=entry+level+software+engineer+jobs&sca_esv=a1b2c3d4e5f6&ved=2ahUKEwiAbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
           "https://jobs.example/search?utm_source=abc123def456&from=x9y8z7w6",
+          "https://www.builtinchicago.org/jobs/dev-engineering/search/backend-engineer",
+          "https://careers.example.com/results/backend-engineer",
           "javascript:void(0)"]
     assert all(sd(u) for u in yes), [u for u in yes if not sd(u)]
     assert not any(sd(u) for u in no), [u for u in no if sd(u)]

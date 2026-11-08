@@ -258,7 +258,7 @@ def _run(q: Any, params: Mapping[str, Any]) -> Ok[JobList] | Abstain:
 
 
 TOOL = ToolSpec(
-    id="joblist", ct_id="CT-T-008/G", version="0.4.0", run=_run, needs=("listing", "visibility"),
+    id="joblist", ct_id="CT-T-008/G", version="0.4.1", run=_run, needs=("listing", "visibility"),
     params=(
         ParamSpec("min_share", 0.5, 0.0, 1.0, doc="share of records that must look like postings"),
         ParamSpec("min_routed", 0.5, 0.0, 1.0, doc="share of records with a usable route"),

@@ -8,6 +8,8 @@ What this engine does:
 
 9-step sequence:
     1. _fetch_job_description           — navigate to job URL via perception port;
+                                          record where it landed (metadata["landed_url"]);
+                                          confirm an opaque route's landing (ArrivalCheck);
                                           learn the posting's off-host apply target
                                           into metadata["apply_url"] (item 12B)
     2. _parse_with_spacy                — extract skills, experience, metadata via TextMatcher
@@ -49,6 +51,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -70,6 +74,7 @@ from auto_apply.domain.ports.research_port import (
 )
 from auto_apply.domain.services.posting_context import posting_observation
 from auto_apply.domain.services.apply_target import find_apply_controls
+from auto_apply.domain.services.route_arrival import arrival_problem, url_host
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +88,12 @@ _EMPLOYMENT_PATTERNS = [
 ]
 _REMOTE_POSITIVE = ["remote", "work from home", "wfh", "fully remote"]
 _REMOTE_NEGATIVE = ["on-site only", "in-office required", "no remote", "onsite only"]
+
+#: How long an opaque route (a search engine's ``/goto`` link) may take to
+#: leave the engine's own host after the browser opened it. A server
+#: redirect is done when ``navigate`` returns; this covers a script hop.
+ARRIVAL_WAIT_SECONDS = 8.0
+_ARRIVAL_POLL_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -108,6 +119,9 @@ class FetchedDescription:
     text: str
     from_page: bool
     page_copy_id: str | None = None
+    #: Why the landing of an opaque route is not the posting it claimed to
+    #: be (``domain.services.route_arrival.arrival_problem``); "" otherwise.
+    arrival_problem: str = ""
 
     def for_research(self) -> str:
         """The text safe to record as a job description: "" unless it came from the page."""
@@ -143,6 +157,9 @@ class VettingWorkflow:
         research_observer: ResearchObserverPort | None = None,
         page_copier: PageCopierPort | None = None,
         host_pacer=None,
+        ats_registry=None,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -163,6 +180,11 @@ class VettingWorkflow:
             page_copier: PageCopierPort — keeps a cleaned copy of each job page
                 read, when the person turned page copies on. Defaults to
                 NullPageCopier (nothing read, nothing kept).
+            host_pacer: HostPacer | None — spaces page loads per host.
+            ats_registry: ATSRegistry | None — confirms where an opaque
+                route landed (``route_arrival.arrival_problem``). Without it
+                an opaque hit is rejected, never vetted on trust.
+            sleep, clock: injected for tests of the arrival wait.
         """
         self._profile = profile
         self._filters = filters
@@ -179,6 +201,9 @@ class VettingWorkflow:
         self._research_observer = research_observer or NullResearchObserver()
         self._page_copier: PageCopierPort = page_copier or NullPageCopier()
         self._host_pacer = host_pacer
+        self._ats_registry = ats_registry
+        self._sleep = sleep
+        self._clock = clock
 
     def _cfg(self, key: str, default: Any) -> Any:
         """Read a dot-path config key from self._config with a default fallback."""
@@ -219,6 +244,17 @@ class VettingWorkflow:
 
         try:
             self._perception_port.navigate(job.url)
+            problem = self._confirm_arrival(job)
+            if problem:
+                logger.info(
+                    "VettingWorkflow: %s | route=%s landed=%s",
+                    problem,
+                    job.url,
+                    job.metadata.get("landed_url", "") if hasattr(job, "metadata") else "",
+                )
+                return FetchedDescription(
+                    text=job.title or "", from_page=False, arrival_problem=problem
+                )
             # Canonical text path (PerceptionPort.get_page_text). Every
             # perception adapter reads it from the live browser; there is no
             # browser-free adapter (a replay re-extracts text from a kept
@@ -236,6 +272,59 @@ class VettingWorkflow:
                 text=text, from_page=True, page_copy_id=self._keep_page_copy(job)
             )
         return FetchedDescription(text=job.title or "", from_page=False)
+
+    @staticmethod
+    def _opaque_target(job: Job) -> str:
+        """The target platform of a hit kept on its SHOWN destination, else "".
+
+        Discovery stamps ``shown_destination`` only on opaque routes (the
+        link hides where it goes) and ``target_platform`` on site searches.
+        Only such hits need their landing confirmed: a direct link was
+        already matched against the platform's posting patterns.
+        """
+        metadata = getattr(job, "metadata", None)
+        if not isinstance(metadata, dict):
+            return ""
+        if not str(metadata.get("shown_destination") or "").strip():
+            return ""
+        return str(metadata.get("target_platform") or "").strip()
+
+    def _current_url(self) -> str:
+        try:
+            url = self._perception_port.get_current_url()
+        except Exception:  # noqa: BLE001 - an unknown landing is handled by the caller
+            return ""
+        return url if isinstance(url, str) else ""
+
+    def _confirm_arrival(self, job: Job) -> str:
+        """Record where the navigation landed; check an opaque route's landing.
+
+        Every job gets ``metadata["landed_url"]`` (the page actually read).
+        A hit kept on its shown destination is confirmed against the
+        platform it was searched on; on success its real address is kept as
+        ``metadata["resolved_url"]`` (the application stage starts there)
+        and ``metadata["ats"]`` is set. Returns the rejection reason, or ""
+        when there is nothing to reject.
+        """
+        target = self._opaque_target(job)
+        landed = self._current_url()
+        if target:
+            # A script hop can still be leaving the route's host: wait,
+            # bounded, for the address to change.
+            route_host = url_host(job.url)
+            deadline = self._clock() + ARRIVAL_WAIT_SECONDS
+            while route_host and url_host(landed) == route_host and self._clock() < deadline:
+                self._sleep(_ARRIVAL_POLL_SECONDS)
+                landed = self._current_url()
+        if landed and hasattr(job, "metadata"):
+            job.metadata["landed_url"] = landed
+        if not target:
+            return ""
+        problem = arrival_problem(job.url, landed, target, self._ats_registry)
+        if not problem:
+            job.metadata["resolved_url"] = landed
+            job.metadata["ats"] = target
+        return problem
 
     def _keep_page_copy(self, job: Job) -> str | None:
         """Keep a cleaned copy of the job page just read, if allowed (item 6).
@@ -285,8 +374,11 @@ class VettingWorkflow:
             return
         if not isinstance(html, str) or not html:
             return
+        # Relative hrefs belong to the page actually loaded, which is not
+        # job.url when a route or a redirect moved the browser.
+        page_url = str(job.metadata.get("landed_url") or "") or job.url
         try:
-            controls = find_apply_controls(url=job.url, html=html)
+            controls = find_apply_controls(url=page_url, html=html)
         except Exception as exc:
             logger.debug(
                 "VettingWorkflow: apply-target parse failed (non-fatal) | "
@@ -638,6 +730,16 @@ class VettingWorkflow:
         )
 
         fetch = self._fetch_job_description(job)
+        if fetch.arrival_problem:
+            # The page read is not the posting the results page claimed:
+            # nothing on it may be parsed, observed or applied to.
+            self._record_vetting_outcome(job, False, fetch.arrival_problem, 0.0)
+            self._emit_vetting_telemetry(job, {}, fetch.arrival_problem)
+            logger.info(
+                "VettingWorkflow: REJECT | job=%s reason=%s",
+                job.title, fetch.arrival_problem,
+            )
+            return False
         self._parse_with_spacy(job, fetch.text)
         if fetch.from_page:
             self._learn_apply_target(job)

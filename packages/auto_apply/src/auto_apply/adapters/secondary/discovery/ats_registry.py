@@ -115,8 +115,13 @@ class ATSRegistry:
         classification they support.
         The first descriptor in load order wins, matching ``match()``.
         """
-        normalised = host.lower().strip().strip(".").rsplit("@", 1)[-1]
-        normalised = normalised.split(":", 1)[0]
+        raw = host.lower().strip()
+        # A netloc never holds a path, a query, a fragment or white space:
+        # "evil.com/jobs.jobvite.com" (or ".../x@jobs.jobvite.com") is not a
+        # Jobvite host, it is not a host at all.
+        if any(ch in raw for ch in "/?#\\") or any(ch.isspace() for ch in raw):
+            return None
+        normalised = raw.rsplit("@", 1)[-1].split(":", 1)[0].strip(".")
         if not normalised:
             return None
         for entry in self._entries:
