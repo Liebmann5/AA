@@ -461,6 +461,41 @@ class BlockedEngine(_FrozenModel):
     reason: str = ""
 
 
+class UnsearchedEngine(_FrozenModel):
+    """An enabled engine the session's search plan sent nothing to.
+
+    ``reason`` is the planner's stable code (search_planner.UNUSED_*); the
+    results view translates it.
+    """
+
+    engine: str
+    reason: str = ""
+
+
+class IgnoredRestriction(_FrozenModel):
+    """A ``site:`` restriction an engine answered without, on every route.
+
+    ``detail`` is what each route showed ("direct URL: 0 of 10 results on
+    jobs.lever.co; typed search: ...").
+    """
+
+    provider: str
+    restriction: str
+    detail: str = ""
+
+
+class RejectionCount(_FrozenModel):
+    """How many jobs one vetting check rejected this session.
+
+    ``check`` is the name the vetting workflow reports for the check
+    (``ArrivalCheck``, a filter's class name); the results view translates
+    the known ones.
+    """
+
+    check: str
+    count: int = 0
+
+
 class SessionSummary(_FrozenModel):
     """The end-of-session / results view.
 
@@ -488,6 +523,9 @@ class SessionSummary(_FrozenModel):
     autonomy_enabled: bool = False
     research: ResearchSessionView = ResearchSessionView()
     blocked_engines: tuple[BlockedEngine, ...] = ()
+    engines_not_searched: tuple[UnsearchedEngine, ...] = ()
+    restrictions_ignored: tuple[IgnoredRestriction, ...] = ()
+    vetting_rejections: tuple[RejectionCount, ...] = ()
     discovery_off_shape_dropped: int = 0
     discovery_terminal_dropped: int = 0
     discovery_routed_to_mining: int = 0
@@ -835,6 +873,35 @@ def format_discovery_outcome_lines(
     Lines appear only when there is something to report.
     """
     lines: list[str] = []
+
+    def _known(key: str, fallback: str) -> str:
+        """*key* translated, or *fallback* when no translation exists (a
+        translator answers an unknown key with the key itself)."""
+        text = translate(key)
+        return fallback if not text or text == key else text
+
+    if summary.engines_not_searched:
+        lines.append(translate("searchplan.results.unsearched_header"))
+        for unused in summary.engines_not_searched:
+            lines.append(
+                translate("searchplan.results.unsearched_line").format(
+                    engine=unused.engine,
+                    reason=_known(
+                        f"searchplan.results.unsearched_reason.{unused.reason}",
+                        unused.reason or translate("searchplan.results.blocked_reason_unknown"),
+                    ),
+                )
+            )
+    if summary.restrictions_ignored:
+        lines.append(translate("searchplan.results.ignored_header"))
+        for ignored in summary.restrictions_ignored:
+            lines.append(
+                translate("searchplan.results.ignored_line").format(
+                    engine=ignored.provider,
+                    restriction=ignored.restriction,
+                    detail=ignored.detail,
+                )
+            )
     if summary.blocked_engines:
         lines.append(translate("searchplan.results.blocked_header"))
         for engine in summary.blocked_engines:
@@ -865,4 +932,20 @@ def format_discovery_outcome_lines(
                 budget=summary.search_budget,
             )
         )
+    if summary.vetting_rejections:
+        lines.append(
+            translate("searchplan.results.rejected_header").format(
+                rejected=sum(r.count for r in summary.vetting_rejections),
+                vetted=summary.jobs_vetted,
+            )
+        )
+        for rejection in summary.vetting_rejections:
+            lines.append(
+                translate("searchplan.results.rejected_line").format(
+                    check=_known(
+                        f"searchplan.results.check.{rejection.check}", rejection.check
+                    ),
+                    count=rejection.count,
+                )
+            )
     return lines

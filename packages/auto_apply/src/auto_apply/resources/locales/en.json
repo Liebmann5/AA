@@ -310,7 +310,32 @@
       "blocked_line": "{engine} — {reason}",
       "blocked_reason_unknown": "no reason recorded",
       "off_shape": "Dropped {dropped} off-platform results, skipped {terminal} terminal pages, routed {routed} to company pages.",
-      "budget": "Search budget: {skipped} planned searches were skipped once the budget of {budget} was reached."
+      "budget": "Search budget: {skipped} planned searches were skipped once the budget of {budget} was reached.",
+      "unsearched_header": "Search engines that ran no search this session:",
+      "unsearched_line": "{engine} — {reason}",
+      "unsearched_reason": {
+        "not_in_catalog": "not in the search-engine catalog",
+        "no_automated_form": "the catalog has no automated search form for it",
+        "no_site_form": "it has no form for site-restricted searches, and only site-restricted searches were planned",
+        "no_measured_platform": "no enabled platform's site: restriction has been measured on it, and only site-restricted searches were planned",
+        "no_usable_platform": "no enabled platform can be searched by site restriction yet",
+        "no_site_operator": "its search form has no site: operator, so no site-restricted query can be written for it"
+      },
+      "ignored_header": "Searches an engine answered without the site: restriction (those pages were not read):",
+      "ignored_line": "{engine}: site:{restriction} — {detail}",
+      "rejected_header": "Vetting rejected {rejected} of {vetted} jobs:",
+      "rejected_line": "{check}: {count}",
+      "check": {
+        "ArrivalCheck": "the link did not lead to the posting the results page showed",
+        "TitleLogicFilter": "title does not fit the role searched for, or holds an excluded word",
+        "RoleAlignmentFilter": "role does not match the roles searched for",
+        "HardSkillsFilter": "required skills not in the profile",
+        "ExperienceFilter": "more experience required than the profile has",
+        "LocationLogicFilter": "location does not match the preferences",
+        "SpatialLocationFilter": "outside the commute range or workplace preference",
+        "CompanyBlacklistFilter": "company is on the excluded list",
+        "ThrottlingFilter": "application limit or cooldown for this company"
+      }
     },
     "gui": {
       "frame": "Hiring platforms (automatic search)",

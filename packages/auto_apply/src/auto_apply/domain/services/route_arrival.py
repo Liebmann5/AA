@@ -14,8 +14,9 @@ So the claim is checked twice:
 
 * ``shown_host`` reads the shown destination's host strictly, so a string
   such as ``evil.com/jobs.jobvite.com`` is read as ``evil.com``;
-* ``arrival_problem`` checks, after the browser followed the route, that the
-  page it LANDED on is a posting of the platform the search targeted.
+* ``judge_arrival`` checks, after the browser followed the route, that the
+  page it LANDED on is a posting of the platform the search targeted, on
+  the platform's own hosts or embedded on the employer's careers site.
 
 Both are pure: no network, no browser. The caller supplies the landed
 address and the platform registry.
@@ -23,6 +24,9 @@ address and the platform registry.
 from __future__ import annotations
 
 import urllib.parse
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Any
 
 #: The separators engines print between a breadcrumb's host and its path.
@@ -61,45 +65,87 @@ def shown_host(shown: str) -> str:
     return host if "." in host else ""
 
 
-def arrival_problem(
+@dataclass(frozen=True)
+class ArrivalVerdict:
+    """Where an opaque route landed, judged.
+
+    Attributes:
+        problem: Why the landing is NOT a posting of the target platform
+            (worded for the log and the job's record); "" when confirmed.
+        embedded: Evidence that the landing is the platform's posting
+            embedded on the employer's own site (``gh_jid=8301214``, or the
+            platform's application frame); "" for a landing on the
+            platform's own hosts, and for a rejection.
+    """
+
+    problem: str = ""
+    embedded: str = ""
+
+    @property
+    def confirmed(self) -> bool:
+        return not self.problem
+
+
+def judge_arrival(
     route_url: str,
     landed_url: str,
     target_platform: str,
     registry: Any,
-) -> str:
-    """Why the landing of an opaque route is NOT a posting of ``target_platform``.
+    page_resources: Callable[[], Sequence[str]] | None = None,
+) -> ArrivalVerdict:
+    """Judge the landing of an opaque route against ``target_platform``.
 
-    Returns "" when the landing is confirmed. Every other answer is a
-    rejection reason, worded for the log and the job's record:
+    Confirmed when the landed page is a posting on the platform's hosts, or
+    the platform's posting embedded on the employer's own site (the
+    descriptor's ``embedding`` evidence: a job-id parameter, or a frame of
+    the platform's application form, read from ``page_resources`` — called
+    only when the landed host is not the platform's).
+
+    Rejected, with the reason, when:
 
     * the landed address is unknown;
     * the browser is still on the route's own host (the route did not
       resolve: an interstitial, a block, a dead token);
     * no platform registry is available to confirm anything;
-    * the landed host belongs to another platform, or to none;
+    * the landed host belongs to another platform or to none, with no
+      embedding evidence;
     * the landed page is a terminal page (a closed or removed posting, a
       confirmation);
     * the landed page is on the platform but is not a posting (a company's
       list of openings, a search page).
 
-    ``registry`` is the ATS registry: ``platform_for_host``,
-    ``is_terminal_page`` and ``match`` are read; a fault in any of them is a
-    rejection, never a pass.
+    ``registry`` is the ATS registry (``platform_for_host``,
+    ``embedded_posting``, ``is_terminal_page``, ``match``). A fault in any
+    of them is a rejection, never a pass.
     """
     landed_host = url_host(landed_url)
     if not landed_host:
-        return "ArrivalCheck: the landed address is unknown"
+        return ArrivalVerdict("ArrivalCheck: the landed address is unknown")
     route_host = url_host(route_url)
     if route_host and landed_host == route_host:
-        return f"ArrivalCheck: the route did not resolve (still on {landed_host})"
+        return ArrivalVerdict(
+            f"ArrivalCheck: the route did not resolve (still on {landed_host})"
+        )
     if registry is None:
-        return "ArrivalCheck: no platform registry to confirm the landing"
+        return ArrivalVerdict("ArrivalCheck: no platform registry to confirm the landing")
     try:
         platform = registry.platform_for_host(landed_host)
     except Exception:  # noqa: BLE001 - a registry fault is a rejection
         platform = None
     if platform != target_platform:
-        return (
+        try:
+            resources = list(page_resources()) if page_resources is not None else []
+        except Exception:  # noqa: BLE001 - unreadable page: no evidence
+            resources = []
+        try:
+            evidence = str(
+                registry.embedded_posting(target_platform, landed_url, resources) or ""
+            )
+        except Exception:  # noqa: BLE001
+            evidence = ""
+        if evidence:
+            return ArrivalVerdict(embedded=evidence)
+        return ArrivalVerdict(
             f"ArrivalCheck: landed off platform ({landed_host}; "
             f"expected {target_platform})"
         )
@@ -108,7 +154,7 @@ def arrival_problem(
     except Exception:  # noqa: BLE001
         terminal = False
     if terminal:
-        return (
+        return ArrivalVerdict(
             f"ArrivalCheck: landed on a terminal {target_platform} page "
             "(the posting is closed or removed, or a confirmation page)"
         )
@@ -117,5 +163,63 @@ def arrival_problem(
     except Exception:  # noqa: BLE001
         descriptor = None
     if descriptor is None or getattr(descriptor, "name", None) != target_platform:
-        return f"ArrivalCheck: landed on a {target_platform} page that is not a posting"
-    return ""
+        return ArrivalVerdict(
+            f"ArrivalCheck: landed on a {target_platform} page that is not a posting"
+        )
+    return ArrivalVerdict()
+
+
+def arrival_problem(
+    route_url: str,
+    landed_url: str,
+    target_platform: str,
+    registry: Any,
+    page_resources: Callable[[], Sequence[str]] | None = None,
+) -> str:
+    """``judge_arrival(...).problem``: the rejection reason, or "" when confirmed."""
+    return judge_arrival(
+        route_url, landed_url, target_platform, registry, page_resources
+    ).problem
+
+
+class _ResourceCollector(HTMLParser):
+    """Collects the ``src`` of every frame and script on a page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("iframe", "frame", "script") and len(self.urls) < _MAX_RESOURCES:
+            for name, value in attrs:
+                if name == "src" and value:
+                    self.urls.append(value.strip())
+
+
+#: A page lists far fewer frames and scripts than this; the cap bounds the
+#: work on a hostile or broken page.
+_MAX_RESOURCES = 500
+
+
+def page_resource_urls(html: str, base_url: str = "") -> list[str]:
+    """The absolute addresses of the frames and scripts a page loads.
+
+    Read from the page's HTML with the standard library parser (no browser,
+    no network): the evidence ``judge_arrival`` needs to recognise a
+    platform's application form embedded in an employer's page. Never raises.
+    """
+    if not html:
+        return []
+    collector = _ResourceCollector()
+    try:
+        collector.feed(html)
+        collector.close()
+    except Exception:  # noqa: BLE001 - a broken page yields what was read
+        pass
+    out: list[str] = []
+    for url in collector.urls:
+        try:
+            out.append(urllib.parse.urljoin(base_url, url) if base_url else url)
+        except ValueError:
+            continue
+    return out

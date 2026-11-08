@@ -23,6 +23,7 @@ from auto_apply.domain.services.search_planner import (
     PlannedQuery,
     PlannedSearch,
     PlannerNote,
+    UnusedEngine,
 )
 
 
@@ -441,3 +442,42 @@ def test_a_kept_opaque_route_is_not_reported_as_navigation_chrome():
     report = DiscoveryVerifier(engine_hosts=("google.com",)).verify([hit])
     assert report.passed, report.details()
     assert not DiscoveryVerifier(engine_hosts=("google.com",)).verify([plain]).passed
+
+
+def _named_provider(name: str):
+    provider = MagicMock()
+    provider.name = name
+    provider.requires_live_browser = False
+    provider.run.return_value = []
+    return provider
+
+
+def test_idle_engines_reach_the_completion_summary_and_the_log_teeth(caplog) -> None:
+    """TEETH: the plan's idle engines stopped at an INFO note in the log;
+    the round's DISCOVERY_COMPLETE now names them with their reason."""
+    class _IdlePlanner(_FakePlanner):
+        def plan(self, **kwargs) -> PlannedSearch:
+            self.calls.append(kwargs)
+            return PlannedSearch(
+                queries=self._queries,
+                unused_engines=(UnusedEngine("bing", "no_measured_platform"),
+                                UnusedEngine("indeed", "no_site_form")),
+            )
+
+    workflow = _workflow(
+        plan=_plan(use_ats_site_search=True, ats_platforms=("greenhouse",),
+                   active_providers=("google", "bing", "indeed")),
+        planner=_IdlePlanner(queries=[_planned_query()]),
+        providers=[_named_provider(n) for n in ("google", "bing", "indeed")],
+    )
+    with caplog.at_level(logging.WARNING):
+        workflow.run()
+    payload = next(
+        call.args[1] for call in workflow._event_bus.publish.call_args_list
+        if call.args and call.args[0].name == "DISCOVERY_COMPLETE"
+    )
+    assert payload["engines_not_searched"] == [
+        {"engine": "bing", "reason": "no_measured_platform"},
+        {"engine": "indeed", "reason": "no_site_form"},
+    ]
+    assert any("bing receives no search this session" in r.getMessage() for r in caplog.records)

@@ -146,6 +146,10 @@ class DiscoveryWorkflow:
         # the planner is deliberately stateless.
         self._queries_sent_this_session: int = 0
         self._engine_rotation_offset: int = 0
+        # Enabled engines this run's plan sends nothing to, with the
+        # planner's reason code. Reported in DISCOVERY_COMPLETE so the
+        # results view says which engines did not search, and why.
+        self._unused_engines: dict[str, str] = {}
 
         # Fallback: a minimal plan is always available
         if plan is not None:
@@ -427,6 +431,15 @@ class DiscoveryWorkflow:
         self._emit_search_plan_frame(
             planned, engines=engines, budget_before=remaining
         )
+        for unused in getattr(planned, "unused_engines", ()):
+            if unused.engine not in self._unused_engines:
+                self._unused_engines[unused.engine] = unused.reason
+                logger.warning(
+                    "DiscoveryWorkflow: %s receives no search this session "
+                    "(%s) — see the planner's notes above for each platform.",
+                    unused.engine,
+                    unused.reason,
+                )
         if base_engines:
             bound = [q.engine for q in planned.queries if q.engine]
             if bound and bound[-1] in base_engines:
@@ -532,6 +545,9 @@ class DiscoveryWorkflow:
                         job.metadata.setdefault(
                             "search_query", instr.effective_query
                         )
+                        # The role this job was searched for: vetting judges
+                        # titles against it (domain/vetting/title_targets.py).
+                        job.metadata.setdefault("search_title", instr.title)
                         job.metadata.setdefault(
                             "route",
                             "engine_site_search"
@@ -921,6 +937,10 @@ class DiscoveryWorkflow:
             "terminal_dropped": stats.terminal_dropped,
             "routed_to_mining": stats.routed_to_mining,
             "kept_on_shown_destination": stats.kept_on_shown_destination,
+            "engines_not_searched": [
+                {"engine": engine, "reason": reason}
+                for engine, reason in self._unused_engines.items()
+            ],
         }
         try:
             self._event_bus.publish(Event.DISCOVERY_COMPLETE, payload)
@@ -979,6 +999,7 @@ class DiscoveryWorkflow:
         """
         mode = execution_mode if execution_mode is not None else self._plan.execution_mode
         stats = _DiscoveryStats()
+        self._unused_engines = {}
         logger.info("DiscoveryWorkflow.run() starting | mode=%s", mode.value)
 
         active_providers = self._initialize_sources()

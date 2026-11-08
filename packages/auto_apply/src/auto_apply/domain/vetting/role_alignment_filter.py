@@ -24,6 +24,7 @@ from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.ports.text_similarity_port import TextSimilarityPort
 from auto_apply.domain.vetting.base_filter import BaseVettingFilter
+from auto_apply.domain.vetting.title_targets import names_role, target_titles
 
 logger = logging.getLogger(__name__)
 
@@ -85,16 +86,21 @@ class RoleAlignmentFilter(BaseVettingFilter):
             (True, reason) if best similarity score meets threshold or no desired
             titles are configured. (False, reason) on mismatch.
         """
-        prefs = getattr(self.profile, "search_preferences", None)
-        desired_titles: list[str] = getattr(prefs, "desired_job_titles", []) or []
+        # The profile's titles and this session's searched title
+        # (domain/vetting/title_targets.py).
+        desired_titles: list[str] = target_titles(self.profile, job)
 
         if not desired_titles:
             return True, "no_target_titles_configured"
 
+        job_title = job.title or ""
+        named = next((t for t in desired_titles if names_role(job_title, t)), "")
+        if named:
+            return True, f"role_ok:names '{named}'"
+
         if self._similarity_port is None:
             return True, "similarity_port_unavailable"
 
-        job_title = job.title or ""
         scores: list[float] = []
         for title in desired_titles:
             try:

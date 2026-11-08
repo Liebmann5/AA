@@ -7,6 +7,9 @@ lands, so vetting confirms it before reading, judging or applying.
 from __future__ import annotations
 
 from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
+from auto_apply.adapters.secondary.perception.pagecomp_posting import (
+    PagecompPostingReader,
+)
 from auto_apply.application.workflows.vetting_workflow import (
     ARRIVAL_WAIT_SECONDS,
     VettingWorkflow,
@@ -225,3 +228,101 @@ def test_a_removed_jobvite_posting_is_named_as_such(
 
     assert wf.run(job) is False
     assert "closed or removed" in job.rejection_reason
+
+
+# ── Embedded postings and the posting's own facts (2026-11-08) ─────────────
+
+_TOAST_HTML = """<html><head><script type="application/ld+json">
+{"@context": "https://schema.org", "@type": "JobPosting",
+ "title": "Senior Software Engineer, Backend",
+ "hiringOrganization": {"@type": "Organization", "name": "Toast"},
+ "jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress",
+   "addressLocality": "Chicago", "addressRegion": "IL", "addressCountry": "US"}},
+ "identifier": {"@type": "PropertyValue", "value": "8301214"},
+ "datePosted": "2026-11-01", "validThrough": "2026-12-31"}
+</script></head><body><h1>Senior Software Engineer, Backend</h1></body></html>"""
+
+
+def _greenhouse_hit(job):
+    job.url = _ROUTE
+    job.title = "Job Application for Senior Software Engineer, Backend ..."
+    job.company = "Unknown"
+    job.metadata["target_platform"] = "greenhouse"
+    job.metadata["shown_destination"] = "job-boards.greenhouse.io/toast"
+    return job
+
+
+def _workflow_with_reader(perception, deps, reader):
+    profile, bus, repo, queue, matcher = deps
+    return VettingWorkflow(
+        profile=profile, filters=[_passing_filter()], job_repo=repo, task_queue=queue,
+        event_bus=bus, text_matcher=matcher, perception_port=perception,
+        ats_registry=ATSRegistry(), posting_reader=reader,
+        sleep=_Clock().sleep, clock=_Clock().time,
+    )
+
+
+def test_a_greenhouse_posting_on_the_employers_site_is_vetted_teeth(
+    mock_profile, sample_job, mock_event_bus, mock_job_repo, mock_task_queue, mock_text_matcher,
+):
+    """TEETH: rejected "landed off platform (careers.toasttab.com)" before."""
+    job = _greenhouse_hit(sample_job)
+    landed = "https://careers.toasttab.com/jobs?gh_jid=8301214"
+    wf = _workflow(_Perception([landed]), _deps(mock_profile, mock_event_bus, mock_job_repo,
+                                                mock_task_queue, mock_text_matcher))
+    assert wf.run(job) is True
+    assert job.metadata["embedded_posting"] == "gh_jid=8301214"
+    assert job.metadata["resolved_url"] == landed
+
+
+def test_the_posting_states_its_own_title_company_and_location_teeth(
+    mock_profile, sample_job, mock_event_bus, mock_job_repo, mock_task_queue, mock_text_matcher,
+):
+    """TEETH: all nine jobs of the live run stayed "@ Unknown" with the
+    engine's decorated title; the posting's JSON-LD names them."""
+    job = _greenhouse_hit(sample_job)
+    landed = "https://careers.toasttab.com/jobs?gh_jid=8301214"
+    wf = _workflow_with_reader(
+        _Perception([landed], html=_TOAST_HTML),
+        _deps(mock_profile, mock_event_bus, mock_job_repo, mock_task_queue, mock_text_matcher),
+        PagecompPostingReader(),
+    )
+    assert wf.run(job) is True
+    assert job.title == "Senior Software Engineer, Backend"
+    assert job.company == "Toast"
+    assert "Chicago" in job.location
+    assert job.metadata["card_title"].startswith("Job Application for")
+    assert job.metadata["card_company"] == "Unknown"
+    assert job.metadata["structured_posting"]["identifier"] == "8301214"
+    assert job.metadata["structured_posting"]["source"] == "json-ld"
+
+
+def test_a_page_without_structured_data_leaves_the_card_as_it_was(
+    mock_profile, sample_job, mock_event_bus, mock_job_repo, mock_task_queue, mock_text_matcher,
+):
+    job = _opaque(sample_job)
+    title, company = job.title, job.company
+    wf = _workflow_with_reader(
+        _Perception([_POSTING]),
+        _deps(mock_profile, mock_event_bus, mock_job_repo, mock_task_queue, mock_text_matcher),
+        PagecompPostingReader(),
+    )
+    wf.run(job)
+    assert (job.title, job.company) == (title, company)
+    assert "card_title" not in job.metadata and "structured_posting" not in job.metadata
+
+
+def test_a_reader_fault_never_breaks_vetting(
+    mock_profile, sample_job, mock_event_bus, mock_job_repo, mock_task_queue, mock_text_matcher,
+):
+    class _Broken:
+        def read(self, html, url):
+            raise RuntimeError("bad page")
+
+    job = _opaque(sample_job)
+    wf = _workflow_with_reader(
+        _Perception([_POSTING]),
+        _deps(mock_profile, mock_event_bus, mock_job_repo, mock_task_queue, mock_text_matcher),
+        _Broken(),
+    )
+    assert wf.run(job) is True

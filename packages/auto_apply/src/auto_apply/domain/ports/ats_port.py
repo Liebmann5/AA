@@ -93,6 +93,13 @@ class ATSDescriptor:
     # documentation). Engines differ: on 2026-11-08 Google honoured
     # site:jobs.lever.co while Bing answered it with Greenhouse postings.
     search_restriction_engines: tuple[str, ...] = ()
+    # How a posting of this platform shows itself when an employer embeds it
+    # on its own careers site (the platform's posting address then redirects
+    # there): a query parameter carrying the platform's job id, and frames
+    # that load the platform's application form. Greenhouse documents both:
+    # "gh_jid" on the employer's job URL and an embedded job_app iframe.
+    embed_job_params: tuple[str, ...] = ()
+    embed_frame_patterns: tuple[str, ...] = ()
     # URL shapes that are terminal pages (success / confirm / closed): never
     # an apply-route destination, never a builder suggestion.
     terminal_patterns: tuple[str, ...] = ()

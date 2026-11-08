@@ -84,6 +84,42 @@ _BADGE = re.compile(
     r"contract|temporary|internship|permanent( contract)?|\W+)$", re.I)
 
 
+def _record_host(rec: Any) -> str:
+    """The destination host of one record: the link's host, or for an
+    opaque route the host the page shows for it ("" when neither)."""
+    link = rec.link
+    if link is None:
+        return ""
+    if link.kind == L.OPAQUE:
+        return (link.expected_host or "").lower()
+    try:
+        return (urllib.parse.urlsplit(link.url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _result_hosts(analyzer: Any, page_url: str, limit: int = 60) -> tuple[str, ...]:
+    """The destination hosts of every record in every run on the page, in
+    page order, without the page's own host (an engine's related searches
+    and pagination link back to the engine). Never raises."""
+    try:
+        own = (urllib.parse.urlsplit(page_url or "").hostname or "").lower()
+        listing = analyzer.get("listing").result
+        if not isinstance(listing, Ok):
+            return ()
+        hosts: list[str] = []
+        for run in listing.value.runs:
+            for rec in run.records:
+                host = _record_host(rec)
+                if host and host != own and not (own and host.endswith("." + own)):
+                    hosts.append(host)
+                if len(hosts) >= limit:
+                    return tuple(hosts)
+        return tuple(hosts)
+    except Exception:  # noqa: BLE001
+        return ()
+
+
 def _first_results(analyzer: Any, limit: int = 5) -> str:
     """The first records of the page's top-ranked run, as ``title @ host``.
 
@@ -96,14 +132,10 @@ def _first_results(analyzer: Any, limit: int = 5) -> str:
         listing = analyzer.get("listing").result
         if not isinstance(listing, Ok) or not listing.value.runs:
             return ""
-        parts = []
-        for rec in listing.value.runs[0].records[:limit]:
-            link = rec.link
-            host = ""
-            if link is not None:
-                host = link.expected_host if link.kind == L.OPAQUE else (
-                    urllib.parse.urlsplit(link.url).hostname or "")
-            parts.append(f"{(rec.title or '?')[:60]!r} @ {host or '?'}")
+        parts = [
+            f"{(rec.title or '?')[:60]!r} @ {_record_host(rec) or '?'}"
+            for rec in listing.value.runs[0].records[:limit]
+        ]
         return " | first results: " + "; ".join(parts) if parts else ""
     except Exception:  # noqa: BLE001 - a diagnostic never breaks the read
         return ""
@@ -281,7 +313,8 @@ class PagecompSerpAdapter:
                         runs, how, ms, _first_results(analyzer))
             return SERPStructure(
                 resolution_report=SerpResolutionReport(chosen_level="pagecomp", note="no-job-list"),
-                analyze_ms=ms, page_verdict=NOT_A_JOB_LIST)
+                analyze_ms=ms, page_verdict=NOT_A_JOB_LIST,
+                result_hosts=_result_hosts(analyzer, obs.url))
         if not isinstance(result, Ok):
             logger.warning("pagecomp: no answer (%s); the previous reader answers.",
                            getattr(result, "reason", type(result).__name__))
@@ -294,7 +327,8 @@ class PagecompSerpAdapter:
             resolution_report=SerpResolutionReport(
                 chosen_level="pagecomp", detected_parent_count=len(result.value.records),
                 note=f"run {result.value.run_index}, share {result.value.share:.2f}"),
-            analyze_ms=ms)
+            analyze_ms=ms,
+            result_hosts=_result_hosts(analyzer, obs.url))
 
     def _cards(self, obs: PageObservation, joblist: Any) -> tuple[list[JobCardInfo], int]:
         doc = obs.doc

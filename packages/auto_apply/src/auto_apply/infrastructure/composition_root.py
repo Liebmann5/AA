@@ -166,6 +166,22 @@ def _search_engine_hosts() -> tuple[str, ...] | None:
         return None
 
 
+def _posting_reader():
+    """The reader of a posting's own structured data (StructuredPostingPort).
+
+    pagecomp is vendored and standard-library only, so this is baseline, not
+    an enhancement. None (the card's values are kept) only if it cannot load.
+    """
+    try:
+        from auto_apply.adapters.secondary.perception.pagecomp_posting import (  # noqa: PLC0415
+            PagecompPostingReader,
+        )
+        return PagecompPostingReader()
+    except Exception as exc:
+        logger.warning("composition_root: posting reader unavailable: %s", exc)
+        return None
+
+
 def _build_ats_registry():
     """Load the ATS descriptor registry once per build site.
 
@@ -1395,6 +1411,7 @@ def build_orchestrator(  # noqa: PLR0914
         ),
         host_pacer=_host_pacer,
         ats_registry=_ats_registry,
+        posting_reader=_posting_reader(),
     )
 
     # ── Context manager — tab/window switching for offsite apply clicks ────

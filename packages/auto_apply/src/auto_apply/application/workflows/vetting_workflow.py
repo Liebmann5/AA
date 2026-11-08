@@ -68,13 +68,18 @@ from auto_apply.domain.types import JobStatus
 from auto_apply.application.services.page_copier import NullPageCopier
 from auto_apply.domain.models.page_copy import PostingFacts
 from auto_apply.domain.ports.page_copy_port import PageCopierPort
+from auto_apply.domain.ports.structured_posting_port import StructuredPostingPort
 from auto_apply.domain.ports.research_port import (
     NullResearchObserver,
     ResearchObserverPort,
 )
 from auto_apply.domain.services.posting_context import posting_observation
 from auto_apply.domain.services.apply_target import find_apply_controls
-from auto_apply.domain.services.route_arrival import arrival_problem, url_host
+from auto_apply.domain.services.route_arrival import (
+    judge_arrival,
+    page_resource_urls,
+    url_host,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +125,7 @@ class FetchedDescription:
     from_page: bool
     page_copy_id: str | None = None
     #: Why the landing of an opaque route is not the posting it claimed to
-    #: be (``domain.services.route_arrival.arrival_problem``); "" otherwise.
+    #: be (``domain.services.route_arrival.judge_arrival``); "" otherwise.
     arrival_problem: str = ""
 
     def for_research(self) -> str:
@@ -158,6 +163,7 @@ class VettingWorkflow:
         page_copier: PageCopierPort | None = None,
         host_pacer=None,
         ats_registry=None,
+        posting_reader: StructuredPostingPort | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -182,8 +188,12 @@ class VettingWorkflow:
                 NullPageCopier (nothing read, nothing kept).
             host_pacer: HostPacer | None — spaces page loads per host.
             ats_registry: ATSRegistry | None — confirms where an opaque
-                route landed (``route_arrival.arrival_problem``). Without it
+                route landed (``route_arrival.judge_arrival``). Without it
                 an opaque hit is rejected, never vetted on trust.
+            posting_reader: StructuredPostingPort | None — reads the facts the
+                landed posting declares about itself (schema.org JobPosting)
+                before any filter judges the job. None keeps the card's
+                title, company and location.
             sleep, clock: injected for tests of the arrival wait.
         """
         self._profile = profile
@@ -202,6 +212,9 @@ class VettingWorkflow:
         self._page_copier: PageCopierPort = page_copier or NullPageCopier()
         self._host_pacer = host_pacer
         self._ats_registry = ats_registry
+        self._posting_reader = posting_reader
+        # The landed page's HTML, cached between the reads that need it.
+        self._html_cache: str | None = None
         self._sleep = sleep
         self._clock = clock
 
@@ -243,6 +256,7 @@ class VettingWorkflow:
                 )
 
         try:
+            self._html_cache = None
             self._perception_port.navigate(job.url)
             problem = self._confirm_arrival(job)
             if problem:
@@ -260,6 +274,10 @@ class VettingWorkflow:
             # browser-free adapter (a replay re-extracts text from a kept
             # page copy instead: domain/services/text_extraction.py).
             text = self._perception_port.get_page_text() or ""
+            # The arrival check may have read the HTML before the page
+            # settled; what the posting states and where it applies are read
+            # from the page the text was read from.
+            self._html_cache = None
         except Exception as exc:
             logger.warning(
                 "VettingWorkflow: failed to fetch description | job=%s error=%s",
@@ -288,6 +306,66 @@ class VettingWorkflow:
         if not str(metadata.get("shown_destination") or "").strip():
             return ""
         return str(metadata.get("target_platform") or "").strip()
+
+    def _adopt_posting_facts(self, job: Job) -> None:
+        """Replace the results card's title, company and location with what
+        the posting itself declares.
+
+        A results card is second-hand: an engine truncates and decorates the
+        title ("Job Application for Senior Software Engineer, Backend ...")
+        and never names the employer (live run 2026-11-08: all nine jobs
+        "@ Unknown"). The posting's own structured data is first-hand. The
+        card's values are kept in ``metadata["card_title"]`` and friends, so
+        the record shows both and which one the filters judged. Fields the
+        posting does not state are left as they were. Never raises.
+        """
+        if self._posting_reader is None or not hasattr(job, "metadata"):
+            return
+        page_url = str(job.metadata.get("landed_url") or "") or job.url
+        try:
+            facts = self._posting_reader.read(self._page_html(), page_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("VettingWorkflow: posting facts unreadable: %s", exc)
+            return
+        if facts is None:
+            return
+        changed = []
+        for field_name, stated in (
+            ("title", facts.title),
+            ("company", facts.company),
+            ("location", facts.location),
+        ):
+            value = (stated or "").strip()
+            current = getattr(job, field_name, None) or ""
+            if value and value != current:
+                job.metadata.setdefault(f"card_{field_name}", current)
+                setattr(job, field_name, value)
+                changed.append(field_name)
+        job.metadata["structured_posting"] = {
+            "source": facts.source,
+            "identifier": facts.identifier,
+            "date_posted": facts.date_posted,
+            "valid_through": facts.valid_through,
+            "remote": facts.remote,
+        }
+        if changed:
+            logger.info(
+                "VettingWorkflow: the posting states its own %s | title=%r company=%r",
+                ", ".join(changed), job.title, job.company,
+            )
+
+    def _page_html(self) -> str:
+        """The landed page's HTML, cached: once for the arrival check, once
+        more after the page text is read (the posting's facts and the apply
+        target share that read)."""
+        if self._html_cache is not None:
+            return self._html_cache
+        try:
+            html = self._perception_port.get_page_html()
+        except Exception:  # noqa: BLE001 - no page: no evidence
+            html = ""
+        self._html_cache = html if isinstance(html, str) else ""
+        return self._html_cache
 
     def _current_url(self) -> str:
         try:
@@ -320,10 +398,27 @@ class VettingWorkflow:
             job.metadata["landed_url"] = landed
         if not target:
             return ""
-        problem = arrival_problem(job.url, landed, target, self._ats_registry)
+        verdict = judge_arrival(
+            job.url,
+            landed,
+            target,
+            self._ats_registry,
+            page_resources=lambda: page_resource_urls(self._page_html(), landed),
+        )
+        problem = verdict.problem
         if not problem:
             job.metadata["resolved_url"] = landed
             job.metadata["ats"] = target
+            if verdict.embedded:
+                # The platform's posting, shown on the employer's own site
+                # (Greenhouse's embedded board). Recorded, never hidden: the
+                # application form is the platform's frame on that page.
+                job.metadata["embedded_posting"] = verdict.embedded
+                logger.info(
+                    "VettingWorkflow: ArrivalCheck: %s posting embedded on the "
+                    "employer's site (%s) | landed=%s",
+                    target, verdict.embedded, landed,
+                )
         return problem
 
     def _keep_page_copy(self, job: Job) -> str | None:
@@ -368,11 +463,8 @@ class VettingWorkflow:
         """
         if self._perception_port is None or not hasattr(job, "metadata"):
             return
-        try:
-            html = self._perception_port.get_page_html() or ""
-        except Exception:
-            return
-        if not isinstance(html, str) or not html:
+        html = self._page_html()
+        if not html:
             return
         # Relative hrefs belong to the page actually loaded, which is not
         # job.url when a route or a redirect moved the browser.
@@ -740,6 +832,8 @@ class VettingWorkflow:
                 job.title, fetch.arrival_problem,
             )
             return False
+        if fetch.from_page:
+            self._adopt_posting_facts(job)
         self._parse_with_spacy(job, fetch.text)
         if fetch.from_page:
             self._learn_apply_target(job)

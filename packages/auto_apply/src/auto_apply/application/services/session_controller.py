@@ -166,7 +166,9 @@ from auto_apply.domain.models.ui_contract import (
     BlockedEngine,
     DiscoveredJob,
     EntryPoint,
+    IgnoredRestriction,
     QueueSnapshot,
+    RejectionCount,
     ResearchSessionView,
     SearchPlanPreview,
     SessionEventRecord,
@@ -176,6 +178,7 @@ from auto_apply.domain.models.ui_contract import (
     SessionSummary,
     SessionViewState,
     SubmittedApplication,
+    UnsearchedEngine,
     entry_point_from_label,
     view_state_from_agent_state,
 )
@@ -264,6 +267,7 @@ _EVENT_KIND_MAP: dict[Event, ActivityKind] = {
     # Provider failures
     Event.PROVIDER_TIMED_OUT: ActivityKind.FAILED,
     Event.PROVIDER_BENCHED: ActivityKind.INFO,
+    Event.SEARCH_RESTRICTION_IGNORED: ActivityKind.INFO,
     # Task lifecycle
     Event.TASK_PERMANENTLY_FAILED: ActivityKind.FAILED,
     # HITL (recorded locally, not bus-subscribed)
@@ -326,6 +330,13 @@ def _render_discovery_complete(p: dict) -> str:
         )
     if p.get("budget_skipped"):
         extras.append(f"{p['budget_skipped']} over budget")
+    unsearched = [
+        str(entry.get("engine") or "?")
+        for entry in (p.get("engines_not_searched") or ())
+        if isinstance(entry, dict)
+    ]
+    if unsearched:
+        extras.append("not searched: " + ", ".join(unsearched))
     if extras:
         line += " (" + "; ".join(extras) + ")"
     return line
@@ -345,6 +356,14 @@ def _render_provider_timed_out(p: dict) -> str:
 
 def _render_provider_benched(p: dict) -> str:
     return f"Provider benched for this session: {p.get('provider', 'unknown')}"
+
+
+def _render_search_restriction_ignored(p: dict) -> str:
+    return (
+        f"{p.get('provider', 'unknown')} answered site:{p.get('restriction', '?')} "
+        f"without the restriction ({p.get('detail', '')}) — not sent again "
+        "this session"
+    )
 
 
 def _render_task_permanently_failed(p: dict) -> str:
@@ -393,6 +412,7 @@ _STREAM_TEXT_RENDERERS: dict[Event, Any] = {
     Event.CAPTCHA_REQUIRES_MANUAL_SOLVE: _render_captcha_manual_solve,
     Event.PROVIDER_TIMED_OUT: _render_provider_timed_out,
     Event.PROVIDER_BENCHED: _render_provider_benched,
+    Event.SEARCH_RESTRICTION_IGNORED: _render_search_restriction_ignored,
     Event.TASK_PERMANENTLY_FAILED: _render_task_permanently_failed,
     Event.TASK_SKIPPED_DUPLICATE: _render_task_skipped_duplicate,
     Event.BROWSER_DEGRADED: _render_browser_degraded,
@@ -524,6 +544,10 @@ class SessionController:
             "routed_to_mining": 0,
             "budget_skipped": 0,
         }
+        self._unsearched_engines: dict[str, str] = {}
+        self._ignored_restrictions: list[IgnoredRestriction] = []
+        #: Vetting rejections by the check that rejected (event-fed).
+        self._rejections: dict[str, int] = {}
         self._agent_thread: threading.Thread | None = None
         # HITL: maps context_id → (gate_event, chosen_value_holder, payload).
         self._pending_approvals: dict[
@@ -613,6 +637,7 @@ class SessionController:
             bus.subscribe(Event.CAPTCHA_REQUIRES_MANUAL_SOLVE, partial(self._on_stream_event, Event.CAPTCHA_REQUIRES_MANUAL_SOLVE))
             bus.subscribe(Event.PROVIDER_TIMED_OUT, partial(self._on_stream_event, Event.PROVIDER_TIMED_OUT))
             bus.subscribe(Event.PROVIDER_BENCHED, partial(self._on_stream_event, Event.PROVIDER_BENCHED))
+            bus.subscribe(Event.SEARCH_RESTRICTION_IGNORED, partial(self._on_stream_event, Event.SEARCH_RESTRICTION_IGNORED))
             bus.subscribe(Event.TASK_PERMANENTLY_FAILED, partial(self._on_stream_event, Event.TASK_PERMANENTLY_FAILED))
             bus.subscribe(Event.TASK_SKIPPED_DUPLICATE, partial(self._on_stream_event, Event.TASK_SKIPPED_DUPLICATE))
             bus.subscribe(Event.BROWSER_DEGRADED, partial(self._on_stream_event, Event.BROWSER_DEGRADED))
@@ -715,6 +740,15 @@ class SessionController:
         )
         if is_pass:
             self._report.pending_jobs_to_apply_for += 1
+        elif isinstance(payload, dict):
+            # Every vetting outcome is published (VettingWorkflow.
+            # _record_vetting_outcome), so passed + rejected is every job
+            # vetted. The reason reads "<check>: <why>".
+            self._report.jobs_rejected_by_filter += 1
+            check = str(payload.get("reason") or "").split(":", 1)[0].strip() or "unknown"
+            rejections = self.__dict__.setdefault("_rejections", {})
+            rejections[check] = rejections.get(check, 0) + 1
+            self._report.rejection_reasons[check] = rejections[check]
         kind = ActivityKind.VETTED if is_pass else ActivityKind.REJECTED
         self._record_stream(
             kind,
@@ -757,6 +791,8 @@ class SessionController:
         """
         if event is Event.PROVIDER_BENCHED:
             self._accumulate_blocked_engine(payload)
+        elif event is Event.SEARCH_RESTRICTION_IGNORED:
+            self._accumulate_ignored_restriction(payload)
         elif event is Event.DISCOVERY_COMPLETE:
             self._accumulate_discovery_counts(payload)
 
@@ -1510,7 +1546,7 @@ class SessionController:
         return SessionSnapshot(
             state=self._view_state(),
             jobs_discovered=int(getattr(stats, "jobs_discovered", 0) or 0),
-            jobs_vetted=int(getattr(stats, "jobs_vetted", 0) or 0),
+            jobs_vetted=self._jobs_vetted(),
             applications_submitted=int(
                 getattr(stats, "applications_submitted", 0) or 0
             ),
@@ -1538,7 +1574,7 @@ class SessionController:
         return SessionSummary(
             state=self._view_state(),
             jobs_discovered=int(getattr(stats, "jobs_discovered", 0) or 0),
-            jobs_vetted=int(getattr(stats, "jobs_vetted", 0) or 0),
+            jobs_vetted=self._jobs_vetted(),
             jobs_passed_vetting=report.pending_jobs_to_apply_for,
             applications_attempted=report.applications_completed,
             applications_submitted=report.applications_submitted,
@@ -1563,6 +1599,18 @@ class SessionController:
             autonomy_enabled=self.autonomy(),
             research=self._research_view(),
             blocked_engines=tuple(self._blocked_engines),
+            engines_not_searched=tuple(
+                UnsearchedEngine(engine=engine, reason=reason)
+                for engine, reason in self.__dict__.get("_unsearched_engines", {}).items()
+            ),
+            restrictions_ignored=tuple(self.__dict__.get("_ignored_restrictions", ())),
+            vetting_rejections=tuple(
+                RejectionCount(check=check, count=count)
+                for check, count in sorted(
+                    self.__dict__.get("_rejections", {}).items(),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ),
             discovery_off_shape_dropped=self._discovery_outcome_counts["off_shape_dropped"],
             discovery_terminal_dropped=self._discovery_outcome_counts["terminal_dropped"],
             discovery_routed_to_mining=self._discovery_outcome_counts["routed_to_mining"],
@@ -1671,7 +1719,9 @@ class SessionController:
             )
 
     def _accumulate_discovery_counts(self, payload: Any) -> None:
-        """Sums the per-round discovery outcome counts for the summary."""
+        """Sums the per-round discovery outcome counts for the summary, and
+        collects the engines a round's plan sent nothing to (first reason
+        recorded wins: admission does not change within a session)."""
         if not isinstance(payload, dict):
             return
         for key in self._discovery_outcome_counts:
@@ -1679,6 +1729,38 @@ class SessionController:
                 self._discovery_outcome_counts[key] += int(payload.get(key) or 0)
             except (TypeError, ValueError):
                 continue
+        for entry in payload.get("engines_not_searched") or ():
+            if isinstance(entry, dict) and entry.get("engine"):
+                self.__dict__.setdefault("_unsearched_engines", {}).setdefault(
+                    str(entry["engine"]), str(entry.get("reason") or "")
+                )
+
+    def _accumulate_ignored_restriction(self, payload: Any) -> None:
+        """Records one restriction an engine answered without (deduped)."""
+        if not isinstance(payload, dict):
+            return
+        entry = IgnoredRestriction(
+            provider=str(payload.get("provider") or "unknown"),
+            restriction=str(payload.get("restriction") or ""),
+            detail=str(payload.get("detail") or ""),
+        )
+        recorded = self.__dict__.setdefault("_ignored_restrictions", [])
+        if (entry.provider, entry.restriction) not in {
+            (e.provider, e.restriction) for e in recorded
+        }:
+            recorded.append(entry)
+
+    def _jobs_vetted(self) -> int:
+        """Every job vetting judged this session: passed plus rejected.
+
+        Read from the event-fed report, where both outcomes are counted.
+        The context counter ``jobs_vetted`` counts passes only (its writer is
+        the orchestrator's pass branch), so showing it as "Jobs vetted" told
+        a user whose nine jobs were all rejected that nothing was vetted
+        (owner run 2026-11-08).
+        """
+        report = self._report
+        return int(report.pending_jobs_to_apply_for) + int(report.jobs_rejected_by_filter)
 
     def _search_budget(self) -> int:
         """The session's query budget, read from the live plan."""
@@ -2016,7 +2098,10 @@ class SessionController:
                         ),
                         duration_seconds=float(data.get("duration_seconds") or 0.0),
                         jobs_found=int(discovery.get("raw_results_found", 0) or 0),
-                        jobs_vetted=int(vetting.get("jobs_approved", 0) or 0),
+                        # Approved plus rejected: every job vetting judged
+                        # (reports before 2026-11-08 carry no rejections).
+                        jobs_vetted=int(vetting.get("jobs_approved", 0) or 0)
+                        + int(vetting.get("jobs_rejected", 0) or 0),
                         applications_submitted=int(applications.get("submitted", 0) or 0),
                         applications_failed=int(applications.get("failed", 0) or 0),
                         report_path=(

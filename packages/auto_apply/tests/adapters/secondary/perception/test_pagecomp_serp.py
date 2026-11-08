@@ -20,6 +20,7 @@ from auto_apply.adapters.secondary.perception.pagecomp_serp import (
     query_from_url,
 )
 from auto_apply.domain.ports.page_understanding_port import PageContext, SERPStructure
+from auto_apply.domain.services.site_restriction import check_restriction
 from pagecomp.access import ObservationOutcome
 from pagecomp.observation import observe_html
 
@@ -226,3 +227,40 @@ def test_a_page_that_is_not_a_job_list_logs_what_it_did_hold(caplog) -> None:
     assert s.page_verdict == NOT_A_JOB_LIST
     line = next(r.getMessage() for r in caplog.records if "no list of job postings" in r.getMessage())
     assert "first results: 'Backend Engineer jobs in Chicago 0' @ board0.example" in line, line
+
+
+def test_every_result_host_is_reported_so_a_dropped_restriction_shows() -> None:
+    """TEETH. Bing answered ``site:jobs.jobvite.com`` with Greenhouse
+    postings (owner capture 2026-11-08, shape above). Before, the reader
+    reported cards only, so no one could tell the restriction was dropped;
+    the hosts of all results are now part of the reading, and none is the
+    engine's own (related searches, pagination)."""
+    s = PagecompSerpAdapter(Legacy(), FakeBrowser(BING, BING_URL), access_factory=_no_access,
+                            posting_hosts=["greenhouse.io"],
+                            engine_hosts=["bing.com"]).analyze_serp(PageContext(url=BING_URL))
+    assert s.result_hosts and set(s.result_hosts) == {"job-boards.greenhouse.io"}
+    check = check_restriction("jobs.jobvite.com", s.result_hosts)
+    assert check.dropped and check.state == "dropped"
+
+
+def test_opaque_results_report_the_host_the_page_shows() -> None:
+    """Google's /goto links hide the destination: the host is the one the
+    page shows beside the result, never google.com."""
+    s = PagecompSerpAdapter(Legacy(), FakeBrowser(GOOGLE, GOOGLE_URL), access_factory=_no_access,
+                            posting_hosts=["jobvite.com"]).analyze_serp(PageContext(url=GOOGLE_URL))
+    assert s.result_hosts and all(h == "jobs.jobvite.com" for h in s.result_hosts), s.result_hosts
+    assert check_restriction("jobs.jobvite.com", s.result_hosts).state == "kept"
+
+
+def test_a_page_that_is_not_a_job_list_still_reports_its_result_hosts() -> None:
+    """The dropped-restriction page Google served in AA's browser was
+    ZipRecruiter-and-boards, read as "not a job list": its hosts are what
+    show the restriction was dropped."""
+    boards = "<html><body><main><ol>" + "".join(
+        f'<li><h2><a href="https://board{k}.example/q-backend-engineer-l-chicago-jobs.html">'
+        f"Backend Engineer jobs in Chicago {k}</a></h2><p>Browse jobs</p></li>" for k in range(4)
+    ) + "</ol></main></body></html>"
+    s = PagecompSerpAdapter(Legacy(), FakeBrowser(boards, BING_URL), access_factory=_no_access,
+                            engine_hosts=["bing.com"]).analyze_serp(PageContext(url=BING_URL))
+    assert s.page_verdict == NOT_A_JOB_LIST
+    assert set(s.result_hosts) == {f"board{k}.example" for k in range(4)}

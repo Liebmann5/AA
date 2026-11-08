@@ -12,7 +12,12 @@ from __future__ import annotations
 import pytest
 
 from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
-from auto_apply.domain.services.route_arrival import arrival_problem, shown_host
+from auto_apply.domain.services.route_arrival import (
+    arrival_problem,
+    judge_arrival,
+    page_resource_urls,
+    shown_host,
+)
 
 _ROUTE = "https://www.google.com/goto?url=CAESaQHEIkXXo_WqMhp-QAnfytxyPIc3nz1rqUjgMcnlZef"
 
@@ -84,3 +89,83 @@ def test_a_registry_fault_is_a_rejection_never_a_pass():
 
     problem = arrival_problem(_ROUTE, "https://jobs.jobvite.com/a/job/oAbCdEfG", "jobvite", _Broken())
     assert "off platform" in problem
+
+
+# ── A platform's posting embedded on the employer's own site ────────────────
+#
+# Live run 2026-11-08: five Greenhouse hits "landed off platform"; three
+# carried gh_jid=<id> on the employer's careers page (Greenhouse's documented
+# embed: employer job links carry gh_jid, the form loads from
+# job-boards.greenhouse.io/embed/job_app), one framed the application form,
+# and one landed on a company's list of openings. The list stays rejected.
+
+
+_GH_ROUTE = "https://www.google.com/goto?url=CAESaQHEIkXX"
+
+
+def test_an_employer_page_carrying_the_greenhouse_job_id_is_confirmed_teeth():
+    """TEETH: rejected as "landed off platform (careers.toasttab.com)"."""
+    landed = "https://careers.toasttab.com/jobs?gh_jid=8301214"
+    verdict = judge_arrival(_GH_ROUTE, landed, "greenhouse", ATSRegistry(), lambda: [])
+    assert verdict.confirmed and verdict.embedded == "gh_jid=8301214"
+
+
+def test_an_employer_page_framing_the_greenhouse_form_is_confirmed_teeth():
+    html = ('<html><body><div id="grnhse_app"><iframe id="grnhse_iframe" '
+            'src="https://job-boards.greenhouse.io/embed/job_app?for=okta&amp;token=6512345">'
+            "</iframe></div></body></html>")
+    landed = "https://www.okta.com/company/careers/opportunity/6512345/"
+    verdict = judge_arrival(_GH_ROUTE, landed, "greenhouse", ATSRegistry(),
+                            lambda: page_resource_urls(html, landed))
+    assert verdict.confirmed and verdict.embedded.startswith("frame job-boards.greenhouse.io/embed/job_app")
+
+
+def test_a_frame_counts_only_when_the_platform_serves_it():
+    """The frame patterns are unanchored; another host carrying the path in
+    its query is not Greenhouse's form."""
+    html = '<iframe src="https://evil.example/frame?u=greenhouse.io/embed/job_app?for=x"></iframe>'
+    landed = "https://careers.example.com/jobs/1"
+    verdict = judge_arrival(_GH_ROUTE, landed, "greenhouse", ATSRegistry(),
+                            lambda: page_resource_urls(html, landed))
+    assert not verdict.confirmed
+
+
+def test_an_employer_list_of_openings_is_still_off_platform():
+    """Only the board script: a list of openings, not one posting."""
+    html = '<script src="https://boards.greenhouse.io/embed/job_board/js?for=fanduel"></script>'
+    landed = "https://www.fanduel.careers/open-positions"
+    verdict = judge_arrival(_GH_ROUTE, landed, "greenhouse", ATSRegistry(),
+                            lambda: page_resource_urls(html, landed))
+    assert not verdict.confirmed and "landed off platform" in verdict.problem
+
+
+@pytest.mark.parametrize("landed", [
+    "https://careers.example.com/jobs?gh_jid=",          # empty id
+    "https://careers.example.com/jobs?gh_jidx=8301214",   # another parameter
+    "https://careers.example.com/jobs#gh_jid=8301214",    # not a query parameter
+])
+def test_a_job_id_must_be_a_real_query_parameter(landed):
+    assert not judge_arrival(_GH_ROUTE, landed, "greenhouse", ATSRegistry(), lambda: []).confirmed
+
+
+def test_embedding_evidence_is_per_platform():
+    """gh_jid is Greenhouse's: it confirms nothing for another platform."""
+    landed = "https://careers.toasttab.com/jobs?gh_jid=8301214"
+    assert not judge_arrival(_GH_ROUTE, landed, "lever", ATSRegistry(), lambda: []).confirmed
+
+
+def test_page_resources_are_read_only_when_the_host_is_not_the_platform():
+    calls = []
+    judge_arrival(_GH_ROUTE, "https://boards.greenhouse.io/acme/jobs/4012345", "greenhouse",
+                  ATSRegistry(), lambda: calls.append(1) or [])
+    assert calls == []
+
+
+def test_page_resource_urls_resolve_and_bound():
+    html = '<iframe src="/embed/x"></iframe><script src="https://cdn.example/a.js"></script><img src="i.png">'
+    assert page_resource_urls(html, "https://careers.example.com/jobs/1") == [
+        "https://careers.example.com/embed/x", "https://cdn.example/a.js",
+    ]
+    many = "".join(f'<script src="/s{k}.js"></script>' for k in range(700))
+    assert len(page_resource_urls(many, "https://e.example/")) == 500
+    assert page_resource_urls("", "https://e.example/") == []

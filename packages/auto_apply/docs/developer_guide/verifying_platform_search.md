@@ -122,6 +122,23 @@ Greenhouse is therefore no evidence either. All seven platforms are
    paste the same query into Bing and check whether results come back at all;
    if not, that platform's Bing searches stay host-only.
 
+## What AA checks at run time
+
+A measurement in this guide says an engine honoured a restriction when you
+ran it. AA checks again on every search (Bible issue register, LR-19): when a
+results page shows three or more results and none is on the restricted site,
+the page is not read and the typed search is tried; when every route drops
+the restriction, that restriction is not sent to that engine again in the
+session. The log line names the result:
+
+- `Google: site:jobs.lever.co kept via direct URL — 9 of 9 results on jobs.lever.co`
+- `Google: the engine dropped site:jobs.ashbyhq.com via direct URL — 0 of 10 results ...`
+- `google ignored the restriction site:jobs.ashbyhq.com on every route (...)`
+
+The last one is also shown in the session's results view. A run's log is a
+measurement in AA's own browser: record it here next to the hand-run result
+when the two differ.
+
 ## Per-platform checklist
 
 For each platform: paste the Google query, then the Bing query. A correct

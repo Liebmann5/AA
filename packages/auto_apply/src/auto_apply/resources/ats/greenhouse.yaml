@@ -45,6 +45,18 @@ search_restriction_source: "Measured 2026-11-08 by the owner on Google: site:boa
 search_restriction_engines: [google]
 terminal_patterns: []
 
+# An employer that embeds its Greenhouse board on its own careers site has
+# Greenhouse send job links there (support.greenhouse.io, "Embed a Greenhouse
+# job board on your career site"); the job URL then carries gh_jid=<job id>
+# ("Job post URL for Greenhouse-hosted job posts"), and the application form
+# is Greenhouse's job_app iframe (the embed script's applicationURI). Live run
+# 2026-11-08: boards.greenhouse.io postings for Toast, Databricks and
+# Bitwarden landed on their own careers pages with ?gh_jid=<job id>.
+embedding:
+  job_id_params: [gh_jid]
+  frame_patterns:
+    - "*greenhouse.io/embed/job_app*"
+
 notes: >
   Greenhouse forms are server-rendered. Rarely requires login for external
   applicants. Resume upload uses input[type=file][name=resume].

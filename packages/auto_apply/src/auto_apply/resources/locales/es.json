@@ -272,7 +272,32 @@
       "blocked_line": "{engine} — {reason}",
       "blocked_reason_unknown": "sin motivo registrado",
       "off_shape": "Se descartaron {dropped} resultados fuera de la plataforma, se omitieron {terminal} páginas terminales, se enviaron {routed} a páginas de empresa.",
-      "budget": "Límite de búsqueda: {skipped} búsquedas planeadas se omitieron al alcanzar el límite de {budget}."
+      "budget": "Límite de búsqueda: {skipped} búsquedas planeadas se omitieron al alcanzar el límite de {budget}.",
+      "unsearched_header": "Buscadores que no hicieron ninguna búsqueda en esta sesión:",
+      "unsearched_line": "{engine} — {reason}",
+      "unsearched_reason": {
+        "not_in_catalog": "no está en el catálogo de buscadores",
+        "no_automated_form": "el catálogo no tiene un formulario de búsqueda automatizado para él",
+        "no_site_form": "no tiene formulario para búsquedas restringidas a un sitio, y solo se planearon búsquedas restringidas",
+        "no_measured_platform": "la restricción site: de ninguna plataforma activa se ha medido en él, y solo se planearon búsquedas restringidas",
+        "no_usable_platform": "todavía no se puede buscar en ninguna plataforma activa por restricción de sitio",
+        "no_site_operator": "su formulario de búsqueda no tiene el operador site:, así que no se puede escribir una búsqueda restringida para él"
+      },
+      "ignored_header": "Búsquedas que un buscador respondió sin la restricción site: (esas páginas no se leyeron):",
+      "ignored_line": "{engine}: site:{restriction} — {detail}",
+      "rejected_header": "La evaluación rechazó {rejected} de {vetted} empleos:",
+      "rejected_line": "{check}: {count}",
+      "check": {
+        "ArrivalCheck": "el enlace no llevó a la oferta que mostraba la página de resultados",
+        "TitleLogicFilter": "el título no corresponde al puesto buscado o contiene una palabra excluida",
+        "RoleAlignmentFilter": "el puesto no coincide con los puestos buscados",
+        "HardSkillsFilter": "habilidades requeridas que no están en el perfil",
+        "ExperienceFilter": "requiere más experiencia de la que tiene el perfil",
+        "LocationLogicFilter": "la ubicación no coincide con las preferencias",
+        "SpatialLocationFilter": "fuera del rango de traslado o de la modalidad preferida",
+        "CompanyBlacklistFilter": "la empresa está en la lista de exclusión",
+        "ThrottlingFilter": "límite de solicitudes o espera para esta empresa"
+      }
     },
     "gui": {
       "frame": "Plataformas de contratación (búsqueda automática)",

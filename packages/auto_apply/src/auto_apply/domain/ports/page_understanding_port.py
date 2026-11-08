@@ -179,6 +179,11 @@ class SERPStructure:
     #: ``"not-a-job-list"``: the page holds no list of job postings, so no
     #: other route may re-read it as one (FallbackSerpExtractor honours it).
     page_verdict: str = ""
+    #: The destination host of every result the reader found on the page,
+    #: job-like or not (an opaque route counts by the host the page shows
+    #: for it), in page order. Empty when the reader cannot tell. Read by
+    #: the site-restriction check (domain/services/site_restriction.py).
+    result_hosts: tuple[str, ...] = ()
 
     @property
     def total_cards(self) -> int:

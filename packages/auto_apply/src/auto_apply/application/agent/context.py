@@ -71,7 +71,10 @@ class SessionStatistics:
 
     Attributes:
         jobs_discovered: Total job listings found by DiscoveryEngine.
-        jobs_vetted: Jobs that passed all VettingEngine filters.
+        jobs_vetted: Jobs that PASSED all VettingEngine filters (the name
+            predates the rejection count; checkpoints carry it under this
+            key). Jobs vetted in total, passed plus rejected, are read from
+            SessionController._jobs_vetted, which counts both outcomes.
         applications_submitted: Applications successfully submitted.
         applications_blocked: Application attempts that ended in a blocked
             outcome (``ApplicationEvidence.is_blocked``) — an access barrier
@@ -163,7 +166,7 @@ class SessionStatistics:
         """One-line summary for logging and UI status bar."""
         return (
             f"Discovered: {self.jobs_discovered} | "
-            f"Vetted: {self.jobs_vetted} | "
+            f"Passed vetting: {self.jobs_vetted} | "
             f"Applied: {self.applications_submitted} | "
             f"Failed: {self.applications_failed} | "
             f"{self.duration_str}"

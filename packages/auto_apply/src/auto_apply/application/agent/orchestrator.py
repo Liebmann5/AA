@@ -947,6 +947,16 @@ class AgentOrchestrator:
             self._session_report.pending_jobs_to_apply_for += 1
         else:
             logger.info("Vetting FAILED | title=%s company=%s", job.title, job.company)
+            # The saved report counts rejections by the check that made them
+            # ("<check>: <why>", VettingWorkflow), so a session whose jobs
+            # were all rejected says why instead of "0 vetted".
+            report = self._session_report
+            report.jobs_rejected_by_filter += 1
+            check = (
+                str(getattr(job, "rejection_reason", "") or "").split(":", 1)[0].strip()
+                or "unknown"
+            )
+            report.rejection_reasons[check] = report.rejection_reasons.get(check, 0) + 1
 
         self.state_machine.transition_to(AgentState.RUNNING, triggered_by="_handle_vetting")
 

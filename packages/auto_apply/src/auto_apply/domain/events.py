@@ -123,9 +123,16 @@ class Event(Enum):
     """
 
     DISCOVERY_COMPLETE = auto()
-    """All discovery tasks for the current session have been processed.
+    """One discovery round (DiscoveryWorkflow.run) has finished.
 
-    Payload: {'total_jobs_found': int}
+    Payload (DiscoveryWorkflow._emit_completion_summary): the round's counts
+    {'queries_run', 'providers_attempted', 'providers_failed', 'raw_found',
+    'prefiltered_dropped', 'deduped_dropped', 'enqueued', 'budget_skipped',
+    'off_shape_dropped', 'terminal_dropped', 'routed_to_mining',
+    'kept_on_shown_destination': int} and 'engines_not_searched':
+    [{'engine': str, 'reason': str}], the enabled engines the round's plan
+    sent nothing to, with the planner's reason code
+    (domain/services/search_planner.py, UNUSED_*).
     """
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -339,6 +346,17 @@ class Event(Enum):
 
     Payload: {'provider': str, 'yield_ratio': float, 'bytes_ratio': float,
               'baseline_samples': int}
+    """
+
+    SEARCH_RESTRICTION_IGNORED = auto()
+    """A search engine answered a ``site:``-restricted query as if the
+    restriction were not there, on every route AA tried (the direct URL and
+    the typed search): enough results to judge, none on the restricted site.
+    The engine keeps running other searches; this restriction is not sent to
+    it again this session. Published by SilentDegradationDetector; consumed
+    by SessionController (feed line and end-of-session summary).
+
+    Payload: {'provider': str, 'restriction': str, 'detail': str}
     """
 
     # ─────────────────────────────────────────────────────────────────────────

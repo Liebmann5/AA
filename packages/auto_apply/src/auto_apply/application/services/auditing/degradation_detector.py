@@ -79,6 +79,9 @@ class SilentDegradationDetector:
         self._event_bus = event_bus
         self._deterministic = deterministic
         self._benched: set[str] = set()
+        #: (provider, restriction) pairs the engine answered without the
+        #: restriction this session, with what was seen.
+        self._ignored_restrictions: dict[tuple[str, str], str] = {}
 
     def is_benched(self, provider: str) -> bool:
         """True if *provider* has been benched this session.
@@ -111,6 +114,39 @@ class SilentDegradationDetector:
                 self._event_bus.publish(
                     Event.PROVIDER_BENCHED,
                     {"provider": provider_key, "reason": reason},
+                )
+            except Exception as exc:
+                logger.debug("degradation guard: event publish failed: %s", exc)
+
+    def restriction_ignored(self, provider: str, restriction: str) -> bool:
+        """True once *provider* answered *restriction* without it this session."""
+        return (provider.lower(), (restriction or "").lower()) in self._ignored_restrictions
+
+    def mark_restriction_ignored(self, provider: str, restriction: str, detail: str) -> None:
+        """Record that *provider* ignored a ``site:`` restriction on every route.
+
+        Scoped to the one restriction, not the engine: Google kept
+        ``site:boards.greenhouse.io`` while dropping six other platforms in
+        the same session (2026-11-08), so the engine keeps serving the
+        restrictions it honours. Session-scoped and idempotent; not written
+        to any baseline, because what an engine does with an operator can
+        change between sessions and is re-measured each time.
+        """
+        key = (provider.lower(), (restriction or "").lower())
+        if not key[1] or key in self._ignored_restrictions:
+            return
+        self._ignored_restrictions[key] = detail
+        logger.warning(
+            "%s ignored the restriction site:%s on every route (%s) — that "
+            "restriction is not sent to %s again this session; its other "
+            "searches continue.",
+            key[0], key[1], detail, key[0],
+        )
+        if self._event_bus is not None:
+            try:
+                self._event_bus.publish(
+                    Event.SEARCH_RESTRICTION_IGNORED,
+                    {"provider": key[0], "restriction": key[1], "detail": detail},
                 )
             except Exception as exc:
                 logger.debug("degradation guard: event publish failed: %s", exc)

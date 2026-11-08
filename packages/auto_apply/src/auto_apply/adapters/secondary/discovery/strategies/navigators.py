@@ -48,6 +48,9 @@ class NavigationStrategy(ABC):
         #: Where the last navigation ended, when the strategy checks it.
         self.last_landing: Landing | None = None
 
+    #: How the route reads in a user-facing explanation.
+    route_label: str = "route"
+
     @property
     def name(self) -> str:
         return self.__class__.__name__
@@ -75,6 +78,8 @@ class NavigationStrategy(ABC):
 
 class DirectURLNavigation(NavigationStrategy):
     """Navigates directly to a constructed URL (Fastest, High Detectability)."""
+
+    route_label = "direct URL"
 
     def navigate(
         self,
@@ -121,6 +126,8 @@ class HumanSearchNavigation(NavigationStrategy):
     so that no engine‑specific knowledge is hardcoded here.
     """
 
+    route_label = "typed search"
+
     def navigate(
         self,
         engine_strategy: SearchEngineStrategy,
@@ -159,9 +166,13 @@ class HumanSearchNavigation(NavigationStrategy):
                     break
 
             if search_input:
+                # The query the direct URL sends, verbatim: effective_query
+                # is the one composition ("<title> jobs in <location>", or
+                # the planner's raw query). Appending " in <location>" here
+                # typed "... jobs in Chicago, IL in Chicago, IL" for a plain
+                # search and changed a composed site-restricted query, so
+                # the fallback route searched something else.
                 query_text = instruction.effective_query
-                if instruction.location:
-                    query_text += f" in {instruction.location}"
 
                 logger.info("Typing query: %s", query_text)
 
@@ -226,6 +237,9 @@ class ResilientNavigator:
         #: Every checked landing of the navigations made, in order: the
         #: record of where each attempt ended (requested, landed, reason).
         self.landings: list[Landing] = []
+        #: The name of the strategy whose landing is being validated, so a
+        #: validator can say which route a verdict is about ("" between).
+        self.current_strategy: str = ""
 
     def navigate_with_fallback(
         self,
@@ -261,6 +275,7 @@ class ResilientNavigator:
             )
 
             # 1. Attempt Navigation
+            self.current_strategy = getattr(strategy, "route_label", "") or strategy.name
             success = strategy.navigate(engine_strategy, instruction)
 
             # 2. If navigation command worked, check if the page is actually

@@ -108,13 +108,38 @@ class PlannerNote:
     message: str
 
 
+#: Why an enabled engine received no site-restricted search, as stable codes
+#: (the results view translates them; resources/locales/*.json).
+UNUSED_NOT_IN_CATALOG = "not_in_catalog"
+UNUSED_NO_AUTOMATED_FORM = "no_automated_form"
+UNUSED_NO_SITE_FORM = "no_site_form"
+UNUSED_NO_MEASURED_PLATFORM = "no_measured_platform"
+UNUSED_NO_USABLE_PLATFORM = "no_usable_platform"
+UNUSED_NO_SITE_OPERATOR = "no_site_operator"
+
+
+@dataclass(frozen=True)
+class UnusedEngine:
+    """An enabled engine the plan sends nothing to, and why (a code above)."""
+
+    engine: str
+    reason: str
+
+
 @dataclass(frozen=True)
 class PlannedSearch:
-    """The planner's output: the ordered queries and the notes behind them."""
+    """The planner's output: the ordered queries and the notes behind them.
+
+    ``unused_engines`` names every enabled engine that receives no search
+    from this plan: an engine left idle is a fact the user is told, not a
+    line in a debug log (owner run 2026-11-08: Bing and Indeed sat idle and
+    nothing on screen said so).
+    """
 
     queries: tuple[PlannedQuery, ...] = ()
     notes: tuple[PlannerNote, ...] = ()
     dropped_targets: tuple[str, ...] = ()
+    unused_engines: tuple[UnusedEngine, ...] = ()
 
 
 class SiteSearchStrategy(Protocol):
@@ -227,7 +252,13 @@ class SearchPlanner:
                 PlannerNote("info", "Bases with an empty title were skipped.")
             )
         if not usable_engines or not usable_platforms or not clean_bases:
-            return PlannedSearch((), tuple(notes), ())
+            return PlannedSearch(
+                (), tuple(notes), (),
+                # No titles means nothing to search anywhere (noted above);
+                # that is not an engine's shortfall.
+                self._unused_engines(engines, usable_engines, set(), set(), bool(usable_platforms))
+                if clean_bases else (),
+            )
 
         strategy = self._strategies.get(self._strategy_name)
         if strategy is None:
@@ -241,6 +272,8 @@ class SearchPlanner:
             strategy = self._strategies[PerPlatformStrategy.name]
 
         admitted = self._admitted_pairs(usable_platforms, usable_engines, notes)
+        # Engines a search went to, or would have but for the budget.
+        reached: set[str] = set()
         for title, location, workplace_type in clean_bases:
             groups = strategy.group(list(usable_platforms))
             if any(len(group) != 1 for group in groups):
@@ -261,6 +294,7 @@ class SearchPlanner:
                     label = f"{target.name} on {engine} ({title})"
                     if len(queries) >= budget:
                         dropped.append(label)
+                        reached.add(engine)
                         continue
                     planned = self._compose_query(
                         engine=engine,
@@ -274,6 +308,7 @@ class SearchPlanner:
                     )
                     if planned is not None:
                         queries.append(planned)
+                        reached.add(engine)
 
         if dropped:
             shown = "; ".join(dropped[:5]) + (" ..." if len(dropped) > 5 else "")
@@ -285,7 +320,48 @@ class SearchPlanner:
                     f"{shown}",
                 )
             )
-        return PlannedSearch(tuple(queries), tuple(notes), tuple(dropped))
+        return PlannedSearch(
+            tuple(queries), tuple(notes), tuple(dropped),
+            self._unused_engines(engines, usable_engines, admitted, reached, True),
+        )
+
+    def _unused_engines(
+        self,
+        engines: Sequence[str],
+        usable_engines: Sequence[str],
+        admitted: set[tuple[str, str]],
+        reached: set[str],
+        platforms_usable: bool,
+    ) -> tuple[UnusedEngine, ...]:
+        """Every requested engine the plan sends no search to, and why.
+
+        An engine whose searches the budget cut is not "unused": that is
+        reported as budget-skipped searches.
+        """
+        admitted_engines = {engine for _, engine in admitted}
+        unused: list[UnusedEngine] = []
+        for name in dict.fromkeys(engines):
+            spec = self._engine_specs.get(name)
+            if spec is None:
+                reason = UNUSED_NOT_IN_CATALOG
+            elif spec.automation_url is None:
+                reason = UNUSED_NO_AUTOMATED_FORM
+            elif name in reached:
+                continue
+            elif name in admitted_engines:
+                # Admitted, but the catalog's composer refused every query
+                # (no site operator on the engine's form).
+                reason = UNUSED_NO_SITE_OPERATOR
+            elif not platforms_usable:
+                reason = UNUSED_NO_USABLE_PLATFORM
+            elif spec.site_template is None:
+                reason = UNUSED_NO_SITE_FORM
+            elif name in usable_engines:
+                reason = UNUSED_NO_MEASURED_PLATFORM
+            else:
+                continue
+            unused.append(UnusedEngine(name, reason))
+        return tuple(unused)
 
     # ------------------------------------------------------------------
     # Admission
