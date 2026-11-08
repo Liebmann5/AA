@@ -7,6 +7,14 @@ url_patterns:
   - "jobs.lever.co/*/apply*"
   - "jobs.eu.lever.co/*/apply*"
   - "hire.lever.co/*/apply*"
+  # The posting itself: <tenant>/<posting UUID>, with or without /apply.
+  # Live search results, 2026-11-08: jobs.lever.co/lendbuzz/0d9ef5fb-e31b-
+  # 4a93-ad98-cb5970927c21 and jobs.eu.lever.co/leverdemo/cd1ea494-1629-
+  # 4cb1-a1c7-5dbcc9dea545. Without these a Lever site search kept nothing:
+  # every posting address was "off-shape". The UUID's four hyphens keep a
+  # tenant's list page (jobs.lever.co/<tenant>) out.
+  - "jobs.lever.co/*/*-*-*-*-*"
+  - "jobs.eu.lever.co/*/*-*-*-*-*"
 
 # The platform's own domains (a host equal to one, or a subdomain of one).
 # Research analysis groups destinations by these, so one platform counts

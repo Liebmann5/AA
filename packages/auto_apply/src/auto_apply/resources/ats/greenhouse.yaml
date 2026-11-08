@@ -8,6 +8,9 @@ url_patterns:
   - "boards.greenhouse.io/*/jobs/*"
   - "app.greenhouse.io/*/jobs/*"
   - "job-boards.greenhouse.io/*/jobs/*"
+  # EU-hosted boards (reported by several Greenhouse API clients; no
+  # first-party page found, 2026-11-08).
+  - "job-boards.eu.greenhouse.io/*/jobs/*"
 
 # The platform's own domains (a host equal to one, or a subdomain of one).
 # Research analysis groups destinations by these, so one platform counts

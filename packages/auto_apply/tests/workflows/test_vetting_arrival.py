@@ -211,3 +211,17 @@ def test_the_apply_target_is_read_against_the_landed_page(
 
     wf.run(job)
     assert "apply_url" not in job.metadata
+
+
+def test_a_removed_jobvite_posting_is_named_as_such(
+    mock_profile, sample_job, mock_event_bus, mock_job_repo, mock_task_queue, mock_text_matcher,
+):
+    """Live run 2026-11-08: Google still listed leantechio/job/otsNAfw2; the
+    visit landed on jobs.jobvite.com/careers/leantechio/jobs?error=404."""
+    job = _opaque(sample_job)
+    landed = "https://jobs.jobvite.com/careers/leantechio/jobs?error=404"
+    wf = _workflow(_Perception([landed]), _deps(mock_profile, mock_event_bus, mock_job_repo,
+                                                mock_task_queue, mock_text_matcher))
+
+    assert wf.run(job) is False
+    assert "closed or removed" in job.rejection_reason

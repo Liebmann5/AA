@@ -51,12 +51,12 @@ site_template: web
 operators:
   - name: site
     label: "Only this site"
-    explanation: "Shows results only from the site you name. A folder works too, for example site:example.com/jobs."
+    explanation: "Shows results only from the site you name, its subdomains included. A folder works too, for example site:example.com/jobs."
     syntax: "site:{value}"
     channel: typed
     accepts: domain_or_path
     status: vendor
-    source: "Google Search documentation: search operators"
+    source: "Google Search Central, 'site: search operator' (a domain includes its subdomains; a path limits to that URL prefix; results are not guaranteed to be complete) and Google Search Help, 'Refine Google searches'; read 2026-11-08"
   - name: phrase
     label: "Exact words"
     explanation: "Results must contain these words in exactly this order."
@@ -64,7 +64,7 @@ operators:
     channel: typed
     accepts: text
     status: vendor
-    source: "Google Search documentation: search operators"
+    source: "Google Search Help, 'Refine Google searches' (read 2026-11-08)"
   - name: exclude
     label: "Without this"
     explanation: "Results must not contain this word or phrase."
@@ -72,15 +72,16 @@ operators:
     channel: typed
     accepts: text
     status: vendor
-    source: "Google Search documentation: search operators"
+    source: "Google Search Help, 'Refine Google searches' (read 2026-11-08)"
   - name: any_of
     label: "Any of these"
     explanation: "Results can match any one of these. Written as (A OR B); OR must be capital letters."
     syntax: "({content})"
     channel: typed
     accepts: text
-    status: vendor
-    source: "Google Search documentation: search operators"
+    status: measured
+    verified_on: "2026-11-08"
+    source: "Not on Google's current help pages (read 2026-11-08: 'Refine Google searches' lists quotes, site:, -, before:, after: and filetype: only). Measured 2026-11-08 by the owner: a site-restricted search of the form site:<platform host> (\"Backend Engineer\" OR \"Fullstack Engineer\") returned 10 results, all on that host (owner capture serp-site-restricted 20261108-151736)"
     caveats:
       - "OR must be capital letters; a lower-case 'or' is read as an ordinary word."
   - name: intitle
@@ -89,8 +90,8 @@ operators:
     syntax: "intitle:{value}"
     channel: typed
     accepts: text
-    status: vendor
-    source: "Google Search documentation: search operators"
+    status: third_party
+    source: "Widely reported; not on Google's current help pages (read 2026-11-08)"
   # Recorded, not offered: AA's composer cannot write these yet.
   - name: exclude_site
     label: "Not this site"
@@ -98,8 +99,8 @@ operators:
     syntax: "-site:{value}"
     channel: typed
     accepts: domain_or_path
-    status: vendor
-    source: "Google Search documentation: search operators"
+    status: third_party
+    source: "The documented minus and site: combined; the combination itself is not on Google's current help pages (read 2026-11-08)"
     composable: false
   - name: inurl
     label: "Word in the address"
@@ -107,8 +108,8 @@ operators:
     syntax: "inurl:{value}"
     channel: typed
     accepts: text
-    status: vendor
-    source: "Google Search documentation: search operators"
+    status: third_party
+    source: "Widely reported; not on Google's current help pages (read 2026-11-08)"
     composable: false
   - name: after
     label: "Posted after a date"
@@ -117,7 +118,7 @@ operators:
     channel: typed
     accepts: date
     status: vendor
-    source: "Google Search documentation: search operators"
+    source: "Google Search Help, 'Refine Google searches' (read 2026-11-08)"
     composable: false
   - name: before
     label: "Posted before a date"
@@ -126,7 +127,7 @@ operators:
     channel: typed
     accepts: date
     status: vendor
-    source: "Google Search documentation: search operators"
+    source: "Google Search Help, 'Refine Google searches' (read 2026-11-08)"
     composable: false
   - name: filetype
     label: "Only this file type"
@@ -135,7 +136,7 @@ operators:
     channel: typed
     accepts: file_type
     status: vendor
-    source: "Google Search documentation: search operators"
+    source: "Google Search Help, 'Refine Google searches' (read 2026-11-08)"
     composable: false
   # Recorded, never offered: retired or unreliable.
   - name: link

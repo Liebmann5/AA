@@ -77,7 +77,8 @@ def arrival_problem(
       resolve: an interstitial, a block, a dead token);
     * no platform registry is available to confirm anything;
     * the landed host belongs to another platform, or to none;
-    * the landed page is a terminal page (closed, confirmation);
+    * the landed page is a terminal page (a closed or removed posting, a
+      confirmation);
     * the landed page is on the platform but is not a posting (a company's
       list of openings, a search page).
 
@@ -107,7 +108,10 @@ def arrival_problem(
     except Exception:  # noqa: BLE001
         terminal = False
     if terminal:
-        return f"ArrivalCheck: landed on a terminal {target_platform} page"
+        return (
+            f"ArrivalCheck: landed on a terminal {target_platform} page "
+            "(the posting is closed or removed, or a confirmation page)"
+        )
     try:
         descriptor = registry.match(landed_url)
     except Exception:  # noqa: BLE001

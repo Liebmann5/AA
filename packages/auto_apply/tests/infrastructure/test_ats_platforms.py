@@ -196,3 +196,29 @@ def test_the_verification_checklist_covers_every_platform():
         assert descriptor.name in text, (
             f"{descriptor.name!r} missing from verifying_platform_search.md"
         )
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        # Live search results, 2026-11-08.
+        ("https://jobs.lever.co/lendbuzz/0d9ef5fb-e31b-4a93-ad98-cb5970927c21", "lever"),
+        ("https://jobs.eu.lever.co/leverdemo/cd1ea494-1629-4cb1-a1c7-5dbcc9dea545", "lever"),
+        ("https://job-boards.greenhouse.io/greenhouse/jobs/7091352", "greenhouse"),
+        ("https://job-boards.eu.greenhouse.io/acme/jobs/4012345", "greenhouse"),
+        ("https://jobs.smartrecruiters.com/smartrecruiters/743999873519601-senior-software-engineer-backend",
+         "smartrecruiters"),
+        ("https://apply.workable.com/fuku/j/9EE7DBC74E/", "workable"),
+    ],
+)
+def test_real_posting_addresses_match_their_platform(url, expected):
+    """TEETH (Lever, Greenhouse EU). A Lever posting is <tenant>/<UUID>; only
+    its /apply page matched, so a Lever site search would have dropped every
+    posting as off-shape."""
+    descriptor = ATSRegistry().match(url)
+    assert descriptor is not None and descriptor.name == expected
+
+
+@pytest.mark.parametrize("url", ["https://jobs.lever.co/lendbuzz", "https://jobs.eu.lever.co/leverdemo"])
+def test_a_lever_tenant_list_is_not_a_posting(url):
+    assert ATSRegistry().match(url) is None

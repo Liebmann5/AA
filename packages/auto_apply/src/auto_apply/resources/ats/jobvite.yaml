@@ -12,4 +12,8 @@ search_restriction: "jobs.jobvite.com"
 search_restriction_status: measured
 search_restriction_verified_on: "2026-10-27"
 search_restriction_source: "Reported reliable on Google by Nick on 2026-10-27: site:jobs.jobvite.com (\"Software Engineer\"); date of his original check not recorded"
-terminal_patterns: []
+# A removed posting redirects to the company's list with error=404 (live run
+# 2026-11-08: jobs.jobvite.com/leantechio/job/otsNAfw2, still in Google's
+# index, landed on jobs.jobvite.com/careers/leantechio/jobs?error=404).
+terminal_patterns:
+  - "jobs.jobvite.com/*error=404"

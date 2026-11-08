@@ -84,6 +84,31 @@ _BADGE = re.compile(
     r"contract|temporary|internship|permanent( contract)?|\W+)$", re.I)
 
 
+def _first_results(analyzer: Any, limit: int = 5) -> str:
+    """The first records of the page's top-ranked run, as ``title @ host``.
+
+    Logged when the page is judged "not a job list", so a run's log shows
+    WHAT the engine returned (a site search the engine ignored, a "no
+    results" page, boards' search pages) instead of only that nothing was
+    kept. Results pages are public; no page text beyond titles is logged.
+    """
+    try:
+        listing = analyzer.get("listing").result
+        if not isinstance(listing, Ok) or not listing.value.runs:
+            return ""
+        parts = []
+        for rec in listing.value.runs[0].records[:limit]:
+            link = rec.link
+            host = ""
+            if link is not None:
+                host = link.expected_host if link.kind == L.OPAQUE else (
+                    urllib.parse.urlsplit(link.url).hostname or "")
+            parts.append(f"{(rec.title or '?')[:60]!r} @ {host or '?'}")
+        return " | first results: " + "; ".join(parts) if parts else ""
+    except Exception:  # noqa: BLE001 - a diagnostic never breaks the read
+        return ""
+
+
 def query_from_url(url: str) -> str | None:
     """The search words a results URL carries, or None."""
     try:
@@ -139,6 +164,7 @@ class PagecompSerpAdapter:
         access: Mapping[str, Any] | None = None,
         posting_hosts: Iterable[str] = (),
         access_factory: Any = None,
+        engine_hosts: Iterable[str] = (),
     ) -> None:
         """
         Args:
@@ -150,6 +176,9 @@ class PagecompSerpAdapter:
                 registry), evidence that a link leads to a posting.
             access_factory: Builds the access adapter from a raw driver
                 (tests inject a fake; default ``PagecompAccess``).
+            engine_hosts: Hosts of the search engines (the search-surface
+                catalog). On an engine's results page no card line names
+                the employer (see ``_cards``).
         """
         self._legacy = legacy
         self._browser = browser
@@ -162,6 +191,15 @@ class PagecompSerpAdapter:
             registry.specs(), {"joblist": {"posting_hosts": hosts}},
             reason="AA: posting hosts from the ATS registry")
         self.last_page_verdict = ""
+        self._engine_hosts = tuple(sorted({h.strip().lower().removeprefix("www.")
+                                           for h in engine_hosts if h and h.strip()}))
+
+    def _on_engine(self, url: str) -> bool:
+        try:
+            host = (urllib.parse.urlsplit(url or "").hostname or "").lower()
+        except ValueError:
+            return False
+        return any(host == h or host.endswith("." + h) for h in self._engine_hosts)
 
     # -- the wrapped adapter answers everything but search pages ---------
     def analyze_form(self, context: PageContext) -> FormStructure:
@@ -229,7 +267,8 @@ class PagecompSerpAdapter:
             if obs is None:
                 logger.warning("pagecomp: could not read the page (%s); the previous reader answers.", how)
                 return self._legacy.analyze_serp(context)
-            result = Analyzer(obs, params=self._params).get("joblist").result
+            analyzer = Analyzer(obs, params=self._params)
+            result = analyzer.get("joblist").result
         except Exception as exc:  # noqa: BLE001
             logger.warning("pagecomp: reading the results page failed (%s); the previous reader answers.",
                            exc, exc_info=True)
@@ -238,7 +277,8 @@ class PagecompSerpAdapter:
         if isinstance(result, Abstain) and result.reason.rsplit(": ", 1)[-1] in _CONTENT_REASONS:
             self.last_page_verdict = NOT_A_JOB_LIST
             runs = "; ".join(e.detail for e in result.evidence[:4]) or result.reason
-            logger.info("pagecomp: no list of job postings on this page (%s) [%s, %.0f ms]", runs, how, ms)
+            logger.info("pagecomp: no list of job postings on this page (%s) [%s, %.0f ms]%s",
+                        runs, how, ms, _first_results(analyzer))
             return SERPStructure(
                 resolution_report=SerpResolutionReport(chosen_level="pagecomp", note="no-job-list"),
                 analyze_ms=ms, page_verdict=NOT_A_JOB_LIST)
@@ -262,6 +302,13 @@ class PagecompSerpAdapter:
         per = list(joblist.record_jobness)   # one per record, merged runs included
         cards: list[JobCardInfo] = []
         skipped = 0
+        # A search engine's card names the SITE ("greenhouse.io", "Jobvite")
+        # and carries the engine's own section heading ("Web results"), never
+        # the employer. Read as a company, every Greenhouse hit of one Bing
+        # search shared one "company", so one application capped them all
+        # (ThrottlingFilter's per-company limit). The company stays unknown
+        # until the posting itself names it.
+        on_engine = self._on_engine(obs.url)
         for index, rec in enumerate(records):
             # Not job-like: an ad, a related search, or a decoy (a hidden copy
             # of a visible card; visiting it identifies a bot).
@@ -286,6 +333,8 @@ class PagecompSerpAdapter:
             heading = node >= 0 and doc.kind[node] == ELEMENT and (
                 doc.tag_name(node) in _HEADINGS or doc.attr(node, "role") == "heading")
             company, location = _card_fields(rec.lines, title)
+            if on_engine:
+                company = ""
             shown = ""
             if link is not None and link.kind == L.OPAQUE and link.expected_host:
                 shown = link.expected_host + (

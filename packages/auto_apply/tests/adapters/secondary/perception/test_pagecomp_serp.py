@@ -183,3 +183,46 @@ def test_opaque_results_carry_the_destination_the_page_shows() -> None:
     assert all(c.url.startswith("https://www.google.com/goto?url=") for c in s.job_cards)
     assert all(c.shown_destination.startswith("jobs.jobvite.com") for c in s.job_cards), \
         [c.shown_destination for c in s.job_cards]
+
+
+BING_URL = "https://www.bing.com/search?q=site%3Ajobs.jobvite.com+%22Backend+Engineer%22"
+BING = "<html><body><main><h2>Web results</h2><ol id=b_results>" + "".join(
+    f'<li class="b_algo"><div>greenhouse.io</div><cite>https://job-boards.greenhouse.io › co{k} › jobs</cite>'
+    f'<h2><a href="https://job-boards.greenhouse.io/co{k}/jobs/53941280{k:02d}">'
+    f'Job Application for Backend Engineer at Co {k}</a></h2>'
+    f'<p>Co {k} is hiring a backend engineer for APIs.</p></li>'
+    for k in range(6)) + "</ol></main></body></html>"
+
+
+def test_an_engine_card_never_names_the_company() -> None:
+    """TEETH. Live run 2026-11-08: Google cards got company "Web results"
+    (the engine's section heading) and "Jobvite" (the site name); Bing's
+    Greenhouse cards would all share "greenhouse.io". One shared company
+    lets the per-company application cap block every other hit. On an
+    engine's page the company stays unknown; a job board's cards still name
+    their employer (the Indeed test above)."""
+    s = PagecompSerpAdapter(Legacy(), FakeBrowser(BING, BING_URL), access_factory=_no_access,
+                            posting_hosts=["greenhouse.io"],
+                            engine_hosts=["bing.com", "google.com"]).analyze_serp(PageContext(url=BING_URL))
+    assert len(s.job_cards) == 6
+    assert all(c.company == "" for c in s.job_cards), [c.company for c in s.job_cards]
+    indeed = _adapter(INDEED, engine_hosts=["bing.com", "google.com"]).analyze_serp(PageContext(url=URL))
+    assert indeed.job_cards[0].company == "Acme Corp 0"
+
+
+def test_a_page_that_is_not_a_job_list_logs_what_it_did_hold(caplog) -> None:
+    """The live run of 2026-11-08 logged only "job-like 0.00, n=9" for a
+    Google site search that kept nothing; what the nine results were could
+    not be told from the log."""
+    import logging
+
+    boards = "<html><body><main><ol>" + "".join(
+        f'<li><h2><a href="https://board{k}.example/q-backend-engineer-l-chicago-jobs.html">'
+        f"Backend Engineer jobs in Chicago {k}</a></h2><p>Browse jobs</p></li>" for k in range(4)
+    ) + "</ol></main></body></html>"
+    caplog.set_level(logging.INFO)
+    s = PagecompSerpAdapter(Legacy(), FakeBrowser(boards, BING_URL), access_factory=_no_access,
+                            engine_hosts=["bing.com"]).analyze_serp(PageContext(url=BING_URL))
+    assert s.page_verdict == NOT_A_JOB_LIST
+    line = next(r.getMessage() for r in caplog.records if "no list of job postings" in r.getMessage())
+    assert "first results: 'Backend Engineer jobs in Chicago 0' @ board0.example" in line, line

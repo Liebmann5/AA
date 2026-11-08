@@ -135,6 +135,37 @@ logger = logging.getLogger(__name__)
 _MAX_LEASES_PER_SHARED_DRIVER = 1
 
 
+def _search_engine_hosts() -> tuple[str, ...] | None:
+    """Hosts of the search engines in the bundled search-surface catalog.
+
+    Job boards are not engines. None when the catalog cannot be read (each
+    consumer then keeps its own pinned fallback).
+    """
+    try:
+        from urllib.parse import urlparse  # noqa: PLC0415
+
+        from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
+            list_surface_names,
+            load_surface_bundled,
+        )
+
+        hosts: set[str] = set()
+        for surface_name in list_surface_names():
+            try:
+                spec = load_surface_bundled(surface_name)
+            except Exception:
+                continue
+            if spec.kind != "engine":
+                continue
+            host = urlparse(spec.homepage).netloc.lower().removeprefix("www.")
+            if host:
+                hosts.add(host)
+        return tuple(sorted(hosts)) or None
+    except Exception as exc:
+        logger.debug("composition_root: engine-host derivation unavailable: %s", exc)
+        return None
+
+
 def _build_ats_registry():
     """Load the ATS descriptor registry once per build site.
 
@@ -953,6 +984,7 @@ def build_orchestrator(  # noqa: PLR0914
                     page_understanding_port, driver,
                     access=_effective.get("comprehension_access") or {},
                     posting_hosts=_posting_hosts,
+                    engine_hosts=_search_engine_hosts() or (),
                 )
                 logger.info("build_orchestrator: search pages are read by pagecomp "
                             "(serp_reader: pagecomp; %d posting hosts)", len(set(_posting_hosts)))
@@ -1287,32 +1319,7 @@ def build_orchestrator(  # noqa: PLR0914
     # The discovery verifier's engine-host set, derived from the bundled
     # catalog (job boards are not engines). When unavailable, the verifier's
     # pinned fallback applies.
-    _engine_hosts = None
-    try:
-        from urllib.parse import urlparse  # noqa: PLC0415
-
-        from auto_apply.adapters.secondary.discovery.search_surface_registry import (  # noqa: PLC0415
-            list_surface_names,
-            load_surface_bundled,
-        )
-
-        _hosts: set[str] = set()
-        for _surface_name in list_surface_names():
-            try:
-                _spec = load_surface_bundled(_surface_name)
-            except Exception:
-                continue
-            if _spec.kind != "engine":
-                continue
-            _host = urlparse(_spec.homepage).netloc.lower().removeprefix("www.")
-            if _host:
-                _hosts.add(_host)
-        if _hosts:
-            _engine_hosts = tuple(sorted(_hosts))
-    except Exception as _exc:
-        logger.debug(
-            "composition_root: engine-host derivation unavailable: %s", _exc
-        )
+    _engine_hosts = _search_engine_hosts()
 
     # ── Deterministic RNG streams ──────────────────────────────────────────────
     # BehaviorParameters is already constructed above (see cascade section).
