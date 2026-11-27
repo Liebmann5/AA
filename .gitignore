@@ -53,6 +53,10 @@ Notes/
 AA-kimi.txt
 session_log*.txt
 measure_*.txt
+.deepseek_out/
+.deepseek_backups/
+.ds_backups/
+deepseek_responses/
 
 packages/auto_apply/dev_data/
 
