@@ -86,7 +86,10 @@ def test_run_returns_true_on_submission(
 
     # Patch _submit_application to simulate a successful submit
     fake_evidence = ApplicationEvidence(outcome="SUBMITTED", confidence=0.95)
-    with patch.object(wf, "_submit_application", return_value=fake_evidence):
+    # One field filled: the submit step is reached only for an application
+    # AA actually filled (FAILED_NOTHING_FILLED otherwise).
+    with patch.object(wf, "_submit_application", return_value=fake_evidence), \
+            patch.object(wf, "_fill_standard_fields", return_value=1):
         result = wf.run(sample_job)
 
     # run() returns a structured ApplicationEvidence; truthiness delegates to

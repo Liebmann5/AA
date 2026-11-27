@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply — Contoso Analytics</title>
+<style>
+  body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; }
+  .row { margin-top: 1rem; }
+</style>
+</head>
+<body>
+<!--
+  Assessments, required external steps and a choice limit (docs/adr/026).
+  What it exercises:
+  * a link to an assessment platform whose words make it a condition of
+    being considered: reported with its host, never followed;
+  * a link to another site beside the form's own "Required fields are
+    marked *" note: an ordinary link, not a condition;
+  * "Pick the best 2" over three tick boxes: the limit is read from the
+    words, so AA can never tick three;
+  * nothing is sent (the submit control posts nowhere reachable).
+-->
+<form id="application" method="post" action="/never" novalidate>
+  <p class="note">Required fields are marked *. Read our
+    <a href="https://privacy.contoso-policies.example/notice">privacy notice</a>.</p>
+  <div class="row"><label for="first_name">First name *</label>
+    <input id="first_name" name="first_name" autocomplete="given-name" required></div>
+  <div class="row"><label for="email">Email *</label>
+    <input id="email" name="email" type="email" autocomplete="email" required></div>
+  <fieldset class="row">
+    <legend>Which areas are your strongest? Pick the best 2</legend>
+    <label><input type="checkbox" name="areas" value="sql"> SQL</label>
+    <label><input type="checkbox" name="areas" value="python"> Python</label>
+    <label><input type="checkbox" name="areas" value="excel"> Excel</label>
+  </fieldset>
+  <p class="row">You must complete our coding test before we review your application:
+    <a href="https://contoso.hackerrank.com/tests/abc123?invite=secret">Start the coding test</a></p>
+  <div class="row"><button type="submit">Submit application</button></div>
+</form>
+</body>
+</html>

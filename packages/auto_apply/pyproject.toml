@@ -218,7 +218,10 @@ auto-apply = "auto_apply.main:main"
 # ── Hatchling Build Config ────────────────────────────────────────────────────
 # src/ layout: the importable package is at src/auto_apply/.
 [tool.hatch.build.targets.wheel]
-packages = ["src/auto_apply"]
+# pagecomp: the page-comprehension library, vendored as its own top-level
+# package (standard library only; see docs/pagecomp/README.md). It ships in
+# the same wheel so no extra install step or index is needed.
+packages = ["src/auto_apply", "src/pagecomp"]
 
 [tool.hatch.build]
 # Package data: the `packages` directive above ships every file under

@@ -25,6 +25,8 @@ looking for architectural details, head to the [Developer Guide](../developer_gu
 | [Understanding the Output](understanding_output.md) | Logs, session reports, CSV exports, screenshots on failure, and the optional research data file. |
 | [Profiles & Privacy](profiles_and_privacy.md) | Creating and editing profiles, encrypting your data with a master password, storing profiles on external drives, what AA collects and how to delete it. |
 | [Admin Policy](admin_policy.md) | How IT administrators can lock down AA on shared computers — allowed browsers, headless enforcement, rate limits, research opt‑out. |
+| [Accessibility Settings](accessibility.md) | How long AA waits for you, answering form questions in AA's own window, keyboard focus, plain terminal output for screen readers. |
+| [Checking AA's Answers](answers.md) | Which answers AA may send without showing you, when it shows them, tests and steps on other sites, "pick the best 2". |
 
 ---
 

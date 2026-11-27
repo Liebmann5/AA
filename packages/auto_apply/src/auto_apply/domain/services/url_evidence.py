@@ -12,6 +12,17 @@ Scoring (all constants documented in-module):
           + 0.5  if the resolved host differs from the SERP host
           + 0.4  if the original href carries an opaque long wrapper payload
           + 0.6  if the anchor text expresses apply intent
+          + 0.5  if the anchor contains the card's title or sits inside it
+                 (``relation == "title"``; 06 section 2, link score)
+
+The title relation is structural evidence that does not depend on the host:
+a careers board links its own postings on its own host, with opaque slugs,
+so without it a direct same-host posting link scored 0 and was never
+eligible (S1 trace, Jobvite fixture).
+
+Dead-end text is matched as a phrase that covers at least half of a short
+anchor name (``Privacy Policy``, ``Help``), never as a substring: a link
+whose name is a job title such as ``Help Desk Technician`` is not a dead end.
 
 A candidate is eligible at score >= 0.5. Selection among eligible candidates
 requires either a single eligible candidate, or exactly one title-aligned
@@ -42,6 +53,15 @@ DEAD_END_TEXT = (
     "advertise", "feedback", "help", "sign in", "log in", "report",
 )
 
+#: Multi-word dead-end phrases matched as whole token sequences.
+DEAD_END_PHRASES = DEAD_END_TEXT + (
+    "terms of use", "terms of service", "privacy policy", "cookie policy",
+    "cookie settings", "help center", "report an ad", "report this ad",
+    "why this ad", "send feedback",
+)
+#: A name longer than this is never a dead end: it describes something.
+DEAD_END_MAX_TOKENS = 5
+
 # Host labels that identify advertising infrastructure wherever they appear.
 AD_HOST_LABELS = frozenset(
     {"ads", "adservice", "adserver", "adlibrary", "adtech", "adsystem",
@@ -61,6 +81,7 @@ TITLE_OVERLAP_FOR_SELECTION = 0.5
 APPLY_INTENT_BONUS = 0.6
 EXTERNAL_HOST_BONUS = 0.5
 PENDING_REDIRECT_BONUS = 0.4
+TITLE_RELATION_BONUS = 0.5
 
 _OPAQUE_PAYLOAD_MIN_LEN = 40
 
@@ -75,6 +96,14 @@ def _url_tokens(value: str) -> frozenset[str]:
 def _overlap_tokens(text: str) -> frozenset[str]:
     """Tokens used for title alignment; short tokens carry no meaning here."""
     return frozenset(t for t in _url_tokens(text) if len(t) > 3)
+
+
+def title_overlap(title: str, text: str) -> float:
+    """Share of the title's meaningful tokens found in ``text`` (0 to 1)."""
+    title_tokens = _overlap_tokens(title)
+    if not title_tokens:
+        return 0.0
+    return len(title_tokens & _overlap_tokens(text)) / len(title_tokens)
 
 
 def resolve_href(href: str, base_url: str) -> str:
@@ -223,6 +252,31 @@ def has_pending_redirect(href: str) -> bool:
         for key, values in params.items()
         if key in WRAPPER_KEYS
     )
+
+
+def _word_tokens(text: str) -> list[str]:
+    return re.findall(r"[0-9a-z]+", text.casefold())
+
+
+def is_dead_end_text(text: str) -> bool:
+    """True when a short anchor name is mostly a dead-end phrase.
+
+    The phrase must appear as a contiguous token sequence and cover at least
+    half of the name's tokens, and the name must have at most
+    :data:`DEAD_END_MAX_TOKENS` tokens.
+    """
+    tokens = _word_tokens(text)
+    if not tokens or len(tokens) > DEAD_END_MAX_TOKENS:
+        return False
+    for phrase in DEAD_END_PHRASES:
+        ptoks = phrase.split()
+        width = len(ptoks)
+        if 2 * width < len(tokens):
+            continue
+        for start in range(len(tokens) - width + 1):
+            if tokens[start:start + width] == ptoks:
+                return True
+    return False
 
 
 def has_apply_intent(text: str) -> bool:
@@ -384,7 +438,7 @@ def evaluate_candidates(
             )
             continue
 
-        if any(term in text.lower() for term in DEAD_END_TEXT):
+        if is_dead_end_text(text):
             rejections.append(
                 JobUrlRejection(raw, href, "dead-end text", (text[:80],))
             )
@@ -412,20 +466,18 @@ def evaluate_candidates(
             continue
 
         resolved_host = urllib.parse.urlsplit(resolved).netloc.lower()
-        overlap = (
-            len(title_tokens & _overlap_tokens(resolved + " " + text)) / len(title_tokens)
-            if title_tokens
-            else 0.0
-        )
+        overlap = title_overlap(title, resolved + " " + text) if title_tokens else 0.0
         external = bool(resolved_host) and resolved_host != serp_host
         pending = has_pending_redirect(href)
         apply_intent = has_apply_intent(text)
+        title_related = item.get("relation") == "title"
 
         score = (
             overlap
             + (EXTERNAL_HOST_BONUS if external else 0.0)
             + (PENDING_REDIRECT_BONUS if pending else 0.0)
             + (APPLY_INTENT_BONUS if apply_intent else 0.0)
+            + (TITLE_RELATION_BONUS if title_related else 0.0)
         )
 
         candidates.append(

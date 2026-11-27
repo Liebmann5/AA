@@ -36,6 +36,16 @@ Non-interactive output:
     (isatty + TERM != 'dumb') is the same one already used by
     SessionProgressDisplay in progress.py.
 
+Screen-reader and reduced-motion modes (accessibility.screen_reader_mode /
+reduced_motion, docs/adr/024):
+    A screen reader re-reads, or loses its place in, a terminal that is
+    cleared and redrawn every second. In either mode the dashboard never
+    clears or redraws: it prints like the non-interactive path (new lines
+    only), its prompts carry no box-drawing rules, and every choice is read
+    out in full ("Choice 1 of 3: Done"). Every prompt says up front how long
+    AA waits for the answer, or that it waits without a time limit
+    (WCAG 2.2 SC 2.2.1).
+
 Screen clearing on a TTY:
     POSIX (Linux/macOS): the ANSI erase sequence is written directly to the
     stream. No subprocess is spawned per frame — previously os.system forked
@@ -54,6 +64,8 @@ import os
 import sys
 import time
 
+from auto_apply.application.services.accessibility import get_a11y_config
+from auto_apply.application.services.i18n import get_text, option_label
 from auto_apply.domain.models.ui_contract import (
     ApprovalRequest,
     SessionEventRecord,
@@ -98,6 +110,10 @@ class CLIDashboard:
         self._is_tty: bool = (
             sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
         )
+        a11y = get_a11y_config()
+        # Plain: no redraws, no box art, choices read in full.
+        self._plain: bool = bool(a11y.screen_reader_mode or a11y.reduced_motion)
+        self._redraw: bool = self._is_tty and not self._plain
         self._last_status_line: float = 0.0
         self._last_state: str | None = None
         # Diff state for the non-TTY stream path: the last record printed,
@@ -141,7 +157,7 @@ class CLIDashboard:
                     self._handle_approval_prompt(gate)
                     continue
 
-                if self._is_tty:
+                if self._redraw:
                     self._render_screen(state)
                 else:
                     self._poll_activity()
@@ -169,32 +185,67 @@ class CLIDashboard:
         """Presents the HITL question/options and reads user input.
 
         Blocks the monitor loop (which is fine — the agent is also blocked)
-        until the user enters a valid choice number or presses Ctrl+C.
+        until the user enters a valid choice number or presses Ctrl+C. A
+        ``text`` question takes a typed answer instead (the person answering
+        a form question in AA); an empty answer means "answer it in the
+        browser". The typed answer is sent to the controller and printed
+        nowhere else.
 
         Args:
             approval: The open gate, as the port's ApprovalRequest DTO.
         """
-        self._clear_screen()
-        sep = "─" * 52
-        print(f"\n AutoApply — Agent Approval Required [{approval.checkpoint}]")  # noqa: T201
-        print(sep)  # noqa: T201
+        plain = self._plain
+        if not plain:
+            self._clear_screen()
+        rule = "" if plain else "─" * 52
+        print(f"\n {get_text('approval.heading')} [{approval.checkpoint}]")  # noqa: T201
+        if rule:
+            print(rule)  # noqa: T201
+        if plain:
+            print(f" {get_text('approval.question')}:")  # noqa: T201
         print(f" {approval.question}")  # noqa: T201
-        print(sep)  # noqa: T201
-        for idx, opt in enumerate(approval.options, start=1):
-            print(f"  {idx}. {opt}")  # noqa: T201
-        print(sep)  # noqa: T201
+        if rule:
+            print(rule)  # noqa: T201
+        wait = approval.wait_s
+        print(" " + (get_text("approval.wait_no_limit") if wait is None else  # noqa: T201
+                     get_text("approval.wait_minutes", minutes=max(1, round(wait / 60)))))
+
+        if approval.kind == "text":
+            answer = ""
+            try:
+                answer = input(f" {get_text('approval.type_answer')}\n > ").strip()
+            except EOFError:
+                answer = ""
+            except KeyboardInterrupt:
+                print(f"\n {get_text('approval.interrupted')}")  # noqa: T201
+                answer = ""
+            self.controller.provide_approval(approval.context_id, answer or "skip")
+            return
+
+        options = approval.options
+        if plain:
+            print(f" {get_text('approval.choices')}:")  # noqa: T201
+        for idx, opt in enumerate(options, start=1):
+            label = option_label(opt)
+            if plain:
+                print(" " + get_text("approval.option_line", index=idx,  # noqa: T201
+                                     count=len(options), label=label))
+            else:
+                print(f"  {idx}. {label}")  # noqa: T201
+        if rule:
+            print(rule)  # noqa: T201
 
         choice = "skip"
         try:
-            raw = input(" Enter choice number (or press Enter to skip): ").strip()
+            raw = input(f" {get_text('approval.choose_number')} ").strip()
             if raw.isdigit():
                 idx_choice = int(raw) - 1
-                if 0 <= idx_choice < len(approval.options):
-                    choice = approval.options[idx_choice]
+                if 0 <= idx_choice < len(options):
+                    choice = options[idx_choice]
         except EOFError:
             pass
         except KeyboardInterrupt:
-            print("\n Interrupted — skipping this checkpoint.")  # noqa: T201
+            print(f"\n {get_text('approval.interrupted')}")  # noqa: T201
             choice = "skip"
 
         self.controller.provide_approval(approval.context_id, choice)

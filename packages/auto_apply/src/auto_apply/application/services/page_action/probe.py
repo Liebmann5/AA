@@ -6,7 +6,9 @@ and what the viewport looks like. The click ladder and the scroller both
 judge from this one probe; nothing else in AA runs elementFromPoint.
 
 Verdict vocabulary (three-plus-one outcomes, and undetermined proceeds):
-    "ok"         — topmost at the centre point is the target (or wraps it)
+    "ok"         — topmost at the centre point is the target (or wraps it,
+                   or is inside one of the target's own labels, which
+                   activates it: ``reached`` = "label")
     "occluded:X" — something else is on top (a banner, a sticky header)
     "pane-clip"  — the topmost element sits inside one of the target's OWN
                    scrolling ancestors: the target is clipped by that pane's
@@ -109,6 +111,20 @@ if (cx < 0 || cy < 0 || cx > vw || cy > vh) {
                 }
             }
         }
+        if (!found && elem.labels) {
+            // Clicking a control's own label activates the control (HTML
+            // "label activation behavior"): a native radio drawn as a 1px
+            // input under its label's text is reached through that text.
+            // Not when the hit is a link or other control inside the label
+            // (an "I agree to the <a>terms</a>" link navigates instead).
+            for (var li = 0; li < elem.labels.length && !found; li++) {
+                var lab = elem.labels[li];
+                for (var h = top; h; h = up(h)) {
+                    if (h === lab) { found = true; result.reached = 'label'; break; }
+                    if (h !== elem && isInteractive(h)) { break; }
+                }
+            }
+        }
         if (!found) {
             // D12: if the topmost element sits inside one of the target's
             // OWN scrolling ancestors, the target is clipped by that pane's
@@ -127,6 +143,13 @@ if (cx < 0 || cy < 0 || cx > vw || cy > vh) {
                 : 'occluded:' + (top.tagName || '?').toLowerCase();
         }
     }
+}
+function isInteractive(el) {
+    var tag = (el.tagName || '').toLowerCase();
+    if (tag === 'a' && el.hasAttribute('href')) { return true; }
+    if (/^(button|input|select|textarea|summary)$/.test(tag)) { return true; }
+    var role = (el.getAttribute && el.getAttribute('role') || '').toLowerCase();
+    return /^(link|button|checkbox|radio|switch|tab|menuitem|option|combobox|textbox)$/.test(role);
 }
 function isScroller(el) {
     var o = window.getComputedStyle(el);

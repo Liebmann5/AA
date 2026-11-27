@@ -82,6 +82,8 @@ nav:
       - Labelling: user_guide/labelling.md
       - Profiles and Privacy: user_guide/profiles_and_privacy.md
       - Admin Policy: user_guide/admin_policy.md
+      - Accessibility Settings: user_guide/accessibility.md
+      - Checking AA's Answers: user_guide/answers.md
 
   - Reference:
       - Overview: reference/index.md
@@ -98,6 +100,7 @@ nav:
       - Running Tests: developer_guide/running_tests.md
       - Contribution Workflow: developer_guide/contribution_workflow.md
       - Adding an ATS Platform: developer_guide/adding_an_ats_platform.md
+      - Adding a Form Language: developer_guide/adding_a_form_language.md
       - Verifying Platform Search: developer_guide/verifying_platform_search.md
       - Documentation Standards: DOCUMENTATION_STANDARDS.md
       - Releasing: developer_guide/releasing.md
@@ -114,6 +117,8 @@ nav:
       - Evasion Framework: architecture/evasion_framework.md
       - Engineering Philosophy: ENGINEERING_PHILOSOPHY.md
       - Architecture Bible: AA_ARCHITECTURE_BIBLE.md
+      - "pagecomp: overview": pagecomp/README.md
+      - "pagecomp: blueprint and evidence": pagecomp/BLUEPRINT.md
 
   - Decisions:
       - Overview: adr/index.md
@@ -137,6 +142,31 @@ nav:
       - "018 Layered settings": adr/018_layered_settings_and_motion_profile.md
       - "019 Search surface catalog and query builder": adr/019_search_surface_catalog_and_query_builder.md
       - "020 Automated site-restricted search": adr/020_automated_site_search.md
+      - "021 Search pieces through verified channels (proposed)": adr/021_search_pieces_through_verified_channels.md
+      - "022 Every page identified, bounded and recorded (proposed)": adr/022_every_page_identified_bounded_recorded.md
+      - "023 The application step engine (proposed)": adr/023_application_step_engine.md
+      - "024 Accessibility accommodations (proposed)": adr/024_accessibility_accommodations.md
+      - "025 Application forms in any language (proposed)": adr/025_forms_in_any_language.md
+      - "026 Answer review, tests and external steps (proposed)": adr/026_answer_review_and_external_steps.md
+
+  - Page comprehension:
+      - Index: comprehension/00_index.md
+      - Charter: comprehension/01_charter.md
+      - Capability ledger: comprehension/02_ledger.md
+      - Ledger part 2: comprehension/02_ledger_part2.md
+      - Ledger part 3: comprehension/02_ledger_part3.md
+      - Ledger part 4: comprehension/02_ledger_part4.md
+      - Philosophy and Bible conformance: comprehension/03_philosophy_and_bible_conformance.md
+      - Requirements: comprehension/04_requirements.md
+      - Architecture: comprehension/05_architecture.md
+      - Mathematics: comprehension/06_mathematics.md
+      - Footprint and defences: comprehension/07_footprint_and_defences.md
+      - Evidence and research: comprehension/08_evidence_and_research.md
+      - Verification: comprehension/09_verification.md
+      - Gap analysis and build plan: comprehension/10_gap_analysis_and_build_plan.md
+      - Risks and open questions: comprehension/11_risks_and_open_questions.md
+      - Edge cases and adversity: comprehension/12_edge_cases_and_adversity.md
+      - Production readiness: comprehension/13_production_readiness.md
 
   - Research:
       - Overview: research_module/index.md

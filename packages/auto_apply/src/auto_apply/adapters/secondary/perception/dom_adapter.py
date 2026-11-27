@@ -75,6 +75,14 @@ class DOMScanner(PerceptionPort):
         except Exception:
             return ""
 
+    def get_current_url(self) -> str:
+        """Return the current page address (PerceptionPort contract); "" on failure."""
+        try:
+            url = self.browser.current_url
+        except Exception:
+            return ""
+        return url if isinstance(url, str) else ""
+
     def get_current_state(self) -> ApplicationState:
         """Return ApplicationState.UNKNOWN — DOMScanner does not classify pages.
 

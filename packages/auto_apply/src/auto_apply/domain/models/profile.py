@@ -26,12 +26,6 @@ Document-path storage contract (resume_path, cover_letter):
 from pathlib import Path
 from typing import Any, Literal
 
-from auto_apply.domain.config import CHECKPOINTS_DIR
-from auto_apply.domain.models.motion_profile import (
-    MOTION_PROFILE_NAMES,
-    MotionConfig,
-)
-
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -41,6 +35,12 @@ from pydantic import (
     HttpUrl,
     ValidationInfo,
     field_validator,
+)
+
+from auto_apply.domain.config import CHECKPOINTS_DIR
+from auto_apply.domain.models.motion_profile import (
+    MOTION_PROFILE_NAMES,
+    MotionConfig,
 )
 
 # --- Type Aliases for controlled vocabularies ---
@@ -156,39 +156,13 @@ def _resolve_relative_document_path(root: Path, value: str) -> Path | None:
     return None
 
 
-DOCUMENT_FILE_SUFFIXES: frozenset[str] = frozenset({".pdf", ".doc", ".docx", ".txt"})
-"""Suffixes that mark a document field's value as a file path rather than prose."""
-
-
-def is_document_path(value: str | None) -> bool:
-    """True when a document field's value names a file rather than prose.
-
-    This is the SINGLE predicate for the question "does this value name a
-    file?" — defined here once and used by the settings writer, the model
-    validator, and the applications engine, so the rule cannot drift between
-    the places that write a cover letter and the place that attaches it.
-
-    Shape check only — never touches the filesystem. A value like
-    ``"resume.pdf"`` or ``"documents/cover.docx"`` returns True; a sentence,
-    a URL, or any prose returns False. A value containing ``"://"`` is a link,
-    not a local file (AA cannot upload a URL as a file), and a value with a
-    newline is prose even if it happens to end in a document suffix. Whether
-    the named file actually exists is decided by the resolved accessors
-    (``get_resolved_resume_path`` / ``get_resolved_cover_letter_path``), not
-    here.
-
-    Args:
-        value: The stored document value, or None.
-
-    Returns:
-        True if the value has the shape of a file path.
-    """
-    if not value or not value.strip():
-        return False
-    text = value.strip()
-    if "\n" in text or "://" in text:
-        return False
-    return Path(text).suffix.lower() in DOCUMENT_FILE_SUFFIXES
+# The document-path predicate lives in a pure module (no pydantic, no AA
+# configuration) so the application engine can use it without importing the
+# whole profile model; re-exported here for every existing import.
+from auto_apply.domain.models.documents import (  # noqa: E402
+    DOCUMENT_FILE_SUFFIXES,  # noqa: F401 - public here before the move; kept importable
+    is_document_path,
+)
 
 
 def prepare_cover_letter_for_storage(value: str) -> str | None:
@@ -466,13 +440,69 @@ class EEOInfo(BaseModel):
 #! Ask the user if they have any disabilities that would require accommodations then
 #! rather than save them just ask users' if they'd like to implement any of these
 #! accessibility settings.
+class AnswerPreferences(BaseModel):
+    """How AA may answer for you, and when you check its answers (ADR-026).
+
+    Two independent choices, separate from whether AA may *send* an
+    application without asking (``app_config.human_review_checkpoints``):
+
+    * ``trust`` — which answers AA may send without showing you first.
+      ``never`` (the default): every answer AA wrote, matched by meaning, or
+      took from a sensitive part of your profile is shown to you.
+      ``own_words``: your own words go without review (profile facts, saved
+      answers matched word for word, your earlier answers this session).
+      ``matched``: also saved answers matched by meaning. ``drafts``: also
+      AI drafts that pass AA's checks. A low-confidence answer is always
+      shown to you, at every level.
+    * ``review_timing`` — when: ``each`` (as each is filled), ``page`` (all of
+      a page's before AA moves on), ``end`` (all of them before sending).
+
+    ``drafts_enabled`` turns AI drafts for open-ended questions on or off.
+    Each ``None`` means "use AA's default" (``applications`` in
+    runtime_defaults.yaml).
+    """
+    model_config = ConfigDict(validate_assignment=True)
+
+    trust: Literal["never", "own_words", "matched", "drafts"] | None = Field(
+        None, description="Which answers AA may send without showing you first.")
+    review_timing: Literal["each", "page", "end"] | None = Field(
+        None, description="When AA shows you the answers you asked to check: as each is "
+                          "filled, a page at a time, or all before sending.")
+    drafts_enabled: bool | None = Field(
+        None, description="Let AA draft answers to open-ended questions with an AI model.")
+
+
 class AccessibilityPreferences(BaseModel):
-    """User preferences for application accessibility and localization."""
+    """How the person wants AA to work with them: settings, never diagnoses.
+
+    AA stores the accommodations a person chooses, not the reason for them:
+    nothing here records a disability, and nothing here is ever used to
+    answer an application form (a pin enforces that no answer source reads
+    these settings). Each ``None`` means "use AA's default"
+    (``accessibility`` in runtime_defaults.yaml), so the defaults live in
+    one place; the profile carries only what the person changed.
+    """
     model_config = ConfigDict(validate_assignment=True)
 
     ui_language: str = Field("en-US", description="The language code for the UI.")
     prefers_high_contrast: bool = False
-    prefers_audio_captchas: bool = False
+    prefers_audio_captchas: bool = Field(
+        False, description="Mention a challenge's audio option when AA hands one to you.")
+    time_limits: Literal["1x", "3x", "10x", "20x", "off"] | None = Field(
+        None, description="How long AA waits for your answers: standard (1x), 3, 10 or 20 "
+                          "times as long, or no time limit (off).")
+    answer_in_aa: bool | None = Field(
+        None, description="Answer the questions AA cannot answer in AA's own window, "
+                          "instead of in the website's form.")
+    focus_asked_field: bool | None = Field(
+        None, description="Move the browser's keyboard focus to a question AA asks you "
+                          "to answer there.")
+    screen_reader_mode: bool | None = Field(
+        None, description="Plain, linear text in the terminal: no screen redraws, no "
+                          "box drawing, every choice read out in full.")
+    reduced_motion: bool | None = Field(None, description="No animation or screen redraws.")
+    font_scale: float | None = Field(None, ge=0.8, le=3.0,
+                                     description="Text size in AA's windows (1.0 = normal).")
 
 
 class JobSearchPreferences(BaseModel):
@@ -692,14 +722,18 @@ class ApplicationConfig(BaseModel):
 class CustomAnswerTemplate(BaseModel):
     """A pre-authored answer for a specific type of application question.
 
-    When ApplicationsWorkflow encounters a custom question, it checks
-    ``custom_answer_templates`` for a matching keyword before invoking
-    GPT4All.  Keyword matching is fuzzy (SpaCy similarity), so
-    ``"why this role"`` will match ``"Why are you interested in this position?"``.
+    The application step engine answers a free-text question with a
+    template when every content word of one of its keyword phrases appears
+    in the question (case and punctuation ignored; "the", "your" and the
+    like do not count). Matching is deliberately literal: a pre-written
+    answer sent to the wrong question is worse than being asked, so
+    ``"why this role"`` matches "Why do you want this role?" but not "Why
+    are you interested in this position?" — add a phrase for each wording
+    you want covered.
 
     Attributes:
-        keywords: Keywords or phrases this answer applies to.  AA uses
-            similarity matching, not exact matching.  Examples:
+        keywords: Keywords or phrases this answer applies to; each phrase
+            matches a question containing all of its words. Examples:
             ``["why this role", "why this company", "career goals"]``.
         answer: Your pre-written answer.  Keep under 500 characters for
             form compatibility.
@@ -712,8 +746,9 @@ class CustomAnswerTemplate(BaseModel):
         ...,
         min_length=1,
         description=(
-            "Keywords or phrases this answer applies to. "
-            "AA uses similarity matching, not exact matching. "
+            "Keywords or phrases this answer applies to. A phrase matches "
+            "a question that contains all of its words (case and "
+            "punctuation ignored). "
             "Examples: ['why this role', 'why this company', 'career goals']"
         ),
     )
@@ -761,6 +796,7 @@ class UserProfile(BaseModel):
 
     eeo_info: EEOInfo = Field(default_factory=EEOInfo)
     accessibility_preferences: AccessibilityPreferences = Field(default_factory=AccessibilityPreferences)  # noqa: E501
+    answer_preferences: AnswerPreferences = Field(default_factory=AnswerPreferences)
 
     search_preferences: JobSearchPreferences
     application_preferences: ApplicationPreferences = Field(default_factory=ApplicationPreferences)  # noqa: E501
@@ -877,6 +913,32 @@ class UserProfile(BaseModel):
             # into the nested discovery section.
             if ac.search_platforms is not None:
                 result["search_platforms"] = list(ac.search_platforms)
+
+        # ── Accessibility settings ────────────────────────────────────
+        # Emitted only when the person set them: None means "inherit the
+        # YAML default". The registry folds these flat inputs into the
+        # nested accessibility section.
+        ap = self.accessibility_preferences
+        if ap is not None:
+            for key in ("time_limits", "answer_in_aa", "focus_asked_field",
+                        "screen_reader_mode", "reduced_motion", "font_scale"):
+                value = getattr(ap, key, None)
+                if value is not None:
+                    result[f"accessibility_{key}"] = value
+            if ap.prefers_high_contrast:
+                result["accessibility_high_contrast"] = True
+            if ap.prefers_audio_captchas:
+                result["accessibility_audio_challenge_hint"] = True
+
+        # ── Answer review settings (ADR-026) ──────────────────────────
+        # Emitted only when set; the registry folds answers_<key> into the
+        # nested applications section.
+        anp = self.answer_preferences
+        if anp is not None:
+            for key in ("trust", "review_timing", "drafts_enabled"):
+                value = getattr(anp, key, None)
+                if value is not None:
+                    result[f"answers_{key}"] = value
 
         # ── Politeness settings ───────────────────────────────────────
         if self.politeness:

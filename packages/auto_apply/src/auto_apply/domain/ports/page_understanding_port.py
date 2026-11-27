@@ -16,6 +16,7 @@ Correct usage:
             jobs = self._extract_from_structure(structure)
 
 Adapters that implement this port:
+    PagecompSerpAdapter            — search pages read by pagecomp; wraps the math adapter
     MathPageUnderstandingAdapter   — uses Math DOM + Hungarian + VIPS
     BS4PageUnderstandingAdapter    — uses BeautifulSoup (fallback, no browser needed)
     NullPageUnderstandingAdapter   — no-op, returns empty structures (worst-case)
@@ -25,6 +26,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar, Protocol, runtime_checkable
+
+from auto_apply.domain.models.page_record import (
+    ListingDetectionFacts,
+    ObservationFacts,
+)
 
 
 class CardResolutionState(str, Enum):
@@ -95,6 +101,12 @@ class JobCardInfo:
         resolution_state: resolved | multi_route | deferred | no_destination.
         identity_attribute: Learned per-card identity attribute name, if any.
         identity_value: That attribute's value on this card, if any.
+        title_source: ``heading`` | ``anchor_name`` | ``none`` (S1 trace).
+        title_truncated: True when the title was cut at the text cap.
+        shown_destination: For a link that hides its destination (Google's
+            ``/goto`` redirect), the destination the results page itself
+            shows next to it (``jobs.jobvite.com/acme/job/oX1``, as
+            displayed): page evidence, confirmed only by the visit.
     """
 
     title: str = ""
@@ -111,6 +123,9 @@ class JobCardInfo:
     resolution_state: str = CardResolutionState.NO_DESTINATION.value
     identity_attribute: str = ""
     identity_value: str = ""
+    title_source: str = "none"
+    title_truncated: bool = False
+    shown_destination: str = ""
 
     @property
     def has_ad_rejection(self) -> bool:
@@ -126,6 +141,12 @@ class SerpResolutionReport:
     chosen_level: str = "detected"
     detected_parent_count: int = 0
     note: str = ""
+    #: Level the records were read at under the record-root rule ("" when
+    #: no level satisfied it and the identity level was used instead).
+    record_level: str = ""
+    #: Level the identity attributes were learned at.
+    identity_level: str = ""
+    level_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -150,6 +171,19 @@ class SERPStructure:
     pagination_present: bool = False
     total_results_text: str = ""
     resolution_report: SerpResolutionReport = field(default_factory=SerpResolutionReport)
+    #: S1 trace inputs: extraction facts, detection numbers, analysis time.
+    observation: ObservationFacts | None = None
+    listing_facts: ListingDetectionFacts | None = None
+    analyze_ms: float = 0.0
+    #: The reader's judgment of the page as a whole, when it has one.
+    #: ``"not-a-job-list"``: the page holds no list of job postings, so no
+    #: other route may re-read it as one (FallbackSerpExtractor honours it).
+    page_verdict: str = ""
+    #: The destination host of every result the reader found on the page,
+    #: job-like or not (an opaque route counts by the host the page shows
+    #: for it), in page order. Empty when the reader cannot tell. Read by
+    #: the site-restriction check (domain/services/site_restriction.py).
+    result_hosts: tuple[str, ...] = ()
 
     @property
     def total_cards(self) -> int:
@@ -234,6 +268,10 @@ class FormFieldInfo:
         placeholder: Placeholder text if present.
         is_required: Whether the field is required.
         is_honeypot: Whether this appears to be a honeypot trap.
+        is_hidden: Whether a person cannot see the control now (never
+            filled directly; a hidden backing input is operated through its
+            visible widget).
+        requiredness: ``"REQUIRED"``, ``"OPTIONAL"`` or ``"UNKNOWN"``.
         options: For select/radio fields, the available options.
     """
 
@@ -245,6 +283,8 @@ class FormFieldInfo:
     is_required: bool = False
     is_honeypot: bool = False
     options: tuple[str, ...] = field(default=())
+    is_hidden: bool = False
+    requiredness: str = "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -294,6 +334,8 @@ class PageUnderstandingPort(Protocol):
     """Contract for all page analysis capabilities.
 
     Implementations:
+        PagecompSerpAdapter          — search pages via pagecomp (serp_reader:
+                                       pagecomp); wraps the math adapter
         MathPageUnderstandingAdapter — primary, uses JS DOM + math algorithms
         BS4PageUnderstandingAdapter  — fallback, uses BeautifulSoup HTML parsing
         NullPageUnderstandingAdapter — no-op, returns empty structures

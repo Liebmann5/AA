@@ -1,7 +1,7 @@
 ---
 title: "Verifying Platform Search Data"
 status: needs-review
-last_verified: 2026-10-28
+last_verified: 2026-11-08
 verified_against: "resources/ats/*.yaml as of the query-builder platform expansion"
 audience: contributors
 ---
@@ -44,6 +44,72 @@ python -m auto_apply --print-plan --platforms <name>
 The preview prints the composed `site:`-restricted query the session would
 send for that platform, per enabled engine — or says why none was planned.
 
+## What each engine documents (read 2026-11-08)
+
+Only the engine's own pages count as `vendor`. Everything else is
+`third_party` until measured.
+
+- **Google** ("Refine Google searches"; Search Central, "site: search
+  operator"): quotes, `site:`, `-`, `before:`, `after:` and `filetype:`.
+  `site:example.com` includes every subdomain (`www.`, `recipes.`); a path
+  limits results to that URL prefix; Google says a `site:` search is not a
+  complete list. `OR`, `intitle:` and `inurl:` are not on the current pages.
+  `OR` with `site:` was measured on 2026-11-08 (`google.surface.yaml`).
+- **Bing** ("Advanced search keywords", "Advanced search options"): `site:`
+  works on a domain, a top-level domain or a directory "not more than two
+  levels deep", and several sites can be grouped with uppercase `OR` in
+  parentheses. Precedence is `()`, `""`, `NOT`/`-`, `AND`, `OR`, so `OR`
+  terms go in parentheses. `intitle:`, `inbody:` and `inanchor:` take one
+  term each.
+- **DuckDuckGo** (help page, "advanced syntax"): `site:`, `-site:`,
+  quotes, `intitle:`, `inurl:`, `filetype:`. `OR` is not documented (two
+  words already mean either). The page says that when advanced syntax finds
+  nothing it shows related results instead, and that some advanced syntax
+  "isn't operating 100% correctly".
+
+What follows for verification: an engine can **silently** widen a search
+(Bing answered `site:jobs.jobvite.com "Backend Engineer"` with 3,090
+Greenhouse postings on 2026-11-08, while honouring `site:jobs.gohire.io`
+the same day). A query "works" only when the results are on the platform.
+Count them; do not trust a non-empty page.
+
+## How to measure (owner's browser, aa_capture)
+
+1. Type the query exactly as the table below gives it, on google.com and
+   then on bing.com (web results, not a jobs tab).
+2. Capture each results page with `aa_capture.py` (label
+   `serp-site-restricted`), upload the captures, and record them here.
+3. The measurement is the share of organic results whose address is on the
+   platform's hosts (`hosts:` in the descriptor), read by pagecomp. All on
+   the platform → `measured` for that engine; some → note the share; none
+   → the engine does not honour the restriction for that platform.
+
+## Recording which engines a restriction holds on
+
+`search_restriction_engines: [google]` in a descriptor limits automation to
+the engines the restriction was measured on. Leave it out only when the
+evidence covers every engine (vendor documentation). The planner notes every
+platform and engine it leaves out, and those searches do not use the
+session's search budget.
+
+## Results, 2026-11-08 (owner captures, `site:<restriction> ("Software Engineer")`)
+
+| Platform | Google | Bing |
+|---|---|---|
+| greenhouse (`boards.greenhouse.io`) | 9 of 9 on the host | 10 of 10 (see note) |
+| greenhouse (`job-boards.greenhouse.io`) | 9 of 9 on the host | the `boards.` list again |
+| lever | 9 of 9 | 0 of 10: the `boards.greenhouse.io` list |
+| ashby | 9 of 9 | 0 of 10: same list |
+| workday | 9 of 9 (one a careers page) | 0 of 10: same list |
+| smartrecruiters | 9 of 9 | 0 of 10: same list |
+| workable | 8 of 8 | 0 of 10: same list |
+| jobvite (`("Backend Engineer")`, and without brackets) | 9 of 9 each | not run (LR-2) |
+
+Note: Bing returned one identical list of ten `boards.greenhouse.io`
+results for all seven searches, whatever the `site:` value. Its result for
+Greenhouse is therefore no evidence either. All seven platforms are
+`measured` on Google only.
+
 ## Two measurements that apply to many platforms
 
 1. **Subdomain tenancy + shared path.** For platforms like BambooHR
@@ -56,6 +122,23 @@ send for that platform, per enabled engine — or says why none was planned.
    paste the same query into Bing and check whether results come back at all;
    if not, that platform's Bing searches stay host-only.
 
+## What AA checks at run time
+
+A measurement in this guide says an engine honoured a restriction when you
+ran it. AA checks again on every search (Bible issue register, LR-19): when a
+results page shows three or more results and none is on the restricted site,
+the page is not read and the typed search is tried; when every route drops
+the restriction, that restriction is not sent to that engine again in the
+session. The log line names the result:
+
+- `Google: site:jobs.lever.co kept via direct URL — 9 of 9 results on jobs.lever.co`
+- `Google: the engine dropped site:jobs.ashbyhq.com via direct URL — 0 of 10 results ...`
+- `google ignored the restriction site:jobs.ashbyhq.com on every route (...)`
+
+The last one is also shown in the session's results view. A run's log is a
+measurement in AA's own browser: record it here next to the hand-run result
+when the two differ.
+
 ## Per-platform checklist
 
 For each platform: paste the Google query, then the Bing query. A correct
@@ -63,7 +146,7 @@ result shows only postings from that platform's hosts.
 
 | Platform | Paste into Google | Paste into Bing |
 |---|---|---|
-| greenhouse | `site:boards.greenhouse.io ("Software Engineer")` | same, on bing.com (web results) |
+| greenhouse | `site:boards.greenhouse.io ("Software Engineer")`, then `site:job-boards.greenhouse.io ("Software Engineer")` (the newer board host: every Greenhouse posting Bing returned on 2026-11-08 was on it) | same, on bing.com (web results) |
 | lever | `site:jobs.lever.co ("Software Engineer")` | same |
 | workday | `site:myworkdayjobs.com ("Software Engineer")` | same |
 | icims | `site:icims.com ("Software Engineer")` | same |
@@ -73,7 +156,7 @@ result shows only postings from that platform's hosts.
 | rippling | `site:ats.rippling.com ("Software Engineer")` | same |
 | workable | `site:apply.workable.com ("Software Engineer")` | same |
 | smartrecruiters | `site:jobs.smartrecruiters.com ("Software Engineer")` | same |
-| jobvite | `site:jobs.jobvite.com ("Software Engineer")` — measured (reported 2026-10-27) | same |
+| jobvite | `site:jobs.jobvite.com ("Software Engineer")` — measured (reported 2026-10-27); holds only with no other words in the query (measured 2026-10-30) | **not honoured** — measured 2026-10-30: Bing returned other sites with and without extra words |
 | recruitee | `site:recruitee.com ("Software Engineer")` | same |
 | gusto | `site:jobs.gusto.com/boards ("Software Engineer")` | host-only variant |
 | pinpointhq | `site:pinpointhq.com ("Software Engineer")` | same |
@@ -106,4 +189,6 @@ result shows only postings from that platform's hosts.
 - **gitjobs.dev, techjobsforgood.com** — job boards, not ATS platforms. If
   their search URLs are verified, they become catalog surfaces
   (`resources/search_surfaces/`), not ATS descriptors.
-- **Bing jobs vertical** — already a catalog surface (`bing.surface.yaml`).
+- **Bing jobs vertical** — a catalog surface (`bing.surface.yaml`), retired by
+  Bing in early November 2026 (the page moves itself to Bing's home page);
+  see the Bible's issue register, LR-17.

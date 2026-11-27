@@ -286,3 +286,24 @@ class EventBus:
             f"errors={stats['error_count']}, "
             f"subscriptions={stats['total_subscriptions']})"
         )
+
+def unique_new_count(payload: Any, seen: set[str]) -> int:
+    """How many jobs in a JOBS_DISCOVERED payload were not counted before.
+
+    The payload's ``keys`` are job identities (the discovery verifier's
+    dedup key). Keys already in ``seen`` are not counted again, and the new
+    ones are added to it, so a session's "Jobs discovered" counts unique
+    jobs however many discovery passes saw them. A payload without ``keys``
+    falls back to its ``count``.
+    """
+    if not isinstance(payload, dict):
+        return 0
+    keys = payload.get("keys")
+    if isinstance(keys, (list, tuple)):
+        fresh = {str(k) for k in keys if str(k) not in seen}
+        seen.update(fresh)
+        return len(fresh)
+    try:
+        return max(0, int(payload.get("count", 0)))
+    except (TypeError, ValueError):
+        return 0

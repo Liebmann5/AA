@@ -19,12 +19,16 @@ urls:
     base: "https://www.bing.com/search"
     parameters:
       - {name: q, source: query}
+  # Retired by Bing: since early November 2026 this address moves itself to
+  # https://www.bing.com/?form=REDIRERR (Bible issue register LR-17). Kept
+  # for automation only until an engine can declare fallback addresses
+  # (LR-16); AA's arrival check stops any read of the moved page.
   jobs:
     base: "https://www.bing.com/jobs"
     parameters:
       - {name: q, source: query}
     date_parameter: filters
-default_url: jobs
+default_url: web
 automation_url: jobs
 # A site: restriction is a web search, not a jobs-vertical search: the
 # composer uses this template whenever the request carries one. Automation

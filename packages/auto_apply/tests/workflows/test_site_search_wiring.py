@@ -23,6 +23,7 @@ from auto_apply.domain.services.search_planner import (
     PlannedQuery,
     PlannedSearch,
     PlannerNote,
+    UnusedEngine,
 )
 
 
@@ -305,7 +306,7 @@ def test_a_terminal_hit_is_dropped_and_never_followed():
         [_hit("https://jobs.jobvite.com/acme/job/1/apply/success")]
     )
     assert kept == []
-    assert counts == {"dropped": 0, "terminal": 1, "mined": 0}
+    assert counts == {"dropped": 0, "terminal": 1, "mined": 0, "shown": 0}
     registry.match.assert_not_called()
     workflow._task_queue.queue_task.assert_not_called()
 
@@ -320,7 +321,7 @@ def test_an_off_shape_hit_is_dropped_and_counted_by_default():
         [_hit("https://jobs.jobvite.com/acme")]
     )
     assert kept == []
-    assert counts == {"dropped": 1, "terminal": 0, "mined": 0}
+    assert counts == {"dropped": 1, "terminal": 0, "mined": 0, "shown": 0}
     workflow._task_queue.queue_task.assert_not_called()
 
 
@@ -335,7 +336,7 @@ def test_an_off_shape_hit_routes_to_company_mining_when_enabled():
         [_hit("https://jobs.jobvite.com/acme")]
     )
     assert kept == []
-    assert counts == {"dropped": 0, "terminal": 0, "mined": 1}
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 1, "shown": 0}
     workflow._task_queue.queue_task.assert_called_once()
     task = workflow._task_queue.queue_task.call_args.args[0]
     assert task.task_type == TaskType.DISCOVER_COMPANY
@@ -352,7 +353,45 @@ def test_an_on_shape_posting_is_kept():
     hit = _hit("https://jobs.jobvite.com/acme/job/123")
     kept, counts = workflow._handle_off_shape_hits([hit])
     assert kept == [hit]
-    assert counts == {"dropped": 0, "terminal": 0, "mined": 0}
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 0, "shown": 0}
+
+
+def test_an_opaque_hit_is_kept_on_its_shown_destination():
+    """Google's /goto hides the destination; the results page shows it.
+    Live run 2026-11-08: all 9 Google results for site:jobs.jobvite.com were
+    dropped as off-shape because the shape check read the /goto address.
+    Owner ruling 2026-11-04: opaque routes count. A shown destination on
+    another platform is still dropped."""
+    from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
+
+    workflow = _off_shape_workflow(ATSRegistry())
+    on = _hit("https://www.google.com/goto?url=CAESaQHEIkXXps5J")
+    on.metadata["shown_destination"] = "jobs.jobvite.com/acme/job/oX1abc"
+    off = _hit("https://www.google.com/goto?url=CAESbQHEIkXXnzIl")
+    off.metadata["shown_destination"] = "job-boards.greenhouse.io/acme/jobs/5394128008"
+    bare = _hit("https://www.google.com/goto?url=CAESawHEIkXX")
+    kept, counts = workflow._handle_off_shape_hits([on, off, bare])
+    assert kept == [on]
+    assert counts == {"dropped": 2, "terminal": 0, "mined": 0, "shown": 1}
+
+
+def test_a_shown_destination_is_read_as_a_host_not_a_suffix():
+    """GUARD (review of 2ef7019). The old cut at the first "/" happened to
+    read these right; the registry underneath did not (it claimed
+    "evil.com/jobs.jobvite.com" for Jobvite: TEETH in
+    tests/domain/test_route_arrival.py). Pinned so a later "simplification"
+    cannot pass a raw shown string to the registry."""
+    from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
+
+    workflow = _off_shape_workflow(ATSRegistry())
+    hits = []
+    for shown in ("evil.com/jobs.jobvite.com", "evil.com/x@jobs.jobvite.com",
+                  "jobs.jobvite.com@evil.com", "https:"):
+        hit = _hit("https://www.google.com/goto?url=CAESaQHEIkXXps5J" + str(len(hits)))
+        hit.metadata["shown_destination"] = shown
+        hits.append(hit)
+    kept, counts = workflow._handle_off_shape_hits(hits)
+    assert kept == [] and counts["shown"] == 0
 
 
 def test_unstamped_jobs_pass_untouched():
@@ -362,7 +401,7 @@ def test_unstamped_jobs_pass_untouched():
     job = Job(title="Engineer", company="Acme", url="https://acme.example/1", source="bing")
     kept, counts = workflow._handle_off_shape_hits([job])
     assert kept == [job]
-    assert counts == {"dropped": 0, "terminal": 0, "mined": 0}
+    assert counts == {"dropped": 0, "terminal": 0, "mined": 0, "shown": 0}
     registry.is_terminal_page.assert_not_called()
 
 
@@ -377,3 +416,68 @@ def test_off_shape_counts_reach_the_completion_summary():
     assert payload["off_shape_dropped"] == 2
     assert payload["terminal_dropped"] == 1
     assert payload["routed_to_mining"] == 1
+
+
+def test_the_shown_count_reaches_the_completion_summary_and_the_feed():
+    """Kept-on-shown-destination hits are reported, not only logged."""
+    from auto_apply.application.services.session_controller import _render_discovery_complete
+
+    workflow = _off_shape_workflow(MagicMock())
+    workflow._emit_completion_summary(_DiscoveryStats(kept_on_shown_destination=9))
+    payload = workflow._event_bus.publish.call_args.args[1]
+    assert payload["kept_on_shown_destination"] == 9
+    assert "9 kept on the destination the page shows" in _render_discovery_complete(payload)
+
+
+def test_a_kept_opaque_route_is_not_reported_as_navigation_chrome():
+    """TEETH: the discovery verifier flagged every kept /goto hit as "job
+    URL is hosted on a search engine" and failed the run's report."""
+    from auto_apply.application.services.auditing.discovery_verification import (
+        DiscoveryVerifier,
+    )
+
+    hit = _hit("https://www.google.com/goto?url=CAESaQHEIkXXps5J")
+    hit.metadata["shown_destination"] = "jobs.jobvite.com/acme/job/oX1abc"
+    plain = _hit("https://www.google.com/search?q=x")
+    report = DiscoveryVerifier(engine_hosts=("google.com",)).verify([hit])
+    assert report.passed, report.details()
+    assert not DiscoveryVerifier(engine_hosts=("google.com",)).verify([plain]).passed
+
+
+def _named_provider(name: str):
+    provider = MagicMock()
+    provider.name = name
+    provider.requires_live_browser = False
+    provider.run.return_value = []
+    return provider
+
+
+def test_idle_engines_reach_the_completion_summary_and_the_log_teeth(caplog) -> None:
+    """TEETH: the plan's idle engines stopped at an INFO note in the log;
+    the round's DISCOVERY_COMPLETE now names them with their reason."""
+    class _IdlePlanner(_FakePlanner):
+        def plan(self, **kwargs) -> PlannedSearch:
+            self.calls.append(kwargs)
+            return PlannedSearch(
+                queries=self._queries,
+                unused_engines=(UnusedEngine("bing", "no_measured_platform"),
+                                UnusedEngine("indeed", "no_site_form")),
+            )
+
+    workflow = _workflow(
+        plan=_plan(use_ats_site_search=True, ats_platforms=("greenhouse",),
+                   active_providers=("google", "bing", "indeed")),
+        planner=_IdlePlanner(queries=[_planned_query()]),
+        providers=[_named_provider(n) for n in ("google", "bing", "indeed")],
+    )
+    with caplog.at_level(logging.WARNING):
+        workflow.run()
+    payload = next(
+        call.args[1] for call in workflow._event_bus.publish.call_args_list
+        if call.args and call.args[0].name == "DISCOVERY_COMPLETE"
+    )
+    assert payload["engines_not_searched"] == [
+        {"engine": "bing", "reason": "no_measured_platform"},
+        {"engine": "indeed", "reason": "no_site_form"},
+    ]
+    assert any("bing receives no search this session" in r.getMessage() for r in caplog.records)

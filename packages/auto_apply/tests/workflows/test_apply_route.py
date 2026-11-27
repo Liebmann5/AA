@@ -155,7 +155,7 @@ def test_off_host_apply_route_through_one_redirector(
     assert result.apply_target_host == "publisher.example"
     assert result.landed_host == "employer.example"
     assert result.apply_route_hops == 1
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"
+    assert result.outcome == "FAILED_NOTHING_FILLED"
 
 
 def test_posting_with_off_host_link_is_routed_not_filled(
@@ -203,7 +203,7 @@ def test_posting_with_off_host_link_is_routed_not_filled(
     assert result.landed_host == "employer.example"
     assert result.apply_route_hops == 1
     mock_interaction_port.fill.assert_not_called()
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"
+    assert result.outcome == "FAILED_NOTHING_FILLED"
 
 
 def test_apply_opening_a_new_tab_is_followed_and_closed(
@@ -252,7 +252,7 @@ def test_apply_opening_a_new_tab_is_followed_and_closed(
 
     context_manager.switch_to_new_tab.assert_called_once()
     assert result.landed_host == "employer.example"
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"
+    assert result.outcome == "FAILED_NOTHING_FILLED"
     context_manager.close_current_tab_and_return.assert_called_once()
 
 
@@ -362,7 +362,7 @@ def test_hidden_signin_modal_does_not_block_a_revealed_form(
     result = wf.run(sample_job)
 
     assert result.outcome != "ACCOUNT_REQUIRED"
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"  # reached the form stage
+    assert result.outcome == "FAILED_NOTHING_FILLED"  # reached the form stage
 
 
 def test_visible_signin_dialog_after_click_is_account_required(
@@ -455,7 +455,7 @@ def test_onsite_apply_modal_is_proceeded_with_not_account_required(
 
     assert result.outcome != "ACCOUNT_REQUIRED"
     assert result.outcome != "CAPTCHA_BLOCKED"
-    assert result.outcome == "FAILED_NO_SUBMIT_BUTTON"
+    assert result.outcome == "FAILED_NOTHING_FILLED"
 
 
 def test_redirect_loop_ends_honestly_never_hangs(
@@ -579,3 +579,36 @@ def test_jsless_fallback_needs_a_dialog_to_appear():
     )
     assert wf._auth_dialog_blocking(before_html=modal, after_html=modal) is False
     assert wf._auth_dialog_blocking(before_html=empty, after_html=modal) is True
+
+
+def test_an_opaque_route_confirmed_by_vetting_starts_from_its_real_address(
+    mock_profile,
+    sample_job,
+    mock_event_bus,
+    mock_job_repo,
+    mock_task_queue,
+    mock_text_matcher,
+    mock_interaction_port,
+):
+    """TEETH: a Google /goto hit, resolved and confirmed by vetting's arrival
+    check (metadata["resolved_url"]), was opened again through Google and
+    recorded with google.com as its posting host."""
+    posting = "https://jobs.jobvite.com/brahma/job/oAbCdEfG"
+    sample_job.url = "https://www.google.com/goto?url=CAESaQHEIkXXo_WqMhp-QAnfytxyPIc3nz1rqUjgMcnlZef"
+    sample_job.metadata["resolved_url"] = posting
+    browser = _RouteBrowser(pages={posting: _form_html()}, start="about:blank")
+    wf = _make_route_workflow(
+        browser,
+        mock_event_bus,
+        mock_job_repo,
+        mock_task_queue,
+        mock_text_matcher,
+        mock_interaction_port,
+        mock_profile,
+    )
+
+    result = wf.run(sample_job)
+
+    assert browser.get_calls[0] == posting
+    assert not any("google.com" in url for url in browser.get_calls)
+    assert result.posting_host == "jobs.jobvite.com"

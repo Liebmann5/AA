@@ -8,8 +8,11 @@ property the feature depends on from future edits.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from auto_apply.adapters.secondary.discovery.ats_registry import ATSRegistry
 from auto_apply.domain.models.search_query import QueryRequest
 from auto_apply.domain.models.search_surface import (
     SearchSurfaceSpec,
@@ -18,9 +21,16 @@ from auto_apply.domain.models.search_surface import (
 from auto_apply.domain.services.query_composer import compose
 from auto_apply.domain.services.search_planner import (
     AUTOMATION_STATUSES,
+    UNUSED_NO_MEASURED_PLATFORM,
+    UNUSED_NO_SITE_FORM,
+    UNUSED_NO_SITE_OPERATOR,
+    UNUSED_NO_USABLE_PLATFORM,
+    UNUSED_NOT_IN_CATALOG,
     PlatformTarget,
     SearchPlanner,
+    UnusedEngine,
 )
+from auto_apply.infrastructure.composition_root import _build_search_planner
 
 
 def _engine_spec(
@@ -281,11 +291,13 @@ def test_planning_is_deterministic() -> None:
     assert first == second
 
 
-def test_location_is_appended_only_when_the_engine_form_lacks_a_location_field() -> None:
-    """NEW SURFACE — location handling follows the engine form's fields.
+def test_location_is_never_typed_into_a_site_restricted_query__teeth() -> None:
+    """TEETH (failed against 75b8d13, which typed the place as bare words).
 
-    Mutation caught: always appending (duplicating the location into engines
-    that carry it in the URL) or never appending (dropping it on web forms).
+    Measured 2026-10-30: Google drops site: when words follow it. The
+    location stays on the planned query for vetting, the URL field carries
+    it where an engine has one, and the plan says once why it was left out.
+    Mutation caught: appending the location again, or dropping the note.
     """
     planner = _planner(
         engine_specs={
@@ -303,7 +315,10 @@ def test_location_is_appended_only_when_the_engine_form_lacks_a_location_field()
     by_engine = {q.engine: q for q in out.queries}
     assert "Austin" not in by_engine["withloc"].raw_query_string
     assert by_engine["withloc"].location == "Austin"
-    assert by_engine["withoutloc"].raw_query_string.endswith("Austin")
+    assert "Austin" not in by_engine["withoutloc"].raw_query_string
+    assert by_engine["withoutloc"].location == "Austin"
+    left_out = [n for n in out.notes if "not typed into site-restricted" in n.message]
+    assert len(left_out) == 1
 
 
 def test_terminal_restrictions_are_never_planned() -> None:
@@ -445,3 +460,97 @@ def test_engines_and_platforms_preserve_the_caller_order() -> None:
         ("alpha", "engtwo"),
         ("alpha", "engone"),
     ]
+
+
+def test_a_platform_measured_on_one_engine_is_planned_only_there() -> None:
+    """TEETH. Owner captures 2026-11-08: Google honoured site:jobs.lever.co
+    and five more platform restrictions; Bing answered all of them with the
+    same boards.greenhouse.io list. A restriction measured on one engine is
+    planned on that engine only; no per-engine evidence plans everywhere."""
+    planner = _planner(
+        platform_targets={
+            "oneco": PlatformTarget(name="oneco", restriction="jobs.oneco.example",
+                                    status="measured", engines=("engone",)),
+            "allco": _target("allco", "vendor"),
+        }
+    )
+    out = _plan(planner, engines=("engone", "engtwo"), platforms=("oneco", "allco"))
+    planned = sorted((q.platform, q.engine) for q in out.queries)
+    assert planned == [("allco", "engone"), ("allco", "engtwo"), ("oneco", "engone")]
+    assert any("oneco on engtwo: not planned" in n.message for n in out.notes)
+
+
+# ── Engines the plan sends nothing to (owner run 2026-11-08) ────────────────
+#
+# Bing and Indeed sat idle all session: Bing had no platform measured on it,
+# Indeed has no site-search form. The notes said so at INFO in the log only;
+# the user "couldn't even tell if the other 2 engines ran". The plan now
+# names every idle engine with a reason code the results view translates.
+
+
+def test_every_idle_engine_is_named_with_its_reason__teeth() -> None:
+    """TEETH: PlannedSearch had no unused_engines; idle engines were notes."""
+    planner = _planner(
+        engine_specs={
+            "engone": _engine_spec("engone"),
+            "engtwo": _engine_spec("engtwo"),
+            "noform": _engine_spec("noform", site_template=None),
+            "noop": _engine_spec("noop", with_site_operator=False),
+        },
+        platform_targets={
+            "oneco": PlatformTarget(name="oneco", restriction="jobs.oneco.example",
+                                    status="measured", engines=("engone", "noop")),
+        },
+    )
+    out = _plan(planner, engines=("engone", "engtwo", "noform", "noop", "ghost"),
+                platforms=("oneco",))
+    assert [q.engine for q in out.queries] == ["engone"]
+    assert out.unused_engines == (
+        UnusedEngine("engtwo", UNUSED_NO_MEASURED_PLATFORM),
+        UnusedEngine("noform", UNUSED_NO_SITE_FORM),
+        UnusedEngine("noop", UNUSED_NO_SITE_OPERATOR),
+        UnusedEngine("ghost", UNUSED_NOT_IN_CATALOG),
+    )
+
+
+def test_an_engine_cut_by_the_budget_is_not_called_idle() -> None:
+    """Budget cuts are reported as budget-skipped searches, not as an
+    engine that could not search."""
+    planner = _planner(platform_targets={"a": _target("a"), "b": _target("b")})
+    out = _plan(planner, engines=("engone", "engtwo"), platforms=("a", "b"), budget=1)
+    assert len(out.queries) == 1 and out.dropped_targets
+    assert out.unused_engines == ()
+
+
+def test_no_usable_platform_idles_every_engine_with_that_reason() -> None:
+    planner = _planner(platform_targets={"thirdco": _target("thirdco", "third_party")})
+    out = _plan(planner, engines=("engone", "engtwo"), platforms=("thirdco",))
+    assert out.queries == ()
+    assert {u.reason for u in out.unused_engines} == {UNUSED_NO_USABLE_PLATFORM}
+    assert [u.engine for u in out.unused_engines] == ["engone", "engtwo"]
+
+
+def test_no_titles_idles_no_engine() -> None:
+    """Nothing to search is not an engine's shortfall."""
+    planner = _planner(platform_targets={"a": _target("a")})
+    out = _plan(planner, bases=(("  ", "", "remote"),), platforms=("a",))
+    assert out.queries == () and out.unused_engines == ()
+
+
+def test_the_shipped_catalog_idles_bing_and_indeed_for_the_owners_platforms() -> None:
+    """GUARD on the real catalog and descriptors: the owner's session of
+    2026-11-08, reproduced. Fails when a measurement or a form changes:
+    then the expectation, and the results the user is shown, change too."""
+    registry = ATSRegistry()
+    planner = _build_search_planner(SimpleNamespace(site_search_strategy="per_platform"), registry)
+    out = planner.plan(
+        bases=(("Software Engineer", "Chicago, IL", "onsite"),),
+        engines=("google", "bing", "indeed"),
+        platforms=tuple(d.name for d in registry.all_descriptors()),
+        date_range=None, max_results=20, budget=40,
+    )
+    assert {q.engine for q in out.queries} == {"google"}
+    assert out.unused_engines == (
+        UnusedEngine("bing", UNUSED_NO_MEASURED_PLATFORM),
+        UnusedEngine("indeed", UNUSED_NO_SITE_FORM),
+    )

@@ -22,6 +22,7 @@ from auto_apply.adapters.secondary.navigation.interruption import InterruptionHa
 from auto_apply.domain.models.search_instruction import SearchInstruction
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.interaction_primitives_port import PageActionPrimitives
+from auto_apply.domain.services.navigation_landing import Landing, check_landing
 from auto_apply.domain.types import Keys, Locator
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,11 @@ class NavigationStrategy(ABC):
     ) -> None:
         self.browser = browser
         self._page_action = page_action
+        #: Where the last navigation ended, when the strategy checks it.
+        self.last_landing: Landing | None = None
+
+    #: How the route reads in a user-facing explanation.
+    route_label: str = "route"
 
     @property
     def name(self) -> str:
@@ -73,6 +79,8 @@ class NavigationStrategy(ABC):
 class DirectURLNavigation(NavigationStrategy):
     """Navigates directly to a constructed URL (Fastest, High Detectability)."""
 
+    route_label = "direct URL"
+
     def navigate(
         self,
         engine_strategy: SearchEngineStrategy,
@@ -80,12 +88,35 @@ class DirectURLNavigation(NavigationStrategy):
     ) -> bool:
         url = engine_strategy.build_search_url(instruction)
         logger.info("Navigating via %s: %s", self.name, url)
+        self.last_landing = None
         try:
             self.browser.get(url)
-            return True
         except Exception as exc:
             logger.error("%s failed: %s", self.name, exc)
             return False
+        # A get() that returns is not a navigation that arrived: a site may
+        # redirect to another surface (Bing's /jobs to its home page with
+        # form=REDIRERR, 2026-11-02). Landing elsewhere is a failed
+        # navigation, and the landed URL is recorded.
+        try:
+            landed = self.browser.current_url
+        except Exception:
+            landed = None
+        if not isinstance(landed, str) or not landed:
+            logger.debug("%s: landed URL unreadable; landing not verified", self.name)
+            return True
+        landing = check_landing(url, landed)
+        self.last_landing = landing
+        if not landing.on_surface:
+            logger.warning(
+                "%s landed on a different surface (%s) | requested=%s landed=%s",
+                self.name,
+                landing.reason,
+                url,
+                landed,
+            )
+            return False
+        return True
 
 
 class HumanSearchNavigation(NavigationStrategy):
@@ -94,6 +125,8 @@ class HumanSearchNavigation(NavigationStrategy):
     Uses the engine strategy's ``homepage_url`` and ``search_bar_selectors``
     so that no engine‑specific knowledge is hardcoded here.
     """
+
+    route_label = "typed search"
 
     def navigate(
         self,
@@ -133,9 +166,13 @@ class HumanSearchNavigation(NavigationStrategy):
                     break
 
             if search_input:
+                # The query the direct URL sends, verbatim: effective_query
+                # is the one composition ("<title> jobs in <location>", or
+                # the planner's raw query). Appending " in <location>" here
+                # typed "... jobs in Chicago, IL in Chicago, IL" for a plain
+                # search and changed a composed site-restricted query, so
+                # the fallback route searched something else.
                 query_text = instruction.effective_query
-                if instruction.location:
-                    query_text += f" in {instruction.location}"
 
                 logger.info("Typing query: %s", query_text)
 
@@ -197,12 +234,19 @@ class ResilientNavigator:
         """
         self.browser = browser
         self.strategies = strategies
+        #: Every checked landing of the navigations made, in order: the
+        #: record of where each attempt ended (requested, landed, reason).
+        self.landings: list[Landing] = []
+        #: The name of the strategy whose landing is being validated, so a
+        #: validator can say which route a verdict is about ("" between).
+        self.current_strategy: str = ""
 
     def navigate_with_fallback(
         self,
         engine_strategy: SearchEngineStrategy,
         instruction: SearchInstruction,
         validator: Callable[[], bool],
+        should_stop: Callable[[], bool] | None = None,
     ) -> bool:
         """Attempts navigation using the defined strategies until one yields a valid page.
 
@@ -212,6 +256,10 @@ class ResilientNavigator:
             instruction: The typed search instruction.
             validator: A function that returns ``True`` if the page is
                 healthy/safe, and ``False`` if blocked/broken.
+            should_stop: Optional; asked after an attempt fails. True (the
+                engine was benched, e.g. its host showed a CAPTCHA) ends the
+                sequence: a blocked host is never retried through another
+                route, which is escalation, not degradation.
 
         Returns:
             ``True`` if a valid page was loaded, ``False`` if all strategies
@@ -227,10 +275,14 @@ class ResilientNavigator:
             )
 
             # 1. Attempt Navigation
+            self.current_strategy = getattr(strategy, "route_label", "") or strategy.name
             success = strategy.navigate(engine_strategy, instruction)
 
             # 2. If navigation command worked, check if the page is actually
             #    valid (not blocked).
+            landing = getattr(strategy, "last_landing", None)
+            if landing is not None:
+                self.landings.append(landing)
             if success:
                 # Give it a moment to settle/render before validation.
                 time.sleep(2)
@@ -247,13 +299,21 @@ class ResilientNavigator:
                     strategy.name,
                 )
 
+            if should_stop is not None and should_stop():
+                logger.warning(
+                    "ResilientNavigation: engine benched after %s — no further "
+                    "route is tried for this search.",
+                    strategy.name,
+                )
+                return False
+
             # 3. FAILURE RECOVERY
             # If we failed and have more strategies to try, reset the
             # environment.
             if attempt_num < len(self.strategies):
                 logger.info(
-                    "ResilientNavigation: Resetting browser state "
-                    "(Cookies/Storage) before next attempt..."
+                    "ResilientNavigation: loading a blank page before the next "
+                    "attempt (cookies and storage are kept)."
                 )
                 try:
                     self.browser.get("about:blank")

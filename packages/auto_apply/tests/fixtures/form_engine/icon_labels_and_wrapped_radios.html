@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply — Example Robotics</title>
+<style>
+  body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; }
+  .row { margin-top: 1rem; }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  [role=radio] { display: inline-block; border: 1px solid #888; padding: .3rem 1rem; cursor: pointer; }
+  [role=radio][aria-checked=true] { background: #cde; }
+</style>
+</head>
+<body>
+<!--
+  Three label shapes seen on a live ATS form (2026-11-26), rebuilt by hand:
+  * An info icon inside a field's <label>, whose <svg> carries hidden
+    fallback text in <desc> ("SVGs not supported by this browser."). The
+    fallback is never shown and is not part of the field's name.
+  * A file input whose only <label for> holds an upload icon (no words),
+    while aria-labelledby names it "Resume". The empty label must not win.
+  * Yes/No options drawn as role="radio" boxes, each wrapping a native
+    radio. One question with two options, not three questions.
+  Nothing is sent: the form posts nowhere reachable.
+-->
+<form id="application" method="post" action="/never" novalidate>
+  <div class="row"><label><span><strong>*</strong></span><span id="first_label"><strong>First name</strong></span>
+    <input id="first" name="firstname" aria-labelledby="first_label" required></label></div>
+
+  <div class="row"><label><span><strong>*</strong></span><span id="address_label"><strong>Address</strong></span>
+    <span><svg viewBox="0 0 20 20" width="16" height="16"><desc aria-hidden="true"><p>SVGs not supported by this browser.</p></desc><circle cx="10" cy="10" r="8"/></svg></span>
+    <input id="address" name="address" aria-labelledby="address_label" required></label></div>
+
+  <div class="row"><div><span><strong>*</strong></span><span id="resume_label"><strong>Resume</strong></span>
+    <div data-role="dropzone">
+      <label for="resume_file"><svg viewBox="0 0 20 20" width="24" height="24"><desc aria-hidden="true"><p>SVGs not supported by this browser.</p></desc><rect width="20" height="20"/></svg></label>
+      <label for="resume_file" id="resume_choose" role="button" tabindex="0">Choose file</label>
+      <input id="resume_file" type="file" class="vh" tabindex="-1" required
+             aria-labelledby="resume_label resume_choose" accept=".pdf,.doc,.docx">
+    </div></div></div>
+
+  <div class="row"><span><strong>*</strong></span><span id="q1_label"><strong>Do you have a minimum of 3 years of Python experience?</strong></span>
+    <fieldset role="radiogroup" aria-labelledby="q1_label" style="border:0;padding:0">
+      <div role="radio" id="w_yes" aria-labelledby="q1_label yes_label" aria-checked="false" aria-required="true" tabindex="0">
+        <label><input type="radio" name="q1" value="yes" required tabindex="-1" aria-hidden="true" class="vh"><span id="yes_label">YES</span></label>
+      </div>
+      <div role="radio" id="w_no" aria-labelledby="q1_label no_label" aria-checked="false" aria-required="true" tabindex="-1">
+        <label><input type="radio" name="q1" value="no" required tabindex="-1" aria-hidden="true" class="vh"><span id="no_label">NO</span></label>
+      </div>
+    </fieldset></div>
+
+  <div class="row"><span><strong>*</strong></span><span id="q2_label"><strong>Will you now or in the future require visa sponsorship?</strong></span>
+    <fieldset role="radiogroup" aria-labelledby="q2_label" style="border:0;padding:0">
+      <div role="radio" id="w_sp_yes" aria-labelledby="q2_label sp_yes" aria-checked="false" aria-required="true" tabindex="0">
+        <label><input type="radio" name="q2" value="yes" required tabindex="-1" aria-hidden="true" class="vh"><span id="sp_yes">YES</span></label>
+      </div>
+      <div role="radio" id="w_sp_no" aria-labelledby="q2_label sp_no" aria-checked="false" aria-required="true" tabindex="-1">
+        <label><input type="radio" name="q2" value="no" required tabindex="-1" aria-hidden="true" class="vh"><span id="sp_no">NO</span></label>
+      </div>
+    </fieldset></div>
+
+  <div class="row"><button type="submit">Submit application</button></div>
+</form>
+<script>
+  // The wrappers mirror their native radios, as the live form does: a
+  // click anywhere on the box (or a change of the native input) checks it.
+  function sync(group) {
+    group.querySelectorAll('[role=radio]').forEach(function (o) {
+      o.setAttribute('aria-checked', String(o.querySelector('input').checked));
+    });
+  }
+  document.querySelectorAll('[role=radiogroup]').forEach(function (g) {
+    g.addEventListener('change', function () { sync(g); });
+    g.querySelectorAll('[role=radio]').forEach(function (w) {
+      w.addEventListener('click', function () {
+        w.querySelector('input').checked = true;
+        sync(g);
+      });
+    });
+  });
+</script>
+</body>
+</html>

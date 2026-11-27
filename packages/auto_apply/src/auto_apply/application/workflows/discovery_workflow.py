@@ -33,7 +33,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from auto_apply.application.services.auditing.discovery_math_auditor import DiscoveryMathAuditor
-from auto_apply.application.services.auditing.discovery_verification import DiscoveryVerifier
+from auto_apply.application.services.auditing.discovery_verification import (
+    DiscoveryVerifier,
+    job_identity,
+)
 from auto_apply.domain.models.task_priority import TaskPriority
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.job import Job
@@ -46,6 +49,7 @@ from auto_apply.domain.ports.research_port import (
     ResearchObserverPort,
     SearchPlanObservation,
 )
+from auto_apply.domain.services.route_arrival import shown_host
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,7 @@ class _DiscoveryStats:
     off_shape_dropped: int = 0
     terminal_dropped: int = 0
     routed_to_mining: int = 0
+    kept_on_shown_destination: int = 0
 
 
 class DiscoveryWorkflow:
@@ -141,6 +146,10 @@ class DiscoveryWorkflow:
         # the planner is deliberately stateless.
         self._queries_sent_this_session: int = 0
         self._engine_rotation_offset: int = 0
+        # Enabled engines this run's plan sends nothing to, with the
+        # planner's reason code. Reported in DISCOVERY_COMPLETE so the
+        # results view says which engines did not search, and why.
+        self._unused_engines: dict[str, str] = {}
 
         # Fallback: a minimal plan is always available
         if plan is not None:
@@ -422,6 +431,15 @@ class DiscoveryWorkflow:
         self._emit_search_plan_frame(
             planned, engines=engines, budget_before=remaining
         )
+        for unused in getattr(planned, "unused_engines", ()):
+            if unused.engine not in self._unused_engines:
+                self._unused_engines[unused.engine] = unused.reason
+                logger.warning(
+                    "DiscoveryWorkflow: %s receives no search this session "
+                    "(%s) — see the planner's notes above for each platform.",
+                    unused.engine,
+                    unused.reason,
+                )
         if base_engines:
             bound = [q.engine for q in planned.queries if q.engine]
             if bound and bound[-1] in base_engines:
@@ -527,6 +545,9 @@ class DiscoveryWorkflow:
                         job.metadata.setdefault(
                             "search_query", instr.effective_query
                         )
+                        # The role this job was searched for: vetting judges
+                        # titles against it (domain/vetting/title_targets.py).
+                        job.metadata.setdefault("search_title", instr.title)
                         job.metadata.setdefault(
                             "route",
                             "engine_site_search"
@@ -712,7 +733,7 @@ class DiscoveryWorkflow:
         mining is enabled it becomes a DISCOVER_COMPANY task; otherwise it is
         dropped. Each outcome is counted and reported.
         """
-        counts = {"dropped": 0, "terminal": 0, "mined": 0}
+        counts = {"dropped": 0, "terminal": 0, "mined": 0, "shown": 0}
         if self._ats_registry is None:
             return jobs, counts
         kept: list[Job] = []
@@ -739,6 +760,19 @@ class DiscoveryWorkflow:
                 kept.append(job)
                 continue
             if descriptor is not None and descriptor.name == platform:
+                kept.append(job)
+                continue
+            if descriptor is None and self._shown_on_platform(job, platform):
+                # An opaque route (Google's /goto) hides its destination; the
+                # results page shows it next to the link. Owner ruling
+                # 2026-11-04: opaque routes count. The visit confirms it.
+                counts["shown"] += 1
+                logger.info(
+                    "DiscoveryWorkflow: opaque hit kept on its shown destination "
+                    "| platform=%s shown=%s",
+                    platform,
+                    job.metadata.get("shown_destination"),
+                )
                 kept.append(job)
                 continue
             if (
@@ -780,6 +814,23 @@ class DiscoveryWorkflow:
                     job.url,
                 )
         return kept, counts
+
+    def _shown_on_platform(self, job: Job, platform: str) -> bool:
+        """True when the page-shown destination of an opaque hit is on the
+        target platform's hosts (``ATSRegistry.platform_for_host``)."""
+        shown = str(job.metadata.get("shown_destination") or "").strip()
+        if not shown or self._ats_registry is None:
+            return False
+        # Read as a URL authority: "evil.com/jobs.jobvite.com" is evil.com.
+        # The claim is confirmed again where the visit lands (vetting's
+        # ArrivalCheck, domain/services/route_arrival.py).
+        host = shown_host(shown)
+        if not host:
+            return False
+        try:
+            return self._ats_registry.platform_for_host(host) == platform
+        except Exception:  # noqa: BLE001 - a registry fault keeps the old behaviour
+            return False
 
     def _emit_search_plan_frame(
         self,
@@ -885,6 +936,11 @@ class DiscoveryWorkflow:
             "off_shape_dropped": stats.off_shape_dropped,
             "terminal_dropped": stats.terminal_dropped,
             "routed_to_mining": stats.routed_to_mining,
+            "kept_on_shown_destination": stats.kept_on_shown_destination,
+            "engines_not_searched": [
+                {"engine": engine, "reason": reason}
+                for engine, reason in self._unused_engines.items()
+            ],
         }
         try:
             self._event_bus.publish(Event.DISCOVERY_COMPLETE, payload)
@@ -910,7 +966,12 @@ class DiscoveryWorkflow:
         # JOBS_DISCOVERED carries the unique found count in every mode.
         try:
             self._event_bus.publish(
-                Event.JOBS_DISCOVERED, {"count": len(jobs), "source": "discovery"}
+                Event.JOBS_DISCOVERED,
+                {
+                    "count": len(jobs),
+                    "source": "discovery",
+                    "keys": [job_identity(job) for job in jobs],
+                },
             )
         except Exception:
             pass
@@ -938,6 +999,7 @@ class DiscoveryWorkflow:
         """
         mode = execution_mode if execution_mode is not None else self._plan.execution_mode
         stats = _DiscoveryStats()
+        self._unused_engines = {}
         logger.info("DiscoveryWorkflow.run() starting | mode=%s", mode.value)
 
         active_providers = self._initialize_sources()
@@ -968,6 +1030,7 @@ class DiscoveryWorkflow:
         stats.off_shape_dropped = off_shape["dropped"]
         stats.terminal_dropped = off_shape["terminal"]
         stats.routed_to_mining = off_shape["mined"]
+        stats.kept_on_shown_destination = off_shape["shown"]
 
         # ── Persist before the mode branch (C1) ─────────────────────────────
         # A job is persisted the moment it is known, so results survive
@@ -997,9 +1060,17 @@ class DiscoveryWorkflow:
         # used to be published from _enqueue_vet_tasks with the vet enqueue
         # count, which is 0 when vetting is skipped — both the controller's
         # report and the live dashboard recorded zero for DISCOVER_ONLY.
+        # "keys" lets every counter count unique jobs across passes: a job
+        # seen by two discovery passes of one session is one job (the live
+        # run of 2026-11-02 reported 40 for 20 unique jobs).
         try:
             self._event_bus.publish(
-                Event.JOBS_DISCOVERED, {"count": len(all_jobs), "source": "discovery"}
+                Event.JOBS_DISCOVERED,
+                {
+                    "count": len(all_jobs),
+                    "source": "discovery",
+                    "keys": [job_identity(job) for job in all_jobs],
+                },
             )
         except Exception:
             pass

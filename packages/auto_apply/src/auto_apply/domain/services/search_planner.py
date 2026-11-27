@@ -71,11 +71,18 @@ class PlatformTarget:
             ``"boards.greenhouse.io"``).
         status: The descriptor's restriction status (a
             :class:`VerificationStatus` value).
+        engines: The engines the restriction was measured on. Empty: the
+            status holds for every engine. Otherwise the platform is planned
+            only on these engines: an engine that drops the restriction
+            returns other sites' pages, which costs a search and finds
+            nothing (Bing, 2026-11-08: Greenhouse postings for
+            site:jobs.lever.co, site:jobs.ashbyhq.com and four more).
     """
 
     name: str
     restriction: str
     status: str
+    engines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -101,13 +108,38 @@ class PlannerNote:
     message: str
 
 
+#: Why an enabled engine received no site-restricted search, as stable codes
+#: (the results view translates them; resources/locales/*.json).
+UNUSED_NOT_IN_CATALOG = "not_in_catalog"
+UNUSED_NO_AUTOMATED_FORM = "no_automated_form"
+UNUSED_NO_SITE_FORM = "no_site_form"
+UNUSED_NO_MEASURED_PLATFORM = "no_measured_platform"
+UNUSED_NO_USABLE_PLATFORM = "no_usable_platform"
+UNUSED_NO_SITE_OPERATOR = "no_site_operator"
+
+
+@dataclass(frozen=True)
+class UnusedEngine:
+    """An enabled engine the plan sends nothing to, and why (a code above)."""
+
+    engine: str
+    reason: str
+
+
 @dataclass(frozen=True)
 class PlannedSearch:
-    """The planner's output: the ordered queries and the notes behind them."""
+    """The planner's output: the ordered queries and the notes behind them.
+
+    ``unused_engines`` names every enabled engine that receives no search
+    from this plan: an engine left idle is a fact the user is told, not a
+    line in a debug log (owner run 2026-11-08: Bing and Indeed sat idle and
+    nothing on screen said so).
+    """
 
     queries: tuple[PlannedQuery, ...] = ()
     notes: tuple[PlannerNote, ...] = ()
     dropped_targets: tuple[str, ...] = ()
+    unused_engines: tuple[UnusedEngine, ...] = ()
 
 
 class SiteSearchStrategy(Protocol):
@@ -220,7 +252,13 @@ class SearchPlanner:
                 PlannerNote("info", "Bases with an empty title were skipped.")
             )
         if not usable_engines or not usable_platforms or not clean_bases:
-            return PlannedSearch((), tuple(notes), ())
+            return PlannedSearch(
+                (), tuple(notes), (),
+                # No titles means nothing to search anywhere (noted above);
+                # that is not an engine's shortfall.
+                self._unused_engines(engines, usable_engines, set(), set(), bool(usable_platforms))
+                if clean_bases else (),
+            )
 
         strategy = self._strategies.get(self._strategy_name)
         if strategy is None:
@@ -233,6 +271,9 @@ class SearchPlanner:
             )
             strategy = self._strategies[PerPlatformStrategy.name]
 
+        admitted = self._admitted_pairs(usable_platforms, usable_engines, notes)
+        # Engines a search went to, or would have but for the budget.
+        reached: set[str] = set()
         for title, location, workplace_type in clean_bases:
             groups = strategy.group(list(usable_platforms))
             if any(len(group) != 1 for group in groups):
@@ -248,9 +289,12 @@ class SearchPlanner:
             for group in groups:
                 target = group[0]
                 for engine in usable_engines:
+                    if (target.name, engine) not in admitted:
+                        continue
                     label = f"{target.name} on {engine} ({title})"
                     if len(queries) >= budget:
                         dropped.append(label)
+                        reached.add(engine)
                         continue
                     planned = self._compose_query(
                         engine=engine,
@@ -264,6 +308,7 @@ class SearchPlanner:
                     )
                     if planned is not None:
                         queries.append(planned)
+                        reached.add(engine)
 
         if dropped:
             shown = "; ".join(dropped[:5]) + (" ..." if len(dropped) > 5 else "")
@@ -275,11 +320,90 @@ class SearchPlanner:
                     f"{shown}",
                 )
             )
-        return PlannedSearch(tuple(queries), tuple(notes), tuple(dropped))
+        return PlannedSearch(
+            tuple(queries), tuple(notes), tuple(dropped),
+            self._unused_engines(engines, usable_engines, admitted, reached, True),
+        )
+
+    def _unused_engines(
+        self,
+        engines: Sequence[str],
+        usable_engines: Sequence[str],
+        admitted: set[tuple[str, str]],
+        reached: set[str],
+        platforms_usable: bool,
+    ) -> tuple[UnusedEngine, ...]:
+        """Every requested engine the plan sends no search to, and why.
+
+        An engine whose searches the budget cut is not "unused": that is
+        reported as budget-skipped searches.
+        """
+        admitted_engines = {engine for _, engine in admitted}
+        unused: list[UnusedEngine] = []
+        for name in dict.fromkeys(engines):
+            spec = self._engine_specs.get(name)
+            if spec is None:
+                reason = UNUSED_NOT_IN_CATALOG
+            elif spec.automation_url is None:
+                reason = UNUSED_NO_AUTOMATED_FORM
+            elif name in reached:
+                continue
+            elif name in admitted_engines:
+                # Admitted, but the catalog's composer refused every query
+                # (no site operator on the engine's form).
+                reason = UNUSED_NO_SITE_OPERATOR
+            elif not platforms_usable:
+                reason = UNUSED_NO_USABLE_PLATFORM
+            elif spec.site_template is None:
+                reason = UNUSED_NO_SITE_FORM
+            elif name in usable_engines:
+                reason = UNUSED_NO_MEASURED_PLATFORM
+            else:
+                continue
+            unused.append(UnusedEngine(name, reason))
+        return tuple(unused)
 
     # ------------------------------------------------------------------
     # Admission
     # ------------------------------------------------------------------
+
+    def _admitted_pairs(
+        self,
+        platforms: Sequence[PlatformTarget],
+        engines: Sequence[str],
+        notes: list[PlannerNote],
+    ) -> set[tuple[str, str]]:
+        """The (platform, engine) pairs that may be searched, each refusal
+        noted once.
+
+        Decided before the budget is spent, so a pair that can never be
+        searched neither uses nor appears in the budget: an engine with no
+        form for site-restricted searches, and an engine on which the
+        platform's restriction was not measured (``PlatformTarget.engines``).
+        """
+        admitted: set[tuple[str, str]] = set()
+        for target in platforms:
+            for engine in engines:
+                if self._engine_specs[engine].site_template is None:
+                    notes.append(
+                        PlannerNote(
+                            "warning",
+                            f"Engine {engine!r} declares no form for site-restricted "
+                            f"searches; {target.name} is not planned on it.",
+                        )
+                    )
+                    continue
+                if target.engines and engine not in target.engines:
+                    notes.append(
+                        PlannerNote(
+                            "info",
+                            f"{target.name} on {engine}: not planned — the site: "
+                            f"restriction is measured on {', '.join(target.engines)} only.",
+                        )
+                    )
+                    continue
+                admitted.add((target.name, engine))
+        return admitted
 
     def _usable_engines(
         self, engines: Sequence[str], notes: list[PlannerNote]
@@ -414,15 +538,26 @@ class SearchPlanner:
             return None
         bar_text = result.bar_text
         # Location is user intent. Engines whose form has a location field
-        # get it through the URL at run time; engines without one get the
-        # place as bare words, the way a person would type it.
+        # get it through the URL at run time. Engines without one do NOT get
+        # it as typed words: measured 2026-10-30, Google drops the site:
+        # restriction once words follow it and returns other job boards. The
+        # location stays on the query (PlannedQuery.location) for vetting.
+        # STOPGAP: choosing and verifying a channel per surface is a task-list
+        # item, not this.
         url_template = spec.urls[template]
         has_location_field = any(
             parameter.source == "location"
             for parameter in url_template.parameters
         )
         if location.strip() and not has_location_field:
-            bar_text = f"{bar_text} {location.strip()}"
+            message = (
+                "Locations are not typed into site-restricted searches: "
+                "engines drop the site restriction when words are added "
+                "(measured on Google, 2026-10-30). Postings from any "
+                "location come back; vetting checks the location."
+            )
+            if not any(note.message == message for note in notes):
+                notes.append(PlannerNote("info", message))
         return PlannedQuery(
             engine=engine,
             platform=target.name,

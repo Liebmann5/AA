@@ -233,3 +233,52 @@ def _try_get_text(key: str) -> str | None:
         if result != full_key:  # service returns the key itself on miss
             return result
     return None
+
+
+# ── Sections both surfaces show (GUI settings editor, CLI settings screen) ──
+
+# Identity-adjacent schema keys that belong in "About you" even though they
+# are not under personal_info/. These are named explicitly because they are
+# exceptions to the prefix rule — everything else in the tab comes from the
+# "personal_info." schema prefix. legal_info.security_clearance is skipped
+# automatically (it is an optional nested object and the schema yields no
+# leaf for it).
+ABOUT_YOU_EXTRA_KEYS: tuple[str, ...] = (
+    "legal_info.has_work_authorization",
+    "legal_info.requires_sponsorship",
+    "legal_info.non_compete_agreements",
+    "search_preferences.desired_job_titles",
+)
+
+# Fields that already have an editor in the Documents tab — one field, one
+# editor. Duplicating them here would create two write paths for one field.
+DOCUMENTS_TAB_KEYS: frozenset[str] = frozenset(
+    {"personal_info.resume_path", "personal_info.cover_letter"}
+)
+
+
+def about_you_field_keys() -> list[str]:
+    """Return the schema-driven field keys rendered in the "About you" tab.
+
+    Computed from build_ui_schema(UserProfile, "en") at call time: every
+    personal_info.* leaf (minus the two Documents-tab fields), career_summary,
+    and the curated extras above. If the UserProfile model grows a
+    personal_info field, it appears here automatically — the model, not this
+    function, is the source of truth.
+    """
+    keys: list[str] = []
+    from auto_apply.domain.models.profile import UserProfile  # noqa: PLC0415
+
+    try:
+        schema = build_ui_schema(UserProfile, "en")
+    except Exception:
+        schema = []
+    for field in schema:
+        if field.key == "career_summary":
+            keys.append(field.key)
+        elif field.key.startswith("personal_info."):
+            if field.key not in DOCUMENTS_TAB_KEYS:
+                keys.append(field.key)
+        elif field.key in ABOUT_YOU_EXTRA_KEYS:
+            keys.append(field.key)
+    return keys

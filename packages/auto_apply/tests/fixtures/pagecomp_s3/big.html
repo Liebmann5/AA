@@ -1,0 +1,4 @@
+<!doctype html><html><body><div id="b"></div><script>
+var b=document.getElementById('b'), f=document.createDocumentFragment(); for (var i=0;i<20000;i++){var d=document.createElement('div'); d.textContent='r'+i; f.appendChild(d);} b.appendChild(f);
+var deep=document.createElement('div'), cur=deep; deep.style.display='none'; for (var j=0;j<5000;j++){var n=document.createElement('div'); cur.appendChild(n); cur=n;} cur.textContent='bottom'; document.body.appendChild(deep);
+</script></body></html>

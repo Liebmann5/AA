@@ -25,10 +25,12 @@ Activity stream (stage D2):
 
 import tkinter as tk
 from tkinter import ttk
-from tkinter.scrolledtext import ScrolledText
 from typing import TYPE_CHECKING, Any
 
+from auto_apply.adapters.primary.gui.scrolling import ScrolledText
 from auto_apply.adapters.primary.gui.strings import get_strings
+from auto_apply.application.services.accessibility import get_a11y_config
+from auto_apply.application.services.i18n import get_text, option_label
 from auto_apply.domain.models.ui_contract import (
     ApprovalRequest,
     SessionEventRecord,
@@ -296,35 +298,53 @@ class Dashboard(ttk.Frame):
         wait_window() — which runs the Tk event loop, so stats and stream
         polls continue to fire inside it — until the user chooses an option
         or closes the window (treated as skip, same as the old modal).
+
+        Accessibility (docs/adr/024): text sized by ``font_scale`` and, with
+        high contrast, drawn in the high-contrast theme; operable from the
+        keyboard alone (Tab between choices, Enter or Space to choose, Escape
+        to skip; focus starts on the first choice, or in the answer field);
+        says up front how long AA waits, or that it waits without limit. A
+        ``text`` question takes a typed answer (the person answering a form
+        question in AA). Tk gained screen-reader support only in 9.1 and this
+        window does not use it yet; the CLI's screen-reader mode is the
+        accessible path there.
         """
         if self._session_controller is None:
             return
 
         self._approval_modal_open = True
+        a11y = get_a11y_config()
+        size = a11y.scaled_font_size
+        colors = a11y.colors if a11y.high_contrast else None
         try:
             modal = tk.Toplevel(self)
-            modal.title("Agent Approval Required")
-            modal.resizable(False, False)
+            modal.title(get_text("approval.heading"))
+            modal.resizable(True, True)
             modal.grab_set()
+            if colors is not None:
+                modal.configure(bg="#" + colors.bg_primary)
 
-            ttk.Label(
-                modal,
-                text=f"Checkpoint: {approval.checkpoint}",
-                font=("Segoe UI", 9, "italic"),
-            ).pack(padx=20, pady=(15, 0))
+            def label(text: str, font: tuple, **pack: object) -> None:
+                kw: dict[str, object] = {"text": text, "wraplength": int(360 * a11y.font_scale),
+                                         "justify": tk.LEFT, "font": font}
+                if colors is not None:
+                    kw.update(fg="#" + colors.text_primary, bg="#" + colors.bg_primary)
+                tk.Label(modal, **kw).pack(**pack)  # type: ignore[arg-type]
 
-            ttk.Label(
-                modal,
-                text=approval.question,
-                wraplength=360,
-                justify=tk.LEFT,
-                font=("Segoe UI", 10),
-            ).pack(padx=20, pady=10)
+            label(f"{approval.checkpoint}", ("Segoe UI", size(9), "italic"),
+                  padx=20, pady=(15, 0))
+            label(approval.question, ("Segoe UI", size(10)), padx=20, pady=10)
+            wait = approval.wait_s
+            label(get_text("approval.wait_no_limit") if wait is None else
+                  get_text("approval.wait_minutes", minutes=max(1, round(wait / 60))),
+                  ("Segoe UI", size(9)), padx=20, pady=(0, 6))
 
             ttk.Separator(modal, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10)
 
             btn_frame = ttk.Frame(modal, padding="10 10 10 15")
             btn_frame.pack(fill=tk.X)
+            style = ttk.Style(modal)
+            style.configure("A11y.TButton", font=("Segoe UI", size(10)))
 
             def _choose(choice: str) -> None:
                 modal.grab_release()
@@ -334,14 +354,40 @@ class Dashboard(ttk.Frame):
                         approval.context_id, choice
                     )
 
-            for option in approval.options:
-                ttk.Button(
-                    btn_frame,
-                    text=option.capitalize(),
-                    command=lambda o=option: _choose(o),  # type: ignore[misc]
-                ).pack(side=tk.LEFT, padx=5)
+            first: tk.Widget | None = None
+            if approval.kind == "text":
+                answer = tk.StringVar(master=modal)
+                entry = ttk.Entry(btn_frame, textvariable=answer,
+                                  font=("Segoe UI", size(10)), width=48)
+                entry.pack(side=tk.TOP, fill=tk.X, pady=(0, 8))
+                first = entry
 
+                def _send() -> None:
+                    _choose(answer.get().strip() or "skip")
+
+                ttk.Button(btn_frame, text=get_text("approval.send"), style="A11y.TButton",
+                           command=_send).pack(side=tk.LEFT, padx=5)
+                ttk.Button(btn_frame, text=option_label("answer in the browser"),
+                           style="A11y.TButton",
+                           command=lambda: _choose("skip")).pack(side=tk.LEFT, padx=5)
+                entry.bind("<Return>", lambda _e: _send())
+            else:
+                for option in approval.options:
+                    btn = ttk.Button(
+                        btn_frame,
+                        text=option_label(option),
+                        style="A11y.TButton",
+                        command=lambda o=option: _choose(o),  # type: ignore[misc]
+                    )
+                    btn.pack(side=tk.LEFT, padx=5)
+                    btn.bind("<Return>", lambda _e, o=option: _choose(o))  # type: ignore[misc]
+                    if first is None:
+                        first = btn
+
+            modal.bind("<Escape>", lambda _e: _choose("skip"))
             modal.protocol("WM_DELETE_WINDOW", lambda: _choose("skip"))
+            if first is not None:
+                first.focus_set()
             modal.wait_window()
         finally:
             # Clear even if the window is destroyed by something other than

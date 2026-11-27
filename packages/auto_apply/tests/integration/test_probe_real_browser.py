@@ -60,6 +60,25 @@ _PAGES = {
         "for(var i=2;i<5;i++){var a=document.createElement('a');a.href='/j'+i;"
         "a.textContent='J'+i;f.appendChild(a);}\">x</button></body></html>"
     ),
+    # A native radio drawn as a 1px input under its own label's text (the
+    # live Workable shape, 2026-11-26), and the same with a LINK on top.
+    "/label": (
+        "<html><body style='margin:0'><label style='position:relative;display:block;"
+        "width:200px;height:40px;margin:50px'>"
+        "<input id='r' type='radio' name='q' style='position:absolute;left:10px;top:10px;"
+        "width:1px;height:1px;margin:0;opacity:0'>"
+        "<span style='position:absolute;left:0;top:0;width:200px;height:40px'>YES</span>"
+        "</label></body></html>"
+    ),
+    "/labellink": (
+        "<html><body style='margin:0'><label style='position:relative;display:block;"
+        "width:200px;height:40px;margin:50px'>"
+        "<input id='c' type='checkbox' style='position:absolute;left:10px;top:10px;"
+        "width:1px;height:1px;margin:0;opacity:0'>"
+        "<a href='#terms' onclick='window.__link=1;return false' style='position:absolute;"
+        "left:0;top:0;width:200px;height:40px'>I agree to the terms</a>"
+        "</label></body></html>"
+    ),
     "/t": "<html><body><a href='/j1'>J1</a><br><a href='/j2'>J2</a></body></html>",
     "/w1": "<html><body><a href='/w-a'>Alpha</a><br><a href='/w-b'>Beta</a></body></html>",
     "/w2": "<html><body><a href='/w-c'>Gamma</a><br><a href='/w-d'>Delta</a></body></html>",
@@ -180,6 +199,34 @@ class TestProbeOnRealChrome:
         assert result.rung == "wheel"
         assert driver.execute_script("return window.scrollY") > 0
         assert driver.execute_script("return window.scrollX") == 0
+
+    def test_a_radio_under_its_own_label_text_is_reached_through_the_label(
+        self, driver, probe_server_url
+    ):
+        """Clicking a control's own label activates it (HTML label
+        activation): not an occlusion."""
+        driver.get(f"{probe_server_url}/label")
+        tool = _tool(driver)
+        radio = tool.find("css selector", "#r")
+        assert radio is not None
+
+        result = tool.click(radio)
+
+        assert bool(result) is True, f"click refused: {result.reason}"
+        assert driver.execute_script("return document.getElementById('r').checked") is True
+
+    def test_a_link_inside_the_label_still_occludes(self, driver, probe_server_url):
+        """A link inside the label would navigate, not activate the control."""
+        driver.get(f"{probe_server_url}/labellink")
+        tool = _tool(driver)
+        box = tool.find("css selector", "#c")
+        assert box is not None
+
+        result = tool.click(box)
+
+        assert bool(result) is False and "occluded:a" in result.reason
+        assert driver.execute_script("return window.__link || 0") == 0
+        assert driver.execute_script("return document.getElementById('c').checked") is False
 
     def test_a_button_in_an_open_shadow_root_is_clicked(
         self, driver, probe_server_url

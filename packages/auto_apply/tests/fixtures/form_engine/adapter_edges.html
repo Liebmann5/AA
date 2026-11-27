@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply — Fabrikam</title>
+<style>
+  body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; }
+  .field { margin-top: 1rem; }
+  .pill { display: inline-block; padding: .3rem .8rem; border: 1px solid #888; border-radius: 1rem; cursor: pointer; }
+  input[type=radio]:checked + .pill { background: #135; color: #fff; }
+</style>
+</head>
+<body>
+<!--
+  Three patterns from the two code reviews of the step engine:
+  1. a combobox with no placeholder, in a field whose label sits beside it
+     (its label must never be read as its value);
+  2. radios drawn by styled labels over inputs that are display:none (the
+     label is what a person clicks);
+  3. a choice that swaps one question for another without changing how many
+     controls are shown;
+  4. (round 3) two custom widgets side by side in one container with no
+     label element in it: the checkbox's text is not the combobox's value.
+-->
+<form id="f" method="post" action="/apply">
+  <div class="field">
+    <label for="country">Country *</label>
+    <div class="combo"><input id="country" role="combobox" aria-expanded="false"
+         aria-controls="country-list" aria-autocomplete="list" required></div>
+    <ul id="country-list" role="listbox" hidden>
+      <li role="option">Canada</li><li role="option">United States</li>
+    </ul>
+  </div>
+  <fieldset class="field">
+    <legend>Preferred contact *</legend>
+    <input type="radio" name="contact" id="c_email" value="email" style="display:none" required>
+    <label for="c_email" class="pill">Email</label>
+    <input type="radio" name="contact" id="c_phone" value="phone" style="display:none">
+    <label for="c_phone" class="pill">Phone</label>
+  </fieldset>
+  <div class="field" id="email_box"><label for="contact_email">Contact email</label>
+    <input id="contact_email" name="contact_email" type="email"></div>
+  <div class="field" id="phone_box" style="display:none"><label for="contact_phone">Contact phone</label>
+    <input id="contact_phone" name="contact_phone" type="tel"></div>
+  <div class="field" id="pair">
+    <span id="sen_label">Seniority *</span>
+    <div class="row"><input id="seniority" role="combobox" aria-labelledby="sen_label"
+         aria-expanded="false" aria-autocomplete="list">
+      <div role="checkbox" id="remote" aria-checked="false" tabindex="0">Remote only</div></div>
+  </div>
+  <p><button type="submit">Submit</button></p>
+</form>
+<script>
+  document.querySelectorAll('input[name=contact]').forEach(function (r) {
+    r.addEventListener('change', function () {
+      var phone = document.getElementById('c_phone').checked;
+      document.getElementById('email_box').style.display = phone ? 'none' : 'block';
+      document.getElementById('phone_box').style.display = phone ? 'block' : 'none';
+    });
+  });
+  document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); });
+</script>
+</body>
+</html>

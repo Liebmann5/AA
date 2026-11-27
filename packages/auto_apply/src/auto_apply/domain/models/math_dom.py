@@ -18,6 +18,16 @@ import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+#: Upper bound, in characters, on the full-subtree text and the accessible
+#: name kept per node (05 section 14, text cap). Titles and link names on the
+#: specimen pages are far shorter (longest heading or link name measured on the
+#: S1 fixtures: under 200 characters); the cap bounds the payload, and a node
+#: whose text was cut carries ``text_truncated``.
+TEXT_CAP = 256
+
+#: Elements whose text never reaches a reader.
+_NON_TEXT_TAGS = frozenset({"script", "style", "noscript", "template"})
+
 
 @dataclass(frozen=True, slots=True)
 class Geometry:
@@ -107,6 +117,32 @@ class DOMNode:
         attributes: Tuple of ``(name, value)`` pairs.  Order is preserved from
             parsing but does not affect equality.
         text: Visible text content of this node (not including children).
+        full_text: Whitespace-normalised text of the whole subtree as a reader
+            sees it (``script``/``style`` and hidden elements excluded), at most
+            :data:`TEXT_CAP` characters. Filled by the extraction adapter;
+            empty when the adapter did not supply it (then
+            :meth:`subtree_text` derives it from the children).
+        accessible_name: The element's accessible name (WAI-ARIA Accessible
+            Name Computation, the subset in the S1 extraction script), for
+            elements that are named (headings, links, buttons, elements with
+            ``aria-label``/``aria-labelledby``); empty otherwise.
+        text_truncated: True when ``full_text`` or ``accessible_name`` was cut
+            at :data:`TEXT_CAP`.
+        hidden_reason: For form controls only (slice S4): why a person cannot
+            see the control, from the computed style the extraction reads
+            (``display-none``, ``visibility-hidden``, ``opacity-zero``,
+            ``zero-size``, ``off-screen``, ``hidden-attribute``); empty when
+            visible or not read.
+        value_missing: For form controls: ``validity.valueMissing`` as read
+            without interacting (True only for an empty required control).
+        rtl: For form controls: the computed ``direction`` is ``rtl``.
+        marker: For label-like elements and lone-asterisk elements: a
+            required marker the page draws, including one drawn by CSS
+            (``::before``/``::after`` content), e.g. ``"*"``.
+        marker_red: The marker is drawn in red (06 section 5: colour signal).
+        aria_hidden: For form controls: the control or an ancestor carries
+            ``aria-hidden="true"`` (hidden from assistive technology, which is
+            not the same as hidden from sight).
         geometry: Bounding box, or ``None`` if not rendered.
         children: Tuple of child ``DOMNode`` objects.
         depth: Depth in the DOM tree (root = 0).
@@ -121,6 +157,15 @@ class DOMNode:
     children: tuple[DOMNode, ...] = field(default=())
     depth: int = 0
     structural_hash: str = ""
+    full_text: str = ""
+    accessible_name: str = ""
+    text_truncated: bool = False
+    hidden_reason: str = ""
+    value_missing: bool = False
+    rtl: bool = False
+    aria_hidden: bool = False
+    marker: str = ""
+    marker_red: bool = False
 
     def __post_init__(self) -> None:
         """Ensure children depth is consistent and compute structural hash."""
@@ -202,10 +247,61 @@ class DOMNode:
             return self.get_attribute("type", "text").lower()
         return None
 
+    def subtree_text(self, cap: int = TEXT_CAP) -> tuple[str, bool]:
+        """Return ``(text, truncated)``: the subtree's reader-visible text.
+
+        Uses ``full_text`` when the adapter supplied it (exact: the script
+        reads text in document order). Otherwise walks the subtree
+        iteratively (no recursion, so depth is not a hazard), skipping
+        non-text elements and those marked ``hidden``, and stops once ``cap``
+        characters are collected. This fallback is approximate: a ``DOMNode``
+        keeps an element's own text apart from its children, so text mixed
+        with child elements is read own-text first, and pieces are joined
+        with a space so words are never glued together. Whitespace is
+        normalised. This is the full-subtree text rule of 06 section 2
+        (defect 4).
+        """
+        if self.full_text:
+            return self.full_text, self.text_truncated
+        parts: list[str] = []
+        size = 0
+        truncated = False
+        stack: list[DOMNode] = [self]
+        while stack:
+            item = stack.pop()
+            if item.tag in _NON_TEXT_TAGS or (
+                item is not self and any(k == "hidden" for k, _ in item.attributes)
+            ):
+                continue
+            if item.text:
+                parts.append(" " + item.text + " ")
+                size += len(item.text)
+                if size > 2 * cap:  # room for whitespace normalisation
+                    truncated = True
+                    break
+            stack.extend(reversed(item.children))
+        text = " ".join("".join(parts).split())
+        if len(text) > cap:
+            text, truncated = text[:cap].rstrip(), True
+        return text, truncated
+
+    def display_name(self) -> str:
+        """Accessible name if known, else the subtree text (06 section 2)."""
+        if self.accessible_name:
+            return self.accessible_name
+        return self.subtree_text()[0]
+
     def iter_nodes(self) -> Iterator[DOMNode]:
-        yield self
-        for child in self.children:
-            yield from child.iter_nodes()
+        """Every node of the subtree in document order (pre-order).
+
+        Iterative, so a deep tree cannot exhaust the interpreter's recursion
+        limit (EC-38).
+        """
+        stack: list[DOMNode] = [self]
+        while stack:
+            node = stack.pop()
+            yield node
+            stack.extend(reversed(node.children))
 
     def find_by_tag(self, tag: str) -> list[DOMNode]:
         tag_lower = tag.lower()

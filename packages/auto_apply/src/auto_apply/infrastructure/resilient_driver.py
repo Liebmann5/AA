@@ -6,6 +6,7 @@ import time
 from auto_apply.domain.config import LOG_DIR
 from auto_apply.domain.models.motion import MotionCapabilities, MotionPlan
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
+from auto_apply.domain.services.navigation_landing import Landing, check_landing
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,11 @@ class ResilientDriver(BrowserInterface):
         self._command_lock = threading.RLock()
         self._driver = driver
         self._main_window = getattr(driver, 'current_window_handle', None)
+        # The URL the last get() asked for (None after a blank page): what
+        # confirm_arrival() compares the current URL against. Every
+        # production browser is wrapped here (browser_cascade), so every
+        # page AA opens is covered without any caller wiring it.
+        self._requested_url: str | None = None
 
     def __enter__(self):
         if hasattr(self._driver, '__enter__'):
@@ -91,6 +97,7 @@ class ResilientDriver(BrowserInterface):
                 # Suppress noisy log for about:blank navigation (P1-16)
                 if url != "about:blank":
                     logger.info("Navigating to: %s", url)
+                self._requested_url = None if url == "about:blank" else url
                 self._driver.get(url)
                 self._wait_for_ready_state()
                 title = self._driver.title.lower()
@@ -139,6 +146,7 @@ class ResilientDriver(BrowserInterface):
                 if callable(set_timeout):
                     set_timeout(timeout)
 
+                self._requested_url = None if url == "about:blank" else url
                 self._driver.get(url)
                 return True
 
@@ -182,6 +190,20 @@ class ResilientDriver(BrowserInterface):
                     return False
 
         return False
+
+    def confirm_arrival(self) -> Landing | None:
+        """See :meth:`BrowserInterface.confirm_arrival`."""
+        requested = self._requested_url
+        if requested is None:
+            return None
+        with self._command_lock:
+            try:
+                now = self._driver.current_url
+            except Exception:
+                return None
+        if not isinstance(now, str) or not now:
+            return None
+        return check_landing(requested, now)
 
     def back(self) -> None:
         with self._command_lock:

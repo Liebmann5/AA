@@ -206,6 +206,9 @@ EXPECTED_REACHES: dict[str, set[str]] = {
         "auto_apply.infrastructure.composition_root",
     },
     "gui/app.py": {
+        # First-run setup asks the answer-review choices (ADR-026) with the
+        # shared definition — the same as Settings → Answers and the CLI.
+        "auto_apply.application.services.answer_settings",
         "auto_apply.application.services.profile_validator",
         "auto_apply.application.services.session_controller",
         "auto_apply.application.services.ui_schema",
@@ -213,6 +216,31 @@ EXPECTED_REACHES: dict[str, set[str]] = {
     },
     "gui/dashboard.py": {
         "auto_apply.application.services.session_controller",
+        # The approval window speaks the person's language and honours their
+        # presentation settings (text size, high contrast): the two
+        # presentation services, the same category as gui/strings.py's i18n.
+        "auto_apply.application.services.accessibility",
+        "auto_apply.application.services.i18n",
+    },
+    "cli/choice_prompt.py": {
+        # The terminal twin of gui/choice_widget.py: the shared choice rules.
+        "auto_apply.application.services.choice_field",
+    },
+    "cli/settings_screen.py": {
+        # The terminal twin of the GUI settings editor (ruling C): the same
+        # presentation helpers — the About-you field list (ui_schema), the
+        # choice rules (choice_field), the answer-review settings
+        # (answer_settings) — and i18n for its translated words.
+        "auto_apply.application.services.answer_settings",
+        "auto_apply.application.services.choice_field",
+        "auto_apply.application.services.i18n",
+        "auto_apply.application.services.ui_schema",
+    },
+    "cli/dashboard.py": {
+        # The terminal twin: translated prompts and option labels, and the
+        # screen-reader / reduced-motion output (docs/adr/024).
+        "auto_apply.application.services.accessibility",
+        "auto_apply.application.services.i18n",
     },
     "cli/research_verify.py": {
         # The verify-research screen reaches the wiring layer for the
@@ -249,6 +277,16 @@ EXPECTED_REACHES: dict[str, set[str]] = {
     "gui/settings_editor.py": {
         "auto_apply.application.services.ui_schema",
         "auto_apply.infrastructure.composition_root",
+        # Presentation helpers both surfaces share — ui_schema's category, not
+        # orchestration: one definition of a multiple-choice field
+        # (choice_field) and of the answer-review settings (answer_settings),
+        # so the GUI and CLI cannot offer or save different things (ADR-026).
+        "auto_apply.application.services.answer_settings",
+        "auto_apply.application.services.choice_field",
+    },
+    "gui/choice_widget.py": {
+        # The GUI's drop-down over the shared choice rules (see above).
+        "auto_apply.application.services.choice_field",
     },
     "gui/strings.py": {
         "auto_apply.application.services.i18n",

@@ -247,6 +247,11 @@ class _LocaleState:
         Returns:
             The localized, formatted string.
         """
+        if not self._configured and not self._fallback_strings:
+            # Never configured (a test, a library use, an early error path):
+            # read the English bundle so a key is never shown to a person.
+            # No OS detection here — configure() owns that.
+            self._fallback_strings = _load_string_bundle(_DEFAULT_LOCALES_DIR / "en.json")
         template = self._strings.get(key) or self._fallback_strings.get(key, key)
         try:
             return template.format(**kwargs) if kwargs else template
@@ -255,6 +260,7 @@ class _LocaleState:
             return template
 
 
+_DEFAULT_LOCALES_DIR = Path(__file__).parent.parent.parent / "resources" / "locales"
 _state = _LocaleState()
 
 
@@ -297,6 +303,38 @@ def get_text(key: str, **kwargs: Any) -> str:
         'Found 42 jobs'
     """
     return _state.get_string(key, **kwargs)
+
+
+def get_text_or(key: str, default: str, **kwargs: Any) -> str:
+    """The localized string for ``key``, or ``default`` (formatted the same
+    way) when no bundle has the key — for text that is data, such as an
+    approval option a gate offers, which may have no translation."""
+    text = _state.get_string(key, **kwargs)
+    if text != key:
+        return text
+    try:
+        return default.format(**kwargs) if kwargs else default
+    except (KeyError, IndexError):
+        return default
+
+
+def option_label(token: str) -> str:
+    """What a person reads for an approval option. Options are protocol
+    tokens ("done", "skip", "click it"); interfaces show this label and send
+    the token back. A token with no translation is shown as it is (a form's
+    own option, offered by AA's answer-in-AA prompt, is never translated)."""
+    key = "options." + "_".join(token.strip().lower().split())
+    return get_text_or(key, token)
+
+
+def current_language() -> str:
+    """The ISO 639-1 code of the language AA speaks to the person in."""
+    return _state.language_code
+
+
+def language_name(code: str) -> str:
+    """A language's own name for itself ("Deutsch"), or the code."""
+    return LANGUAGE_DISPLAY_NAMES.get((code or "").lower(), code)
 
 
 def format_currency(amount: float, salary_context: bool = False) -> str:

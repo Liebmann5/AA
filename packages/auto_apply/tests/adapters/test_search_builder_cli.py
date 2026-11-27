@@ -38,6 +38,7 @@ from auto_apply.domain.models.search_query import (
     build_request,
     describe_request,
     format_result_lines,
+    note_text,
     platform_display_text,
     resolved_remember_request,
 )
@@ -262,6 +263,24 @@ def test_a_template_that_cannot_be_filled_falls_back_to_english__teeth() -> None
     assert lines == ["  English sentence"]
 
 
+@pytest.mark.parametrize(
+    ("template", "params"),
+    [
+        ("{surface.x}", (("surface", "google"),)),
+        ("{x[a]}", (("x", "5"),)),
+    ],
+    ids=["attribute-lookup", "string-index"],
+)
+def test_a_malformed_placeholder_falls_back_to_english__teeth(template, params) -> None:
+    """TEETH (a broken locale file never crashes rendering): a template whose
+    placeholder raises AttributeError or TypeError when filled falls back to
+    the English sentence. Mutation caught: AttributeError or TypeError
+    dropped from the except tuple in note_text."""
+    note = QueryNote(severity="info", topic="location", message="English sentence",
+                     message_key="builder.note.x", message_params=params)
+    assert note_text(note, lambda key: template) == "English sentence"
+
+
 def test_resolved_remember_request_folds_site_only__teeth() -> None:
     """TEETH (remembered platform/company queries are stored resolved).
     Mutation caught: folding anything but `site`, or folding an empty
@@ -281,9 +300,12 @@ def test_platform_offers_labels_unverified_only__teeth(tmp_path) -> None:
     vendor-verified carry none. Mutation caught: badges inverted or absent.
     Label text is compared against the locale lookup, not hardcoded."""
     offers = {o.name: o for o in _service(tmp_path).query_platforms()}
-    assert offers["workday"].status == "unverified"
-    assert offers["workday"].label == get_text("builder.platform.unverified")
-    assert offers["workday"].label
+    # Workday was measured on 2026-11-08; iCIMS is still unverified.
+    assert offers["icims"].status == "unverified"
+    assert offers["icims"].label == get_text("builder.platform.unverified")
+    assert offers["icims"].label
+    assert offers["workday"].status == "measured"
+    assert offers["workday"].label == ""
     assert offers["jobvite"].status == "measured"
     assert offers["jobvite"].label == ""
 

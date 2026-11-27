@@ -106,7 +106,7 @@
       "why": "application forms are not kept as page copies"
     }
   ],
-  "research_schema_version": 5,
+  "research_schema_version": 6,
   "signals": 7,
   "skipped": [
     {

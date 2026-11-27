@@ -218,6 +218,11 @@ only opaque wrappers, so it buys nothing without following each one over the net
 Google web search has real anchors and would work through today's code unchanged; (C) drop Google.
 **Only A preserves R-1, and A is now the weakest of the three on evidence.**
 
+**Measured 2026-10-30 — option B does not hold with today's code.** Ordinary Google web search, restricted to
+`site:jobs.jobvite.com`, showed only Jobvite postings on screen, and the extractor read none of them: 6 cards, all
+dropped for "no title" (session `5f9566fd`). The anchors are on the page; the extractor does not reach them. Recorded
+as LR-1 in the Architecture Bible, section 21 (`packages/auto_apply/docs/AA_ARCHITECTURE_BIBLE.md`).
+
 ## ~~CB-8 — The static path: three answers to one question~~ — **CLOSED 2026-09-09 (P6)**
 Ruled 2026-09-08: **delete the pretence.** A mode name with no implementation behind it is capability
 built and never connected — THE ROOT, flavour one. Cascade exhaustion now refuses startup with an

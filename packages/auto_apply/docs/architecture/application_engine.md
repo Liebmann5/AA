@@ -1,8 +1,8 @@
 ---
 title: "Application Engine"
 status: needs-review
-last_verified: 2026-09-27
-verified_against: "bulk provenance stamp 2026-09-27; content not individually re-verified against code"
+last_verified: 2026-11-26
+verified_against: "the step-engine section against application/services/form_engine.py, form_actuator.py, adapters/secondary/perception/pagecomp_form.py, domain/applications/form_localization.py, answer_review.py, external_steps.py, selection_limits.py and runtime_defaults.yaml; the sections after it describe the earlier page loop and were not re-verified"
 audience: contributors
 ---
 
@@ -21,6 +21,122 @@ to do, and perform the actions. The engine never touches the browser or DOM
 directly. It is completely framework‑agnostic and testable in isolation.
 
 ---
+
+## How forms are filled now: the step engine
+
+Since 2026-11 the form is filled by the **application step engine**
+(`application/services/form_engine.py`; the decision is
+[ADR-023](../adr/023_application_step_engine.md)). The sections after this one
+describe the earlier page loop, which stays selectable with
+`applications.form_engine: legacy` until it is retired.
+
+`ApplicationsWorkflow` still owns everything around the form: reaching it (the
+apply route), challenges and sign-in walls, and the irreversible submit behind
+the fail-closed gate. Between those, the engine works the form one step at a
+time:
+
+1. **Read** the step with pagecomp, through `FormPagePort`
+   (`adapters/secondary/perception/pagecomp_form.py`): the application form,
+   its questions, whether each is required (with the evidence), traps, the
+   Next/Submit buttons, the declared language and the step position. AA's
+   multilingual words are then applied (`form_localization.localize_step`,
+   [ADR-025](../adr/025_forms_in_any_language.md)), including any choice
+   limit ("pick the best 2"). Every control is read back live, so only what
+   is visible on *this* step is worked. A page that is a test (a timer, a code
+   editor, or an assessment site) is never worked: it is handed to the person
+   or the application stops as `ASSESSMENT`; links to assessments and other
+   required steps are recorded, never followed
+   ([ADR-026](../adr/026_answer_review_and_external_steps.md)).
+2. **Upload first.** The résumé goes in before anything is typed; the engine
+   waits until the controls stop changing (a site's résumé parser) and reads
+   the step again. Values already present are kept.
+3. **Each question in page order:** a short reading pause, an answer from the
+   configured sources, one decision by the fill policy
+   (`domain/applications/fill_policy.py`), the act through the shared
+   interaction tool, and a read-back that proves the value took. Each filled
+   answer is marked if the person asked to see it first (trust and timing,
+   [ADR-026](../adr/026_answer_review_and_external_steps.md)); with `each`
+   timing they are asked at once, with `page` before AA moves on.
+4. **Conditional questions.** After a choice that can reveal or withdraw
+   questions, a cheap census of visible controls decides whether to read the
+   step again.
+5. **Ask** for what AA cannot answer — only when asking is allowed — while
+   the browser shows the page the questions are on, with the keyboard focus on
+   the first one. The person answers in the browser and chooses "done", or, if
+   they chose to, answers in AA's own window and AA enters and checks it
+   ([ADR-024](../adr/024_accessibility_accommodations.md)).
+6. **Advance** with Next only when every question the reader marked required
+   holds a value (a sweep catches ones revealed, swapped in or emptied along
+   the way), and count it as progress only when the page proves it. A
+   rejected step is read for the page's own messages; questions the reader
+   could not recognise as required are left to that validation.
+7. **Stop before submitting.** The engine never clicks a control that may
+   submit: a button that may (pagecomp's `final`, a `submit` role, or submit
+   words in any language), or a submit-type Next with no evidence that more
+   steps follow, is
+   clicked only when the person says "click it" (or chose autonomous
+   submission). The workflow shows the submit gate with a summary (counts,
+   the labels worth checking and the control it will click, never the
+   answers) and clicks the engine's submit control only on "submit". A review
+   page with nothing to answer is handled the same way.
+
+### What the person controls
+
+All in the `applications:` block of `runtime_defaults.yaml` (and the layered
+settings above it):
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `form_engine` | `steps` | `legacy` runs the earlier page loop instead |
+| `assist_mode` | `auto` | When AA may ask in the browser: `auto` (when you asked to review before submitting), `always`, `never` |
+| `assist_timeout_s` | `900` | How long AA waits for an in-place answer |
+| `review_each_step` | `false` | Pause after every filled step for a check |
+| `remember_answers` | `true` | Reuse in-place answers for the rest of the session (memory only; an answer specific to one employer — open-ended, about "here"/"us", naming it — only for that employer) |
+| `answer_sources` | session, profile, saved, generated | Where answers come from, in order |
+| `generated_answers` | `false` | Let the local text model draft open answers (always flagged for review) |
+| `legal_answers` | `profile` | `ask` keeps work-authorisation and sponsorship questions for you |
+| `overwrite_prefilled` | `false` | Replace values a site or extension already put in |
+| `acknowledge_required` | `true` | Tick a required "I certify / I agree" box (optional boxes are never ticked) |
+| `script_fill_fallback` | `true` | Set a value by script, recorded, when typing did not take |
+| `min_answer_confidence` | `0.75` | Answers below this are not used |
+
+How AA works with the person — time limits (`1x` to `20x`, or `off`),
+answering in AA's window, keyboard focus, terminal output for screen readers
+— is the `accessibility:` block
+([ADR-024](../adr/024_accessibility_accommodations.md),
+[the user guide](../user_guide/accessibility.md)); `assist_timeout_s` is the
+standard wait that the time-limit setting scales.
+
+The interrupt policy's checkpoints still apply: `BEFORE_FORM_SUBMIT` (the
+gate), `ON_LOW_CONFIDENCE_FIELD` (turns `auto` assistance on), and
+`ON_AMBIGUOUS_SUBMISSION` (after submit, when the page does not clearly
+confirm, AA asks what you see and records your answer as yours).
+
+### Working alongside other tools
+
+- **Browser extensions and the person.** A value already in a field is kept
+  and counted (`prefilled_kept`); a form an autofill extension completed is
+  offered for submission like any other.
+- **Other answer sources** (a saved-answers store, an LLM, an AI assistant)
+  plug in as `AnswerSourcePort` implementations; the policy and read-back
+  apply to them unchanged, and they never decide submission.
+- **Other readers** (another page-understanding library, an AI browser's
+  reading) can implement `FormPagePort`.
+- **Research.** One record per step goes to the research observer, and the
+  evidence carries counts only: steps, assisted answers, kept values, traps
+  left, fill failures, validation problems met, answer provenance and fill
+  method.
+
+### Footprint
+
+Trusted input through the interaction tool, human pacing from the same tool,
+a reading pause per question, and no page mutation: no injected styles, no
+value set by script unless typing failed (and then recorded). One known
+exception is tracked as a problem: the reader's change probe leaves a global
+the page can see (`window.__pcMut`); moving it to an isolated world is open
+work. AA does not
+solve CAPTCHAs, never types a password, and never signs in or creates an
+account; those steps are handed to the person in the browser window.
 
 ## The Scan‑Plan‑Act Loop
 
@@ -415,6 +531,18 @@ confirmation page to load and then:
     application on file” are treated as a 180‑day cooldown.
 4.  **Records the outcome** — the job is marked as `APPLIED` or `FAILED` in
     the persistent database, ensuring it is never double‑applied.
+
+The outcome ladder: a confirmation phrase or confirmation address is
+`SUBMITTED`; otherwise, a page that moved off the form's own address (host
+and path, compared with the address at the moment of the click) is
+`PROBABLY_SUBMITTED`; otherwise `AMBIGUOUS`. The first live run
+(2026-11-26) compared against `job.url` instead, which for jobs found
+through a search engine is a redirect link: every click read as "probably
+submitted". One INFO line records what was seen after the click (hosts and
+paths only, the page kind, any confirmation phrase), and one INFO line per
+form page records what the engine read (question words, kinds,
+requiredness, options, buttons; never a value), so a live run can be judged
+from its log (`describe_step`, `tests/workflows/test_submission_verdict.py`).
 
 ---
 

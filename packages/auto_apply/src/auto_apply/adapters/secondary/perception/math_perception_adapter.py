@@ -173,6 +173,14 @@ class MathPerceptionAdapter(PerceptionPort):
         except Exception:
             return ""
 
+    def get_current_url(self) -> str:
+        """Return the current page address (PerceptionPort contract); "" on failure."""
+        try:
+            url = self._browser.current_url
+        except Exception:
+            return ""
+        return url if isinstance(url, str) else ""
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

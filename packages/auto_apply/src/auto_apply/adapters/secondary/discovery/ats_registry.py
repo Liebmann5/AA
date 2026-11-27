@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import logging
 import re
+import urllib.parse
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,6 +60,7 @@ class _CompiledEntry:
     descriptor: ATSDescriptor
     patterns: list[re.Pattern[str]]
     terminal_patterns: list[re.Pattern[str]] = field(default_factory=list)
+    embed_frame_patterns: list[re.Pattern[str]] = field(default_factory=list)
 
 
 class ATSRegistry:
@@ -115,8 +118,13 @@ class ATSRegistry:
         classification they support.
         The first descriptor in load order wins, matching ``match()``.
         """
-        normalised = host.lower().strip().strip(".").rsplit("@", 1)[-1]
-        normalised = normalised.split(":", 1)[0]
+        raw = host.lower().strip()
+        # A netloc never holds a path, a query, a fragment or white space:
+        # "evil.com/jobs.jobvite.com" (or ".../x@jobs.jobvite.com") is not a
+        # Jobvite host, it is not a host at all.
+        if any(ch in raw for ch in "/?#\\") or any(ch.isspace() for ch in raw):
+            return None
+        normalised = raw.rsplit("@", 1)[-1].split(":", 1)[0].strip(".")
         if not normalised:
             return None
         for entry in self._entries:
@@ -124,6 +132,50 @@ class ATSRegistry:
                 if normalised == domain or normalised.endswith("." + domain):
                     return entry.descriptor.name
         return None
+
+    def embedded_posting(
+        self,
+        platform: str,
+        url: str,
+        resource_urls: Iterable[str] = (),
+    ) -> str:
+        """Evidence that *url* is a posting of *platform* embedded on an
+        employer's own site, or "" when there is none.
+
+        Read from the descriptor's ``embedding`` block: a job-id query
+        parameter on the page's address (Greenhouse: ``gh_jid=8301214``), or
+        a frame/script on the page that loads the platform's application
+        form (Greenhouse: ``…greenhouse.io/embed/job_app…``). The parameter
+        needs a non-empty value; a frame needs a pattern match AND a host of
+        the platform. Never raises.
+        """
+        entry = next((e for e in self._entries if e.descriptor.name == platform), None)
+        if entry is None:
+            return ""
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url or "").query)
+        except ValueError:
+            query = {}
+        for param in entry.descriptor.embed_job_params:
+            values = [v.strip() for v in query.get(param, []) if v and v.strip()]
+            if values:
+                return f"{param}={values[0][:40]}"
+        for raw in resource_urls:
+            resource = str(raw or "")
+            # A frame is evidence only when the platform serves it: the
+            # patterns are unanchored, so "evil.example/?u=greenhouse.io/
+            # embed/job_app" would otherwise match.
+            try:
+                host = urllib.parse.urlsplit(resource).hostname or ""
+            except ValueError:
+                continue
+            if not host or self.platform_for_host(host) != platform:
+                continue
+            normalised = _strip_scheme(resource)
+            for pat in entry.embed_frame_patterns:
+                if pat.search(normalised):
+                    return f"frame {normalised[:80]}"
+        return ""
 
     def all_descriptors(self) -> list[ATSDescriptor]:
         """Returns every loaded ATSDescriptor, in load order."""
@@ -226,7 +278,10 @@ class ATSRegistry:
             len(terminal),
         )
         return _CompiledEntry(
-            descriptor=descriptor, patterns=patterns, terminal_patterns=terminal
+            descriptor=descriptor,
+            patterns=patterns,
+            terminal_patterns=terminal,
+            embed_frame_patterns=_compile_patterns(descriptor.embed_frame_patterns),
         )
 
 
@@ -252,6 +307,9 @@ def _build_descriptor(data: dict, filename: str) -> ATSDescriptor:
     form_selector = _normalise_selector(data.get("form_root_selector", ""))
 
     raw_terminal = data.get("terminal_patterns") or []
+    embedding = data.get("embedding") or {}
+    if not isinstance(embedding, dict):
+        embedding = {}
 
     return ATSDescriptor(
         name=name,
@@ -275,7 +333,18 @@ def _build_descriptor(data: dict, filename: str) -> ATSDescriptor:
         search_restriction_source=str(
             data.get("search_restriction_source") or ""
         ).strip(),
+        search_restriction_engines=tuple(
+            str(e).strip().lower()
+            for e in (data.get("search_restriction_engines") or [])
+            if str(e).strip()
+        ),
         terminal_patterns=tuple(str(p).strip() for p in raw_terminal if p),
+        embed_job_params=tuple(
+            str(p).strip() for p in (embedding.get("job_id_params") or []) if str(p).strip()
+        ),
+        embed_frame_patterns=tuple(
+            str(p).strip() for p in (embedding.get("frame_patterns") or []) if str(p).strip()
+        ),
     )
 
 

@@ -21,6 +21,9 @@ class PageType(Enum):
                                  # one page verdict; detection lands with the
                                  # application-path fold-in (turn 2)
     CLOSED = auto()              # Posting closed / no longer accepting (turn 2)
+    HOME_PAGE = auto()           # A site's home or landing page: not a results
+                                 # list, not a posting (Bing's error redirect
+                                 # lands here; discovery reads no records on it)
 
 class JobStatus(Enum):
     """Enumeration for the status of a job in the application workflow."""

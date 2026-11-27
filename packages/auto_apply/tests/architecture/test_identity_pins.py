@@ -544,6 +544,11 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     # neither family below, never written to a research row.
     "adapters/secondary/annotation/detector_sample_source.py": ["hashlib.sha256"],
     "adapters/secondary/persistence/database.py": ["hashlib.sha256"],
+    # Step fingerprint (application step engine): a digest of a form step's
+    # address and question keys, so the engine tells a step it has already
+    # worked (a loop) from a new one. In memory for one attempt only; never in
+    # a row, the evidence or a log. Not an identity of anything.
+    "adapters/secondary/perception/pagecomp_form.py": ["hashlib.sha256"],
     "adapters/secondary/research/research_exporter.py": ["hashlib.sha256"],
     # Bundle verification (item 10): file hashes, the recomputed digest and
     # the signed-payload hash. Verification only — it mints no identity.
@@ -572,6 +577,11 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     # research key with its own context label, so it can never coincide
     # with a company_id. None of them is a company or posting identity.
     "domain/models/page_copy.py": ["hashlib.sha256", "hmac.new"],
+    # Page record (slice S1 trace): url_ref, a 16-hex commitment to a
+    # canonical URL so a local log line (LR-6) joins its decision without the
+    # record holding the URL. Local L0/L1 only; unkeyed, so never exported to
+    # research (a guessable URL could be recovered); not a posting identity.
+    "domain/models/page_record.py": ["hashlib.sha256"],
     "domain/models/timing.py": ["hashlib.sha256"],
     # Replay (item 7): corpus and artifact digests, the text digest in each
     # record, and replay signal ids derived from (copy, type, index). Result

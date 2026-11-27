@@ -23,7 +23,7 @@ import tkinter as tk
 from enum import Enum, auto
 from pathlib import Path
 from tkinter import filedialog, ttk
-from tkinter.scrolledtext import ScrolledText
+from auto_apply.adapters.primary.gui.scrolling import ScrolledText
 
 from auto_apply.infrastructure.composition_root import (
     InstallEngine,

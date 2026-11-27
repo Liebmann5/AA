@@ -136,6 +136,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from auto_apply.application.agent.event_bus import unique_new_count
 from auto_apply.application.agent.orchestrator import AgentOrchestrator
 from auto_apply.application.agent.state_machine import AgentState
 from auto_apply.application.services.autonomy import (
@@ -159,13 +160,16 @@ from auto_apply.domain.models.search_query import (
 from auto_apply.domain.models.session_plan import SessionExecutionMode, SessionPlan
 from auto_apply.domain.models.session_report import SessionReport
 from auto_apply.domain.models.task_priority import TaskPriority
+from auto_apply.domain.services.person_time import known_mode, person_timeout
 from auto_apply.domain.models.ui_contract import (
     ActivityKind,
     ApprovalRequest,
     BlockedEngine,
     DiscoveredJob,
     EntryPoint,
+    IgnoredRestriction,
     QueueSnapshot,
+    RejectionCount,
     ResearchSessionView,
     SearchPlanPreview,
     SessionEventRecord,
@@ -175,6 +179,7 @@ from auto_apply.domain.models.ui_contract import (
     SessionSummary,
     SessionViewState,
     SubmittedApplication,
+    UnsearchedEngine,
     entry_point_from_label,
     view_state_from_agent_state,
 )
@@ -207,11 +212,15 @@ class AnsweredBy(Enum):
              is on, the authoriser can only take the no-pause path, so a
              successful submission is provably policy-authorised (stage E1).
     TIMEOUT — the gate's wait elapsed and the machine returned "skip".
+    STOPPED — the session was stopped while the question was open; the
+              machine returned "skip" (so a gate with no time limit can never
+              hold a stopped session).
     """
 
     HUMAN = auto()
     POLICY = auto()
     TIMEOUT = auto()
+    STOPPED = auto()
 
 
 @dataclass(frozen=True)
@@ -263,6 +272,7 @@ _EVENT_KIND_MAP: dict[Event, ActivityKind] = {
     # Provider failures
     Event.PROVIDER_TIMED_OUT: ActivityKind.FAILED,
     Event.PROVIDER_BENCHED: ActivityKind.INFO,
+    Event.SEARCH_RESTRICTION_IGNORED: ActivityKind.INFO,
     # Task lifecycle
     Event.TASK_PERMANENTLY_FAILED: ActivityKind.FAILED,
     # HITL (recorded locally, not bus-subscribed)
@@ -281,8 +291,10 @@ _OUTCOME_KIND_MAP: dict[str, ActivityKind] = {
     "CAPTCHA_BLOCKED": ActivityKind.BLOCKED,
     "LOGIN_WALL_BLOCKED": ActivityKind.BLOCKED,
     "ACCOUNT_REQUIRED": ActivityKind.BLOCKED,
+    "ASSESSMENT_REQUIRED": ActivityKind.BLOCKED,
     "AMBIGUOUS": ActivityKind.FAILED,
     "FAILED_NO_SUBMIT_BUTTON": ActivityKind.FAILED,
+    "FAILED_NOTHING_FILLED": ActivityKind.FAILED,
     "FAILED_NAVIGATION": ActivityKind.FAILED,
     "FAILED_REQUIRED_FIELD": ActivityKind.FAILED,
     "FAILED_FILE_UPLOAD": ActivityKind.FAILED,
@@ -317,8 +329,20 @@ def _render_discovery_complete(p: dict) -> str:
         extras.append(f"{p['terminal_dropped']} terminal skipped")
     if p.get("routed_to_mining"):
         extras.append(f"{p['routed_to_mining']} routed to company pages")
+    if p.get("kept_on_shown_destination"):
+        extras.append(
+            f"{p['kept_on_shown_destination']} kept on the destination the page "
+            "shows (confirmed on arrival)"
+        )
     if p.get("budget_skipped"):
         extras.append(f"{p['budget_skipped']} over budget")
+    unsearched = [
+        str(entry.get("engine") or "?")
+        for entry in (p.get("engines_not_searched") or ())
+        if isinstance(entry, dict)
+    ]
+    if unsearched:
+        extras.append("not searched: " + ", ".join(unsearched))
     if extras:
         line += " (" + "; ".join(extras) + ")"
     return line
@@ -338,6 +362,14 @@ def _render_provider_timed_out(p: dict) -> str:
 
 def _render_provider_benched(p: dict) -> str:
     return f"Provider benched for this session: {p.get('provider', 'unknown')}"
+
+
+def _render_search_restriction_ignored(p: dict) -> str:
+    return (
+        f"{p.get('provider', 'unknown')} answered site:{p.get('restriction', '?')} "
+        f"without the restriction ({p.get('detail', '')}) — not sent again "
+        "this session"
+    )
 
 
 def _render_task_permanently_failed(p: dict) -> str:
@@ -386,6 +418,7 @@ _STREAM_TEXT_RENDERERS: dict[Event, Any] = {
     Event.CAPTCHA_REQUIRES_MANUAL_SOLVE: _render_captcha_manual_solve,
     Event.PROVIDER_TIMED_OUT: _render_provider_timed_out,
     Event.PROVIDER_BENCHED: _render_provider_benched,
+    Event.SEARCH_RESTRICTION_IGNORED: _render_search_restriction_ignored,
     Event.TASK_PERMANENTLY_FAILED: _render_task_permanently_failed,
     Event.TASK_SKIPPED_DUPLICATE: _render_task_skipped_duplicate,
     Event.BROWSER_DEGRADED: _render_browser_degraded,
@@ -415,6 +448,8 @@ def _application_outcome_text(kind: ActivityKind, payload: dict) -> str:
             barrier = "CAPTCHA"
         elif outcome == "ACCOUNT_REQUIRED":
             barrier = "an account requirement"
+        elif outcome == "ASSESSMENT_REQUIRED":
+            barrier = "a test or assessment"
         elif outcome == "LOGIN_WALL_BLOCKED":
             barrier = "login wall"
         else:
@@ -517,6 +552,10 @@ class SessionController:
             "routed_to_mining": 0,
             "budget_skipped": 0,
         }
+        self._unsearched_engines: dict[str, str] = {}
+        self._ignored_restrictions: list[IgnoredRestriction] = []
+        #: Vetting rejections by the check that rejected (event-fed).
+        self._rejections: dict[str, int] = {}
         self._agent_thread: threading.Thread | None = None
         # HITL: maps context_id → (gate_event, chosen_value_holder, payload).
         self._pending_approvals: dict[
@@ -536,6 +575,8 @@ class SessionController:
             ),
         )
         self._recent_events: deque[SessionEventRecord] = deque(maxlen=200)
+        #: Job identities already counted from JOBS_DISCOVERED.
+        self._discovered_keys: set[str] = set()
 
         # ── Approval evidence ────────────────────────────────────────────────
         self._approval_evidence: dict[str, ApprovalAnswer] = {}
@@ -604,6 +645,7 @@ class SessionController:
             bus.subscribe(Event.CAPTCHA_REQUIRES_MANUAL_SOLVE, partial(self._on_stream_event, Event.CAPTCHA_REQUIRES_MANUAL_SOLVE))
             bus.subscribe(Event.PROVIDER_TIMED_OUT, partial(self._on_stream_event, Event.PROVIDER_TIMED_OUT))
             bus.subscribe(Event.PROVIDER_BENCHED, partial(self._on_stream_event, Event.PROVIDER_BENCHED))
+            bus.subscribe(Event.SEARCH_RESTRICTION_IGNORED, partial(self._on_stream_event, Event.SEARCH_RESTRICTION_IGNORED))
             bus.subscribe(Event.TASK_PERMANENTLY_FAILED, partial(self._on_stream_event, Event.TASK_PERMANENTLY_FAILED))
             bus.subscribe(Event.TASK_SKIPPED_DUPLICATE, partial(self._on_stream_event, Event.TASK_SKIPPED_DUPLICATE))
             bus.subscribe(Event.BROWSER_DEGRADED, partial(self._on_stream_event, Event.BROWSER_DEGRADED))
@@ -706,6 +748,15 @@ class SessionController:
         )
         if is_pass:
             self._report.pending_jobs_to_apply_for += 1
+        elif isinstance(payload, dict):
+            # Every vetting outcome is published (VettingWorkflow.
+            # _record_vetting_outcome), so passed + rejected is every job
+            # vetted. The reason reads "<check>: <why>".
+            self._report.jobs_rejected_by_filter += 1
+            check = str(payload.get("reason") or "").split(":", 1)[0].strip() or "unknown"
+            rejections = self.__dict__.setdefault("_rejections", {})
+            rejections[check] = rejections.get(check, 0) + 1
+            self._report.rejection_reasons[check] = rejections[check]
         kind = ActivityKind.VETTED if is_pass else ActivityKind.REJECTED
         self._record_stream(
             kind,
@@ -713,13 +764,13 @@ class SessionController:
         )
 
     def _on_discovery_event(self, payload: Any) -> None:
-        """JOBS_DISCOVERED increments the raw-found counter and streams."""
-        count = 0
-        if isinstance(payload, dict):
-            try:
-                count = int(payload.get("count", 0))
-            except (TypeError, ValueError):
-                count = 0
+        """JOBS_DISCOVERED increments the raw-found counter and streams.
+
+        Counts unique jobs: identities already counted are not counted again.
+        """
+        count = unique_new_count(
+            payload, self.__dict__.setdefault("_discovered_keys", set())
+        )
         if count > 0:
             self._report.raw_results_found += count
         source = "discovery"
@@ -748,6 +799,8 @@ class SessionController:
         """
         if event is Event.PROVIDER_BENCHED:
             self._accumulate_blocked_engine(payload)
+        elif event is Event.SEARCH_RESTRICTION_IGNORED:
+            self._accumulate_ignored_restriction(payload)
         elif event is Event.DISCOVERY_COMPLETE:
             self._accumulate_discovery_counts(payload)
 
@@ -1367,6 +1420,8 @@ class SessionController:
         logger.info("Stop signal received")
         self._stop_requested = True
         self.orchestrator.stop()
+        # The agent thread may be waiting on a question: release it.
+        self._release_open_questions()
 
         if self._agent_thread and self._agent_thread.is_alive():
             self._agent_thread.join(timeout=10.0)
@@ -1501,7 +1556,7 @@ class SessionController:
         return SessionSnapshot(
             state=self._view_state(),
             jobs_discovered=int(getattr(stats, "jobs_discovered", 0) or 0),
-            jobs_vetted=int(getattr(stats, "jobs_vetted", 0) or 0),
+            jobs_vetted=self._jobs_vetted(),
             applications_submitted=int(
                 getattr(stats, "applications_submitted", 0) or 0
             ),
@@ -1529,7 +1584,7 @@ class SessionController:
         return SessionSummary(
             state=self._view_state(),
             jobs_discovered=int(getattr(stats, "jobs_discovered", 0) or 0),
-            jobs_vetted=int(getattr(stats, "jobs_vetted", 0) or 0),
+            jobs_vetted=self._jobs_vetted(),
             jobs_passed_vetting=report.pending_jobs_to_apply_for,
             applications_attempted=report.applications_completed,
             applications_submitted=report.applications_submitted,
@@ -1554,6 +1609,18 @@ class SessionController:
             autonomy_enabled=self.autonomy(),
             research=self._research_view(),
             blocked_engines=tuple(self._blocked_engines),
+            engines_not_searched=tuple(
+                UnsearchedEngine(engine=engine, reason=reason)
+                for engine, reason in self.__dict__.get("_unsearched_engines", {}).items()
+            ),
+            restrictions_ignored=tuple(self.__dict__.get("_ignored_restrictions", ())),
+            vetting_rejections=tuple(
+                RejectionCount(check=check, count=count)
+                for check, count in sorted(
+                    self.__dict__.get("_rejections", {}).items(),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ),
             discovery_off_shape_dropped=self._discovery_outcome_counts["off_shape_dropped"],
             discovery_terminal_dropped=self._discovery_outcome_counts["terminal_dropped"],
             discovery_routed_to_mining=self._discovery_outcome_counts["routed_to_mining"],
@@ -1662,7 +1729,9 @@ class SessionController:
             )
 
     def _accumulate_discovery_counts(self, payload: Any) -> None:
-        """Sums the per-round discovery outcome counts for the summary."""
+        """Sums the per-round discovery outcome counts for the summary, and
+        collects the engines a round's plan sent nothing to (first reason
+        recorded wins: admission does not change within a session)."""
         if not isinstance(payload, dict):
             return
         for key in self._discovery_outcome_counts:
@@ -1670,6 +1739,38 @@ class SessionController:
                 self._discovery_outcome_counts[key] += int(payload.get(key) or 0)
             except (TypeError, ValueError):
                 continue
+        for entry in payload.get("engines_not_searched") or ():
+            if isinstance(entry, dict) and entry.get("engine"):
+                self.__dict__.setdefault("_unsearched_engines", {}).setdefault(
+                    str(entry["engine"]), str(entry.get("reason") or "")
+                )
+
+    def _accumulate_ignored_restriction(self, payload: Any) -> None:
+        """Records one restriction an engine answered without (deduped)."""
+        if not isinstance(payload, dict):
+            return
+        entry = IgnoredRestriction(
+            provider=str(payload.get("provider") or "unknown"),
+            restriction=str(payload.get("restriction") or ""),
+            detail=str(payload.get("detail") or ""),
+        )
+        recorded = self.__dict__.setdefault("_ignored_restrictions", [])
+        if (entry.provider, entry.restriction) not in {
+            (e.provider, e.restriction) for e in recorded
+        }:
+            recorded.append(entry)
+
+    def _jobs_vetted(self) -> int:
+        """Every job vetting judged this session: passed plus rejected.
+
+        Read from the event-fed report, where both outcomes are counted.
+        The context counter ``jobs_vetted`` counts passes only (its writer is
+        the orchestrator's pass branch), so showing it as "Jobs vetted" told
+        a user whose nine jobs were all rejected that nothing was vetted
+        (owner run 2026-11-08).
+        """
+        report = self._report
+        return int(report.pending_jobs_to_apply_for) + int(report.jobs_rejected_by_filter)
 
     def _search_budget(self) -> int:
         """The session's query budget, read from the live plan."""
@@ -1686,6 +1787,9 @@ class SessionController:
                 checkpoint=str(payload.get("checkpoint", "")),
                 question=str(payload.get("question", "")),
                 options=tuple(str(o) for o in payload.get("options", ())),
+                kind=str(payload.get("kind", "choice")),
+                private=bool(payload.get("private", False)),
+                wait_s=payload.get("wait_s"),
             )
             for payload in self.get_pending_approvals()
         )
@@ -2007,7 +2111,10 @@ class SessionController:
                         ),
                         duration_seconds=float(data.get("duration_seconds") or 0.0),
                         jobs_found=int(discovery.get("raw_results_found", 0) or 0),
-                        jobs_vetted=int(vetting.get("jobs_approved", 0) or 0),
+                        # Approved plus rejected: every job vetting judged
+                        # (reports before 2026-11-08 carry no rejections).
+                        jobs_vetted=int(vetting.get("jobs_approved", 0) or 0)
+                        + int(vetting.get("jobs_rejected", 0) or 0),
                         applications_submitted=int(applications.get("submitted", 0) or 0),
                         applications_failed=int(applications.get("failed", 0) or 0),
                         report_path=(
@@ -2125,9 +2232,27 @@ class SessionController:
         question: str,
         options: list[str],
         checkpoint: str = "BEFORE_FORM_SUBMIT",
-        timeout: float = 300.0,
+        timeout: float | None = 300.0,
+        *,
+        kind: str = "choice",
+        private: bool = False,
     ) -> str:
         """Publishes HUMAN_APPROVAL_REQUESTED and blocks until the user responds.
+
+        The single choke point every question to the person passes through,
+        so the person's time-limit setting (``accessibility.time_limits``,
+        WCAG 2.2 SC 2.2.1) is applied here, to every gate alike:
+        ``timeout`` is scaled by it, or removed when the person turned time
+        limits off — the wait is then ended only by an answer or by
+        :meth:`stop`. The wait is an event the interface thread sets, so it
+        always ends without anything being abandoned (``hitl_gate``'s gate
+        contract).
+
+        ``kind="text"`` asks for a typed answer (the person answers a form
+        question in AA's own window): any non-empty text is the answer,
+        "skip" skips. ``private=True`` keeps the answer out of the log and out
+        of the approval evidence (recorded as "answered"): it is the person's
+        answer to an application question, not a decision about AA.
 
         Called from the agent worker thread. Blocks for up to *timeout* seconds.
         If the timeout elapses without a response, returns ``"skip"`` so the
@@ -2148,8 +2273,11 @@ class SessionController:
         Returns:
             The option string chosen by the user, or ``"skip"`` on timeout.
         """
-        if "skip" not in options:
+        if kind == "text":
+            options = ["skip"]
+        elif "skip" not in options:
             options = list(options) + ["skip"]
+        wait = person_timeout(timeout, self._time_limits())
 
         context_id = str(uuid.uuid4())
         gate = threading.Event()
@@ -2162,6 +2290,9 @@ class SessionController:
             "checkpoint": checkpoint,
             "question": question,
             "options": options,
+            "kind": "text" if kind == "text" else "choice",
+            "private": bool(private),
+            "wait_s": wait,
         }
 
         with self._approvals_lock:
@@ -2190,16 +2321,16 @@ class SessionController:
                 Event.HUMAN_APPROVAL_REQUESTED
             ),
         )
-        responded = gate.wait(timeout=timeout)
+        responded = gate.wait(timeout=wait)
 
         with self._approvals_lock:
             self._pending_approvals.pop(context_id, None)
 
         if not responded:
             logger.warning(
-                "SessionController: HITL timeout after %.0fs | "
+                "SessionController: HITL timeout after %ss | "
                 "context_id=%s — skipping",
-                timeout,
+                "no-limit" if wait is None else f"{wait:.0f}",
                 context_id,
             )
             self._record_approval_answer(
@@ -2211,9 +2342,35 @@ class SessionController:
         logger.info(
             "SessionController: HITL gate closed | context_id=%s choice=%r",
             context_id,
-            choice,
+            "<private>" if private and choice != "skip" else choice,
         )
         return choice
+
+    def _time_limits(self) -> str:
+        """The person's time-limit setting (``accessibility.time_limits``)."""
+        try:
+            section = self.registry.get_effective_config("accessibility", {}) or {}
+            mode = section.get("time_limits", "1x") if isinstance(section, dict) else "1x"
+        except Exception:
+            return "1x"
+        if not known_mode(mode):
+            logger.warning("SessionController: unknown accessibility.time_limits %r; "
+                           "using the standard limits", mode)
+            return "1x"
+        return str(mode)
+
+    def _release_open_questions(self) -> None:
+        """Answer every open question "skip" (the session is stopping), so a
+        question with no time limit can never hold a stopped session."""
+        with self._approvals_lock:
+            pending = list(self._pending_approvals.items())
+        for context_id, (gate, choice_holder, payload) in pending:
+            if gate.is_set():
+                continue
+            self._record_approval_answer(context_id, "skip", AnsweredBy.STOPPED,
+                                         str(payload.get("checkpoint", "")))
+            choice_holder.append("skip")
+            gate.set()
 
     def provide_approval(self, context_id: str, choice: str) -> bool:
         """Legacy entry point — a human answered from the UI thread.
@@ -2257,12 +2414,18 @@ class SessionController:
 
         gate, choice_holder, payload = entry
         options = list(payload.get("options", []))
-        if options and choice not in options:
+        private = bool(payload.get("private"))
+        if payload.get("kind") == "text":
+            if not isinstance(choice, str) or not choice.strip():
+                logger.warning("SessionController.answer_approval: an empty answer "
+                               "— refusing to unblock")
+                return False
+        elif options and choice not in options:
             logger.warning(
                 "SessionController.answer_approval: choice %r is not in the "
                 "gate's options %s — refusing to unblock",
-                choice,
-                options,
+                "<private>" if private else choice,
+                "<private>" if private else options,
             )
             return False
 
@@ -2281,7 +2444,7 @@ class SessionController:
 
         self._record_approval_answer(
             context_id,
-            choice,
+            "answered" if private and choice != "skip" else choice,
             answered_by,
             str(payload.get("checkpoint", "")),
         )

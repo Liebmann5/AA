@@ -105,7 +105,21 @@
     "save": "Save Settings",
     "saved": "Settings saved",
     "reset": "Reset to Defaults",
-    "admin_locked": "This setting is locked by your administrator"
+    "admin_locked": "This setting is locked by your administrator",
+    "answers_heading": "Answers",
+    "answers_intro": "How AA may answer for you, and when you check its answers. This is separate from whether AA may send an application without asking: AA never sends an answer you still have to see.",
+    "answer_trust": "Answers AA may send without showing you first",
+    "answer_trust_never": "None — show me every answer AA wrote or matched (recommended)",
+    "answer_trust_own_words": "My own words (profile facts, my saved answers, my earlier answers)",
+    "answer_trust_matched": "My own words, and saved answers AA matched by meaning",
+    "answer_trust_drafts": "All of the above, and AI drafts that pass AA's checks",
+    "answer_trust_note": "Whatever you choose, AA always shows you an answer it is unsure of.",
+    "review_timing": "When AA shows you the answers to check",
+    "review_timing_each": "As AA fills each one",
+    "review_timing_page": "A page at a time, before AA moves on",
+    "review_timing_end": "All at once, before the application is sent",
+    "drafts_enabled": "Let AA draft answers to open-ended questions with AI",
+    "choice_none": "(none)"
   },
   "dashboard": {
     "title": "AutoApply Dashboard",
@@ -160,7 +174,13 @@
     "screen_reader_mode": "Screen Reader Mode",
     "high_contrast": "High Contrast Mode",
     "font_size": "Font Size",
-    "keyboard_shortcuts": "Keyboard Shortcuts"
+    "keyboard_shortcuts": "Keyboard Shortcuts",
+    "time_limits": "Time limits",
+    "time_limits_help": "How long AA waits for your answers.",
+    "answer_in_aa": "Answer form questions in AA",
+    "focus_asked_field": "Move the keyboard focus to questions AA asks about",
+    "reduced_motion": "Reduce motion",
+    "audio_challenge_hint": "Mention audio challenges"
   },
   "gui": {
     "wizard_title": "Session Configuration",
@@ -310,7 +330,32 @@
       "blocked_line": "{engine} — {reason}",
       "blocked_reason_unknown": "no reason recorded",
       "off_shape": "Dropped {dropped} off-platform results, skipped {terminal} terminal pages, routed {routed} to company pages.",
-      "budget": "Search budget: {skipped} planned searches were skipped once the budget of {budget} was reached."
+      "budget": "Search budget: {skipped} planned searches were skipped once the budget of {budget} was reached.",
+      "unsearched_header": "Search engines that ran no search this session:",
+      "unsearched_line": "{engine} — {reason}",
+      "unsearched_reason": {
+        "not_in_catalog": "not in the search-engine catalog",
+        "no_automated_form": "the catalog has no automated search form for it",
+        "no_site_form": "it has no form for site-restricted searches, and only site-restricted searches were planned",
+        "no_measured_platform": "no enabled platform's site: restriction has been measured on it, and only site-restricted searches were planned",
+        "no_usable_platform": "no enabled platform can be searched by site restriction yet",
+        "no_site_operator": "its search form has no site: operator, so no site-restricted query can be written for it"
+      },
+      "ignored_header": "Searches an engine answered without the site: restriction (those pages were not read):",
+      "ignored_line": "{engine}: site:{restriction} — {detail}",
+      "rejected_header": "Vetting rejected {rejected} of {vetted} jobs:",
+      "rejected_line": "{check}: {count}",
+      "check": {
+        "ArrivalCheck": "the link did not lead to the posting the results page showed",
+        "TitleLogicFilter": "title does not fit the role searched for, or holds an excluded word",
+        "RoleAlignmentFilter": "role does not match the roles searched for",
+        "HardSkillsFilter": "required skills not in the profile",
+        "ExperienceFilter": "more experience required than the profile has",
+        "LocationLogicFilter": "location does not match the preferences",
+        "SpatialLocationFilter": "outside the commute range or workplace preference",
+        "CompanyBlacklistFilter": "company is on the excluded list",
+        "ThrottlingFilter": "application limit or cooldown for this company"
+      }
     },
     "gui": {
       "frame": "Hiring platforms (automatic search)",
@@ -329,5 +374,75 @@
       "no_profile": "No profile found — cannot show the plan without one.",
       "override_note": "Platforms from --platforms: {platforms}"
     }
+  },
+  "form_engine": {
+    "where_step": "step {now} of {total}",
+    "where_page": "this page",
+    "application": "the {company} application",
+    "assist_intro": "AA needs your answer to {count} question(s) on {where} of {application}:",
+    "required_suffix": " (required)",
+    "more": "  (and {count} more)",
+    "language_note": "This form is written in {language}. The questions are shown exactly as the form words them.",
+    "focus_note": "AA has put the keyboard focus on the first of them in the browser window.",
+    "assist_instructions": "Answer them in the browser window, then choose “done” so AA can check them and go on, or choose “skip” to leave this application.",
+    "aa_heading": "Question {index} of {count} on {where} of {application}{required}:",
+    "aa_protected": "Only you can answer this question; AA never answers it for you.",
+    "aa_choice": "Choose your answer: AA will select it in the form and check that it took. Or choose “answer in the browser” to answer it there yourself.",
+    "aa_checkbox": "Should AA tick this box? Or choose “answer in the browser” to do it yourself.",
+    "aa_text": "Type your answer: AA will enter it in the form exactly as you type it and check that it took. Leave it empty (or choose “skip”) to answer it in the browser instead.",
+    "review_step": "AA has filled step {index}{label} of {application}: {filled} answered, {left} left as they were. Check the browser window, then choose “continue” to let AA go on, or “skip” to leave this application.",
+    "account_wall": "This application on {host} needs an account. AA never signs in or creates accounts for you. If you want to go on, sign in (or create the account) yourself in the browser window until the application form shows, then choose “signed in”. Choose “skip” to leave this application.",
+    "not_accepted": "The page did not accept this step. It reports a problem with:\n{problems}\nPlease correct them in the browser window, then choose “done” so AA tries again, or choose “skip” to leave this application.",
+    "review_answers": "AA filled {count} answer(s) on {where} of {application} that you asked to check before they are sent:",
+    "review_answers_instructions": "Look at them in the browser window and change anything that is not right there. Then choose “done” to let AA go on, or “skip” to leave this application.",
+    "review_step_check": "Please check these answers in particular: {items}.",
+    "test_page": "This page of {application} is a test or assessment (a timer or a code editor is showing). AA never takes tests for you. If you want to go on, take it yourself in the browser window until the application form shows again, then choose “done”. Choose “skip” to leave this application."
+  },
+  "apply_prompts": {
+    "risky_click": "To go on with the {title} application at {company}, AA needs to click “{button}”, and it cannot rule out that this sends the application. Check the browser window. Click it?",
+    "sign_in": "The application for {title} at {company} needs an account on {host}. AA never signs in or creates accounts for you. If you want to go on, sign in (or create the account) yourself in the browser window until the application form shows, then choose “signed in”. Choose “skip” to leave this application.",
+    "challenge": "A human-verification challenge is blocking the current page. Solve it in the browser window, then choose how to go on.",
+    "challenge_audio": "Many of these challenges have an audio version: look for a headphone or speaker button.",
+    "submit": "Submit application?",
+    "ambiguous": "AA clicked submit on the {title} application at {company}, but the page does not clearly confirm it. Look at the browser window: did the application go through?",
+    "summary_head": "{title} at {company}: AA filled {filled} question(s) over {pages} page(s)",
+    "summary_you": "; you answered {count}",
+    "summary_kept": "; {count} already held a value and were kept",
+    "summary_resume": "; résumé attached",
+    "summary_control": "On “submit” AA clicks the page's “{button}” control.",
+    "summary_check": "Please check these answers: {items}{more}.",
+    "summary_more": " (+{count} more)",
+    "summary_left": "{count} optional question(s) were left blank.",
+    "summary_end": "Check the browser window, then choose “submit” or “skip”.",
+    "needs_person": "AA is set to send applications without asking, but this one has things you asked to see first, or that the page says must be done first. Choose “submit” to send it, or “skip” to leave it.",
+    "summary_pending": "Answers you asked to check before sending: {items}.",
+    "summary_external": "The page says these must be done first: {items}. AA never opens them or takes tests for you."
+  },
+  "options": {
+    "done": "Done",
+    "skip": "Skip",
+    "continue": "Continue",
+    "signed_in": "I have signed in",
+    "click_it": "Click it",
+    "submit": "Submit",
+    "solved": "Solved",
+    "stop": "Stop the session",
+    "it_was_submitted": "It was submitted",
+    "it_was_not_submitted": "It was not submitted",
+    "answer_in_the_browser": "Answer in the browser",
+    "tick_it": "Tick it",
+    "leave_it_unticked": "Leave it unticked"
+  },
+  "approval": {
+    "heading": "Approval Required — AutoApply needs your answer",
+    "question": "Question",
+    "choices": "Choices",
+    "choose_number": "Type the number of your choice and press Enter. Press Enter alone to skip.",
+    "type_answer": "Type your answer and press Enter. Press Enter alone to answer it in the browser instead.",
+    "wait_minutes": "AA waits up to {minutes} minute(s) for your answer.",
+    "wait_no_limit": "AA waits for your answer with no time limit.",
+    "option_line": "Choice {index} of {count}: {label}",
+    "send": "Send",
+    "interrupted": "Interrupted — skipping this question."
   }
 }

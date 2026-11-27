@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Job Application for Platform Engineer at Acme Robotics</title>
+<style>
+  body { font-family: sans-serif; max-width: 760px; margin: 24px auto; }
+  .field { margin: 16px 0; }
+  .select__control { border: 1px solid #999; padding: 4px; position: relative; min-height: 28px; }
+  .select__value-container { display: flex; gap: 6px; }
+  .select__input-container input { border: none; outline: none; width: 220px; }
+  .menu { border: 1px solid #555; background: #fff; position: absolute; z-index: 5; width: 300px; }
+  .menu [role=option] { padding: 4px; cursor: pointer; }
+  .menu [role=option]:hover { background: #def; }
+  .file-btn { border: 1px solid #333; padding: 4px 10px; display: inline-block; }
+  #resume { position: absolute; left: -9999px; }
+</style>
+</head>
+<body>
+<h1>Platform Engineer</h1>
+<p>Acme Robotics &middot; Remote, US</p>
+<div id="app">
+  <form id="application-form">
+    <p><span aria-hidden="true">*</span> indicates a required field</p>
+    <div class="field">
+      <label id="resume_label" for="resume">Resume/CV<span>*</span></label>
+      <span class="file-btn" id="attach">Attach</span>
+      <input type="file" id="resume" name="resume" aria-required="true" aria-labelledby="resume_label">
+      <span id="resume_status"></span>
+    </div>
+    <div class="field"><label for="first_name">First Name<span>*</span></label>
+      <input id="first_name" type="text" aria-required="true" class="controlled"></div>
+    <div class="field"><label for="last_name">Last Name<span>*</span></label>
+      <input id="last_name" type="text" aria-required="true" class="controlled"></div>
+    <div class="field"><label for="email">Email<span>*</span></label>
+      <input id="email" type="text" aria-required="true" class="controlled"></div>
+    <div class="field"><label for="phone">Phone</label>
+      <input id="phone" type="text" class="controlled"></div>
+    <div class="field"><label for="linkedin">LinkedIn Profile</label>
+      <input id="linkedin" type="text" class="controlled"></div>
+    <div class="field" data-combo="auth" data-required="1"
+         data-options="Yes|No">
+      <label id="auth_label">Are you legally authorized to work in the United States?<span>*</span></label>
+    </div>
+    <div class="field" data-combo="sponsor" data-required="1"
+         data-options="Yes|No">
+      <label id="sponsor_label">Will you now or in the future require sponsorship for employment visa status?<span>*</span></label>
+    </div>
+    <div class="field" data-combo="location" data-required="1" data-remote="1"
+         data-options="Chicago, IL, USA|Chicago Heights, IL, USA|Chico, CA, USA|Boston, MA, USA">
+      <label id="location_label">Location (City)<span>*</span></label>
+    </div>
+    <div class="field"><label for="why">Why do you want to work at Acme Robotics?<span>*</span></label>
+      <textarea id="why" rows="4" aria-required="true" class="controlled"></textarea></div>
+    <h3>Voluntary Self-Identification</h3>
+    <div class="field" data-combo="gender" data-options="Male|Female|Decline To Self Identify">
+      <label id="gender_label">Gender</label>
+    </div>
+    <div class="field" data-combo="hispanic" data-options="Yes|No|Decline To Self Identify">
+      <label id="hispanic_label">Are you Hispanic/Latino?</label>
+    </div>
+    <div class="field" data-combo="veteran"
+         data-options="I am not a protected veteran|I identify as one or more of the classifications of a protected veteran|I don't wish to answer">
+      <label id="veteran_label">Veteran Status</label>
+    </div>
+    <button type="submit" id="submit_app">Submit Application</button>
+  </form>
+</div>
+<script>
+(function () {
+  var state = {};
+  // Controlled inputs: the value shown is always re-rendered from state on
+  // blur, so a value set without input events does not survive.
+  document.querySelectorAll('.controlled').forEach(function (el) {
+    state[el.id] = '';
+    el.addEventListener('input', function () { state[el.id] = el.value; });
+    el.addEventListener('blur', function () { el.value = state[el.id]; });
+  });
+  document.getElementById('attach').addEventListener('click', function () {
+    document.getElementById('resume').click();
+  });
+  document.getElementById('resume').addEventListener('change', function (e) {
+    var f = e.target.files[0];
+    document.getElementById('resume_status').textContent = f ? ('Attached: ' + f.name) : '';
+    // The "parser" fills what it can read from the résumé, after a moment.
+    setTimeout(function () {
+      ['first_name', 'last_name'].forEach(function (id) {
+        var v = id === 'first_name' ? 'Ada' : 'Quill';
+        state[id] = v; document.getElementById(id).value = v;
+      });
+    }, 150);
+  });
+  var counter = 0;
+  document.querySelectorAll('[data-combo]').forEach(function (field) {
+    var key = field.getAttribute('data-combo');
+    var options = field.getAttribute('data-options').split('|');
+    var n = ++counter, listId = 'react-select-' + n + '-listbox';
+    var control = document.createElement('div'); control.className = 'select__control';
+    var vc = document.createElement('div'); vc.className = 'select__value-container';
+    var shown = document.createElement('div'); shown.className = 'select__placeholder'; shown.textContent = 'Select...';
+    var ic = document.createElement('div'); ic.className = 'select__input-container';
+    var input = document.createElement('input');
+    input.id = 'q_' + key; input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list'); input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-labelledby', key + '_label');
+    if (field.getAttribute('data-required')) input.setAttribute('aria-required', 'true');
+    var hidden = document.createElement('input'); hidden.type = 'hidden'; hidden.name = 'question_' + key;
+    ic.appendChild(input); vc.appendChild(shown); vc.appendChild(ic); control.appendChild(vc);
+    field.appendChild(control); field.appendChild(hidden);
+    var menu = null;
+    function close() { if (menu) { menu.remove(); menu = null; } input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-controls'); }
+    function open() {
+      close();
+      var q = input.value.toLowerCase();
+      if (field.getAttribute('data-remote') && q.length < 2) return;
+      menu = document.createElement('div'); menu.className = 'menu'; menu.id = listId; menu.setAttribute('role', 'listbox');
+      var r = control.getBoundingClientRect();
+      menu.style.left = (r.left + window.scrollX) + 'px'; menu.style.top = (r.bottom + window.scrollY) + 'px';
+      options.filter(function (o) { return !q || o.toLowerCase().indexOf(q) >= 0; }).forEach(function (o, i) {
+        var d = document.createElement('div'); d.setAttribute('role', 'option');
+        d.id = 'react-select-' + n + '-option-' + i; d.textContent = o;
+        d.addEventListener('mousedown', function (ev) {
+          ev.preventDefault();
+          shown.className = 'select__single-value'; shown.textContent = o; hidden.value = o;
+          input.value = ''; close();
+        });
+        menu.appendChild(d);
+      });
+      document.body.appendChild(menu);   // portal, like react-select's menuPortalTarget
+      input.setAttribute('aria-expanded', 'true'); input.setAttribute('aria-controls', listId);
+    }
+    input.addEventListener('focus', open);
+    input.addEventListener('input', open);
+    input.addEventListener('blur', function () { setTimeout(close, 100); });
+    input.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') close(); });
+  });
+  document.getElementById('application-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var missing = [];
+    ['first_name', 'last_name', 'email', 'why'].forEach(function (id) { if (!state[id]) missing.push(id); });
+    ['auth', 'sponsor', 'location'].forEach(function (k) {
+      if (!document.querySelector('input[name="question_' + k + '"]').value) missing.push(k);
+    });
+    if (!document.getElementById('resume').files.length) missing.push('resume');
+    if (missing.length) { document.title = 'Missing: ' + missing.join(','); return; }
+    window.__submitted = {state: state, auth: document.querySelector('input[name=question_auth]').value};
+    location.hash = '';
+    history.pushState({}, '', '/confirmation');
+    document.getElementById('app').innerHTML = '<h1>Thank you for applying.</h1><p>Your application has been submitted.</p>';
+  });
+})();
+</script>
+</body>
+</html>

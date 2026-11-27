@@ -14,6 +14,11 @@ Architecture:
     It has no knowledge of admin policy, user preferences, or session state.
 
 Platform Support:
+    - Every platform: a portable browser named by ``AA_BROWSER_BINARY_PATH``
+      (Chrome/Chromium/Edge/Brave) or ``AA_FIREFOX_BINARY_PATH`` — a browser
+      carried on a USB drive, or unpacked where no installer may run. It is
+      detected first, so a machine with nothing installed still has a
+      browser, and it wins over an installed browser of the same name.
     - Windows: Reads HKLM\\SOFTWARE\\...\\Uninstall registry keys.
     - macOS: Scans /Applications for .app bundles with Info.plist.
     - Linux: Checks PATH via shutil.which() and runs --version commands.
@@ -120,14 +125,14 @@ class BrowserDetector:
         """
         os_name = platform.system().lower()
 
-        raw: list[DetectedBrowser] = []
+        raw: list[DetectedBrowser] = cls._detect_portable()
         try:
             if os_name == "windows":
-                raw = cls._detect_windows()
+                raw += cls._detect_windows()
             elif os_name == "darwin":
-                raw = cls._detect_macos()
+                raw += cls._detect_macos()
             elif os_name == "linux":
-                raw = cls._detect_linux()
+                raw += cls._detect_linux()
             else:
                 logger.warning(
                     "Unsupported OS '%s' — browser detection may be incomplete",
@@ -165,6 +170,64 @@ class BrowserDetector:
             )
 
         return ordered
+
+    # ── Portable (any OS) ──────────────────────────────────────────────────
+
+    #: Environment variables naming a portable browser, in the order read.
+    PORTABLE_ENV_VARS: tuple[str, ...] = ("AA_BROWSER_BINARY_PATH", "AA_FIREFOX_BINARY_PATH")
+
+    #: Executable base names (lower case, without ``.exe``/``.app``) → browser.
+    _PORTABLE_NAMES: tuple[tuple[str, str], ...] = (
+        ("firefox", "firefox"),
+        ("msedge", "edge"), ("microsoft-edge", "edge"), ("edge", "edge"),
+        ("brave", "brave"), ("brave-browser", "brave"),
+        ("chrome", "chrome"), ("chromium", "chrome"), ("chromium-browser", "chrome"),
+        ("google-chrome", "chrome"), ("chrome-headless-shell", "chrome"),
+    )
+
+    @classmethod
+    def portable_browser_name(cls, path: str) -> str | None:
+        """The browser a portable executable is, from its file name alone.
+
+        Shape only — the file is never run (running ``chrome.exe --version``
+        on Windows opens a browser window). Unknown names give None.
+        """
+        # Either separator: a Windows path is read the same on any host.
+        base = path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for suffix in (".exe", ".app", ".bin", ".sh"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+        for stem, name in cls._PORTABLE_NAMES:
+            if base == stem:
+                return name
+        for stem, name in cls._PORTABLE_NAMES:
+            if base.startswith(stem):
+                return name
+        return None
+
+    @classmethod
+    def _detect_portable(cls) -> list[DetectedBrowser]:
+        """Browsers named by the portable-browser environment variables.
+
+        A set variable that names no file, or a file AA cannot recognise,
+        is reported in the log and skipped — never trusted blindly.
+        """
+        found: list[DetectedBrowser] = []
+        for var in cls.PORTABLE_ENV_VARS:
+            raw = (os.environ.get(var) or "").strip().strip('"')
+            if not raw:
+                continue
+            if not (os.path.isfile(raw) or (raw.lower().endswith(".app") and os.path.isdir(raw))):
+                logger.warning("%s is set but names no file: %s", var, raw)
+                continue
+            name = cls.portable_browser_name(raw)
+            if name is None:
+                logger.warning("%s names a file AA does not recognise as a browser: %s",
+                               var, raw)
+                continue
+            logger.info("Portable browser from %s: %s (%s)", var, name, raw)
+            found.append(DetectedBrowser(name=name, path=raw))
+        return found
 
     # ── Windows ───────────────────────────────────────────────────────────
 

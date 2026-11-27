@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.vetting.base_filter import BaseVettingFilter
+from auto_apply.domain.vetting.title_targets import names_role, target_titles
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,9 @@ class TitleLogicFilter(BaseVettingFilter):
 
         # 2. Fuzzy Matching (The "Soft Check")
         # We check if the job title is sufficiently similar to ANY of the desired titles.  # noqa: E501
-        desired_titles = [t.lower() for t in self.profile.search_preferences.desired_job_titles]  # noqa: E501
+        # The profile's titles and this session's searched title
+        # (domain/vetting/title_targets.py).
+        desired_titles = [t.lower() for t in target_titles(self.profile, job)]
 
         best_score = 0.0
         for desired in desired_titles:
@@ -51,9 +54,10 @@ class TitleLogicFilter(BaseVettingFilter):
             # It returns a float 0.0 to 1.0 based on similarity.
             score = SequenceMatcher(None, desired, title).ratio()
 
-            # Boost score if the desired title appears exactly inside the job title
-            # e.g. desired="Python Dev", job="Junior Python Dev at Google" -> Good match
-            if desired in title:
+            # A title that names the role in full is a match, wherever the
+            # words sit: "Python Dev" in "Junior Python Dev at Google",
+            # "Backend Engineer" in "Senior Software Engineer, Backend".
+            if names_role(title, desired):
                 score = 1.0
 
             best_score = max(best_score, score)

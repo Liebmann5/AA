@@ -126,10 +126,6 @@ class GoogleProvider(BaseSearchProvider):
             page_action=self._page_action,
         )
 
-    def _is_page_healthy(self) -> bool:
-        # If an evasion manager is wired, use it; otherwise assume healthy.
-        return True
-
     def run(self, instruction: SearchInstruction) -> list[Job]:
         """Executes a single Google search for the given instruction.
 
@@ -153,9 +149,7 @@ class GoogleProvider(BaseSearchProvider):
 
         self._pace_for(instruction)
 
-        if not self.navigator.navigate_with_fallback(
-            self._engine_strategy, instruction, self._is_page_healthy
-        ):
+        if not self._navigate(instruction):
             logger.warning(
                 "GoogleProvider: navigation/health check failed — returning empty"
             )

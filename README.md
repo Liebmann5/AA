@@ -11,9 +11,11 @@
 
 ## Read this first
 
-**AutoApply has never been released and has never successfully submitted a job
-application.** The most recent full live run made 18 attempts and produced 0
-submissions: 13 were stopped by CAPTCHA challenges and 5 by login walls.
+**AutoApply has never been released.** In November 2026 it submitted its first
+two job applications, both on Workable-hosted forms; both employers' confirmation
+emails arrived on 2026-11-26. One platform is not yet proof that it submits
+elsewhere. The earlier full live run made 18 attempts and produced 0 submissions
+(STATUS.md explains why the recorded reasons for those 18 are not trustworthy).
 
 That number is published deliberately. AA exists to test a falsifiable claim,
 and the claim is not yet proven. Before you install anything, read
@@ -58,7 +60,7 @@ along with what evidence would falsify it.
 | Discover postings via Google, Bing and Indeed | **Partial** — only Bing has yielded real postings in live runs |
 | Vet postings against a profile (title, location, skills, salary) | **Working** |
 | Fill application forms from a stored profile | **Working, unproven end-to-end** |
-| Submit an application | **Never achieved** — 0 of 18 attempts |
+| Submit an application | **Partial** — 2 confirmed submissions on Workable (confirmation emails 2026-11-26); 0 of 18 in the earlier full run; other platforms unproven |
 | Run from a USB stick with no admin rights | **Working** |
 | Record an auditable, opt-in research dataset | **Working** |
 | Operate with no browser at all | **Removed** — see [ADR-013](packages/auto_apply/docs/adr/013_static_path_retirement.md) |

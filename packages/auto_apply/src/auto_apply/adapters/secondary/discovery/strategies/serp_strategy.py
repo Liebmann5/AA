@@ -33,6 +33,7 @@ from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.profile import JobSearchPreferences
 from auto_apply.domain.ports.browser_port import BrowserInterface
 from auto_apply.domain.ports.page_advance_port import PageAdvancePort
+from auto_apply.domain.services.navigation_landing import Landing
 from auto_apply.domain.services.page_assessment import assess_page
 from auto_apply.domain.types import PageType
 
@@ -52,6 +53,28 @@ BLOCK_PAGE_TYPES = frozenset({
     PageType.CAPTCHA_BLOCK,
     PageType.LOGIN_REQUIRED,
     PageType.ERROR_404,
+})
+
+
+#: Verdict kinds on which a results reader must not run: the page is not a
+#: results list (Bing's error redirect to its home page, 2026-11-02, whose
+#: news cards were read as 20 job records). Not a block: the engine is not
+#: benched, the query simply yields nothing.
+NOT_RESULTS_PAGE_TYPES = frozenset({
+    PageType.HOME_PAGE,
+})
+
+
+#: Landing reasons that mean the page being read is not the page that was
+#: requested, whatever the page verdict says: the site's home page, an error
+#: redirect, another site, or no page. ``different-path`` is deliberately not
+#: here: sites legitimately canonicalise a search URL onto another path, so
+#: a moved path alone is not evidence that the results are wrong.
+LEFT_SURFACE_REASONS = frozenset({
+    "home-page",
+    "error-redirect",
+    "different-site",
+    "no-page",
 })
 
 
@@ -205,6 +228,8 @@ class GenericSERPStrategy:
         # The miner is never replaced — only wrapped, and only when a provider
         # supplies a fast route. Unwired (fast_extractor=None) self.miner IS
         # the SemanticMiner instance, so discovery behaves exactly as before.
+        #: The verdict kind of the page last checked (one verdict per page).
+        self.last_page_kind: PageType | None = None
         self.miner = (
             FallbackSerpExtractor(fast_extractor, semantic_miner)
             if fast_extractor is not None
@@ -225,6 +250,7 @@ class GenericSERPStrategy:
         """
         url, title, html = browser_page_snapshot(self.browser)
         assessment = assess_page(url=url, title=title, html=html)
+        self.last_page_kind = assessment.kind
         if assessment.kind in BLOCK_PAGE_TYPES:
             logger.info(
                 "%s: page verdict %s | signals=%s",
@@ -234,6 +260,61 @@ class GenericSERPStrategy:
             )
             return assessment.kind
         return None
+
+    def _left_requested_page(self) -> bool:
+        """True when the page has moved off the requested one since it loaded.
+
+        Asked right before reading, so a page that moved itself by script
+        after the load-time check (Bing's retired jobs page moving to its
+        home page) yields no records instead of 20 news headlines. Not a
+        block: the engine is not benched; the query yields nothing and the
+        log names where the page went.
+        """
+        check = getattr(self.browser, "confirm_arrival", None)
+        if not callable(check):
+            return False
+        try:
+            landing: Landing | None = check()
+        except Exception as exc:
+            logger.debug("%s: arrival re-check failed: %s", self.source_tag, exc)
+            return False
+        if landing is None or landing.on_surface:
+            return False
+        if landing.reason not in LEFT_SURFACE_REASONS:
+            logger.info(
+                "%s: page path changed since it was requested (%s); reading it | "
+                "requested=%s now=%s",
+                self.source_tag,
+                landing.reason,
+                landing.requested,
+                landing.landed,
+            )
+            return False
+        logger.warning(
+            "%s: the page moved off the requested search page (%s) — no "
+            "records read | requested=%s now=%s",
+            self.source_tag,
+            landing.reason,
+            landing.requested,
+            landing.landed,
+        )
+        return True
+
+    def _not_results_page(self) -> bool:
+        """True when the verdict says this page is not a results list.
+
+        Asked of the verdict already taken by :meth:`_page_block_type`
+        (one verdict per page). No records are read from such a page.
+        """
+        kind = self.last_page_kind
+        if kind is None or kind not in NOT_RESULTS_PAGE_TYPES:
+            return False
+        logger.warning(
+            "%s: page verdict %s — not a results page; no records read",
+            self.source_tag,
+            kind.name,
+        )
+        return True
 
     def _abort_blocked(self, page_type: PageType, context: str) -> list[Job]:
         """Log and record a blocked page, then return no jobs.
@@ -665,6 +746,8 @@ class GenericSERPStrategy:
         block_type = self._page_block_type()
         if block_type is not None:
             return self._abort_blocked(block_type, "execute")
+        if self._left_requested_page() or self._not_results_page():
+            return []
 
         # 2. Clear Interruptions (Cookies/Popups)
         self.interruption_handler.handle_interruptions()
@@ -705,6 +788,8 @@ class GenericSERPStrategy:
         block_type = self._page_block_type()
         if block_type is not None:
             return self._abort_blocked(block_type, "run")
+        if self._left_requested_page() or self._not_results_page():
+            return []
 
         # Overlay dismissal: run() previously never dismissed popups at all
         # (only execute() did). Both entry paths now dismiss once per page;

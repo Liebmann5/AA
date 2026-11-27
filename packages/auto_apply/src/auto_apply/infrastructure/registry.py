@@ -146,10 +146,22 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
     "company_batch_threshold": 3,
     "discovery_strategy": "live_browser",
     "perception_strategy": "math",
+    "serp_reader": "pagecomp",
     "store_session_logs": True,
     "log_retention_days": 30,
     "page_copy_keep_days": 90,
     "page_copy_max_mb": 200,
+    # Accessibility defaults (mirrors runtime_defaults.yaml, parity-pinned).
+    "accessibility": {
+        "time_limits": "1x",
+        "answer_in_aa": False,
+        "focus_asked_field": True,
+        "screen_reader_mode": False,
+        "reduced_motion": False,
+        "high_contrast": False,
+        "font_scale": 1.0,
+        "audio_challenge_hint": False,
+    },
     "vetting": {
         "hard_skills_min_overlap": 0.5,
         "role_alignment_threshold": 0.6,
@@ -183,6 +195,30 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "dom_stabilization_timeout_s": 3.0,
         "dom_stabilization_poll_interval_s": 0.25,
         "custom_answer_max_tokens": 150,
+        "form_engine": "steps",
+        "assist_mode": "auto",
+        "assist_timeout_s": 900,
+        "max_assists_per_step": 2,
+        "review_each_step": False,
+        "remember_answers": True,
+        "answer_sources": ["session", "profile", "saved", "generated"],
+        "generated_answers": False,
+        "legal_answers": "profile",
+        "min_answer_confidence": 0.75,
+        "answer_trust": "never",
+        "review_timing": "end",
+        "review_below_confidence": 0.8,
+        "overwrite_prefilled": False,
+        "acknowledge_required": True,
+        "script_fill_fallback": True,
+        "type_chunk_threshold": 240,
+        "option_match_threshold": 0.6,
+        "upload_settle_s": 8.0,
+        "upload_quiet_min_s": 1.5,
+        "reading_pause_ms_per_char": 18,
+        "reading_pause_max_s": 2.0,
+        "max_questions_per_step": 80,
+        "max_apply_hops": 3,
         "inter_action_delay_ms": 400,
         "macro_pause_min_seconds": 0.4,
         "macro_pause_max_seconds": 1.2,
@@ -198,6 +234,23 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "max_tokens": 512,
         "temperature": 0.7,
         "device": "cpu",
+    },
+    "comprehension_access": {
+        "level": "dom",
+        "max_nodes": 29000,
+        "max_bytes": 8000000,
+        "max_depth": 256,
+        "max_frame_depth": 3,
+        "frame_cap": 16,
+        "script_deadline_ms": 10000,
+        "wall_ms": 20000,
+        "prefer_cdp": True,
+    },
+    "comprehension_transitions": {
+        "settle_quiet_reads": 2,
+        "settle_t_max_s": 10.0,
+        "new_windows_per_action": 4,
+        "error_skeleton_tau": 0.7,
     },
 }
 
@@ -477,6 +530,34 @@ class CapabilitiesRegistry:
             discovery_section["ats_platforms"] = list(platforms_pick)
             discovery_section["use_ats_site_search"] = bool(platforms_pick)
             merged["discovery"] = discovery_section
+
+        # Accessibility reconciliation (the same input -> resolution ->
+        # resolved pattern): the profile carries the person's choices as flat
+        # declarative inputs (accessibility_<key>); everything reads the one
+        # nested accessibility section. Unset choices inherit the YAML.
+        a11y_inputs = {
+            key[len("accessibility_"):]: merged.pop(key)
+            for key in [k for k in merged if k.startswith("accessibility_")]
+        }
+        if a11y_inputs:
+            a11y_section = dict(merged.get("accessibility") or {})
+            a11y_section.update(a11y_inputs)
+            merged["accessibility"] = a11y_section
+
+        # Answer review (ADR-026): the profile's answers_<key> choices fold
+        # into the applications section under the names the engine reads.
+        answer_inputs = {
+            key[len("answers_"):]: merged.pop(key)
+            for key in [k for k in merged if k.startswith("answers_")]
+        }
+        if answer_inputs:
+            apps_section = dict(merged.get("applications") or {})
+            names = {"trust": "answer_trust", "review_timing": "review_timing",
+                     "drafts_enabled": "generated_answers"}
+            for key, value in answer_inputs.items():
+                if key in names:
+                    apps_section[names[key]] = value
+            merged["applications"] = apps_section
 
         if admin_policy:
             for key, value in admin_policy.config_overrides.items():

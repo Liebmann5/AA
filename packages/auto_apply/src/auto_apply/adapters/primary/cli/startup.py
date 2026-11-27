@@ -82,6 +82,7 @@ from collections.abc import Callable
 from pydantic import ValidationError
 
 from auto_apply.adapters.primary.cli.dashboard import CLIDashboard
+from auto_apply.adapters.primary.cli.settings_screen import run_settings_screen
 from auto_apply.adapters.primary.cli.wizard import CLIWizard
 from auto_apply.application.services.autonomy import (
     apply_autonomy,
@@ -93,6 +94,7 @@ from auto_apply.infrastructure.composition_root import (
     build_query_builder,
     build_search_plan_preview,
     build_session_controller,
+    configure_accessibility_presentation,
 )
 from auto_apply.domain.models.profile import UserProfile, make_portable_path
 from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
@@ -161,6 +163,9 @@ class CLIStartup:
         # here and handed to the wizard. If the registry or catalog cannot be
         # loaded, both degrade to nothing and the wizard runs a normal session.
         configure_locale(language=None)
+        # Screen-reader output from the first question (AA_SCREEN_READER=1,
+        # or the OS hint), before the session's settings are known.
+        configure_accessibility_presentation()
         platforms_vocabulary: tuple = ()
         preview_factory = None
         try:
@@ -435,6 +440,7 @@ class CLIStartup:
             for idx, name in enumerate(user_profiles, 1):
                 print(f"  [{idx}] {name}")  # noqa: T201
             print(f"  [{len(user_profiles) + 1}] Load profile from file")  # noqa: T201
+            print("  [e]  Edit a profile's settings")  # noqa: T201
             print("  [q]  Quit")  # noqa: T201
 
             try:
@@ -445,6 +451,10 @@ class CLIStartup:
 
             if choice == "q":
                 return None
+
+            if choice == "e":
+                self._edit_settings(user_profiles)
+                continue
 
             if choice == str(len(user_profiles) + 1):
                 profile = self._load_external_profile()
@@ -468,6 +478,23 @@ class CLIStartup:
                     print(f"  There is no option {choice} on the list.")  # noqa: T201
             except ValueError:
                 print(f"  '{choice}' is not a number. Enter a number from the list, or q to quit.")  # noqa: T201
+
+    def _edit_settings(self, user_profiles: list[str]) -> None:
+        """Edit one profile's settings — the terminal twin of GUI Settings
+        (cli/settings_screen.py); back to the profile list afterwards."""
+        try:
+            raw = input("  Which profile? Enter its number: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()  # noqa: T201
+            return
+        if not raw.isdigit() or not 1 <= int(raw) <= len(user_profiles):
+            print(f"  There is no profile {raw!r} on the list.")  # noqa: T201
+            return
+        profile = self.repo.load_profile(user_profiles[int(raw) - 1])
+        if profile is None:
+            print("  That profile could not be loaded.")  # noqa: T201
+            return
+        run_settings_screen(profile, self.repo.save_profile)
 
     def _load_external_profile(self) -> UserProfile | None:
         """Prompts the user for a file path and imports the profile.

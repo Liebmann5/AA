@@ -48,8 +48,21 @@ from collections.abc import Callable
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any, get_args
 
-from auto_apply.adapters.primary.gui.strings import get_strings
-from auto_apply.application.services.ui_schema import UIField, build_ui_schema
+from auto_apply.adapters.primary.gui.choice_widget import ChoiceBox
+from auto_apply.adapters.primary.gui.scrolling import styled_scrollbar
+from auto_apply.adapters.primary.gui.strings import get_strings, locale_text
+from auto_apply.application.services.answer_settings import (
+    effective_answer_settings,
+    save_answer_settings,
+    timing_choices,
+    trust_choices,
+)
+from auto_apply.application.services.choice_field import choices_for
+from auto_apply.application.services.ui_schema import (
+    UIField,
+    about_you_field_keys,
+    build_ui_schema,
+)
 from auto_apply.domain.models.policy import AdminPolicy
 from auto_apply.domain.models.profile import (
     EmploymentType,
@@ -75,26 +88,6 @@ def _field_options(field: UIField | None, fallback: tuple[str, ...]) -> tuple[st
     return fallback
 
 
-# Identity-adjacent schema keys that belong in "About you" even though they
-# are not under personal_info/. These are named explicitly because they are
-# exceptions to the prefix rule — everything else in the tab comes from the
-# "personal_info." schema prefix. legal_info.security_clearance is skipped
-# automatically (it is an optional nested object and the schema yields no
-# leaf for it).
-_ABOUT_YOU_EXTRA_KEYS: tuple[str, ...] = (
-    "legal_info.has_work_authorization",
-    "legal_info.requires_sponsorship",
-    "legal_info.non_compete_agreements",
-    "search_preferences.desired_job_titles",
-)
-
-# Fields that already have an editor in the Documents tab — one field, one
-# editor. Duplicating them here would create two write paths for one field.
-_DOCUMENTS_TAB_KEYS: frozenset[str] = frozenset(
-    {"personal_info.resume_path", "personal_info.cover_letter"}
-)
-
-
 def _motion_choices(strings: dict[str, str]) -> tuple[tuple[str, str], ...]:
     """Layer 0 of the layered settings pattern (ADR 018): three plain-
     language choices anyone understands, mapped to the canonical
@@ -106,29 +99,9 @@ def _motion_choices(strings: dict[str, str]) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _about_you_field_keys() -> list[str]:
-    """Return the schema-driven field keys rendered in the "About you" tab.
-
-    Computed from build_ui_schema(UserProfile, "en") at call time: every
-    personal_info.* leaf (minus the two Documents-tab fields), career_summary,
-    and the curated extras above. If the UserProfile model grows a
-    personal_info field, it appears here automatically — the model, not this
-    function, is the source of truth.
-    """
-    keys: list[str] = []
-    try:
-        schema = build_ui_schema(UserProfile, "en")
-    except Exception:
-        schema = []
-    for field in schema:
-        if field.key == "career_summary":
-            keys.append(field.key)
-        elif field.key.startswith("personal_info."):
-            if field.key not in _DOCUMENTS_TAB_KEYS:
-                keys.append(field.key)
-        elif field.key in _ABOUT_YOU_EXTRA_KEYS:
-            keys.append(field.key)
-    return keys
+#: The About-you field list is shared with the CLI's settings screen: one
+#: definition (application/services/ui_schema.about_you_field_keys).
+_about_you_field_keys = about_you_field_keys
 
 
 class SettingsEditor(tk.Toplevel):
@@ -164,6 +137,8 @@ class SettingsEditor(tk.Toplevel):
         self.grab_set()
 
         self._vars: dict[str, tk.Variable] = {}
+        #: Multiple-choice settings, keyed like _vars (application/services/choice_field).
+        self._choices: dict[str, ChoiceBox] = {}
         self._summary_text: tk.Text | None = None
 
         try:
@@ -231,6 +206,8 @@ class SettingsEditor(tk.Toplevel):
         self._build_search_tab(notebook)
         self._build_safety_tab(notebook)
         self._build_documents_tab(notebook)
+        self._build_answers_tab(notebook)
+        self._build_accessibility_tab(notebook)
 
     # =====================================================================
     # SCROLLING TAB HELPER
@@ -255,7 +232,7 @@ class SettingsEditor(tk.Toplevel):
         notebook.add(outer, text=title)
 
         canvas = tk.Canvas(outer, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar = styled_scrollbar(outer, tk.VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -344,6 +321,19 @@ class SettingsEditor(tk.Toplevel):
 
             if isinstance(value, bool) or (schema_field and schema_field.kind == "bool"):
                 self._add_checkbox(frame, label, key, bool(value))
+                continue
+
+            if schema_field is not None and schema_field.kind == "select" \
+                    and schema_field.options:
+                # A list of allowed values (a name suffix): a drop-down with
+                # "(none)" for an optional field, never free text the
+                # profile would refuse.
+                ttk.Label(frame, text=f"{label}:").pack(anchor=tk.W, pady=(8, 2))
+                self._choices[key] = ChoiceBox(
+                    frame, choices_for(schema_field,
+                                       none_label=locale_text("settings.choice_none")),
+                    value, width=48,  # lines up with the 50-character text boxes
+                ).pack(anchor=tk.W)
                 continue
 
             if isinstance(value, list):
@@ -656,6 +646,127 @@ class SettingsEditor(tk.Toplevel):
 
         self._add_note(frame, "Your resume is required. Cover letters are sent when the form supports them.")  # noqa: E501
 
+    # Accessibility (docs/adr/024). Settings, never reasons: the tab asks
+    # how AA should work with the person, not why. Each control shows the
+    # effective value (the person's choice, else the YAML default); saving
+    # stores a value only when it differs from that default or was already
+    # the person's, so "inherit" stays inherit.
+    _A11Y_TIME_LIMITS: tuple[tuple[str, str], ...] = (
+        ("Standard (1x)", "1x"),
+        ("3 times as long (3x)", "3x"),
+        ("10 times as long (10x)", "10x"),
+        ("20 times as long (20x)", "20x"),
+        ("No time limit (off)", "off"),
+    )
+    _A11Y_FLAGS: tuple[tuple[str, str], ...] = (
+        ("answer_in_aa", "Answer form questions AA cannot answer in AA's own window"),
+        ("focus_asked_field", "Move the browser's keyboard focus to a question AA asks "
+                              "you to answer there"),
+        ("screen_reader_mode", "Plain, linear text in the terminal (screen readers)"),
+        ("reduced_motion", "Reduce motion (no animation or screen redraws)"),
+    )
+
+    def _applications_defaults(self) -> dict:
+        try:
+            section = self.registry.get_effective_config("applications") or {}
+        except Exception:
+            section = {}
+        return section if isinstance(section, dict) else {}
+
+    def _build_answers_tab(self, notebook: ttk.Notebook) -> None:
+        """Tab: which answers AA may send without showing the person, and
+        when it shows them (docs/adr/026) — the same choices, words and save
+        rule as the CLI (``application/services/answer_settings``)."""
+        frame = self._build_scrollable_tab(notebook, locale_text("settings.answers_heading"))
+        current = effective_answer_settings(self._applications_defaults(),
+                                            self.profile.answer_preferences)
+        self._add_note(frame, locale_text("settings.answers_intro"))
+        ttk.Label(frame, text=locale_text("settings.answer_trust") + ":").pack(
+            anchor=tk.W, pady=(0, 5))
+        self._choices["answers.trust"] = ChoiceBox(
+            frame, trust_choices(), current["trust"], width=64).pack(anchor=tk.W)
+        self._add_note(frame, locale_text("settings.answer_trust_note"))
+        ttk.Label(frame, text=locale_text("settings.review_timing") + ":").pack(
+            anchor=tk.W, pady=(10, 5))
+        self._choices["answers.review_timing"] = ChoiceBox(
+            frame, timing_choices(), current["review_timing"], width=64).pack(anchor=tk.W)
+        self._add_checkbox(frame, locale_text("settings.drafts_enabled"), "answers_drafts",
+                           current["drafts_enabled"])
+
+    def _save_answers(self) -> None:
+        trust = self._choices.get("answers.trust")
+        timing = self._choices.get("answers.review_timing")
+        drafts = self._vars.get("answers_drafts")
+        if trust is None or timing is None or drafts is None:
+            return
+        save_answer_settings(
+            self.profile.answer_preferences, self._applications_defaults(),
+            trust=str(trust.get()), review_timing=str(timing.get()),
+            drafts_enabled=bool(drafts.get()),
+        )
+
+    def _a11y_defaults(self) -> dict:
+        try:
+            section = self.registry.get_effective_config("accessibility") or {}
+        except Exception:
+            section = {}
+        return section if isinstance(section, dict) else {}
+
+    def _build_accessibility_tab(self, notebook: ttk.Notebook) -> None:
+        """Tab: how AA works with the person (time limits, answering in AA,
+        focus, terminal output, colours and text size)."""
+        frame = self._build_scrollable_tab(notebook, "Accessibility")
+        prefs = self.profile.accessibility_preferences
+        effective = self._a11y_defaults()
+        self._add_note(frame, "These settings change how AA works with you. AA never asks "
+                              "why, never stores a reason, and never uses them to answer "
+                              "an application.")
+
+        ttk.Label(frame, text="How long AA waits for your answers:").pack(
+            anchor=tk.W, pady=(0, 5))
+        current = str(effective.get("time_limits", "1x"))
+        labels = [label for label, _ in self._A11Y_TIME_LIMITS]
+        shown = next((label for label, v in self._A11Y_TIME_LIMITS if v == current), labels[0])
+        time_var = tk.StringVar(value=shown)
+        self._vars["a11y_time_limits"] = time_var
+        ttk.Combobox(frame, textvariable=time_var, values=labels, state="readonly",
+                     width=28).pack(anchor=tk.W, pady=(0, 10))
+
+        for key, text in self._A11Y_FLAGS:
+            self._add_checkbox(frame, text, f"a11y_{key}", bool(effective.get(key, False)))
+        self._add_checkbox(frame, "High contrast colours in AA's windows", "a11y_high_contrast",
+                           bool(prefs.prefers_high_contrast))
+        self._add_checkbox(frame, "Mention a challenge's audio option when AA hands one to "
+                                  "you", "a11y_audio", bool(prefs.prefers_audio_captchas))
+        ttk.Label(frame, text="Text size in AA's windows (1.0 = normal):").pack(
+            anchor=tk.W, pady=(10, 5))
+        self._add_spinbox(frame, "a11y_font_scale", float(effective.get("font_scale", 1.0)),
+                          0.8, 3.0, 0.1)
+
+    def _save_accessibility(self) -> None:
+        prefs = self.profile.accessibility_preferences
+        defaults = self._a11y_defaults()
+
+        def keep(key: str, value: object) -> None:
+            current = getattr(prefs, key)
+            if current is not None or value != defaults.get(key):
+                setattr(prefs, key, value)
+
+        if "a11y_time_limits" in self._vars:
+            shown = str(self._vars["a11y_time_limits"].get())
+            value = dict(self._A11Y_TIME_LIMITS).get(shown, "1x")
+            keep("time_limits", value)
+        for key, _text in self._A11Y_FLAGS:
+            var = self._vars.get(f"a11y_{key}")
+            if var is not None:
+                keep(key, bool(var.get()))
+        if "a11y_font_scale" in self._vars:
+            keep("font_scale", round(float(self._vars["a11y_font_scale"].get()), 2))
+        if "a11y_high_contrast" in self._vars:
+            prefs.prefers_high_contrast = bool(self._vars["a11y_high_contrast"].get())
+        if "a11y_audio" in self._vars:
+            prefs.prefers_audio_captchas = bool(self._vars["a11y_audio"].get())
+
     # =====================================================================
     # UI HELPERS
     # =====================================================================
@@ -707,7 +818,7 @@ class SettingsEditor(tk.Toplevel):
 
     def _add_note(self, parent, text: str) -> None:
         ttk.Label(
-            parent, text=text,
+            parent, text=text, wraplength=600, justify=tk.LEFT,
             font=("Segoe UI", 8, "italic"), foreground="gray",
         ).pack(anchor=tk.W, padx=0, pady=(0, 10))
 
@@ -741,6 +852,10 @@ class SettingsEditor(tk.Toplevel):
                         self.profile.career_summary = self._summary_text.get(
                             "1.0", "end-1c"
                         ).strip()
+                    continue
+                box = self._choices.get(key)
+                if box is not None:
+                    self._assign_profile_value(key, box.get())
                     continue
                 var = self._vars.get(key)
                 if var is None:
@@ -834,6 +949,12 @@ class SettingsEditor(tk.Toplevel):
                     self._vars["cover_letter"].get()
                 )
             )
+
+            # -- Accessibility tab -----------------------------------------
+            self._save_accessibility()
+
+            # -- Answers tab -------------------------------------------------
+            self._save_answers()
 
             # -- Persist to disk -------------------------------------------
             self.repo.save_profile(self.profile)
