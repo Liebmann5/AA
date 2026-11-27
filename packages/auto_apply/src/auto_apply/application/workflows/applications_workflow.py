@@ -109,6 +109,8 @@ from auto_apply.domain.applications.form_model import (
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.application_evidence import (
     ApplicationEvidence,
+    history_status_for,
+    outcome_for_click_failure,
 )
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.session_plan import SessionPlan
@@ -2445,11 +2447,19 @@ class ApplicationsWorkflow:
                 submit_button, irreversible=True
             )
         except Exception as exc:
+            # An exception during an irreversible click is UNKNOWN when the
+            # rung is unknown: a ladder rung (focus + Enter) may have
+            # dispatched before it raised. When the rung is known — the
+            # interaction executor carries it on the error as click_rung — a
+            # refusal before any rung fired is an ERROR: nothing dispatched.
+            outcome = outcome_for_click_failure(
+                raised=True, rung=getattr(exc, "click_rung", None) or None
+            )
             return evidence.model_copy(update={
                 "submit_clicked": False,
-                "outcome": "ERROR",
+                "outcome": outcome,
                 "error_message": str(exc)[:200],
-                "confidence": 0.90,
+                "confidence": 0.90 if outcome == "ERROR" else 0.50,
                 **self._run_statistics(),
             })
 
@@ -2462,11 +2472,14 @@ class ApplicationsWorkflow:
             reason = str(
                 getattr(submit_result, "reason", "all click rungs exhausted")
             )
+            outcome = outcome_for_click_failure(
+                raised=False, rung=getattr(submit_result, "rung", None) or None
+            )
             return evidence.model_copy(update={
                 "submit_clicked": False,
-                "outcome": "ERROR",
+                "outcome": outcome,
                 "error_message": f"submit click did not complete: {reason}"[:200],
-                "confidence": 0.90,
+                "confidence": 0.90 if outcome == "ERROR" else 0.50,
                 **self._run_statistics(),
             })
 
@@ -2597,14 +2610,10 @@ class ApplicationsWorkflow:
             "challenge_signals": list(self._challenge_signals),
         })
 
-        # ── Persist to job repository ─────────────────────────────────────
-        try:
-            if hasattr(self._job_repo, "mark_applied"):
-                self._job_repo.mark_applied(job, self._session_id)
-        except Exception as exc:
-            logger.warning(
-                "ApplicationsWorkflow: mark_applied failed: %s", exc
-            )
+        # Persistence happens exactly once per attempt, in
+        # _record_application_outcome — never here. A second write in this
+        # method recorded APPLIED before the outcome was re-recorded as FAILED
+        # a call later (the measured double-write).
 
         # ── Publish event ─────────────────────────────────────────────────
         self._event_bus.publish(
@@ -2659,7 +2668,7 @@ class ApplicationsWorkflow:
                 # Reset so the next job cannot misattribute to this one's tier.
                 self._last_analysis_tier = None
 
-        status = "APPLIED" if evidence.is_likely_success else "FAILED"
+        status = history_status_for(evidence.outcome)
         try:
             if hasattr(self._job_repo, "mark_applied"):
                 self._job_repo.mark_applied(

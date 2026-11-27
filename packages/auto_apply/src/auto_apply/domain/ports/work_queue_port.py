@@ -99,13 +99,14 @@ class WorkQueuePort(ABC):
 
     @abstractmethod
     def record_application_permanently(
-        self, job_url: str, company: str, outcome: str, session_id: str
+        self, job_url: str, company: str, outcome: str, session_id: str,
+        job_key: str | None = None,
     ) -> None:
         """Persists an application to the permanent cross-session log."""
 
     @abstractmethod
-    def has_applied_previously(self, job_url: str) -> bool:
-        """True if this URL was successfully applied in any prior session."""
+    def has_applied_previously(self, job_url: str, job_key: str | None = None) -> bool:
+        """True if this URL or job key has a blocking outcome in any prior session."""
 
     @abstractmethod
     def record_job_discovery(self, job_obj: Any, session_id: str | None = None) -> bool:

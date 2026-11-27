@@ -37,6 +37,10 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from auto_apply.domain.config import DB_PATH, IS_FROZEN
+from auto_apply.domain.models.application_evidence import (
+    BLOCKING_HISTORY_STATUSES,
+    BLOCKING_OUTCOMES,
+)
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
@@ -217,11 +221,29 @@ class DatabaseManager(WorkQueuePort):
                     company     TEXT,
                     outcome     TEXT,
                     session_id  TEXT,
+                    job_key     TEXT,
                     applied_at  TEXT    NOT NULL
                 )
             """)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_applied_jobs_url ON applied_jobs(job_url)"
+            )
+
+            # ── Migration: add job_key to applied_jobs on pre-P0-2 databases.
+            # Order is load-bearing: on a fresh database the CREATE above
+            # already carries the column; on an older one the ALTER adds it.
+            # The key index comes last so the column exists on both paths.
+            try:
+                conn.execute("SELECT job_key FROM applied_jobs LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "ALTER TABLE applied_jobs ADD COLUMN job_key TEXT"
+                )
+                logger.info(
+                    "DatabaseManager: added job_key column to applied_jobs"
+                )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_applied_jobs_key ON applied_jobs(job_key)"
             )
 
             # 4. Company History — per-company cooldown periods and mandates.
@@ -586,27 +608,42 @@ class DatabaseManager(WorkQueuePort):
     # CROSS-SESSION DUPLICATE APPLICATION PREVENTION
     # =========================================================================
 
-    def has_applied_previously(self, job_url: str) -> bool:
-        """Check if AA has ever submitted an application to this job URL.
+    def has_applied_previously(
+        self, job_url: str, job_key: str | None = None
+    ) -> bool:
+        """Whether any past session recorded a blocking outcome for this job.
 
-        Checks the applied_jobs table across all past sessions.  Returns
-        True only for outcomes that represent a real submission (SUBMITTED,
-        PROBABLY_SUBMITTED).  Failed, skipped, and blocked jobs are not
-        counted as previously applied — they can be retried.
+        Blocking outcomes are the ones AA cannot rule out as received by the
+        site — SUBMITTED, PROBABLY_SUBMITTED, AMBIGUOUS, UNKNOWN (the single
+        vocabulary in domain/models/application_evidence.py). Both stores are
+        consulted: applied_jobs by URL or job key, job_history by URL, because
+        rows written before the job key existed live in both. Failures raise;
+        the callers decide, and they fail closed.
 
         Args:
             job_url: The job posting URL to check.
+            job_key: The derived posting identity, when the caller computed it.
 
         Returns:
-            True if this URL has been successfully submitted in any session.
+            True if a blocking outcome is on record for this URL or key.
         """
+        blocking = tuple(sorted(BLOCKING_OUTCOMES))
+        blocking_history = tuple(sorted(BLOCKING_HISTORY_STATUSES))
         with self.get_connection() as conn:
             row = conn.execute(
-                """SELECT id FROM applied_jobs
-                    WHERE job_url = ?
-                      AND outcome IN ('SUBMITTED', 'PROBABLY_SUBMITTED')
+                f"""SELECT id FROM applied_jobs
+                    WHERE (job_url = ? OR (? IS NOT NULL AND job_key = ?))
+                      AND outcome IN ({",".join("?" for _ in blocking)})
                     LIMIT 1""",
-                (job_url,),
+                (job_url, job_key, job_key, *blocking),
+            ).fetchone()
+            if row is not None:
+                return True
+            row = conn.execute(
+                f"""SELECT 1 FROM job_history
+                    WHERE url = ? AND status IN ({",".join("?" for _ in blocking_history)})
+                    LIMIT 1""",
+                (job_url, *blocking_history),
             ).fetchone()
             return row is not None
 
@@ -616,6 +653,7 @@ class DatabaseManager(WorkQueuePort):
         company: str,
         outcome: str,
         session_id: str,
+        job_key: str | None = None,
     ) -> None:
         """Persist an application to the permanent applied_jobs log.
 
@@ -632,13 +670,14 @@ class DatabaseManager(WorkQueuePort):
         with self.get_connection() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO applied_jobs
-                   (job_url, company, outcome, session_id, applied_at)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (job_url, company, outcome, session_id, job_key, applied_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     job_url,
                     company,
                     outcome,
                     session_id,
+                    job_key,
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )

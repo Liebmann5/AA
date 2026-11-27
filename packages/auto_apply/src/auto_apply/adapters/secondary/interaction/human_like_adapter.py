@@ -44,6 +44,20 @@ class ExecutionStrategy(Protocol):
     """Protocol for interaction execution strategy (e.g. stealth vs. headless)."""
 
 
+class ClickFailedError(ApplicationError):
+    """An ApplicationError that carries the click ladder's rung, when known.
+
+    The workflow reads ``click_rung`` to classify a failed irreversible
+    click: a pre-dispatch refusal (probe, or nothing fired) is an ERROR;
+    anything after a rung ran is UNKNOWN. Callers catching ApplicationError
+    are unaffected — this is one.
+    """
+
+    def __init__(self, message: str, *, rung: str = "") -> None:
+        super().__init__(message)
+        self.click_rung = rung
+
+
 class UnifiedInteractor:
     """Dispatches interaction requests to specialized handlers based on element type.
 
@@ -216,16 +230,25 @@ class InteractionExecutor(InteractionPort):
                 click did not complete.
         """
         if self._page_action is None:
-            raise ApplicationError(
+            raise ClickFailedError(
                 "InteractionExecutor.click requires the PageActionService tool; "
                 "none was injected (composition root supplies it whenever a "
-                "driver is present)."
+                "driver is present).",
+                rung="none",
             )
 
         result = self._page_action.click(element, irreversible=irreversible)
         if not result:
             reason = getattr(result, "reason", "unknown")
-            raise ApplicationError(f"click did not complete: {reason}")
+            # Carry the ladder rung so the caller can classify the failure: a
+            # pre-dispatch refusal (probe, or nothing fired) is an ERROR;
+            # anything after a rung ran is UNKNOWN. The exception contract is
+            # unchanged — this is an ApplicationError, and callers that catch
+            # it keep working.
+            raise ClickFailedError(
+                f"click did not complete: {reason}",
+                rung=getattr(result, "rung", "") or "",
+            )
 
     def simulate_idle(self, min_seconds: float, max_seconds: float) -> None:
         """Pauses for a human-scale interval between tasks.

@@ -53,6 +53,7 @@ from auto_apply.application.services.data_processing.deduplication_manager impor
 from auto_apply.domain.config import USER_DATA_DIR
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.job import Job
+from auto_apply.domain.models.job_key import compute_job_key
 from auto_apply.domain.models.profile import UserProfile
 from auto_apply.domain.models.resources import RuntimeProfile
 from auto_apply.domain.models.search_instruction import SearchInstruction
@@ -1198,7 +1199,9 @@ class AgentOrchestrator:
                 break
 
             # ── Cross-session deduplication: never re-apply to a known URL ────
-            if batch_scheduler.is_duplicate(job.url):
+            if batch_scheduler.is_duplicate(
+                job.url, job_key=compute_job_key(job).as_string
+            ):
                 logger.debug(
                     "Already applied in prior session, skipping | url=%s",
                     job.url,
@@ -1228,6 +1231,7 @@ class AgentOrchestrator:
                         company=job.company,
                         outcome=evidence.outcome,
                         session_id=self.context.session_id,
+                        job_key=compute_job_key(job).as_string,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -1785,13 +1789,15 @@ class AgentOrchestrator:
                without passing through SERP dedup (RESOLVE_JOB_URL, company
                discovery, redirect-to-list re-enqueues).
 
-            2. Cross-session: ``task_queue.has_applied_previously()`` checks
-               the persistent ``applied_jobs`` table. Prevents re-applying to
-               jobs from prior sessions after a restart. Deliberately returns
-               True only for SUBMITTED/PROBABLY_SUBMITTED — blocked jobs stay
-               retriable across sessions BY DESIGN (a barrier today may be
-               gone next week). Level 1 above is what bounds retries WITHIN
-               one session.
+            2. Cross-session: ``task_queue.has_applied_previously(url, job_key)``
+               consults BOTH persistent stores — ``applied_jobs`` by URL or
+               derived job key, ``job_history`` by URL — and blocks on the
+               outcomes AA cannot rule out as received: SUBMITTED,
+               PROBABLY_SUBMITTED, AMBIGUOUS and UNKNOWN (the vocabulary in
+               domain/models/application_evidence.py). A store error fails
+               CLOSED: the job is skipped, never applied unchecked. Genuinely
+               retriable outcomes (failed, skipped, gate-blocked) never block.
+               Level 1 above is what bounds retries WITHIN one session.
 
         Non-job tasks (DISCOVER, HANDLE_CAPTCHA) always return False —
         deduplication only applies to tasks whose payload is a ``Job``.
@@ -1817,16 +1823,20 @@ class AgentOrchestrator:
             self._accepted_apply_ids.add(task.id)
 
         # 2. Cross-session persistence check via the permanent applied_jobs table.
+        #    Fail CLOSED: when the store cannot answer, the job is skipped, not
+        #    applied — a wrong block costs a review, a wrong send is a duplicate
+        #    application under the user's name. Both stores are consulted inside
+        #    has_applied_previously, on the URL and the derived job key.
+        job_key = compute_job_key(job).as_string
         try:
-            if self.task_queue.has_applied_previously(url):
+            if self.task_queue.has_applied_previously(url, job_key=job_key):
                 return True
         except Exception as exc:
-            # Treat DB errors as non-duplicate — better to process twice
-            # than silently drop a task due to a persistence glitch.
-            logger.warning(
-                "Dedup DB check (has_applied_previously) failed | url=%s error=%s — treating as new",
-                url, exc,
+            logger.error(
+                "Dedup check failed; refusing to apply without it | error=%s",
+                type(exc).__name__,
             )
+            return True
 
         return False
 

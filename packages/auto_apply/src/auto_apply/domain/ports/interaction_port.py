@@ -33,6 +33,12 @@ class InteractionPort(ABC):
                 undone (a form submission). Irreversible clicks are
                 fail-closed: no silent retry of a rung that raised after it
                 may have acted, and never a synthetic-JS last resort.
+
+        Raises:
+            ApplicationError: When the click did not complete. Implementations
+                may attach a ``click_rung`` attribute naming the ladder rung
+                that refused or failed; its absence means "cannot tell", which
+                callers must treat as the unsafe case.
         """
 
     @abstractmethod

@@ -11,6 +11,7 @@ practically, and for user trust. These evidence records are:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -165,6 +166,7 @@ class ApplicationEvidence(BaseModel):
         "SUBMITTED",                # Confident: confirmation phrase + URL change
         "PROBABLY_SUBMITTED",       # Likely: URL changed, no clear confirmation phrase
         "AMBIGUOUS",                # Uncertain: submit clicked, no clear post-state
+        "UNKNOWN",                  # Cannot tell whether a dispatch reached the site
         "FAILED_NO_SUBMIT_BUTTON",  # No submit button found
         "FAILED_NOTHING_FILLED",    # Reached a page but filled no field: nothing to submit
         "FAILED_NAVIGATION",        # Could not navigate to the form
@@ -226,3 +228,84 @@ class ApplicationEvidence(BaseModel):
         if self.ats_platform:
             parts.append(f"ats={self.ats_platform}")
         return " | ".join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The outcome vocabulary — ONE table, ONE source (P0-2)
+#
+# job_history.status (via mark_applied), applied_jobs.outcome (via
+# record_application_permanently) and cross-session dedup all derive from
+# this table. Dedup blocks on any outcome whose blocking flag is set — in
+# EITHER store. Until this table existed, two vocabularies were written by
+# two paths and a submission AA could not rule out (AMBIGUOUS) was silently
+# retriable. An outcome this table does not recognise maps to UNKNOWN's rule
+# — fail closed, never silently retriable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class OutcomeRule:
+    """One outcome's persistence and dedup semantics."""
+
+    history_status: str          # written to job_history.status
+    write_permanent_log: bool    # whether applied_jobs gets a row
+    blocks_reapplication: bool   # cross-session dedup blocks a later attempt
+    retriable: bool              # a later attempt is legitimate
+
+
+OUTCOME_VOCABULARY: dict[str, OutcomeRule] = {
+    "SUBMITTED": OutcomeRule("APPLIED", True, True, False),
+    "PROBABLY_SUBMITTED": OutcomeRule("APPLIED", True, True, False),
+    "AMBIGUOUS": OutcomeRule("UNKNOWN", True, True, False),
+    "UNKNOWN": OutcomeRule("UNKNOWN", True, True, False),
+    "USER_SKIPPED": OutcomeRule("SKIPPED", True, False, True),
+    "SUBMISSION_GATE_BLOCKED": OutcomeRule("GATE_BLOCKED", False, False, True),
+    "POLICY_BLOCKED": OutcomeRule("POLICY_BLOCKED", False, False, True),
+    "CAPTCHA_BLOCKED": OutcomeRule("BLOCKED", True, False, True),
+    "LOGIN_WALL_BLOCKED": OutcomeRule("BLOCKED", True, False, True),
+    "ACCOUNT_REQUIRED": OutcomeRule("BLOCKED", True, False, True),
+    "ASSESSMENT_REQUIRED": OutcomeRule("BLOCKED", True, False, True),
+    "FAILED_NO_SUBMIT_BUTTON": OutcomeRule("FAILED", True, False, True),
+    "FAILED_NOTHING_FILLED": OutcomeRule("FAILED", True, False, True),
+    "FAILED_NAVIGATION": OutcomeRule("FAILED", True, False, True),
+    "FAILED_REQUIRED_FIELD": OutcomeRule("FAILED", True, False, True),
+    "FAILED_FILE_UPLOAD": OutcomeRule("FAILED", True, False, True),
+    "ERROR": OutcomeRule("FAILED", True, False, True),
+}
+
+#: Raw outcomes (applied_jobs.outcome) that block re-application.
+BLOCKING_OUTCOMES: frozenset[str] = frozenset(
+    name for name, rule in OUTCOME_VOCABULARY.items() if rule.blocks_reapplication
+)
+
+#: Mapped job_history.status values that block re-application.
+BLOCKING_HISTORY_STATUSES: frozenset[str] = frozenset(
+    rule.history_status for rule in OUTCOME_VOCABULARY.values() if rule.blocks_reapplication
+)
+
+#: Click-ladder rungs that refuse BEFORE anything can dispatch. Anything after
+#: a rung ran is UNKNOWN — the click may already have happened.
+_PRE_DISPATCH_RUNGS: frozenset[str] = frozenset({"probe", "none"})
+
+
+def outcome_rule_for(outcome: str) -> OutcomeRule:
+    """The rule for an outcome; anything unrecognised maps to UNKNOWN's rule."""
+    return OUTCOME_VOCABULARY.get(outcome, OUTCOME_VOCABULARY["UNKNOWN"])
+
+
+def history_status_for(outcome: str) -> str:
+    """The job_history.status for an evidence outcome."""
+    return outcome_rule_for(outcome).history_status
+
+
+def outcome_for_click_failure(*, raised: bool, rung: str | None) -> str:
+    """The outcome for a submit click that did not report success.
+
+    The rung decides whenever it is known — a probe/none refusal never
+    dispatched (ERROR), whether it arrived as a returned failure or as an
+    exception carrying the rung. Everything else is UNKNOWN: an exception
+    with no rung, or any rung that ran, may already have dispatched.
+    """
+    if rung in _PRE_DISPATCH_RUNGS:
+        return "ERROR"
+    return "UNKNOWN"

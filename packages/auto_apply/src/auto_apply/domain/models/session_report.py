@@ -170,8 +170,16 @@ class SessionReport:
                 "PROBABLY_SUBMITTED",
                 "USER_SKIPPED",
                 "SUBMISSION_GATE_BLOCKED",
+                "UNKNOWN",
             )
         )
+
+    @property
+    def applications_unknown(self) -> int:
+        """Attempts whose outcome AA cannot tell — the click may or may not
+        have reached the site. Reported apart from both submitted and failed:
+        an unknown is neither, and hiding it in either would be a lie."""
+        return sum(1 for a in self.applications if a.outcome == "UNKNOWN")
 
     @property
     def submissions_blocked_by_gate(self) -> int:
@@ -331,6 +339,7 @@ class SessionReport:
                 "total": self.applications_completed,
                 "submitted": self.applications_submitted,
                 "failed": self.applications_failed,
+                "unknown": self.applications_unknown,
                 "success_rate": round(self.success_rate, 3),
                 "total_task_duration_seconds": round(
                     self.total_task_duration_seconds, 1
@@ -363,6 +372,7 @@ class SessionReport:
             "applications_attempted": self.applications_completed,
             "applications_submitted": self.applications_submitted,
             "applications_failed": self.applications_failed,
+            "applications_unknown": self.applications_unknown,
             "submissions_blocked_by_gate": self.submissions_blocked_by_gate,
             "gate_block_remedy": self.gate_block_remedy,
             "session_duration_seconds": self.duration_seconds,

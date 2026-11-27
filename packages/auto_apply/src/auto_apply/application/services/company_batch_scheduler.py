@@ -13,6 +13,8 @@ import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from auto_apply.domain.models.job_key import compute_job_key
+
 if TYPE_CHECKING:
     from auto_apply.domain.models.job import Job
 
@@ -39,22 +41,25 @@ class CompanyBatchScheduler:
 
     # ── Cross‑session dedup — single implementation used by all paths ─────
 
-    def is_duplicate(self, job_url: str) -> bool:
-        """Cross‑session dedup: ``True`` if *job_url* has been successfully
-        applied in any prior session.
+    def is_duplicate(self, job_url: str, job_key: str | None = None) -> bool:
+        """Cross-session dedup, fail closed.
 
-        Errors are treated as non‑blocking — a transient DB glitch lets the
-        job through rather than silently dropping it.
+        True when a blocking outcome is on record for this URL or job key —
+        an outcome AA cannot rule out as received by the site (SUBMITTED,
+        PROBABLY_SUBMITTED, AMBIGUOUS, UNKNOWN). When the store cannot answer,
+        this returns True: a wrongly blocked job costs a review; a wrongly
+        sent one is a duplicate application under the user's name.
         """
         try:
-            return self._task_queue.has_applied_previously(job_url)
-        except Exception as exc:
-            logger.warning(
-                "Dedup DB check (has_applied_previously) failed | url=%s error=%s — treating as new",
-                job_url,
-                exc,
+            return self._task_queue.has_applied_previously(
+                job_url, job_key=job_key
             )
-            return False
+        except Exception as exc:
+            logger.error(
+                "Dedup check failed; refusing to buffer | error=%s",
+                type(exc).__name__,
+            )
+            return True
 
     # ── Buffering ──────────────────────────────────────────────────────────
 
@@ -68,7 +73,7 @@ class CompanyBatchScheduler:
             ``True`` if the job was accepted into the buffer,
             ``False`` if it was rejected (duplicate).
         """
-        if self.is_duplicate(job.url):
+        if self.is_duplicate(job.url, job_key=compute_job_key(job).as_string):
             logger.info(
                 "Scheduler: duplicate (cross‑session) — not buffering | %s @ %s",
                 job.title,

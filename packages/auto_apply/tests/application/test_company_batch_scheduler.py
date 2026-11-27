@@ -42,11 +42,11 @@ class TestBufferingAndDedup:
         # Duplicate must not be stored.
         assert scheduler.has_any_buffered() is False
 
-    def test_buffer_job_handles_db_exception_gracefully(self, scheduler, mock_task_queue):
+    def test_buffer_job_refuses_on_a_store_error(self, scheduler, mock_task_queue):
+        """Fail closed: a dead dedup store refuses the job, never buffers it."""
         mock_task_queue.has_applied_previously.side_effect = RuntimeError("db down")
-        # Should treat as not‑duplicate (fail‑open) and accept the job.
-        assert scheduler.buffer_job(_job()) is True
-        assert scheduler.has_any_buffered() is True
+        assert scheduler.buffer_job(_job()) is False
+        assert scheduler.has_any_buffered() is False
 
 
 class TestBatchReadiness:
@@ -108,12 +108,14 @@ class TestSingleDedupCallSite:
         job_a = _job(url="a")
         # Buffer the job — calls is_duplicate indirectly via buffer_job.
         assert scheduler.buffer_job(job_a) is True
-        mock_task_queue.has_applied_previously.assert_called_with("a")
+        args, _kwargs = mock_task_queue.has_applied_previously.call_args
+        assert args == ("a",)
         mock_task_queue.reset_mock()
 
         # Simulate what _process_batch would do: check dedup per job before running.
         assert scheduler.is_duplicate(job_a.url) is False
-        mock_task_queue.has_applied_previously.assert_called_with("a")
+        args, _kwargs = mock_task_queue.has_applied_previously.call_args
+        assert args == ("a",)
 
     def test_dedup_called_exactly_once_per_dedup_method_invocation(self, scheduler, mock_task_queue):
         """The dedup database query is called via scheduler.is_duplicate,

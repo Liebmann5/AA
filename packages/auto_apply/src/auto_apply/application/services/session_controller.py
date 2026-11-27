@@ -293,6 +293,7 @@ _OUTCOME_KIND_MAP: dict[str, ActivityKind] = {
     "ACCOUNT_REQUIRED": ActivityKind.BLOCKED,
     "ASSESSMENT_REQUIRED": ActivityKind.BLOCKED,
     "AMBIGUOUS": ActivityKind.FAILED,
+    "UNKNOWN": ActivityKind.FAILED,
     "FAILED_NO_SUBMIT_BUTTON": ActivityKind.FAILED,
     "FAILED_NOTHING_FILLED": ActivityKind.FAILED,
     "FAILED_NAVIGATION": ActivityKind.FAILED,
@@ -455,6 +456,11 @@ def _application_outcome_text(kind: ActivityKind, payload: dict) -> str:
         else:
             barrier = "an access barrier"
         return f"Blocked by {barrier}: {who}"
+    if outcome == "UNKNOWN":
+        return (
+            f"Outcome unknown for {who} — AA cannot tell whether the site "
+            "received it and will not retry automatically"
+        )
     return f"Application failed: {who} ({outcome})"
 
 
