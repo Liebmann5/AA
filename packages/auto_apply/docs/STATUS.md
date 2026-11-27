@@ -20,13 +20,18 @@ this one is right and the other is a defect — please
 ## One-line answer
 
 AA is **pre-alpha**. It discovers and vets real job postings, fills forms, runs
-from a USB stick, and has **never successfully submitted an application**.
+from a USB stick, and has made its **first two confirmed submissions** (Workable,
+confirmation emails received 2026-11-26). It has not yet submitted on any other platform.
 
 ---
 
 ## The headline measurement
 
-Most recent full live run:
+First confirmed submissions: two applications on Workable-hosted forms in
+November 2026, each confirmed by the employer's own confirmation email; both
+emails arrived on 2026-11-26.
+
+The last full live run measured before them:
 
 | Outcome | Count |
 | --- | --- |
@@ -48,8 +53,8 @@ markup, form count, rendered content — with the page title deliberately
 ignored, and the pause now happens in place, on the challenging page.
 
 The conclusion previously drawn here — that "the binding constraint today is
-*access*, not comprehension" — is **withdrawn**. The honest summary is: AA
-has submitted 0 of 18 attempts, the reasons recorded for most of those
+*access*, not comprehension" — is **withdrawn**. The honest summary of that run
+is: AA submitted 0 of 18 attempts, the reasons recorded for most of those
 failures are unreliable, and re-measuring with the corrected verdict is the
 next milestone. The 0 stands; the 13 and the 5 do not.
 
@@ -111,9 +116,9 @@ a defect in that document.**
 | Subsystem | Status | Evidence / boundary |
 | --- | --- | --- |
 | Form field detection (mathematical DOM) | `[LIVE]` | Hungarian label-input pairing, structural hashing, honeypot detection |
-| Form filling | `[WIRED]` | Fills correctly in tests and partial live runs; never carried through to a submission |
+| Form filling | `[PARTIAL]` | Carried through to two confirmed submissions on Workable (2026-11); other platforms not yet proven |
 | Fail-closed submission gate | `[LIVE]` | Refuses rather than submitting unproven work (ADR-012) |
-| **End-to-end submission** | **`[GOAL]`** | **0 of 18 attempts.** The single most important unmet milestone |
+| **End-to-end submission** | **`[PARTIAL]`** | **2 confirmed on Workable** (employers' confirmation emails, 2026-11-26); 0 of 18 in the earlier full run; not yet shown on any other platform |
 | Human-in-the-loop checkpoints | `[LIVE]` | CAPTCHA round trip verified live: gate opened, choice honoured, session resumed |
 | Multi-page applications | `[WIRED]` | Advance logic exists; not proven past a real gate |
 
