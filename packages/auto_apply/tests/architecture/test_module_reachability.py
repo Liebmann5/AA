@@ -252,6 +252,12 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "RETIRE-CANDIDATE",
         "retry decorator; 0 importers, no standing ruling",
     ),
+    "auto_apply.domain.services.comparators": (
+        "PLANNED",
+        "Phase 0 P0-1 comparators; first production consumers land in "
+        "P0-2 (dedup vocabulary) and P0-4 (submit token), which must "
+        "remove this entry",
+    ),
     "auto_apply.domain.services.entropy": (
         "WIRE-LATER",
         "dead as one chain with occlusion + honeypot_detection (0 importers "
