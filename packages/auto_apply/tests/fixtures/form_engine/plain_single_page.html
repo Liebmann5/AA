@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Data Analyst - Apply | Northwind Freight</title>
+<style>
+  body { font-family: sans-serif; max-width: 720px; margin: 24px auto; }
+  .row { margin: 14px 0; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .upload-btn { display: inline-block; padding: 6px 12px; border: 1px solid #333; cursor: pointer; }
+  .hp { display: none; }
+  .offpage { position: absolute; left: -10000px; top: 0; }
+</style>
+</head>
+<body>
+<h1>Data Analyst</h1>
+<p>Northwind Freight - Chicago, IL</p>
+<p>Fields marked with * are required.</p>
+<form id="application" method="post" action="/submit" novalidate>
+  <div class="row"><label for="fname">First name *</label>
+    <input id="fname" name="first_name" type="text" required autocomplete="given-name"></div>
+  <div class="row"><label for="lname">Last name *</label>
+    <input id="lname" name="last_name" type="text" required autocomplete="family-name"></div>
+  <div class="row"><label for="email">Email *</label>
+    <input id="email" name="email" type="email" required></div>
+  <div class="row"><label for="phone">Phone</label>
+    <input id="phone" name="phone" type="tel"></div>
+  <div class="row"><label for="country">Country *</label>
+    <select id="country" name="country" required>
+      <option value="">Select...</option>
+      <option value="CA">Canada</option>
+      <option value="MX">Mexico</option>
+      <option value="US">United States of America</option>
+    </select></div>
+  <div class="row">
+    <span class="upload-btn" id="resume-btn"><label for="resume">Attach resume *</label></span>
+    <input id="resume" name="resume" type="file" class="visually-hidden" required accept=".pdf,.doc,.docx">
+    <span id="resume-name"></span>
+  </div>
+  <fieldset class="row">
+    <legend>Are you legally authorized to work in the United States? *</legend>
+    <label><input type="radio" name="authorized" value="yes" required> Yes</label>
+    <label><input type="radio" name="authorized" value="no"> No</label>
+  </fieldset>
+  <div class="row"><label for="heard">How did you hear about this job? *</label>
+    <input id="heard" name="heard_about" type="text" required></div>
+  <div class="row"><label for="extra">Additional information</label>
+    <textarea id="extra" name="additional_info" rows="4"></textarea></div>
+  <div class="row hp"><label for="website_url">Website</label>
+    <input id="website_url" name="website_url" type="text" tabindex="-1" autocomplete="off"></div>
+  <div class="row"><label><input type="checkbox" name="alerts" id="alerts"> Send me job alerts</label></div>
+  <div class="row"><label><input type="checkbox" name="certify" id="certify" required> I certify that the information I provide is accurate *</label></div>
+  <div class="row"><button type="submit" id="submit">Submit application</button></div>
+</form>
+<script>
+  document.getElementById('resume').addEventListener('change', function (e) {
+    var f = e.target.files[0];
+    document.getElementById('resume-name').textContent = f ? f.name : '';
+    // A trap inserted after the upload, placed off the page (a common
+    // honeypot): no person can see it, so it must stay empty.
+    if (!document.getElementById('homepage')) {
+      var hp = document.createElement('div');
+      hp.className = 'offpage';   // placed by the stylesheet, not inline
+      hp.innerHTML = '<label for="homepage">Website</label>' +
+                     '<input id="homepage" name="homepage" type="url" tabindex="-1" autocomplete="off">';
+      document.getElementById('application').appendChild(hp);
+    }
+  });
+  document.getElementById('application').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var form = e.target, missing = [];
+    Array.prototype.forEach.call(form.querySelectorAll('[required]'), function (el) {
+      var ok = el.type === 'radio' ? !!form.querySelector('input[name="' + el.name + '"]:checked')
+             : el.type === 'checkbox' ? el.checked
+             : el.type === 'file' ? el.files.length > 0 : !!el.value;
+      if (!ok) missing.push(el.name);
+    });
+    if (document.getElementById('website_url').value) missing.push('bot');
+    var hp = document.getElementById('homepage');
+    if (hp && hp.value) missing.push('bot');
+    if (missing.length) {
+      document.title = 'Missing: ' + missing.join(',');
+      return;
+    }
+    history.pushState({}, '', '/thank-you');
+    document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been received.</p>';
+    document.title = 'Application received';
+  });
+</script>
+</body>
+</html>

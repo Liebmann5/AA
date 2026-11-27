@@ -102,7 +102,13 @@ SEVERITY_VIOLATION: str = "violation"
 # 5: search_plan_frames added (the sampling frame of automated site-restricted
 #    search: engines/platforms searched and per-target query counts). Rows
 #    written at 2, 3 and 4 stay valid.
-RESEARCH_SCHEMA_VERSION: int = 5
+# 6: form_observations.wcag_violations holds the step engine's accessibility
+#    signals (domain/applications/form_barriers.py: WCAG 2.2 criterion-keyed
+#    observations), and wcag_score says "FINDINGS" or
+#    "NO_AUTOMATED_FINDINGS". Rows written at 5 or earlier hold "AA" there,
+#    which only meant that no check had run (wcag_violations was always
+#    empty): it is not a conformance claim and must not be read as one.
+RESEARCH_SCHEMA_VERSION: int = 6
 RESEARCH_SALT_ENV_VAR: str = "AA_RESEARCH_SALT"
 
 # ── EventBus Event Names (Research Module) ───────────────────────────────────

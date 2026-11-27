@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply — Tailspin</title>
+<style>
+  body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; }
+  .field { margin-top: 1rem; }
+  .picker { border: 1px solid #888; padding: .3rem; }
+  .picked { font-weight: bold; }
+</style>
+</head>
+<body>
+<!--
+  An ARIA 1.2 combobox whose popup is a dialog (aria-haspopup="dialog"):
+  aria-controls names the dialog, and the option list inside it has no id of
+  its own. The widget shows its selection ("Berlin") in a sibling inside the
+  same box as its open popup. AA must read "Berlin" as the value: the popup
+  (its list, and its heading) is the widget's own, not another field.
+-->
+<form id="f" method="post" action="/apply">
+  <div class="field">
+    <span id="city_label">City *</span>
+    <div class="picker">
+      <span class="picked">Berlin</span>
+      <input id="city" role="combobox" aria-labelledby="city_label" aria-haspopup="dialog"
+             aria-expanded="true" aria-controls="city_dialog" required>
+      <div id="city_dialog" role="dialog" aria-label="Choose a city">
+        <p>Choose a city</p>
+        <div role="listbox" aria-label="Cities">
+          <div role="option" aria-selected="true">Berlin</div>
+          <div role="option" aria-selected="false">Paris</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p><button type="submit">Submit</button></p>
+</form>
+<script>
+  document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); });
+</script>
+</body>
+</html>

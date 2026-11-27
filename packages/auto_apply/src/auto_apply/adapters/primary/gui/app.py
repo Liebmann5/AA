@@ -82,21 +82,26 @@ import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
+from auto_apply.adapters.primary.gui.choice_widget import ChoiceBox
 from auto_apply.adapters.primary.gui.dashboard import Dashboard as GUIDashboard
 from auto_apply.adapters.primary.gui.research_window import ResearchWindow
+from auto_apply.adapters.primary.gui.scrolling import ScrolledText
 from auto_apply.adapters.primary.gui.search_window import SearchBuilderWindow
 from auto_apply.adapters.primary.gui.settings_editor import SettingsEditor
 from auto_apply.adapters.primary.gui.strings import get_strings, locale_text
 from auto_apply.adapters.primary.gui.wizard import SessionConfigWizard as GUIWizard
+from auto_apply.application.services.answer_settings import (
+    save_answer_settings,
+    timing_choices,
+    trust_choices,
+)
 from auto_apply.application.services.profile_validator import TEMPLATE_PROFILE_NAME
 from auto_apply.application.services.ui_schema import UIField, build_ui_schema
 from auto_apply.domain.models.profile import UserProfile, make_portable_path
-from auto_apply.adapters.primary.gui.strings import locale_text
 from auto_apply.domain.models.ui_contract import (
     SessionHistoryEntry,
     SessionRequest,
@@ -604,6 +609,26 @@ class AutoApplyApp(tk.Tk):
             sponsor_row, text="No", variable=sponsor_var, value="no"
         ).pack(side=tk.LEFT)
 
+        # ── Answers (docs/adr/026): which answers AA may send without
+        # showing you, and when it shows them. The same choices and words as
+        # Settings → Answers and the CLI (application/services/answer_settings).
+        row += 1
+        answers_frame = ttk.LabelFrame(
+            grid, text=locale_text("settings.answers_heading"), padding=10)
+        answers_frame.grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(10, 6))
+        ttk.Label(answers_frame, text=locale_text("settings.answer_trust") + ":").grid(
+            row=0, column=0, sticky=tk.W, padx=(0, 8), pady=2)
+        trust_box = ChoiceBox(answers_frame, trust_choices(), "never", width=58).grid(
+            row=0, column=1, sticky=tk.W, pady=2)
+        ttk.Label(answers_frame, text=locale_text("settings.review_timing") + ":").grid(
+            row=1, column=0, sticky=tk.W, padx=(0, 8), pady=2)
+        timing_box = ChoiceBox(answers_frame, timing_choices(), "end", width=58).grid(
+            row=1, column=1, sticky=tk.W, pady=2)
+        drafts_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(answers_frame, text=locale_text("settings.drafts_enabled"),
+                        variable=drafts_var).grid(row=2, column=0, columnspan=2,
+                                                   sticky=tk.W, pady=(4, 0))
+
         # ── Status + submit ─────────────────────────────────────────────
         status_var = tk.StringVar()
         ttk.Label(
@@ -645,6 +670,11 @@ class AutoApplyApp(tk.Tk):
 
             try:
                 profile = _build_profile_from_onboarding(values, legal_answers)
+                save_answer_settings(
+                    profile.answer_preferences, {},
+                    trust=str(trust_box.get()), review_timing=str(timing_box.get()),
+                    drafts_enabled=bool(drafts_var.get()),
+                )
             except ValidationError as exc:
                 first = exc.errors()[0] if exc.errors() else {}
                 where = " → ".join(str(p) for p in first.get("loc", ())) or "profile"
@@ -816,14 +846,14 @@ class AutoApplyApp(tk.Tk):
             LifecycleMode,
             LifecycleWindow,
         )
-        from auto_apply.infrastructure.composition_root import (  # noqa: PLC0415
-            InstallEnvironment,
-            load_pins,
-        )
         from auto_apply.domain.config import (  # noqa: PLC0415
             IS_FROZEN,
             get_install_root,
             get_run_mode,
+        )
+        from auto_apply.infrastructure.composition_root import (  # noqa: PLC0415
+            InstallEnvironment,
+            load_pins,
         )
 
         if IS_FROZEN:

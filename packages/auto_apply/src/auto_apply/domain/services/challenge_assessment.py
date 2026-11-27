@@ -101,6 +101,10 @@ _CHALLENGE_IFRAME_MARKERS: tuple[str, ...] = (
     "challenges.cloudflare.com",
 )
 
+#: Public alias for the application step engine's frame choice, which never
+#: opens a challenge frame as "the application". One list, two consumers.
+CHALLENGE_FRAME_MARKERS: tuple[str, ...] = _CHALLENGE_IFRAME_MARKERS
+
 _CHALLENGE_WIDGET_MARKERS: tuple[str, ...] = (
     "cf-turnstile",
     "g-recaptcha",

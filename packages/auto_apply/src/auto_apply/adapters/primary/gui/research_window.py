@@ -36,9 +36,9 @@ import tkinter as tk
 from collections.abc import Callable
 from enum import Enum, auto
 from tkinter import messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
 from typing import Any
 
+from auto_apply.adapters.primary.gui.scrolling import ScrolledText
 from auto_apply.domain.config import RESEARCH_DB_PATH
 from auto_apply.domain.ports.research_consent_port import (
     PageCopiesDialog,

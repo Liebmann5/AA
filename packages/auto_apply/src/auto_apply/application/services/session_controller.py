@@ -160,6 +160,7 @@ from auto_apply.domain.models.search_query import (
 from auto_apply.domain.models.session_plan import SessionExecutionMode, SessionPlan
 from auto_apply.domain.models.session_report import SessionReport
 from auto_apply.domain.models.task_priority import TaskPriority
+from auto_apply.domain.services.person_time import known_mode, person_timeout
 from auto_apply.domain.models.ui_contract import (
     ActivityKind,
     ApprovalRequest,
@@ -211,11 +212,15 @@ class AnsweredBy(Enum):
              is on, the authoriser can only take the no-pause path, so a
              successful submission is provably policy-authorised (stage E1).
     TIMEOUT — the gate's wait elapsed and the machine returned "skip".
+    STOPPED — the session was stopped while the question was open; the
+              machine returned "skip" (so a gate with no time limit can never
+              hold a stopped session).
     """
 
     HUMAN = auto()
     POLICY = auto()
     TIMEOUT = auto()
+    STOPPED = auto()
 
 
 @dataclass(frozen=True)
@@ -286,6 +291,7 @@ _OUTCOME_KIND_MAP: dict[str, ActivityKind] = {
     "CAPTCHA_BLOCKED": ActivityKind.BLOCKED,
     "LOGIN_WALL_BLOCKED": ActivityKind.BLOCKED,
     "ACCOUNT_REQUIRED": ActivityKind.BLOCKED,
+    "ASSESSMENT_REQUIRED": ActivityKind.BLOCKED,
     "AMBIGUOUS": ActivityKind.FAILED,
     "FAILED_NO_SUBMIT_BUTTON": ActivityKind.FAILED,
     "FAILED_NOTHING_FILLED": ActivityKind.FAILED,
@@ -442,6 +448,8 @@ def _application_outcome_text(kind: ActivityKind, payload: dict) -> str:
             barrier = "CAPTCHA"
         elif outcome == "ACCOUNT_REQUIRED":
             barrier = "an account requirement"
+        elif outcome == "ASSESSMENT_REQUIRED":
+            barrier = "a test or assessment"
         elif outcome == "LOGIN_WALL_BLOCKED":
             barrier = "login wall"
         else:
@@ -1412,6 +1420,8 @@ class SessionController:
         logger.info("Stop signal received")
         self._stop_requested = True
         self.orchestrator.stop()
+        # The agent thread may be waiting on a question: release it.
+        self._release_open_questions()
 
         if self._agent_thread and self._agent_thread.is_alive():
             self._agent_thread.join(timeout=10.0)
@@ -1777,6 +1787,9 @@ class SessionController:
                 checkpoint=str(payload.get("checkpoint", "")),
                 question=str(payload.get("question", "")),
                 options=tuple(str(o) for o in payload.get("options", ())),
+                kind=str(payload.get("kind", "choice")),
+                private=bool(payload.get("private", False)),
+                wait_s=payload.get("wait_s"),
             )
             for payload in self.get_pending_approvals()
         )
@@ -2219,9 +2232,27 @@ class SessionController:
         question: str,
         options: list[str],
         checkpoint: str = "BEFORE_FORM_SUBMIT",
-        timeout: float = 300.0,
+        timeout: float | None = 300.0,
+        *,
+        kind: str = "choice",
+        private: bool = False,
     ) -> str:
         """Publishes HUMAN_APPROVAL_REQUESTED and blocks until the user responds.
+
+        The single choke point every question to the person passes through,
+        so the person's time-limit setting (``accessibility.time_limits``,
+        WCAG 2.2 SC 2.2.1) is applied here, to every gate alike:
+        ``timeout`` is scaled by it, or removed when the person turned time
+        limits off — the wait is then ended only by an answer or by
+        :meth:`stop`. The wait is an event the interface thread sets, so it
+        always ends without anything being abandoned (``hitl_gate``'s gate
+        contract).
+
+        ``kind="text"`` asks for a typed answer (the person answers a form
+        question in AA's own window): any non-empty text is the answer,
+        "skip" skips. ``private=True`` keeps the answer out of the log and out
+        of the approval evidence (recorded as "answered"): it is the person's
+        answer to an application question, not a decision about AA.
 
         Called from the agent worker thread. Blocks for up to *timeout* seconds.
         If the timeout elapses without a response, returns ``"skip"`` so the
@@ -2242,8 +2273,11 @@ class SessionController:
         Returns:
             The option string chosen by the user, or ``"skip"`` on timeout.
         """
-        if "skip" not in options:
+        if kind == "text":
+            options = ["skip"]
+        elif "skip" not in options:
             options = list(options) + ["skip"]
+        wait = person_timeout(timeout, self._time_limits())
 
         context_id = str(uuid.uuid4())
         gate = threading.Event()
@@ -2256,6 +2290,9 @@ class SessionController:
             "checkpoint": checkpoint,
             "question": question,
             "options": options,
+            "kind": "text" if kind == "text" else "choice",
+            "private": bool(private),
+            "wait_s": wait,
         }
 
         with self._approvals_lock:
@@ -2284,16 +2321,16 @@ class SessionController:
                 Event.HUMAN_APPROVAL_REQUESTED
             ),
         )
-        responded = gate.wait(timeout=timeout)
+        responded = gate.wait(timeout=wait)
 
         with self._approvals_lock:
             self._pending_approvals.pop(context_id, None)
 
         if not responded:
             logger.warning(
-                "SessionController: HITL timeout after %.0fs | "
+                "SessionController: HITL timeout after %ss | "
                 "context_id=%s — skipping",
-                timeout,
+                "no-limit" if wait is None else f"{wait:.0f}",
                 context_id,
             )
             self._record_approval_answer(
@@ -2305,9 +2342,35 @@ class SessionController:
         logger.info(
             "SessionController: HITL gate closed | context_id=%s choice=%r",
             context_id,
-            choice,
+            "<private>" if private and choice != "skip" else choice,
         )
         return choice
+
+    def _time_limits(self) -> str:
+        """The person's time-limit setting (``accessibility.time_limits``)."""
+        try:
+            section = self.registry.get_effective_config("accessibility", {}) or {}
+            mode = section.get("time_limits", "1x") if isinstance(section, dict) else "1x"
+        except Exception:
+            return "1x"
+        if not known_mode(mode):
+            logger.warning("SessionController: unknown accessibility.time_limits %r; "
+                           "using the standard limits", mode)
+            return "1x"
+        return str(mode)
+
+    def _release_open_questions(self) -> None:
+        """Answer every open question "skip" (the session is stopping), so a
+        question with no time limit can never hold a stopped session."""
+        with self._approvals_lock:
+            pending = list(self._pending_approvals.items())
+        for context_id, (gate, choice_holder, payload) in pending:
+            if gate.is_set():
+                continue
+            self._record_approval_answer(context_id, "skip", AnsweredBy.STOPPED,
+                                         str(payload.get("checkpoint", "")))
+            choice_holder.append("skip")
+            gate.set()
 
     def provide_approval(self, context_id: str, choice: str) -> bool:
         """Legacy entry point — a human answered from the UI thread.
@@ -2351,12 +2414,18 @@ class SessionController:
 
         gate, choice_holder, payload = entry
         options = list(payload.get("options", []))
-        if options and choice not in options:
+        private = bool(payload.get("private"))
+        if payload.get("kind") == "text":
+            if not isinstance(choice, str) or not choice.strip():
+                logger.warning("SessionController.answer_approval: an empty answer "
+                               "— refusing to unblock")
+                return False
+        elif options and choice not in options:
             logger.warning(
                 "SessionController.answer_approval: choice %r is not in the "
                 "gate's options %s — refusing to unblock",
-                choice,
-                options,
+                "<private>" if private else choice,
+                "<private>" if private else options,
             )
             return False
 
@@ -2375,7 +2444,7 @@ class SessionController:
 
         self._record_approval_answer(
             context_id,
-            choice,
+            "answered" if private and choice != "skip" else choice,
             answered_by,
             str(payload.get("checkpoint", "")),
         )

@@ -154,14 +154,48 @@ def test_the_observation_is_made_inside_the_per_page_loop():
     assert "_observe_form_structure" in called
 
 
+def _observation_sites() -> list[str]:
+    """The function that encloses each ``_observe_form_structure`` call."""
+    tree = ast.parse(WORKFLOW.read_text(encoding="utf-8", errors="ignore"))
+    sites: list[str] = []
+
+    def visit(node: ast.AST, enclosing: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            name = (
+                child.name
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                else enclosing
+            )
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr == "_observe_form_structure"
+            ):
+                sites.append(name)
+            visit(child, name)
+
+    visit(tree, "<module>")
+    return sorted(sites)
+
+
 def test_no_post_loop_observation_survives():
-    """Exactly one call site, and it is the one inside the loop."""
+    """Every call site observes one page while it is worked — never after.
+
+    Two fillers exist while the pre-2026-11 page loop stays selectable
+    (``applications.form_engine: legacy``): its call inside the per-page loop,
+    and the step engine's per-step hook ``_observe_step``, which the engine
+    calls once per form step it works. A call anywhere else would be the
+    original bug (a post-loop observation that sees only the last page).
+    """
     source = WORKFLOW.read_text(encoding="utf-8", errors="ignore")
 
-    call_sites = source.count("self._observe_form_structure(")
-    assert call_sites == 1, (
-        f"expected a single call site inside the page loop, found {call_sites}"
+    assert _observation_sites() == ["_apply_single", "_observe_step"], (
+        f"unexpected research observation sites: {_observation_sites()}"
     )
+    assert source.count("self._observe_step(") == 1, (
+        "_observe_step must be reached only as the step engine's on_step hook"
+    )
+    assert "on_step=lambda record: self._observe_step(record, job)" in source
 
 
 def test_the_index_comes_from_the_pages_navigated_counter():

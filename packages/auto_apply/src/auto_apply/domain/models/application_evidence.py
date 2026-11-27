@@ -11,7 +11,7 @@ practically, and for user trust. These evidence records are:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -75,6 +75,62 @@ class ApplicationEvidence(BaseModel):
     file_upload_succeeded: bool = False
     used_gpt4all: bool = False
 
+    # ── Step engine evidence (application step engine) ───────────────────
+    # Counts only: no answer value and no field label is ever stored here.
+    #: Which form filler ran: "steps" (the step engine), "" (the pre-2026-11
+    #: page loop, still selectable as applications.form_engine: legacy).
+    form_engine: str = ""
+    #: Form steps the engine worked (a one-page form is 1).
+    form_steps: int = 0
+    #: Questions the person answered in place, in the browser, when asked.
+    human_assisted_fields: int = 0
+    #: Questions left as they were (optional with no answer, prefilled, ...).
+    fields_left_blank: int = 0
+    #: Of those, questions that already held a value AA kept (a résumé parse
+    #: by the site, a browser extension, the person) — a measured prefill rate.
+    prefilled_kept: int = 0
+    #: Fills that did not survive their read-back.
+    fill_failures: int = 0
+    #: Trap (honeypot) fields AA recognised and left empty.
+    traps_left: int = 0
+    #: Validation problems the page reported after an attempt to advance.
+    validation_errors: int = 0
+    #: Verified answers by provenance: profile, saved, session, human,
+    #: acknowledgement, generated.
+    answer_sources: dict[str, int] = Field(default_factory=dict)
+    #: Verified fills by how they were made: type, clear-and-type,
+    #: type-chunked, native-select, combobox, pointer, set-files, script.
+    fill_rungs: dict[str, int] = Field(default_factory=dict)
+    #: How each question's meaning was known: "structure" (autocomplete,
+    #: input type), "lexicon(<lang>)" (a word in that language), "widget"
+    #: (only the widget's shape) — the form's language coverage.
+    question_typing: dict[str, int] = Field(default_factory=dict)
+    #: The language the form declares ("" when it declares none) and the
+    #: languages AA matched its words in (form_language.resolve).
+    form_language: str = ""
+    form_locales: list[str] = Field(default_factory=list)
+    #: The version of the word lists that read the form (form_lexicon).
+    lexicon_version: str = ""
+    #: Accessibility barriers observed on the form, counted, keyed by the
+    #: WCAG 2.2 criterion they bear on (form_barriers). Observations, never a
+    #: conformance verdict.
+    accessibility_signals: dict[str, int] = Field(default_factory=dict)
+    #: Questions the person answered in AA's own window (answer_in_aa).
+    answered_in_aa: int = 0
+    #: Answer review (docs/adr/026): the trust level and timing in force,
+    #: how many filled answers needed the person's OK, and how many they saw.
+    answer_trust: str = ""
+    review_timing: str = ""
+    answers_needing_review: int = 0
+    answers_reviewed: int = 0
+    #: Multi-choice answers withheld because the question allows fewer or
+    #: more options ("pick the best 2").
+    selection_limited: int = 0
+    #: Assessments and other forms the application sent the person to:
+    #: kind, host (never the full link — it can carry a candidate token),
+    #: whether the page made it a condition, and how AA knew.
+    external_steps: list[dict[str, Any]] = Field(default_factory=list)
+
     # ── Submit action evidence ───────────────────────────────────────────
     submit_button_found: bool = False
     submit_button_text: str = ""
@@ -117,6 +173,7 @@ class ApplicationEvidence(BaseModel):
         "CAPTCHA_BLOCKED",          # Stopped by CAPTCHA challenge
         "LOGIN_WALL_BLOCKED",       # Stopped by login/sign-up requirement
         "ACCOUNT_REQUIRED",         # The apply route demands an account on the site
+        "ASSESSMENT_REQUIRED",      # A page was a test; AA never takes tests for the person
         "USER_SKIPPED",             # User declined at HITL checkpoint
         "SUBMISSION_GATE_BLOCKED",  # Submission gate unsatisfied — never clicked
         "POLICY_BLOCKED",           # Admin policy or cooldown blocked

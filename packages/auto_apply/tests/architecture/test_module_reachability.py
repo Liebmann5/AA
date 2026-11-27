@@ -171,10 +171,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "ProviderWatchdog (Bible Phase 5); the orchestrator accepts it but "
         "the composition root passes watchdog=None",
     ),
-    "auto_apply.application.services.accessibility": (
-        "WIRE-LATER",
-        "a11y theming config; the GUI never calls configure_accessibility yet",
-    ),
     "auto_apply.application.services.audit_coordinator": (
         "WIRE-LATER",
         "correspondence-audit scheduler; consent-gated research mode not "
@@ -244,11 +240,6 @@ KNOWN_UNREACHABLE: dict[str, tuple[str, str]] = {
         "unreachable because SerpExtractionPort has no consumer "
         "(GenericSERPStrategy takes fast_extractor untyped) — same fact, "
         "two pins",
-    ),
-    "auto_apply.domain.ports.text_generation_port": (
-        "WIRE-LATER",
-        "unreachable because TextGenerationPort has no consumer (workflows "
-        "take text_generation_port untyped) — same fact, two pins",
     ),
     "auto_apply.domain.ports.ui_port": (
         "WIRE-LATER",

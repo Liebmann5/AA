@@ -185,6 +185,35 @@ discovery:
   site_search_strategy: per_platform
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Accessibility — how AA works with the person (docs/adr/024)
+# ─────────────────────────────────────────────────────────────────────────────
+# The person's own choices live in their profile (accessibility_preferences);
+# a value left unset there uses the default below. AA stores settings, never
+# the reason for them, and never uses them to answer an application form.
+accessibility:
+  # How long AA waits for your answers (WCAG 2.2 SC 2.2.1): "1x" standard,
+  # "3x" / "10x" / "20x" times as long, or "off" — no limit: AA waits until
+  # you answer or stop the session (stopping always releases every question).
+  time_limits: "1x"
+  # When AA cannot answer a question on a form, offer it in AA's own window:
+  # pick from the form's choices, or type your answer, and AA enters it and
+  # checks that it took. Off: you answer in the website's form, as before.
+  answer_in_aa: false
+  # When AA asks you to answer in the browser, move the keyboard focus to the
+  # first such question and scroll it into view (no animation).
+  focus_asked_field: true
+  # Terminal: no screen redraws, no box drawing, every choice read in full.
+  screen_reader_mode: false
+  # No animation and no screen redraws.
+  reduced_motion: false
+  # AA's window colours and text size.
+  high_contrast: false
+  font_scale: 1.0
+  # When AA hands you a human-verification challenge, mention that many offer
+  # an audio version (the headphone or speaker button).
+  audio_challenge_hint: false
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Applications workflow tuning
 # ─────────────────────────────────────────────────────────────────────────────
 applications:
@@ -200,6 +229,81 @@ applications:
   dom_stabilization_poll_interval_s: 0.25
   # Token budget for GPT4All custom-question answers.
   custom_answer_max_tokens: 150
+
+  # ── The application step engine (read, decide, act, verify, advance) ──
+  # "steps": the step engine fills every step of the form (default).
+  # "legacy": the pre-2026-11 page loop (kept selectable until it is retired).
+  form_engine: "steps"
+  # When AA may ask you, in the browser window, for answers it does not have:
+  #   auto   — when you asked to review before submitting (or asked to be
+  #            consulted on unsure fields): you are at the window anyway
+  #   always — whenever the review prompt can reach you
+  #   never  — never; an unanswerable required question ends the application
+  assist_mode: "auto"
+  # Seconds AA waits for you to answer before moving on — the standard wait,
+  # scaled (or removed) by accessibility.time_limits.
+  assist_timeout_s: 900
+  # At most this many "please answer these" prompts per form step.
+  max_assists_per_step: 2
+  # Pause after AA fills each step so you can check it before AA moves on.
+  review_each_step: false
+  # Reuse the answers you give in place for the rest of this session (kept in
+  # memory only, never written to disk). An answer specific to one employer
+  # (open-ended, about "here"/"us", or naming it) is reused only for it.
+  remember_answers: true
+  # Where answers come from, in order. session = your answers earlier this
+  # session; profile = your profile; saved = your custom answer templates;
+  # generated = drafts by the local text model (only with generated_answers).
+  answer_sources: ["session", "profile", "saved", "generated"]
+  # Let the local text model draft open-ended answers. Off by default: a
+  # model can add claims you never made, so every draft is flagged for your
+  # review before submitting.
+  generated_answers: false
+  # Work-authorisation and sponsorship questions: "profile" answers them from
+  # your profile's legal answers (flagged for your review); "ask" always asks
+  # you in place instead.
+  legal_answers: "profile"
+  # An answer below this confidence is not used.
+  min_answer_confidence: 0.75
+  # Which answers AA may send without showing you first (docs/adr/026):
+  #   never     — every answer AA wrote, matched by meaning, or took from a
+  #               sensitive part of your profile is shown to you (default)
+  #   own_words — your own words go without review: profile facts, saved
+  #               answers matched word for word, your answers this session
+  #   matched   — also saved answers matched by meaning
+  #   drafts    — also AI drafts that pass AA's checks
+  # Independent of sending without asking (human_review_checkpoints): AA
+  # never sends an answer you still have to see.
+  answer_trust: "never"
+  # When AA shows you those answers: each (as each is filled), page (all of a
+  # page's before moving on), end (all before sending).
+  review_timing: "end"
+  # Any answer below this confidence is shown to you, whatever answer_trust says.
+  review_below_confidence: 0.8
+  # Keep values the site or you already put in a field (a résumé parse, a
+  # browser extension). True replaces them with your profile's values.
+  overwrite_prefilled: false
+  # Tick a required "I certify / I agree" box. Optional boxes (job alerts,
+  # marketing, keeping your data) are always left unticked.
+  acknowledge_required: true
+  # When typing could not set a value (a masked or date widget), set it by
+  # script and record that it was done. False never sets values by script.
+  script_fill_fallback: true
+  # Answers longer than this are typed a few words at a time.
+  type_chunk_threshold: 240
+  # How closely an answer must match a listed option to be chosen.
+  option_match_threshold: 0.6
+  # Seconds to wait for an upload to be processed (résumé parsing), and the
+  # minimum quiet time before AA reads the form again.
+  upload_settle_s: 8.0
+  upload_quiet_min_s: 1.5
+  # Reading pause before each question: milliseconds per character of the
+  # question, capped. Set either to 0 for no reading pause.
+  reading_pause_ms_per_char: 18
+  reading_pause_max_s: 2.0
+  # Bounds: questions handled per step; hops to reach the form (frames count).
+  max_questions_per_step: 80
+  max_apply_hops: 3
 
   # ── Human-like interaction timing (BehaviorParameters / TimingProfile) ──
   # These feed BehaviorParameters.from_config() → TimingProfile.

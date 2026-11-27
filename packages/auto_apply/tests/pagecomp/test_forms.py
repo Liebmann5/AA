@@ -141,3 +141,24 @@ def test_partial_assignment_prefers_none_over_costly():
     assert assign_partial([[1.0, 9.0], [9.0, 9.0]], c0=2.5) == [0, -1]
     with pytest.raises(ValueError):
         assign_partial([[1.0]], c0=0.0)
+
+
+def test_lone_checkbox_takes_its_own_label():
+    """BLUEPRINT correction #45: a lone checkbox's own label (for / wrapping /
+    aria) is its question. Measured on a Lever-like form: the text of the
+    field above (a hidden "Website" trap) was read as the question of the
+    "Send me job alerts" box, so an optional opt-in looked like a required
+    acknowledgement and the certify box looked like a URL field."""
+    html = ("<form><label for=w>Website</label><input id=w name=website_url>"
+            "<input type=checkbox id=alerts name=alerts>"
+            "<label for=alerts>Send me job alerts</label>"
+            "<div><input type=checkbox id=cert name=cert required>"
+            "<label for=cert>I certify that the information above is true</label></div>"
+            "<label><input type=checkbox name=wrap> Keep my data for future roles</label>"
+            "<label for=a>Name</label><input id=a></form>")
+    _, _, reading = _read(html)
+    boxes = [f for f in reading.fields if f.kind == "checkbox"]
+    labels = sorted(f.label for f in boxes)
+    assert labels == ["I certify that the information above is true",
+                      "Keep my data for future roles", "Send me job alerts"], labels
+    assert all("Website" not in f.label for f in boxes)

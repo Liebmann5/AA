@@ -64,18 +64,47 @@ How to extend:
 """
 from __future__ import annotations
 
+import dataclasses
+from collections import Counter
 import logging
+import os
 import random
 import re
 import time
+import traceback
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from auto_apply.application.services.company_batch_scheduler import (
     CompanyBatchScheduler,
+)
+from auto_apply.application.services.hitl_gate import ask_gate
+from auto_apply.application.services.i18n import get_text
+from auto_apply.application.services.form_engine import (
+    ACCOUNT_REQUIRED,
+    ASSESSMENT,
+    BLOCKED,
+    NO_ADVANCE,
+    NO_FORM,
+    READY_TO_SUBMIT,
+    USER_SKIPPED,
+    FormRunContext,
+    FormRunResult,
+    FormStepEngine,
+    StepRecord,
+)
+from auto_apply.domain.applications.answers import AnswerContext
+from auto_apply.domain.applications.form_barriers import barrier_signals
+from auto_apply.domain.applications.form_lexicon import LEXICON_VERSION
+from auto_apply.domain.applications.form_model import (
+    REQUIRED,
+    TRAP,
+    HIDDEN,
+    FormStep,
+    QuestionKind,
 )
 from auto_apply.domain.events import Event
 from auto_apply.domain.models.application_evidence import (
@@ -108,6 +137,7 @@ from auto_apply.domain.services.posting_observation import infer_jurisdiction
 from auto_apply.domain.services.page_assessment import (
     PageAssessment,
     assess_page,
+    is_challenge_frame,
 )
 from auto_apply.domain.types import PageType
 from auto_apply.domain.services.apply_target import (
@@ -203,6 +233,7 @@ class ApplicationsWorkflow:
         rng: random.Random | None = None,    # deterministic randomness
         *,
         plan: SessionPlan,
+        form_engine: FormStepEngine | None = None,
     ) -> None:
         """Initialize with all dependencies injected.
 
@@ -232,6 +263,11 @@ class ApplicationsWorkflow:
             page_analysis_router: PageAnalysisRouter | None — lightweight‑first tier decision.
             browser_lease: Optional BrowserLeaseManager — concurrency safety.
             rng: Optional seeded random.Random instance for deterministic behaviour.
+            form_engine: The application step engine (read, decide, act,
+                verify, advance). When present and ``applications.form_engine``
+                is not ``legacy``, it fills every step of the form; the
+                pre-2026-11 page loop runs otherwise (kept selectable until
+                its retirement, Track A slice S11).
         """
         self._profile = profile
         self._browser = browser
@@ -266,6 +302,7 @@ class ApplicationsWorkflow:
         # to a fabricated fallback — a missing plan must fail at construction,
         # not silently run as if non-deterministic.
         self._plan = plan
+        self._form_engine = form_engine
         # Feedback-loop capture: the tier the router chose and the page it chose
         # it for, remembered between form analysis and the recorded outcome.
         self._last_analysis_tier: PageAnalysisTier | None = None
@@ -1993,10 +2030,11 @@ class ApplicationsWorkflow:
             return False
 
         try:
+            question = get_text("apply_prompts.challenge")
+            if self._cfg("accessibility.audio_challenge_hint", False):
+                question += "\n" + get_text("apply_prompts.challenge_audio")
             choice = self._approval_gate(
-                "A human-verification challenge is blocking the current "
-                "page. Solve it in the browser window, then choose how to "
-                "continue.",
+                question,
                 ["solved", "skip", "stop"],
                 checkpoint="CAPTCHA_PRESENTED",
             )
@@ -2150,7 +2188,8 @@ class ApplicationsWorkflow:
             "challenge_signals": list(self._challenge_signals),
         }
 
-    def _authorize_submission(self, job: Job) -> tuple[bool, str, str]:
+    def _authorize_submission(self, job: Job, summary: str = "",
+                              needs_person: str = "") -> tuple[bool, str, str]:
         """Decide whether this application may be submitted. Fail closed.
 
         Submission is authorised by exactly one of two things:
@@ -2166,8 +2205,24 @@ class ApplicationsWorkflow:
         that raised, an unrecognised answer — is ambiguity, and returns refusal.
         The caller records evidence and does not click.
 
+        **Composition with the answer review (docs/adr/026).** Two
+        independent policies meet here and nowhere else: the submission
+        setting decides whether the person approves the *send*; the answer
+        review (and a required assessment or form the page names) decides
+        whether the person must see *answers or steps* first. When the send
+        needs no approval but ``needs_person`` is not empty, the person is
+        asked about those alone (one question, ``ANSWER_REVIEW``); with no
+        one to ask, nothing is sent. When the send needs approval, the one
+        submit prompt already lists them (``summary``). Neither setting
+        changes the other.
+
         Args:
             job: The job about to be submitted.
+            summary: What AA did, for the person to check before answering
+                (labels and counts only, never answer values).
+            needs_person: What still needs the person before sending
+                (answers to review, required external steps); "" when
+                nothing does.
 
         Returns:
             ``(authorized, outcome, detail)``. When *authorized* is False,
@@ -2191,7 +2246,37 @@ class ApplicationsWorkflow:
 
         if not pause_required:
             # The user configured autonomous submission for this checkpoint.
-            return True, "", "no pre-submit review configured"
+            if not needs_person:
+                return True, "", "no pre-submit review configured"
+            # Sending without being asked never means sending what the
+            # person still has to see: ask about that alone, or do not send.
+            if self._approval_gate is None:
+                return (
+                    False,
+                    "SUBMISSION_GATE_BLOCKED",
+                    "answers or steps still need the person and no one can be asked",
+                )
+            try:
+                choice = self._approval_gate(
+                    get_text("apply_prompts.needs_person") + f"\n{needs_person}",
+                    ["submit", "skip"],
+                    checkpoint="ANSWER_REVIEW",
+                )
+            except Exception as exc:
+                return (
+                    False,
+                    "SUBMISSION_GATE_BLOCKED",
+                    f"approval gate raised: {exc}"[:200],
+                )
+            if choice == self.SUBMIT_APPROVAL_TOKEN:
+                return True, "", "the person approved the answers and steps"
+            if choice == "skip":
+                return False, "USER_SKIPPED", "the person declined at the answer review"
+            return (
+                False,
+                "SUBMISSION_GATE_BLOCKED",
+                f"answer review returned an unrecognised answer: {choice!r}",
+            )
 
         if self._approval_gate is None:
             return (
@@ -2202,7 +2287,7 @@ class ApplicationsWorkflow:
 
         try:
             choice = self._approval_gate(
-                "Submit application?",
+                get_text("apply_prompts.submit") + (f"\n{summary}" if summary else ""),
                 ["submit", "skip"],
                 checkpoint="BEFORE_FORM_SUBMIT",
             )
@@ -2258,7 +2343,14 @@ class ApplicationsWorkflow:
             raise ApplicationError(f"navigation did not complete: {reason}")
 
     def _submit_application(
-        self, job: Job, evidence: ApplicationEvidence
+        self,
+        job: Job,
+        evidence: ApplicationEvidence,
+        *,
+        submit_element: Any = None,
+        submit_text: str = "",
+        summary: str = "",
+        needs_person: str = "",
     ) -> ApplicationEvidence:
         """Perform pre-submit HITL check, find submit button, click, and scan
         confirmation.
@@ -2271,6 +2363,10 @@ class ApplicationsWorkflow:
         Args:
             job: The job being applied to.
             evidence: Evidence accumulator to update with submission outcome.
+            submit_element: The submit control the step engine identified
+                (already located); None falls back to the label search.
+            submit_text: Its visible text, for the evidence.
+            summary: Shown at the submit gate (see ``_authorize_submission``).
 
         Returns:
             Updated ApplicationEvidence with submission outcome, confirmation
@@ -2280,7 +2376,9 @@ class ApplicationsWorkflow:
         # Nothing below this point may run unless submission is authorised.
         # This is deliberately NOT wrapped in a try/except that continues: a
         # swallowed error here is how an unapproved application gets sent.
-        authorized, gate_outcome, gate_detail = self._authorize_submission(job)
+        authorized, gate_outcome, gate_detail = self._authorize_submission(
+            job, summary=summary, needs_person=needs_person
+        )
         if not authorized:
             self._warn_once_about_the_gate(gate_outcome, gate_detail)
             logger.info(
@@ -2305,10 +2403,10 @@ class ApplicationsWorkflow:
         )
 
         # ── Find the submit button ────────────────────────────────────────
-        submit_button = None
-        submit_text = ""
+        submit_button = submit_element
+        submit_text = (submit_text or "")[:50] if submit_element is not None else ""
         try:
-            for btn in self._get_clickable_elements():
+            for btn in ([] if submit_button is not None else self._get_clickable_elements()):
                 btn_text = self._control_label(btn)
                 if _label_matches(btn_text, self._SUBMIT_KEYWORDS):
                     submit_button = btn
@@ -2337,6 +2435,11 @@ class ApplicationsWorkflow:
             "submit_button_text": submit_text,
         })
 
+        # The address the form is on when Submit is clicked. "The address
+        # changed" is measured from here: job.url is often a search engine's
+        # redirect link, which every page differs from (live run 2026-11-26:
+        # two Workable submissions read as "probably submitted" on that alone).
+        pre_submit_url = self._current_url(default="")
         try:
             submit_result = self._interaction_port.click(
                 submit_button, irreversible=True
@@ -2401,7 +2504,7 @@ class ApplicationsWorkflow:
         if not isinstance(page_source, str):
             page_source = ""
 
-        url_changed = bool(post_url and post_url != job.url)
+        url_changed = _left_the_form(pre_submit_url, post_url)
 
         # ── Confirmation via the ONE page verdict ─────────────────────────
         # A confirmation is SUCCESS_PAGE: a strong phrase in VISIBLE text
@@ -2409,8 +2512,10 @@ class ApplicationsWorkflow:
         # deciding phrase or marker carried in the verdict's signals. The
         # outcome ladder is unchanged; only the source of "was a
         # confirmation seen?" changes.
+        page_kind = "unknown"
         try:
             post_page = assess_page(url=post_url, title=post_title, html=page_source)
+            page_kind = str(getattr(post_page.kind, "value", post_page.kind))
             confirmation_seen = post_page.kind is PageType.SUCCESS_PAGE
             found_phrases = [
                 signal.split(":", 1)[1]
@@ -2420,6 +2525,16 @@ class ApplicationsWorkflow:
         except Exception:
             confirmation_seen = False
             found_phrases = []
+
+        # What AA saw after the click, so a live run can be judged from the
+        # log alone: hosts and path shape only, never a query string.
+        logger.info(
+            "ApplicationsWorkflow: after submit | job=%s form=%s now=%s "
+            "address_changed=%s page=%s confirmation=%s",
+            job.title, _url_shape(pre_submit_url), _url_shape(post_url),
+            url_changed, page_kind,
+            ",".join(found_phrases) or "none",
+        )
 
         # ── Classify the outcome ──────────────────────────────────────────
         if confirmation_seen and url_changed:
@@ -2456,6 +2571,15 @@ class ApplicationsWorkflow:
                     "ApplicationsWorkflow: 'keep on file' cooldown (6 months) | job=%s",
                     job.title,
                 )
+
+        # ── The person's reading of an unclear result (opt-in checkpoint) ──
+        outcome, confidence, person_note = self._confirm_ambiguous_submission(
+            job, outcome, confidence
+        )
+        if person_note and outcome == "SUBMITTED":
+            found_phrases = [*found_phrases, person_note]
+        elif person_note:
+            evidence = evidence.model_copy(update={"error_message": person_note})
 
         # ── Build final evidence ──────────────────────────────────────────
         evidence = evidence.model_copy(update={
@@ -2691,6 +2815,19 @@ class ApplicationsWorkflow:
     ) -> ApplicationEvidence:
         """Core of a single application attempt; called under lease when provided."""
         evidence = self._navigate_to_application(job, evidence)
+        if (
+            evidence.outcome == "ACCOUNT_REQUIRED"
+            and self._uses_step_engine()
+            and self._sign_in_in_place(job)
+        ):
+            # The person signed in (or created the account) themselves, in
+            # the window AA had open; the attempt continues from here.
+            evidence = evidence.model_copy(update={
+                "outcome": "AMBIGUOUS",
+                "error_message": None,
+                "confidence": 0.0,
+                **self._run_statistics(),
+            })
         if evidence.outcome in (
             "FAILED_NAVIGATION",
             "CAPTCHA_BLOCKED",
@@ -2700,7 +2837,9 @@ class ApplicationsWorkflow:
             return evidence
 
         # ── Login wall detection (Wave K2) ──────────────────────────────
-        if self._detect_login_wall(job):
+        if self._detect_login_wall(job) and not (
+            self._uses_step_engine() and self._sign_in_in_place(job)
+        ):
             evidence = evidence.model_copy(update={
                 "outcome": "LOGIN_WALL_BLOCKED",
                 "confidence": 0.90,
@@ -2723,6 +2862,9 @@ class ApplicationsWorkflow:
             })
             self._record_application_outcome(evidence)
             return evidence
+
+        if self._uses_step_engine():
+            return self._apply_with_step_engine(job, evidence)
 
         try:
             while True:
@@ -2830,6 +2972,472 @@ class ApplicationsWorkflow:
                 self._browser.switch_to_default_content()
             except Exception:
                 pass
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # The step engine path (read, decide, act, verify, advance)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    #: Whole address words that make a frame a likely application frame. No
+    #: host is named anywhere (R-1): a frame qualifies by what its address
+    #: says it is, or by the ATS registry recognising it.
+    _APPLICATION_FRAME_WORDS = re.compile(
+        r"(?<![a-z])(apply|applications?|jobs?|careers?|candidates?|boards?|"
+        r"recruit\w*|hiring|vacanc\w*|positions?|openings?)(?![a-z])",
+        re.IGNORECASE,
+    )
+
+    def _uses_step_engine(self) -> bool:
+        """The step engine fills the form unless it is absent or turned off."""
+        if self._form_engine is None:
+            return False
+        return str(self._cfg("applications.form_engine", "steps")).strip().lower() != "legacy"
+
+    def _assist_allowed(self, job: Job) -> bool:
+        """May AA ask the person, in place, for what it cannot answer?
+
+        ``applications.assist_mode``: ``never`` — no; ``always`` — whenever a
+        gate is wired; ``auto`` (default) — when the person said they want to
+        be asked (a pre-submit review, or ON_LOW_CONFIDENCE_FIELD), because
+        then they are expected to be at the window anyway.
+        """
+        if self._approval_gate is None:
+            return False
+        mode = str(self._cfg("applications.assist_mode", "auto")).strip().lower()
+        if mode == "never":
+            return False
+        if mode == "always":
+            return True
+        for checkpoint in (Checkpoint.BEFORE_FORM_SUBMIT, Checkpoint.ON_LOW_CONFIDENCE_FIELD):
+            try:
+                ctx = self._checkpoint_context(checkpoint, job)
+                if self._interrupt_policy.should_pause(checkpoint, ctx) is True:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _ask_gate(self, question: str, options: list[str], checkpoint: str) -> str:
+        """One HITL question, asked once, bounded by the assist timeout
+        (``hitl_gate.ask_gate``: fail closed, no values in logs)."""
+        try:
+            timeout = float(self._cfg("applications.assist_timeout_s", 900.0))
+        except (TypeError, ValueError):
+            timeout = 900.0
+        return ask_gate(self._approval_gate, question, options,
+                        checkpoint=checkpoint, timeout=timeout)
+
+    def _confirm_risky_click(self, job: Job, button_text: str) -> str:
+        """May AA click a control that is the only way on but may submit?
+
+        Decided exactly like the submit gate (``_authorize_submission``),
+        because the click may be the submission: with no pre-submit review
+        configured the person chose autonomous submission, so ``"click"``;
+        otherwise only the person's explicit "click it" allows it. A policy
+        that raised, or a required review with no gate, is ``"blocked"``.
+        """
+        try:
+            ctx = self._checkpoint_context(Checkpoint.BEFORE_FORM_SUBMIT, job)
+            pause = bool(self._interrupt_policy.should_pause(Checkpoint.BEFORE_FORM_SUBMIT, ctx))
+        except Exception as exc:
+            logger.warning("ApplicationsWorkflow: interrupt policy raised (%s)",
+                           type(exc).__name__)
+            return "blocked"
+        if not pause:
+            return "click"
+        if self._approval_gate is None:
+            return "blocked"
+        choice = self._ask_gate(
+            get_text("apply_prompts.risky_click", title=job.title, company=job.company,
+                     button=button_text[:60]),
+            ["click it", "skip"],
+            "BEFORE_FORM_SUBMIT",
+        )
+        return "click" if choice == "click it" else "skip"
+
+    def _sign_in_in_place(self, job: Job) -> bool:
+        """Ask the person to sign in or create the account themselves.
+
+        AA never signs in or creates accounts (ruling: account creation and
+        login belong to the person). With assistance allowed, the browser
+        stays on the page and the person does it there; AA continues only
+        when the page is no longer a sign-in wall.
+        """
+        if not self._assist_allowed(job):
+            return False
+        host = _host_of(self._current_url(default=job.url)) or "this site"
+        choice = self._ask_gate(
+            get_text("apply_prompts.sign_in", title=job.title, company=job.company, host=host),
+            ["signed in", "skip"],
+            "ACCOUNT_REQUIRED",
+        )
+        if choice != "signed in":
+            return False
+        self._wait_for_dom_stable()
+        try:
+            url, title, html = self._page_snapshot(fallback_url=job.url)
+            if assess_page(url=url, title=title, html=html).kind is PageType.LOGIN_REQUIRED:
+                return False
+            if self._visible_password_dialogs() not in (None, 0):
+                return False
+        except Exception:
+            return False
+        logger.info("ApplicationsWorkflow: the person signed in; continuing | job=%s", job.title)
+        return True
+
+    def _frame_to_open(self, result: FormRunResult, visited: set[str]) -> str | None:
+        """The frame most likely to hold the application, when the top page
+        has none. Frames are opened as pages (one recorded hop), never
+        operated in place."""
+        step = result.final_step
+        if step is None:
+            return None
+        best: tuple[int, str] | None = None
+        for frame in step.frame_candidates:
+            url = frame.url
+            low = url.lower()
+            if (
+                not url
+                or url in visited
+                or not low.startswith(("http://", "https://"))
+                or is_challenge_frame(url)
+            ):
+                continue
+            score = 1
+            if self._APPLICATION_FRAME_WORDS.search(low):
+                score += 2
+            try:
+                if self._ats_registry is not None and self._ats_registry.match(url) is not None:
+                    score += 3
+            except Exception:
+                pass
+            if best is None or score > best[0]:
+                best = (score, url)
+        return best[1] if best is not None and best[0] >= 3 else None
+
+    def _apply_with_step_engine(
+        self, job: Job, evidence: ApplicationEvidence
+    ) -> ApplicationEvidence:
+        """Fill the form with the step engine, then submit through the gate."""
+        engine = self._form_engine
+        assert engine is not None
+        ctx = FormRunContext(
+            answers=AnswerContext(
+                job_title=job.title or "",
+                company=job.company or "",
+                host=_host_of(self._current_url(default=job.url)),
+            ),
+            gate=self._approval_gate,
+            assist_allowed=self._assist_allowed(job),
+            on_step=lambda record: self._observe_step(record, job),
+            confirm_risky=lambda text: self._confirm_risky_click(job, text),
+        )
+        result: FormRunResult | None = None
+        try:
+            self._reveal_form_content()
+            result = engine.run(ctx)
+            visited: set[str] = {job.url, self._current_url(default=job.url)}
+            frame_url = self._frame_to_open(result, visited) if result.status == NO_FORM else None
+            max_hops = self._cfg("applications.max_apply_hops", 3)
+            if frame_url is not None and evidence.apply_route_hops < max_hops:
+                logger.info(
+                    "ApplicationsWorkflow: the application lives in a frame; opening it "
+                    "as a page | host=%s", _host_of(frame_url),
+                )
+                self._navigate(frame_url)
+                evidence = evidence.model_copy(update={
+                    "apply_route_hops": evidence.apply_route_hops + 1,
+                    "landed_host": _host_of(frame_url),
+                })
+                ctx.answers = dataclasses.replace(ctx.answers, host=_host_of(frame_url))
+                self._reveal_form_content()
+                result = engine.run(ctx)
+        except Exception as exc:
+            # Type and code location only: an exception's message can carry
+            # the value being typed, and answers never reach the log.
+            logger.error("ApplicationsWorkflow: step engine failed: %s at %s",
+                         type(exc).__name__, _where(exc))
+            evidence = evidence.model_copy(update={
+                "outcome": "ERROR",
+                "confidence": 0.5,
+                "error_message": f"form engine error: {type(exc).__name__}"[:200],
+                "form_engine": "steps",
+                **self._run_statistics(),
+            })
+            self._record_application_outcome(evidence)
+            self._close_application_tab()
+            return evidence
+        finally:
+            try:
+                self._browser.switch_to_default_content()
+            except Exception:
+                pass
+
+        evidence = self._evidence_from_run(evidence, result)
+        # Values AA kept (a site's résumé parse, a browser extension, the
+        # person) are answers too: a form an extension filled is not empty.
+        answered = self._fields_filled + evidence.prefilled_kept
+        status = result.status
+        if status == READY_TO_SUBMIT and answered == 0:
+            evidence = evidence.model_copy(update={
+                "outcome": "FAILED_NOTHING_FILLED",
+                "submit_clicked": False,
+                "confidence": 0.95,
+                "error_message": (
+                    "no question on the application holds an answer, so nothing was "
+                    "submitted and no submit prompt was shown"
+                ),
+                **self._run_statistics(),
+            })
+        elif status == READY_TO_SUBMIT:
+            submit_el = None
+            if result.submit_button is not None:
+                try:
+                    submit_el = engine.actuator.locate(result.submit_button.control)
+                except Exception:
+                    submit_el = None
+            evidence = self._submit_application(
+                job, evidence,
+                submit_element=submit_el,
+                submit_text=(result.submit_button.text if result.submit_button else ""),
+                summary=self._submit_summary(job, result),
+                needs_person=self._needs_person(result),
+            )
+        elif status == NO_FORM and result.steps and result.steps[-1].advanced_by:
+            # The form went away after AA moved it on. The site may have taken
+            # the application (a control that said "Next" and submitted): record
+            # that honestly — never "nothing filled" — and, when the person
+            # asked to be consulted on unclear results, ask what they see.
+            clicked = result.steps[-1].advanced_by
+            outcome, confidence, note = self._confirm_ambiguous_submission(
+                job, "AMBIGUOUS", 0.5
+            )
+            evidence = evidence.model_copy(update={
+                "outcome": outcome,
+                "submit_clicked": False,
+                "confidence": confidence,
+                "error_message": (
+                    f"the form went away after AA clicked \u201c{clicked[:40]}\u201d; the "
+                    "site may have taken the application"
+                ),
+                "confirmation_text_found": (
+                    [*evidence.confirmation_text_found, note]
+                    if outcome == "SUBMITTED" and note else evidence.confirmation_text_found
+                ),
+                **self._run_statistics(),
+            })
+        else:
+            outcome, message = {
+                BLOCKED: ("FAILED_REQUIRED_FIELD", result.reason),
+                USER_SKIPPED: ("USER_SKIPPED", result.reason),
+                ACCOUNT_REQUIRED: ("ACCOUNT_REQUIRED", result.reason),
+                ASSESSMENT: ("ASSESSMENT_REQUIRED", result.reason),
+                NO_FORM: ("FAILED_NOTHING_FILLED", result.reason),
+                NO_ADVANCE: ("FAILED_NO_SUBMIT_BUTTON", result.reason),
+            }.get(status, ("ERROR", f"{status.lower()}: {result.reason}"))
+            update: dict[str, Any] = {
+                "outcome": outcome,
+                "submit_clicked": False,
+                "confidence": 0.9,
+                "error_message": (message or None) and message[:200],
+                **self._run_statistics(),
+            }
+            if status == BLOCKED and result.unanswered:
+                update["unknown_required_field"] = result.unanswered[0][:200]
+            if status == ACCOUNT_REQUIRED:
+                update["login_wall_encountered"] = True
+            evidence = evidence.model_copy(update=update)
+        self._record_application_outcome(evidence)
+        self._close_application_tab()
+        logger.info(
+            "ApplicationsWorkflow.run() complete (step engine) | %s steps=%d filled=%d",
+            evidence.to_log_string(), len(result.steps), self._fields_filled,
+        )
+        return evidence
+
+    def _close_application_tab(self) -> None:
+        """Close the tab the application was opened in (every exit path)."""
+        if self._context_manager:
+            try:
+                self._context_manager.close_current_tab_and_return()
+            except Exception:
+                pass
+
+    def _evidence_from_run(
+        self, evidence: ApplicationEvidence, result: FormRunResult
+    ) -> ApplicationEvidence:
+        """Carry the run's counts onto the evidence and the per-attempt counters."""
+        c = result.counters()
+        self._fields_filled = int(c["filled"]) + int(c["human"])
+        self._required_fields_filled = int(c["required_filled"])
+        self._pages_navigated = max(0, len(result.steps) - 1)
+        self._fields_classified = sum(len(s.outcomes) for s in result.steps)
+        if c["by_source"].get("generated"):
+            self._gpt4all_invoked = True
+        return evidence.model_copy(update={
+            "form_engine": "steps",
+            "form_steps": len(result.steps),
+            "optional_fields_filled": int(c["optional_filled"]),
+            "human_assisted_fields": int(c["human"]),
+            "fields_left_blank": int(c["left"]),
+            "prefilled_kept": int(c["prefilled"]),
+            "fill_failures": int(c["failed"]),
+            "traps_left": int(c["traps_left"]),
+            "validation_errors": int(c["validation_errors"]),
+            "answer_sources": dict(c["by_source"]),
+            "fill_rungs": dict(c["rungs"]),
+            "question_typing": dict(c["typed_by"]),
+            "form_language": next((s.step.language for s in result.steps if s.step.language),
+                                  ""),
+            "form_locales": sorted({loc for s in result.steps for loc in s.step.locales}),
+            "lexicon_version": LEXICON_VERSION,
+            "accessibility_signals": dict(sum(
+                (barrier_signals(s.step) for s in result.steps), Counter())),
+            "answered_in_aa": sum(1 for s in result.steps for o in s.outcomes
+                                  if o.reason == "answered-in-aa"),
+            "file_upload_attempted": any(
+                o.kind == QuestionKind.FILE and o.action in ("filled", "failed")
+                for s in result.steps for o in s.outcomes
+            ),
+            "file_upload_succeeded": int(c["uploads"]) > 0,
+            "custom_fields_answered": int(c["human"]),
+            "answer_trust": self._engine_settings_value("answer_trust"),
+            "review_timing": self._engine_settings_value("review_timing"),
+            "answers_needing_review": int(c["needs_review"]),
+            "answers_reviewed": int(c["reviewed"]),
+            "selection_limited": int(c["selection_limited"]),
+            "external_steps": [
+                {"kind": e.kind, "host": e.host, "required": e.required, "evidence": e.evidence}
+                for e in result.external_steps
+            ],
+        })
+
+    def _engine_settings_value(self, name: str) -> str:
+        settings = getattr(self._form_engine, "settings", None)
+        return str(getattr(settings, name, "") or "")
+
+    @staticmethod
+    def _needs_person(result: FormRunResult) -> str:
+        """What the person must still see before this application is sent:
+        answers the answer review holds back, and assessments or forms the
+        page makes a condition. "" when nothing does (labels only)."""
+        lines: list[str] = []
+        pending = result.pending_reviews()
+        if pending:
+            lines.append(get_text("apply_prompts.summary_pending",
+                                  items="; ".join(p[:60] for p in pending[:6])))
+        external = result.required_external_steps()
+        if external:
+            lines.append(get_text("apply_prompts.summary_external", items="; ".join(
+                f"{(e.text or e.host)[:60]} ({e.host or '—'})" for e in external[:4])))
+        return "\n".join(lines)
+
+    def _submit_summary(self, job: Job, result: FormRunResult) -> str:
+        """What the person should know before saying "submit" (labels only),
+        in the person's language."""
+        c = result.counters()
+        head = get_text("apply_prompts.summary_head", title=job.title, company=job.company,
+                        filled=c["filled"], pages=len(result.steps))
+        if c["human"]:
+            head += get_text("apply_prompts.summary_you", count=c["human"])
+        if c["prefilled"]:
+            head += get_text("apply_prompts.summary_kept", count=c["prefilled"])
+        if c["uploads"]:
+            head += get_text("apply_prompts.summary_resume")
+        parts = [head + "."]
+        if result.submit_button is not None and result.submit_button.text.strip():
+            parts.append(get_text("apply_prompts.summary_control",
+                                  button=result.submit_button.text.strip()[:60]))
+        external = result.required_external_steps()
+        if external:
+            parts.append(get_text("apply_prompts.summary_external", items="; ".join(
+                f"{(e.text or e.host)[:60]} ({e.host or '—'})" for e in external[:4])))
+        pending = result.pending_reviews()
+        if pending:
+            parts.append(get_text("apply_prompts.summary_pending", items="; ".join(
+                p[:60] for p in pending[:6])))
+        # Worth a look, but not already listed as waiting for the person
+        # (the same answer was named twice in one prompt; live 2026-11-26).
+        review = [r for r in result.review_items() if r not in pending]
+        if review:
+            shown = "; ".join(r[:70] for r in review[:6])
+            more = (get_text("apply_prompts.summary_more", count=len(review) - 6)
+                    if len(review) > 6 else "")
+            parts.append(get_text("apply_prompts.summary_check", items=shown, more=more))
+        if c["left"]:
+            parts.append(get_text("apply_prompts.summary_left", count=c["left"]))
+        parts.append(get_text("apply_prompts.summary_end"))
+        return "\n".join(parts)
+
+    def _observe_step(self, record: StepRecord, job: Job) -> None:
+        """One research record per step, built from the engine's reading."""
+        self._observe_form_structure(
+            self._structure_of(record.step), job, page_index=record.index
+        )
+
+    @staticmethod
+    def _structure_of(step: FormStep) -> FormStructure:
+        """The step as the research pipeline's FormStructure (no values)."""
+        kinds = {
+            QuestionKind.TEXTAREA: "textarea", QuestionKind.FILE: "file",
+            QuestionKind.SELECT: "select", QuestionKind.MULTI_SELECT: "select",
+            QuestionKind.COMBOBOX: "select", QuestionKind.RADIO: "radio",
+            QuestionKind.CHECKBOX: "checkbox", QuestionKind.CHECKBOX_GROUP: "checkbox",
+            QuestionKind.DATE: "date", QuestionKind.PASSWORD: "password",
+        }
+        fields = []
+        for q in step.questions:
+            fields.append(FormFieldInfo(
+                field_id=q.primary.id,
+                label_text=q.label,
+                field_type=kinds.get(q.kind, q.input_type or "text"),
+                name=q.primary.name,
+                is_required=q.required == REQUIRED,
+                is_honeypot=q.decision == TRAP,
+                is_hidden=q.decision == HIDDEN,
+                requiredness=q.required,
+                options=tuple(o.label for o in q.options),
+            ))
+        salary_history = any(
+            q.field_type == "salary"
+            and re.search(r"\b(current|previous|prior|history|last)\b", q.label, re.IGNORECASE)
+            for q in step.questions
+        )
+        return FormStructure(
+            fields=tuple(fields),
+            has_file_upload=any(q.kind == QuestionKind.FILE for q in step.questions),
+            has_cover_letter_field=any(q.field_type == "cover_letter" for q in step.questions),
+            wcag_violations=tuple(sorted(barrier_signals(step))),
+            has_salary_history_field=salary_history,
+        )
+
+    def _confirm_ambiguous_submission(
+        self, job: Job, outcome: str, confidence: float
+    ) -> tuple[Any, float, str]:
+        """ON_AMBIGUOUS_SUBMISSION: when the page after submit is unclear and the
+        person asked to be consulted, ask them what they see.
+
+        Returns ``(outcome, confidence, note)``. Their answer is recorded as
+        theirs (the note says so) — research ground truth, never presented as
+        AA's own verdict. Without the checkpoint, nothing changes.
+        """
+        if outcome not in ("AMBIGUOUS", "PROBABLY_SUBMITTED"):
+            return outcome, confidence, ""
+        try:
+            ctx = self._checkpoint_context(Checkpoint.ON_AMBIGUOUS_SUBMISSION, job)
+            if self._interrupt_policy.should_pause(Checkpoint.ON_AMBIGUOUS_SUBMISSION, ctx) is not True:
+                return outcome, confidence, ""
+        except Exception:
+            return outcome, confidence, ""
+        choice = self._ask_gate(
+            get_text("apply_prompts.ambiguous", title=job.title, company=job.company),
+            ["it was submitted", "it was not submitted", "skip"],
+            "ON_AMBIGUOUS_SUBMISSION",
+        )
+        if choice == "it was submitted":
+            return "SUBMITTED", 0.9, "confirmed by the person"
+        if choice == "it was not submitted":
+            return "AMBIGUOUS", 0.9, "the person reported that the application did not go through"
+        return outcome, confidence, ""
 
     # ------------------------------------------------------------------
     # Research observation helpers
@@ -3008,6 +3616,37 @@ def _label_matches(label: str, keywords: list[str]) -> bool:
     """
     text = (label or "").lower()
     return any(keyword in text for keyword in keywords)
+
+
+def _where(exc: BaseException) -> str:
+    """Where an exception came from — file:line in function, innermost last —
+    without its message or locals, which may carry what was being typed."""
+    try:
+        frames = traceback.extract_tb(exc.__traceback__)[-3:]
+    except Exception:
+        return "?"
+    return " < ".join(
+        f"{os.path.basename(f.filename)}:{f.lineno} in {f.name}" for f in reversed(frames)
+    ) or "?"
+
+
+def _url_shape(url: str) -> str:
+    """Host and path of ``url`` for a log line: no query or fragment, which
+    can carry tokens."""
+    try:
+        parts = urlsplit(url or "")
+    except ValueError:
+        return "?"
+    return f"{parts.hostname or ''}{parts.path or ''}"[:120] or "?"
+
+
+def _left_the_form(before: str, after: str) -> bool:
+    """Did the page move on from the form after Submit? Compared without
+    query, fragment or a trailing slash, so a tracking parameter or a
+    "#top" is not a new page. Unknown on either side: no."""
+    if not before or not after:
+        return False
+    return _url_shape(before).rstrip("/") != _url_shape(after).rstrip("/")
 
 
 def _host_of(url: str) -> str:

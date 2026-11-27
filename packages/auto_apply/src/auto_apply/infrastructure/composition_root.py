@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from auto_apply.application.services.i18n import configure_locale
 from auto_apply.application.services.mathematical_web_analyzer import MathematicalWebAnalyzer
 from auto_apply.domain.config import (
@@ -752,6 +752,7 @@ def build_orchestrator(  # noqa: PLR0914
     _app_config = getattr(profile, "app_config", None)
     _profile_locale = getattr(_app_config, "locale", None)
     configure_locale(language=_profile_locale)
+    configure_accessibility_presentation(registry)
     resources = registry.get_runtime_profile()
 
     filter_pipeline = [
@@ -1491,6 +1492,92 @@ def build_orchestrator(  # noqa: PLR0914
         # source, shared by the workflow and the handlers.
         _dom_observer = dom_readiness
 
+    # ── The application step engine (read, decide, act, verify, advance) ──
+    # pagecomp reads each form step through the form page adapter; the
+    # shared interaction tool acts; every value is read back. Answers come
+    # only from what the person declared (profile, saved answers, their
+    # in-place answers this session) unless they turn on generated drafts.
+    # applications.form_engine: legacy keeps the pre-2026-11 page loop.
+    _form_engine = None
+    _apps_cfg = _effective_config.get("applications")
+    _apps_cfg = _apps_cfg if isinstance(_apps_cfg, dict) else {}
+    if (
+        driver is not None
+        and page_action_tool is not None
+        and str(_apps_cfg.get("form_engine", "steps")).strip().lower() != "legacy"
+    ):
+        try:
+            from auto_apply.adapters.secondary.perception.pagecomp_form import (  # noqa: PLC0415
+                PagecompFormPage,
+            )
+            from auto_apply.application.services.form_engine import (  # noqa: PLC0415
+                FormEngineSettings,
+                FormStepEngine,
+                GeneratedAnswerSource,
+            )
+            from auto_apply.domain.applications.answers import (  # noqa: PLC0415
+                ProfileAnswerSource,
+                SessionAnswerMemory,
+                TemplateAnswerSource,
+            )
+
+            _memory = SessionAnswerMemory()
+            _known_sources: dict[str, Any] = {
+                "session": _memory,
+                "profile": ProfileAnswerSource(
+                    profile,
+                    legal_from_profile=str(
+                        _apps_cfg.get("legal_answers", "profile")
+                    ).strip().lower() != "ask",
+                ),
+                "saved": TemplateAnswerSource(profile),
+            }
+            if _apps_cfg.get("generated_answers") is True and gpt4all_adapter is not None:
+                _known_sources["generated"] = GeneratedAnswerSource(
+                    gpt4all_adapter, profile,
+                    max_tokens=int(_apps_cfg.get("custom_answer_max_tokens", 150) or 150),
+                )
+            _order = _apps_cfg.get("answer_sources") or ["session", "profile", "saved", "generated"]
+            _sources = []
+            for _name in _order:
+                _src = _known_sources.get(str(_name).strip().lower())
+                if _src is None:
+                    if str(_name).strip().lower() not in ("generated",):
+                        logger.warning(
+                            "build_orchestrator: unknown answer source %r in "
+                            "applications.answer_sources — ignored", _name,
+                        )
+                    continue
+                if _src not in _sources:
+                    _sources.append(_src)
+
+            def _wait_ready(seconds: float) -> object:
+                if dom_readiness is None:
+                    return None
+                return dom_readiness.wait_for_dom_stable(timeout=seconds)
+
+            _form_engine = FormStepEngine(
+                PagecompFormPage(
+                    driver, access=_effective_config.get("comprehension_access") or {},
+                ),
+                page_action_tool,
+                _sources,
+                FormEngineSettings.from_config(_effective_config),
+                memory=_memory,
+                wait_ready=_wait_ready,
+            )
+            logger.info(
+                "build_orchestrator: application forms are filled by the step "
+                "engine (answer sources: %s)",
+                ", ".join(getattr(x, "name", "?") for x in _sources),
+            )
+        except Exception as _exc:
+            logger.warning(
+                "build_orchestrator: the application step engine could not be "
+                "built (%s) — the previous form filler runs this session", _exc,
+            )
+            _form_engine = None
+
     applications_workflow = ApplicationsWorkflow(
         profile=profile,
         browser=driver,
@@ -1518,6 +1605,7 @@ def build_orchestrator(  # noqa: PLR0914
         rng=apps_workflow_rng,
         page_analysis_router=page_analysis_router,  # <<< NEW
         plan=plan,
+        form_engine=_form_engine,
     )
 
     # ── 6. Orchestrator — all dependencies injected ───────────────────────────
@@ -1701,6 +1789,41 @@ def _refuse_no_browser(registry: CapabilitiesRegistry, cascade: BrowserCascade) 
     )
     print(message, file=sys.stderr)
     raise BrowserSetupError(message)
+
+
+def configure_accessibility_presentation(registry: Any = None) -> None:
+    """Configure how AA's own windows present themselves to the person
+    (``application/services/accessibility.py``), from the one resolved
+    ``accessibility`` section plus the run's signals (``AA_SCREEN_READER``,
+    the OS screen-reader hint — ``infrastructure/os_accessibility.py``).
+
+    Called with no registry before any profile exists (the CLI's first
+    question), and again when the session's registry is built.
+    """
+    from auto_apply.application.services.accessibility import (  # noqa: PLC0415
+        configure_accessibility,
+    )
+    from auto_apply.application.services.i18n import (  # noqa: PLC0415
+        RTL_LANGUAGES,
+        current_language,
+    )
+    from auto_apply.infrastructure.os_accessibility import (  # noqa: PLC0415
+        presentation_settings,
+    )
+
+    section: Any = {}
+    explicit: bool | None = None
+    if registry is not None:
+        try:
+            section = registry.get_effective_config("accessibility", {}) or {}
+            prefs = getattr(registry.get_active_profile(), "accessibility_preferences", None)
+            explicit = getattr(prefs, "screen_reader_mode", None)
+        except Exception:
+            section = {}
+    if not isinstance(section, dict):
+        section = {}
+    settings = presentation_settings(section, explicit_screen_reader=explicit)
+    configure_accessibility(settings, is_rtl=current_language() in RTL_LANGUAGES)
 
 
 def build_query_builder(profile: "UserProfile | None" = None) -> "QueryBuilderService":

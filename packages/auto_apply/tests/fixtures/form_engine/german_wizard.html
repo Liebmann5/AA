@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Bewerbung — Fabrikam GmbH</title>
+<style>
+  body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; }
+  label { display: block; margin-top: 1rem; }
+  .step[hidden] { display: none; }
+</style>
+</head>
+<body>
+<!--
+  A German two-step application (docs/adr/025). What it exercises:
+  * the page declares its language (lang="de"); no field has an
+    autocomplete token, so the labels must be read in German;
+  * "Nachname (Pflichtfeld)" is required only in words, not in markup;
+  * the step control is a <button> with no type — a submit button by the
+    HTML default — whose word ("Fortfahren") pagecomp's reader does not
+    know: only the German lexicon makes it a "next", and only the visible
+    "Schritt 1 von 2" shows that another step follows;
+  * the country list names countries in German, with ISO codes as values;
+  * "Geschlecht" (gender) is a question only the person answers;
+  * the final control says it sends ("Bewerbung absenden").
+-->
+<form id="bewerbung" method="post" action="/senden" novalidate>
+  <section class="step" id="s1">
+    <p class="indicator">Schritt <b>1</b> von 2</p>
+    <label for="vn">Vorname *</label>
+    <input id="vn" name="vn" aria-required="true">
+    <label for="nn">Nachname (Pflichtfeld)</label>
+    <input id="nn" name="nn">
+    <label for="em">E-Mail *</label>
+    <input id="em" name="em" type="email" required>
+    <p><button id="weiter">Fortfahren</button></p>
+  </section>
+  <section class="step" id="s2" hidden>
+    <p class="indicator">Schritt <b>2</b> von 2</p>
+    <label for="land">Land *</label>
+    <select id="land" name="land" required>
+      <option value="">-- Bitte wählen --</option>
+      <option value="DE">Deutschland</option>
+      <option value="US">Vereinigte Staaten</option>
+      <option value="FR">Frankreich</option>
+    </select>
+    <label for="gs">Geschlecht *</label>
+    <select id="gs" name="gs" required>
+      <option value="">Bitte wählen</option>
+      <option>Weiblich</option><option>Männlich</option><option>Divers</option>
+    </select>
+    <p><button id="senden">Bewerbung absenden</button></p>
+  </section>
+</form>
+<script>
+  var form = document.getElementById('bewerbung');
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var step2 = !document.getElementById('s2').hidden;
+    if (!step2) {
+      var ok = document.getElementById('vn').value && document.getElementById('nn').value &&
+               document.getElementById('em').value;
+      if (!ok) return;
+      document.getElementById('s1').hidden = true;
+      document.getElementById('s2').hidden = false;
+      return;
+    }
+    window.__sent = true;
+    document.body.innerHTML = '<h1>Vielen Dank für Ihre Bewerbung!</h1>';
+  });
+</script>
+</body>
+</html>

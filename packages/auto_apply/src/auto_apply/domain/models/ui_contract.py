@@ -562,12 +562,23 @@ class QueueSnapshot(_FrozenModel):
 
 class ApprovalRequest(_FrozenModel):
     """One open HITL gate, mirroring the payload of get_pending_approvals
-    (session_controller.py:522-532). Empty tuple means no gate is open."""
+    (session_controller.py:522-532). Empty tuple means no gate is open.
+
+    ``kind`` is ``choice`` (answer with one of ``options``) or ``text`` (type
+    an answer; "skip" skips). ``private``: the answer is the person's answer
+    to an application question — the interface must not echo it anywhere
+    but where the person typed it. ``wait_s``: how long AA waits, in
+    seconds, or None for no time limit (shown to the person up front:
+    WCAG 2.2 SC 2.2.1).
+    """
 
     context_id: str
     checkpoint: str
     question: str
     options: tuple[str, ...] = ()
+    kind: str = "choice"
+    private: bool = False
+    wait_s: float | None = None
 
 
 class SessionEventRecord(_FrozenModel):

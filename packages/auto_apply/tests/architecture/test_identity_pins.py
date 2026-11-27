@@ -544,6 +544,11 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     # neither family below, never written to a research row.
     "adapters/secondary/annotation/detector_sample_source.py": ["hashlib.sha256"],
     "adapters/secondary/persistence/database.py": ["hashlib.sha256"],
+    # Step fingerprint (application step engine): a digest of a form step's
+    # address and question keys, so the engine tells a step it has already
+    # worked (a loop) from a new one. In memory for one attempt only; never in
+    # a row, the evidence or a log. Not an identity of anything.
+    "adapters/secondary/perception/pagecomp_form.py": ["hashlib.sha256"],
     "adapters/secondary/research/research_exporter.py": ["hashlib.sha256"],
     # Bundle verification (item 10): file hashes, the recomputed digest and
     # the signed-payload hash. Verification only — it mints no identity.

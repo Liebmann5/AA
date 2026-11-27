@@ -9,7 +9,12 @@ exactly one labelable control, ``aria-labelledby`` (its targets are claimed),
 assignment, and ``title``/``placeholder`` last. The order of the last two
 follows AA's pass-4 reader (a placeholder vanishes when typed; a visible
 label is what a person reads), not 06 s4, which put them before the
-residual: recorded as a blueprint correction. Without the layout capability the residual cost is
+residual: recorded as a blueprint correction. A rung whose text has no
+letters or digits (an upload icon's ``<label for>``, a label holding only
+"*") names nothing and the next rung is asked; a bare mark it held is kept
+in front of the name found. Label text never includes what is not rendered
+as text (SVG ``<desc>``/``<title>``/``<metadata>``: live ATS forms put "SVGs
+not supported by this browser." in every icon; 2026-11-26). Without the layout capability the residual cost is
 structural: ``c = beta·log(1+d_tree) + gamma·[label after control]``, padded
 with dummies at ``c0`` (pagecomp.hungarian), at most 12 controls by 8
 nearest blocks per solve (m <= 108 <= 120, 05 s14). Margin = second-best
@@ -45,7 +50,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pagecomp import hungarian
-from pagecomp.doc import ELEMENT, TEXT, Doc
+from pagecomp.doc import ELEMENT, NON_TEXT, TEXT, Doc
 from pagecomp.params import ParamSpec
 from pagecomp.registry import ToolSpec
 from pagecomp.results import Evidence, Ok
@@ -120,6 +125,8 @@ QUESTION_TYPES = frozenset({"work_authorization", "sponsorship", "gender", "ethn
 #: Canonical types whose answers must come from the user's explicit answer only.
 SENSITIVE = frozenset({"gender", "ethnicity", "veteran", "disability", "pronouns",
                        "work_authorization", "sponsorship", "birth_date"})
+#: Label sources that name a control directly (the pairing ladder's constraints).
+_STRONG_SOURCES = frozenset({"label-for", "wrapping-label", "aria-labelledby", "aria-label"})
 
 
 @dataclass(frozen=True)
@@ -163,12 +170,20 @@ def _label_index(doc: Doc, forms: Forms) -> tuple[dict[int, int], dict[int, int]
     return label_for, labels_count
 
 
+def _has_words(text: str) -> bool:
+    """Any letter or digit, in any script: a label of marks alone ("*",
+    ":") names nothing."""
+    return any(ch.isalnum() for ch in text)
+
+
 def _label_text(doc: Doc, lab: int) -> str:
-    """Label text without the text of controls inside it (select options)."""
+    """Label text without the text of controls inside it (select options)
+    or of anything never rendered as text (an icon's SVG ``<desc>``)."""
     parts = []
     j, stop = lab + 1, doc.end[lab]
     while j < stop:
-        if doc.kind[j] == ELEMENT and doc.tag_name(j) in ("select", "option", "textarea", "script", "style"):
+        if doc.kind[j] == ELEMENT and (doc.tag_name(j) in ("select", "option", "textarea")
+                                       or doc.tag_name(j) in NON_TEXT):
             j = doc.end[j]
             continue
         if doc.kind[j] == TEXT:
@@ -316,19 +331,31 @@ def read_fields(doc: Doc, forms: Forms, vis: Any, p: Mapping[str, Any], tick: An
     for k, c in enumerate(forms.controls):
         tick(4)
         node = c.node
+        # A label with no words (an upload icon's ``<label for>``, or one
+        # holding only the required "*") names nothing: the next rung is
+        # asked, as the accessible-name computation moves on from an empty
+        # source. A bare mark it held is kept in front of the name found,
+        # so requiredness still sees it.
+        mark = ""
         lab = label_for.get(node, -1)
         if lab >= 0:
-            names[k] = (_label_text(doc, lab), "label-for" + ("(dup)" if label_count.get(node, 0) > 1 else ""), None)
             claimed.add(lab)
-            continue
+            t = _label_text(doc, lab)
+            if _has_words(t):
+                names[k] = (t, "label-for" + ("(dup)" if label_count.get(node, 0) > 1 else ""), None)
+                continue
+            mark = t
         wrap = _wrapping_label(doc, node)
         if wrap >= 0:
-            names[k] = (_label_text(doc, wrap), "wrapping-label", None)
             claimed.add(wrap)
-            continue
+            t = _label_text(doc, wrap)
+            if _has_words(t):
+                names[k] = (t, "wrapping-label", None)
+                continue
+            mark = mark or t
         t = doc.idref_text(node, "aria-labelledby")
         if t:
-            names[k] = (t, "aria-labelledby", None)
+            names[k] = (f"{mark}{t}" if mark and mark not in t else t, "aria-labelledby", None)
             for ref in (doc.attr(node, "aria-labelledby") or "").split():
                 j = doc.by_id(doc.scope[node], ref)
                 if j >= 0:
@@ -418,8 +445,16 @@ def read_fields(doc: Doc, forms: Forms, vis: Any, p: Mapping[str, Any], tick: An
         question, source = group_q[gi]
         opts = tuple(names.get(m, ("", "", None))[0] or (doc.attr(forms.controls[m].node, "value") or "")
                      for m in members)
-        if g.kind == "checkbox" and len(members) == 1 and not question:
-            question, source = names.get(members[0], ("", "none", None))[:2]
+        if g.kind == "checkbox" and len(members) == 1:
+            # A lone checkbox IS its own question ("I certify...", "Send me
+            # job alerts"): its own label (for / wrapping / aria) outranks
+            # text that merely precedes it, which belongs to the field above
+            # (measured: the label of a hidden field before a consent box
+            # was read as the consent box's question).
+            own, own_source = names.get(members[0], ("", "none", None))[:2]
+            if own and (own_source in _STRONG_SOURCES or own_source.startswith("label-for")
+                        or not question):
+                question, source = own, own_source
         native = any(forms.controls[m].native_required or forms.controls[m].aria_required for m in members)
         req, lo, rev = requiredness(native, question, bool(legend[g.form]), optional_conv[g.form], p,
                                     star_conv[g.form])
@@ -488,7 +523,7 @@ def _run(q: Any, params: Mapping[str, Any]) -> Ok[FormReading]:
 
 
 TOOL = ToolSpec(
-    id="formread", ct_id="CT-T-011..013", version="0.1.0", run=_run, needs=("forms", "visibility"),
+    id="formread", ct_id="CT-T-011..013", version="0.1.1", run=_run, needs=("forms", "visibility"),
     params=(
         ParamSpec("beta", 1.0, 0.0, 10.0, doc="tree-distance weight in residual cost"),
         ParamSpec("gamma_after", 2.0, 0.0, 10.0, doc="penalty: text after the control is help text"),

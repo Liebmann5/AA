@@ -46,7 +46,11 @@ VOID = frozenset(
     "area base br col embed hr img input link meta param source track wbr".split()
 )
 #: Elements whose text is not page text.
-NON_TEXT = frozenset({"script", "style", "template", "noscript", "head", "title"})
+#: Never rendered as text. ``desc`` and ``metadata`` are SVG's: a ``<desc>``
+#: holds an icon's description or a "not supported" fallback, which no one
+#: sees on the page and which is not part of any name (SVG 2, 5.9; live ATS
+#: forms put "SVGs not supported by this browser." in every icon).
+NON_TEXT = frozenset({"script", "style", "template", "noscript", "head", "title", "desc", "metadata"})
 #: Elements whose boundaries do not separate words.
 INLINE = frozenset(
     "a abbr b bdi bdo cite code data dfn em i kbd label mark q s samp small span "

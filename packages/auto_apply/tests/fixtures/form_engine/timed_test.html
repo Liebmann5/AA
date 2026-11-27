@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Coding assessment — Contoso Analytics</title>
+</head>
+<body>
+<!--
+  A timed coding test (docs/adr/026): a live timer (role="timer") and a
+  code editor. AA never answers a test for the person; with no one to hand
+  it to, the application stops as ASSESSMENT.
+-->
+<form id="assessment" method="post" action="/never" novalidate>
+  <p>Time remaining: <span role="timer" aria-live="off">29:59</span></p>
+  <label for="answer_name">Your name *</label>
+  <input id="answer_name" name="answer_name" autocomplete="name" required>
+  <div class="cm-editor" style="height:6rem;border:1px solid #999">
+    <div class="cm-content" contenteditable="true">def solve(xs):</div>
+  </div>
+  <button type="submit">Submit answers</button>
+</form>
+</body>
+</html>

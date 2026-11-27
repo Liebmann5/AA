@@ -90,6 +90,7 @@ from auto_apply.domain.services.apply_target import (
     page_has_fillable_form,
 )
 from auto_apply.domain.services.challenge_assessment import (
+    CHALLENGE_FRAME_MARKERS,
     ChallengeVerdict,
     assess_challenge,
     assess_login_wall,
@@ -279,6 +280,17 @@ _CLOSED_TEXT_PHRASES: tuple[str, ...] = tuple(
 def _matched(text: str, phrases: tuple[str, ...]) -> list[str]:
     """Every phrase present in the page's visible text, in table order."""
     return [phrase for phrase in phrases if phrase in text]
+
+
+def is_challenge_frame(url: str) -> bool:
+    """Is this frame address a challenge widget (never "the application")?
+
+    The application step engine asks this before opening a frame as the
+    form's page; the vocabulary is the challenge engine's own frame markers,
+    so detection and frame choice cannot drift apart.
+    """
+    low = (url or "").lower()
+    return any(marker in low for marker in CHALLENGE_FRAME_MARKERS)
 
 
 def assess_page(*, url: str, title: str, html: str) -> PageAssessment:

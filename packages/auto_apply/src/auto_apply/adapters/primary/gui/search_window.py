@@ -31,9 +31,9 @@ import tkinter as tk
 import webbrowser
 from collections.abc import Callable
 from tkinter import ttk
-from tkinter.scrolledtext import ScrolledText
 from typing import Any
 
+from auto_apply.adapters.primary.gui.scrolling import ScrolledText
 from auto_apply.domain.models.search_query import (
     build_request,
     describe_request,

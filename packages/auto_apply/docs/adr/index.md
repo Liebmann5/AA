@@ -1,7 +1,7 @@
 ---
 title: Architecture Decision Records
 status: reviewed
-last_verified: 2026-09-19
+last_verified: 2026-11-21
 verified_against: "docs/adr/ directory listing"
 audience: contributors
 ---
@@ -20,7 +20,7 @@ and here is why not" from "nobody thought of it".
 1. **ADRs are immutable once accepted.** They record history, not current state.
 2. **A reversed decision gets a new ADR**, and the old one is marked
    `Superseded` with a link. It is never edited to look correct in hindsight.
-3. **The next number is `023`.** Take it by creating the file; if two people
+3. **The next number is `027`.** Take it by creating the file; if two people
    collide, the second renumbers.
 4. Write an ADR when a change alters a layer boundary, a port contract, a data
    format, a user-visible guarantee, or reverses an earlier decision.
@@ -54,6 +54,10 @@ and here is why not" from "nobody thought of it".
 | [020](020_automated_site_search.md) | Automated site-restricted search: planning, pacing, preview and refusal | Accepted | 2026-10-29 |
 | [021](021_search_pieces_through_verified_channels.md) | Applying each piece of a search through a verified channel, and checking results against the search AA built | Proposed | 2026-10-30 |
 | [022](022_every_page_identified_bounded_recorded.md) | Every page AA reaches is identified, bounded and recorded | Proposed | 2026-10-30 |
+| [023](023_application_step_engine.md) | The application step engine: read, decide, act, verify, advance | Proposed | 2026-11-21 |
+| [024](024_accessibility_accommodations.md) | Accessibility accommodations: time limits, answering in AA, focus, screen-reader output, barrier evidence | Proposed | 2026-11-21 |
+| [025](025_forms_in_any_language.md) | Application forms in any language: structure, words as data, the person | Proposed | 2026-11-21 |
+| [026](026_answer_review_and_external_steps.md) | Answer review independent of sending; tests and required external steps never taken or followed; choice limits | Proposed | 2026-11-26 |
 
 `tests/infrastructure/test_docs_gate.py` asserts that this table and the
 directory contain the same set of records.
@@ -65,7 +69,7 @@ worse than no register.
 
 | ADR | Problem |
 | --- | --- |
-| 003 | Names `application/use_cases/applications_use_case.py` and `domain/applications/fsm/universal.py`. **Neither file exists.** The decision's intent survives; its implementation references do not. Needs a superseding record describing the loop as actually built. |
+| 003 | Names `application/use_cases/applications_use_case.py` and `domain/applications/fsm/universal.py`. **Neither file exists.** The decision's intent survives; its implementation references do not. ADR-023 now records the form-filling loop as built; the orchestrator's state machine half still needs its record. |
 | 010 | A historical audit changelog rather than a decision. Accurate for its date; several files it names have since been retired. Kept as history, not as guidance. |
 | 006 | Superseded by 013. Left unedited, as the rules require. |
 | 014 | Names `UIPort` at 17 methods; the query builder and the resolve step grew it to 27 (see ADR-019), and the plan preview grew it to 28 (see ADR-020). The decision stands — only the count moved. Left unedited, as the rules require. |

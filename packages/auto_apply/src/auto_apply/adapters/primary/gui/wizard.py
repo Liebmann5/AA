@@ -43,7 +43,7 @@ Autonomy (stage E1):
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
+from auto_apply.adapters.primary.gui.scrolling import ScrolledText
 
 from auto_apply.application.services.autonomy import (
     apply_autonomy,

@@ -339,8 +339,9 @@ def test_about_you_tab_is_scrollable_source_pin() -> None:
         "the About-you tab must build its content frame via the scrolling "
         "helper, not a fixed-height frame"
     )
-    assert "tk.Canvas(" in source and "ttk.Scrollbar(" in source, (
-        "the scrolling helper must construct a Canvas and a vertical Scrollbar"
+    assert "tk.Canvas(" in source and "styled_scrollbar(" in source, (
+        "the scrolling helper must construct a Canvas and a vertical Scrollbar "
+        "(AA's styled scrollbar, gui/scrolling.py)"
     )
 
 

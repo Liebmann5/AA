@@ -79,9 +79,11 @@ class PlaywrightProvider:
             raise RuntimeError("playwright package is not installed") from exc
 
         browser_type = config.get("browser_type", "chromium").lower()
+        portable = self.portable_executable(browser_type)
 
         # ----- idempotency guard: warn once per missing binary ----------------
-        if browser_type not in PlaywrightProvider._missing_warned:
+        # A portable Chromium (USB drive) replaces Playwright's own download.
+        if portable is None and browser_type not in PlaywrightProvider._missing_warned:
             with sync_playwright() as temp_pw:
                 browser_map = {
                     "chromium": temp_pw.chromium,
@@ -112,7 +114,8 @@ class PlaywrightProvider:
 
         pw = sync_playwright().start()
         try:
-            page = self._launch(pw, browser_type, headless, profile_path, proxy, width, height)
+            page = self._launch(pw, browser_type, headless, profile_path, proxy, width, height,
+                                executable=portable)
         except Exception as exc:
             try:
                 pw.stop()
@@ -146,6 +149,26 @@ class PlaywrightProvider:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def portable_executable(browser_type: str) -> str | None:
+        """A portable Chromium-family browser for a Chromium launch, or None.
+
+        ``AA_BROWSER_BINARY_PATH`` naming an existing Chrome, Chromium, Edge
+        or Brave executable (a browser carried on a USB drive). Firefox and
+        WebKit need Playwright's own patched builds, so they never use it.
+        """
+        if browser_type not in {"chromium", "chrome"}:
+            return None
+        from auto_apply.adapters.secondary.os.detectors import (  # noqa: PLC0415
+            BrowserDetector,
+        )
+        raw = (os.environ.get("AA_BROWSER_BINARY_PATH") or "").strip().strip('"')
+        if not raw or not Path(raw).is_file():
+            return None
+        if BrowserDetector.portable_browser_name(raw) not in {"chrome", "edge", "brave"}:
+            return None
+        return raw
+
     def _launch(
         self,
         pw: Any,
@@ -155,6 +178,7 @@ class PlaywrightProvider:
         proxy: str | None,
         width: int,
         height: int,
+        executable: str | None = None,
     ) -> Any:
         """Select the correct browser launcher and build the page."""
         browser_map = {
@@ -169,10 +193,12 @@ class PlaywrightProvider:
         launch_args = self._build_launch_args(headless, is_chromium, proxy)
         viewport = {"width": width, "height": height}
 
+        extra: dict[str, Any] = {"executable_path": executable} if executable else {}
         if profile_path and is_chromium:
-            return self._launch_persistent(pw, launcher, profile_path, headless, launch_args, viewport)
+            return self._launch_persistent(pw, launcher, profile_path, headless, launch_args,
+                                           viewport, **extra)
 
-        browser = launcher.launch(headless=headless, args=launch_args)
+        browser = launcher.launch(headless=headless, args=launch_args, **extra)
         context = browser.new_context(viewport=viewport)
         page = context.new_page()
         page._pw_playwright = pw
@@ -188,6 +214,7 @@ class PlaywrightProvider:
         headless: bool,
         launch_args: list[str],
         viewport: dict,
+        executable_path: str | None = None,
     ) -> Any:
         """Launch a persistent Chromium context backed by a user-data directory.
 
@@ -200,6 +227,7 @@ class PlaywrightProvider:
             headless=headless,
             args=launch_args,
             viewport=viewport,
+            **({"executable_path": executable_path} if executable_path else {}),
         )
         page = context.new_page()
         page._pw_playwright = pw

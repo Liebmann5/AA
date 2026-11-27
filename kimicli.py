@@ -114,7 +114,10 @@ for _stream_name in ("stdout", "stderr"):
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # dotenv is optional
+    HAVE_DOTENV = True
+except ImportError:  # dotenv is optional - but without it .env is never read
+    HAVE_DOTENV = False
+
     def load_dotenv(*_a: Any, **_k: Any) -> bool:  # type: ignore[misc]
         return False
 
@@ -4128,7 +4131,7 @@ class Kimi:
         try:
             from openai import OpenAI
         except ImportError:
-            print("The 'openai' package is required:  python -m pip install --upgrade 'openai>=1.0'")
+            print(missing_packages_message(["openai>=1.0"]))
             raise SystemExit(2)
         # max_retries=0 is deliberate. The SDK's default is to retry silently,
         # and a retried 600k-token prompt is a second 600k-token bill.
@@ -5702,6 +5705,17 @@ def set_default_model(kimi: Optional["Kimi"], name: str) -> int:
     return 0
 
 
+def missing_packages_message(pkgs: Sequence[str]) -> str:
+    """The install command for THIS interpreter. 'python -m pip' can name a
+    different Python than the one running kimicli (a venv vs the system one),
+    which installs the package where kimicli never looks."""
+    exe = sys.executable
+    call = f'& "{exe}"' if os.name == "nt" else f'"{exe}"'
+    quoted = " ".join(f'"{p}"' for p in pkgs)
+    return (f"Missing package(s) in the Python running kimicli ({exe}). Install them:\n"
+            f"    {call} -m pip install --upgrade {quoted}")
+
+
 def model_problem(kimi: "Kimi", model: str, ttl: str) -> Optional[str]:
     """Why this request must not go out on this model, or None. A wrong model
     name is refused for free here instead of after the codebase is built."""
@@ -5795,7 +5809,13 @@ def main() -> int:
 
     # ---- API modes -----------------------------------------------------
     if not API_KEY:
-        print("MOONSHOT_API_KEY is not set. Put it in .env next to this script.")
+        env_files = [p for p in (PROJECT_ROOT / ".env", _alt_env) if p.is_file()]
+        if env_files and not HAVE_DOTENV:
+            print(f"MOONSHOT_API_KEY was not read: {env_files[0]} exists, but this Python has no "
+                  f"python-dotenv, so .env is never opened.")
+            print(missing_packages_message(["python-dotenv", "openai>=1.0"]))
+        else:
+            print("MOONSHOT_API_KEY is not set. Put it in .env next to this script.")
         return 2
     kimi = Kimi(API_KEY, BASE_URL)
 

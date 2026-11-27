@@ -153,6 +153,22 @@ def control_type(doc: Doc, i: int) -> str | None:
     return None
 
 
+#: ARIA widget roles that may be drawn around a native input of a type.
+_SKIN_OF = {"role:radio": "radio", "role:checkbox": "checkbox", "role:switch": "checkbox"}
+
+
+def _wraps_native(doc: Doc, i: int, input_type: str) -> bool:
+    """Exactly one native ``input[type=input_type]`` inside element ``i``."""
+    found = 0
+    for j in range(i + 1, doc.end[i]):
+        if doc.kind[j] == ELEMENT and doc.tag_name(j) == "input" \
+                and (doc.attr(j, "type") or "").strip().lower() == input_type:
+            found += 1
+            if found > 1:
+                return False
+    return found == 1
+
+
 def is_button(doc: Doc, i: int) -> bool:
     tag = doc.tag_name(i)
     if tag == "button":
@@ -252,6 +268,11 @@ def read_forms(doc: Doc, vis: Any, p: Mapping[str, Any], tick: Any) -> Forms:
         if doc.kind[i] != ELEMENT:
             continue
         t = control_type(doc, i)
+        if t in _SKIN_OF and _wraps_native(doc, i, _SKIN_OF[t]):
+            # A role="radio"/"checkbox"/"switch" box around a native input of
+            # the same kind is that input's drawing, not a second control:
+            # the native input carries the name, the group and the state.
+            t = None
         if t == "role:listbox" and (
                 (doc.scope[i], doc.attr(i, "id") or "\x00") in popups
                 or any((doc.attr(a, "role") or "") == "combobox" for a in doc.ancestors(i, 6))):

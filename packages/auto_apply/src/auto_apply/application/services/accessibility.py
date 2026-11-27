@@ -1,9 +1,20 @@
 """Accessibility infrastructure for AutoApply.
 
-This module ensures AA is usable by people with disabilities, including
-visual impairments, motor disabilities, and cognitive differences. Every
-UI component in both GUI and CLI consults this module for accessibility
-configuration.
+This module holds how AA's own windows present themselves to the person:
+colours, text size, motion, and the terminal's screen-reader output. It is
+configured once per session from the one resolved ``accessibility`` settings
+section (runtime_defaults.yaml + the person's AccessibilityPreferences),
+by ``composition_root.configure_accessibility_presentation``. Behaviour that
+is not presentation — time limits, answering form questions in AA, moving
+the browser's focus — is read from the same section by the components that
+own it (docs/adr/024_accessibility_accommodations.md).
+
+Consumers today: the CLI dashboard and its prompts (screen-reader and
+reduced-motion output) and the GUI approval window (text size, high
+contrast, keyboard). The rest of the GUI does not read it yet — recorded in
+ADR-024 as open work, together with Tk's own limit: Tk gained screen-reader
+support only in 9.1 and AA's GUI does not use it yet, so the CLI in
+screen-reader mode is the accessible path for a screen-reader user.
 
 Supported Features:
     - Screen reader compatibility (ARIA-equivalent labels for all controls)
@@ -177,7 +188,8 @@ class AccessibilityConfig:
         high_contrast: Whether high contrast mode is active.
         font_scale: Font size multiplier (1.0 = default, 1.5 = 150%).
         reduced_motion: If True, disable all animations and transitions.
-        screen_reader_mode: If True, add extra ARIA labels and descriptions.
+        screen_reader_mode: If True, the terminal never redraws, prompts carry
+            no box drawing, and every choice is read in full (cli/dashboard).
         focus_visible: If True, always show keyboard focus indicators.
         is_rtl: If True, mirror the UI layout for right-to-left text.
         keyboard_shortcuts: The active set of keyboard shortcuts.

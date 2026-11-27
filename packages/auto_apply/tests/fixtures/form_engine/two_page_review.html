@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply — Contoso Freight</title>
+<style>
+  body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; }
+  label { display: block; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<!--
+  A server-rendered two-page flow: the first page asks the questions; the
+  second is a review page with no question at all, only the button that
+  sends the application. The review page replaces the whole document, so
+  nothing of the first page remains in it.
+-->
+<main id="page">
+  <h1>Apply: Data Analyst</h1>
+  <form id="apply" method="post" action="/apply">
+    <label for="fn">First name *</label>
+    <input id="fn" name="first_name" required>
+    <label for="em">Email *</label>
+    <input id="em" name="email" type="email" required>
+    <p><button type="button" id="next">Continue</button></p>
+  </form>
+</main>
+<script>
+  var answers = {};
+  document.getElementById('next').addEventListener('click', function () {
+    var fn = document.getElementById('fn').value, em = document.getElementById('em').value;
+    if (!fn || !em) return;
+    answers = {first_name: fn, email: em};
+    history.pushState({}, '', '/review');
+    document.getElementById('page').innerHTML =
+      '<h1>Review your application</h1>' +
+      '<p>Check your answers before you send them.</p>' +
+      '<form id="send" method="post" action="/send">' +
+      '<button type="submit">Submit application</button></form>';
+    document.getElementById('send').addEventListener('submit', function (e) {
+      e.preventDefault();
+      window.__submitted = answers;
+      history.pushState({}, '', '/sent');
+      document.getElementById('page').innerHTML = '<h1>Thank you for applying!</h1>';
+    });
+  });
+</script>
+</body>
+</html>

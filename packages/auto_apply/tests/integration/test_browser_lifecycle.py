@@ -161,6 +161,10 @@ class TestSessionControllerShutdownUnit:
         controller = object.__new__(SessionController)
         controller.orchestrator = MagicMock()
         controller._agent_thread = None
+        # stop() releases the person's open questions (ADR-024): no question
+        # is open here.
+        controller._approvals_lock = threading.Lock()
+        controller._pending_approvals = {}
         return controller
 
     def test_shutdown_stops_then_releases(self):

@@ -171,7 +171,32 @@ def _wizard_answers(*motion_answers: str) -> list[str]:
         "Remote",
         "I build things.",
         *motion_answers,
+        "",      # accessibility: time limits -> 1x
+        "",      # accessibility: answer in AA -> no
+        "",      # accessibility: plain terminal text -> no
+        "",      # answers: which answers go without review -> never
+        "",      # answers: when to review -> end
+        "",      # answers: AI drafts -> no
     ]
+
+
+def test_the_cli_wizard_writes_accessibility_settings_not_reasons(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GUI+CLI parity (docs/adr/024): the wizard writes the same
+    accessibility_preferences fields the GUI's Accessibility tab writes; a
+    default answer stays "inherit"; the screen-reader answer is stored either
+    way so a "no" outranks the operating system's hint."""
+    answers = iter(_wizard_answers("natural")[:-6] + ["10x", "y", "n", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    saved = run_profile_wizard(tmp_path)
+
+    assert saved is not None
+    a11y = json.loads(saved.read_text(encoding="utf-8"))["accessibility_preferences"]
+    assert a11y["time_limits"] == "10x" and a11y["answer_in_aa"] is True
+    assert a11y["screen_reader_mode"] is False
+    assert not any("disab" in k or "condition" in k for k in a11y)
 
 
 def test_the_cli_wizard_writes_the_canonical_motion_name(
@@ -198,3 +223,29 @@ def test_the_wizard_reprompts_a_bad_behaviour_answer(
     assert saved is not None
     data = json.loads(saved.read_text(encoding="utf-8"))
     assert data["app_config"]["motion_profile"] == "instant"
+
+
+def test_the_cli_wizard_writes_the_answer_settings_the_gui_writes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GUI+CLI parity (docs/adr/026): the same AnswerPreferences fields as
+    Settings → Answers; a choice typed by number or by a word is read with
+    the shared choice rules, and defaults stay "inherit"."""
+    answers = iter(_wizard_answers("natural")[:-3] + ["2", "page", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    saved = run_profile_wizard(tmp_path)
+
+    assert saved is not None
+    prefs = json.loads(saved.read_text(encoding="utf-8"))["answer_preferences"]
+    assert prefs == {"trust": "own_words", "review_timing": "page", "drafts_enabled": True}
+
+
+def test_default_answer_settings_stay_inherited(tmp_path, monkeypatch: pytest.MonkeyPatch
+                                                ) -> None:
+    answers = iter(_wizard_answers("natural"))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    saved = run_profile_wizard(tmp_path)
+    assert saved is not None
+    prefs = json.loads(saved.read_text(encoding="utf-8"))["answer_preferences"]
+    assert prefs == {"trust": None, "review_timing": None, "drafts_enabled": None}

@@ -67,7 +67,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from auto_apply.domain.models.profile import ApplicationConfig, UserProfile
+from auto_apply.adapters.primary.cli.settings_screen import ask_answer_settings
+from auto_apply.domain.models.profile import (
+    AnswerPreferences,
+    ApplicationConfig,
+    UserProfile,
+)
 
 
 class _WizardCancelled(Exception):
@@ -421,6 +426,38 @@ def run_profile_wizard(
         )
         motion_choice = _MOTION_WORD_TO_NAME.get(motion_answer.strip().lower())
 
+    # ── Accessibility (docs/adr/024): settings, never reasons. The same
+    # fields the GUI's Accessibility tab writes; an answer equal to the
+    # default is stored as "inherit" (None), except the screen-reader
+    # answer, which is stored either way so a "no" outranks the OS hint.
+    pf_a11y = dict((prefill or {}).get("accessibility_preferences") or {})
+    print()  # noqa: T201
+    print("── Accessibility ─────────────────────────────────────────────────")  # noqa: T201
+    print("  These settings change how AA works with you. AA never asks why,")  # noqa: T201
+    print("  never stores a reason, and never uses them to answer an application.")  # noqa: T201
+    print("  How long should AA wait for your answers?")  # noqa: T201
+    print("    1x — standard;  3x, 10x, 20x — that many times as long;  off — no limit")  # noqa: T201
+    time_answer = prompt("Time limits (1x / 3x / 10x / 20x / off)",
+                         default=str(pf_a11y.get("time_limits") or "1x")).strip().lower()
+    while time_answer not in ("1x", "3x", "10x", "20x", "off"):
+        print("  Please answer 1x, 3x, 10x, 20x or off.")  # noqa: T201
+        time_answer = prompt("Time limits (1x / 3x / 10x / 20x / off)",
+                             default="1x").strip().lower()
+    in_aa_answer = prompt(
+        "Answer questions AA cannot answer in AA's own window, not the website's form? (y/N)",
+        default="y" if pf_a11y.get("answer_in_aa") else "n",
+    ).strip().lower()
+    reader_answer = prompt(
+        "Plain, linear text in this terminal — best with a screen reader? (y/N)",
+        default="y" if pf_a11y.get("screen_reader_mode") else "n",
+    ).strip().lower()
+
+    # ── Answers (docs/adr/026): which answers AA may send without showing
+    # you first, and when it shows them. The same choices, words and save
+    # rule as the GUI (application/services/answer_settings).
+    answer_prefs = AnswerPreferences(**dict((prefill or {}).get("answer_preferences") or {}))
+    ask_answer_settings(answer_prefs, {})
+
     # ── Assemble the profile dict (prefill preserved verbatim where present) ──
     if prefill is not None:
         profile: dict[str, Any] = copy.deepcopy(prefill)
@@ -487,6 +524,13 @@ def run_profile_wizard(
     # The behaviour question is always answered (default "natural"), so the
     # canonical name is always written — the same field the GUI saves.
     app_config["motion_profile"] = motion_choice
+
+    a11y = profile.setdefault("accessibility_preferences", {})
+    a11y["time_limits"] = None if time_answer == "1x" else time_answer
+    a11y["answer_in_aa"] = True if in_aa_answer.startswith("y") else None
+    a11y["screen_reader_mode"] = reader_answer.startswith("y")
+
+    profile["answer_preferences"] = answer_prefs.model_dump()
 
     politeness = profile.setdefault("politeness_settings", {})
     politeness.setdefault("respect_robots_txt", True)

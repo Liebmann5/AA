@@ -1,12 +1,12 @@
 ---
 title: "pagecomp blueprint, evidence and hand-off"
 status: needs-review
-last_verified: 2026-11-08
+last_verified: 2026-11-26
 verified_against: "every claim names its evidence (tests, owner captures, measurements); see section 3"
 audience: contributors
 ---
 
-# pagecomp v0.5.2: blueprint, evidence and hand-off
+# pagecomp v0.5.3: blueprint, evidence and hand-off
 
 Status: draft for the three-reviewer loop. Every claim below names its
 evidence: **T** a test in `tests/`, **C** the owner-capture corpus
@@ -152,6 +152,18 @@ Each correction is either recorded in the code's docstring or pinned by a test.
    puts them after, because a placeholder vanishes when typed. v0.1 follows
    AA and claims `aria-labelledby` targets so the residual cannot reuse them
    (T `test_pairing_ladder_order`).
+8a. **Word-less labels, icon text and drawn radios (live, 2026-11-26).** A
+   Workable form named its required résumé "SVGs not supported by this
+   browser." (the `<desc>` fallback of an upload icon, the only content of
+   its `<label for>`), and read each Yes/No option twice (a `role="radio"`
+   box around a native radio). Now: SVG `desc`/`metadata` are `NON_TEXT`; a
+   pairing rung with no letters or digits names nothing and the next rung
+   (here `aria-labelledby`) is asked, keeping a bare "*" as the required
+   mark; a `role="radio"`/`"checkbox"`/`"switch"` element around exactly one
+   native input of that kind is that input's drawing, not a control
+   (T `tests/pagecomp/test_label_shapes.py`). The probe reaches a native
+   control through its own label (HTML label activation), except through a
+   link or control inside the label.
 9. **Sample size (from the earlier review, unchanged).** 09 section 9 uses
    α = 0.05 while its decision rule uses α = 0.01, which needs about 25–30
    sites per source. MinHash over multisets needs multiset expansion or
@@ -420,6 +432,17 @@ Found in the owner's captures of 2026-11-08 (Bing and Google, typed by hand):
     `results` segment and no identifier names a search
     (`builtinchicago.org/jobs/dev-engineering/search/backend-engineer` was
     read as one item) (T `test_specific_destination_names_one_item_not_a_search`).
+
+Found while building AA's application step engine (2026-11-21):
+
+45. **(formread 0.1.1) A lone checkbox is its own question.** A single
+    checkbox ("I certify...", "Send me job alerts") took its question from
+    the nearest preceding text whenever any was found, so on a form whose
+    previous field was a hidden "Website" box the job-alerts checkbox read
+    as "Website" and the certification box read as "Send me job alerts".
+    The checkbox's own label (for / wrapping / aria) now wins over
+    preceding text; preceding text is used only when the checkbox has no
+    label of its own (T `test_lone_checkbox_takes_its_own_label`).
 
 ## 4a. Opaque links solved as record linkage (owner ruling 2026-11-04: opaque routes count)
 

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply - Logistics Coordinator - Contoso Careers</title>
+</head>
+<body>
+<header><h1>Logistics Coordinator</h1><p>Contoso &middot; Chicago, IL</p></header>
+<apply-wizard></apply-wizard>
+<script>
+customElements.define('apply-wizard', class extends HTMLElement {
+  connectedCallback() {
+    var root = this.attachShadow({mode: 'open'});
+    root.innerHTML = `
+      <style>
+        .step { display: none; } .step.active { display: block; }
+        .row { margin: 12px 0; }
+        .choice input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+        .choice label { border: 1px solid #555; padding: 4px 10px; margin-right: 6px; cursor: pointer; display: inline-block; }
+        .error { color: #b00; }
+        #former { display: none; }
+      </style>
+      <form id="wizard" novalidate>
+        <div class="step active" data-step="1">
+          <p>Step 1 of 4</p>
+          <div class="row"><label for="fn">First name *</label> <input id="fn" name="firstName" required></div>
+          <div class="row"><label for="ln">Last name *</label> <input id="ln" name="lastName" required></div>
+          <div class="row"><label for="em">Email address *</label> <input id="em" name="email" type="email" required></div>
+          <div class="row"><label for="ph">Mobile phone *</label> <input id="ph" name="mobile" type="tel" required></div>
+          <button type="button" class="next">Next</button>
+        </div>
+        <div class="step" data-step="2">
+          <p>Step 2 of 4</p>
+          <div class="row" role="radiogroup" aria-labelledby="worked_q">
+            <span id="worked_q">Have you worked for Contoso before? *</span>
+            <span class="choice"><input type="radio" id="w_yes" name="worked" value="yes" required><label for="w_yes">Yes</label></span>
+            <span class="choice"><input type="radio" id="w_no" name="worked" value="no"><label for="w_no">No</label></span>
+          </div>
+          <div class="row" id="former"><label for="empid">Former employee ID *</label> <input id="empid" name="employeeId"></div>
+          <div class="row" role="radiogroup" aria-labelledby="visa_q">
+            <span id="visa_q">Will you now or in the future require visa sponsorship? *</span>
+            <span class="choice"><input type="radio" id="v_yes" name="visa" value="yes" required><label for="v_yes">Yes</label></span>
+            <span class="choice"><input type="radio" id="v_no" name="visa" value="no"><label for="v_no">No</label></span>
+          </div>
+          <div class="row"><label for="yrs">Years of logistics experience</label>
+            <input id="yrs" name="years" aria-describedby="yrs_err"><div id="yrs_err" class="error" role="alert"></div></div>
+          <div class="row"><label for="start">Earliest start date</label> <input id="start" name="start" type="date"></div>
+          <button type="button" class="back">Back</button>
+          <button type="button" class="next">Continue</button>
+        </div>
+        <div class="step" data-step="3">
+          <p>Step 3 of 4</p>
+          <div class="row"><input type="checkbox" id="terms" name="terms" required><label for="terms">I agree to the terms of the application *</label></div>
+          <button type="button" class="back">Back</button>
+          <button type="button" class="next">Continue</button>
+        </div>
+        <div class="step" data-step="4">
+          <p>Step 4 of 4</p>
+          <p>Please review your application before you send it.</p>
+          <button type="button" class="back">Back</button>
+          <button type="submit" class="submit">Submit</button>
+        </div>
+      </form>`;
+    var steps = root.querySelectorAll('.step'), current = 0;
+    function show(i) { steps.forEach(function (s, k) { s.classList.toggle('active', k === i); }); current = i; }
+    var ph = root.getElementById('ph');
+    ph.addEventListener('input', function () {
+      var d = ph.value.replace(/\D/g, '').slice(0, 10), out = d;
+      if (d.length > 6) out = '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6);
+      else if (d.length > 3) out = '(' + d.slice(0, 3) + ') ' + d.slice(3);
+      ph.value = out;
+    });
+    root.querySelectorAll('input[name=worked]').forEach(function (r) {
+      r.addEventListener('change', function () {
+        var yes = root.getElementById('w_yes').checked;
+        root.getElementById('former').style.display = yes ? 'block' : 'none';
+        root.getElementById('empid').required = yes;
+      });
+    });
+    function valid(i) {
+      var ok = true;
+      steps[i].querySelectorAll('input').forEach(function (el) {
+        if (el.offsetParent === null && el.type !== 'radio') return;
+        var good = el.type === 'radio' ? !el.required || !!root.querySelector('input[name=' + el.name + ']:checked')
+                 : el.type === 'checkbox' ? !el.required || el.checked
+                 : !el.required || !!el.value;
+        if (el.id === 'yrs') good = /^\d+$/.test(el.value);
+        el.setAttribute('aria-invalid', good ? 'false' : 'true');
+        if (el.id === 'yrs') root.getElementById('yrs_err').textContent = good ? '' : 'Please enter a whole number of years.';
+        if (!good) ok = false;
+      });
+      return ok;
+    }
+    root.querySelectorAll('.next').forEach(function (b) {
+      b.addEventListener('click', function () { if (valid(current)) show(current + 1); });
+    });
+    root.querySelectorAll('.back').forEach(function (b) {
+      b.addEventListener('click', function () { show(current - 1); });
+    });
+    root.getElementById('wizard').addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (!valid(current)) return;
+      history.pushState({}, '', '/applied');
+      root.innerHTML = '<h2>Thank you for applying!</h2><p>We have received your application.</p>';
+    });
+  }
+});
+</script>
+</body>
+</html>

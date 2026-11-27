@@ -1194,7 +1194,11 @@ class ResearchSignalAggregator(ResearchObserverPort):
             return
         form_id = str(uuid.uuid4())
         wcag_violations_json = json.dumps(list(form_structure.wcag_violations))
-        wcag_score = "FAIL" if form_structure.wcag_violations else "AA"
+        # Observations, never a conformance verdict: an automated reading
+        # finds some barriers and cannot establish that a form meets any WCAG
+        # level, so the absence of findings is reported as just that.
+        wcag_score = ("FINDINGS" if form_structure.wcag_violations
+                      else "NO_AUTOMATED_FINDINGS")
         try:
             with self._get_connection() as conn:
                 conn.execute(

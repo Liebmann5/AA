@@ -147,11 +147,6 @@ KNOWN_UNWIRED_PORTS: dict[str, tuple[str, str]] = {
         "WIRE-LATER",
         "same getattr-probe pattern as SupportsRawDriver",
     ),
-    "TextGenerationPort": (
-        "WIRE-LATER",
-        "workflows take text_generation_port=None untyped; GPT4AllAdapter "
-        "implements it structurally",
-    ),
     "UIPort": (
         "WIRE-LATER",
         "structural satisfaction with no wrapper: SessionController satisfies "
