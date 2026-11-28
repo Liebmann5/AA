@@ -16,6 +16,11 @@ follow an ARMED record that was not read back (spec §2 step 1).
   journal (nothing is deleted) and the journal is cut back to the last valid
   frame, so the next append leaves the journal readable. No dispatch can have
   followed it: ``arm`` does not return until its frame is read back.
+  A bad frame followed only by zero bytes to the end of the file is a torn
+  tail too: FAT32 and exFAT (and ext4 without data journalling) can record a
+  file's new size before its data, so after a power cut or a pulled stick the
+  unwritten part reads back as zeros (exFAT's valid-data length does exactly
+  this). No record has length zero, so zeros can only be an unfinished write.
 * A bad frame *before* the last means the medium is corrupt. The journal
   then refuses to arm for the rest of the session and says so in plain
   words; startup is never blocked.
@@ -140,6 +145,11 @@ def _frame(payload: bytes) -> bytes:
     return _HEADER.pack(len(payload)) + payload + hashlib.sha256(payload).digest()
 
 
+def _zeros_from(data: bytes, start: int) -> bool:
+    """Is every byte from ``start`` to the end of the file zero?"""
+    return not data[start:].strip(b"\x00")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -247,12 +257,15 @@ class SubmitIntentJournal:
                 self._set_aside_torn(data, offset, "a frame past the end of the file")
                 return
             if length == 0 or length > _MAX_PAYLOAD:
+                if _zeros_from(data, offset):
+                    self._set_aside_torn(data, offset, "a zero-filled tail")
+                    return
                 self._corrupt = f"a bad record length at byte {offset}"
                 return
             payload = data[offset + _HEADER.size: offset + _HEADER.size + length]
             digest = data[end - _DIGEST_LEN: end]
             if hashlib.sha256(payload).digest() != digest:
-                if end == size:
+                if end == size or _zeros_from(data, end):
                     self._set_aside_torn(data, offset, "a bad checksum on the last record")
                     return
                 self._corrupt = f"a bad checksum at byte {offset}"

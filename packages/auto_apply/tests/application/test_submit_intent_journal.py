@@ -125,6 +125,56 @@ def test_a_torn_last_record_is_set_aside_and_later_appends_stay_readable(tmp_pat
     assert list(tmp_path.glob("p.journal.torn-*")), "the torn bytes are kept, not deleted"
 
 
+def test_a_zero_filled_tail_is_torn_not_corrupt(tmp_path: Path) -> None:
+    """TEETH: without the zero check, a length of zero reads as corruption and
+    the profile can never submit again. FAT32/exFAT record a file's new size
+    before its data, so a pulled stick leaves exactly this tail."""
+    j = _journal(tmp_path)
+    done = j.arm(KEY, URL)
+    j.mark(done, AttemptState.NOT_SENT, "ERROR")
+    path = tmp_path / "p.journal"
+    with open(path, "ab") as fh:
+        fh.write(b"\x00" * 4096)
+    j2 = _journal(tmp_path, lock=ProfileLock(tmp_path / "p2.lock"))
+    assert j2.corrupt is None and j2.torn_note and "zero" in j2.torn_note
+    j2.arm("other|/2", "https://other/2")
+    j3 = _journal(tmp_path, lock=ProfileLock(tmp_path / "p3.lock"))
+    assert j3.corrupt is None and j3.torn_note is None
+
+
+def test_a_last_record_zeroed_part_way_is_torn_not_corrupt(tmp_path: Path) -> None:
+    """TEETH: without the zero check after a bad checksum, a last frame whose
+    data stopped half-way (the rest zeros, past the frame's end too) reads as
+    corruption."""
+    j = _journal(tmp_path)
+    first = j.arm(KEY, URL)
+    path = tmp_path / "p.journal"
+    frame = path.read_bytes()                        # exactly one frame
+    j.mark(first, AttemptState.NOT_SENT, "ERROR")
+    half = len(frame) // 2
+    with open(path, "ab") as fh:
+        fh.write(frame[:half] + b"\x00" * (len(frame) - half) + b"\x00" * 512)
+    j2 = _journal(tmp_path, lock=ProfileLock(tmp_path / "p2.lock"))
+    assert j2.corrupt is None and j2.torn_note
+    assert j2.unresolved() == []                     # the two real records survived
+
+
+def test_zeros_followed_by_a_record_are_still_corruption(tmp_path: Path) -> None:
+    """The zero rule covers only a tail: valid data after the zeros means the
+    medium lost bytes in the middle, which stays a refusal."""
+    j = _journal(tmp_path)
+    a = j.arm(KEY, URL)
+    j.mark(a, AttemptState.NOT_SENT, "ERROR")
+    path = tmp_path / "p.journal"
+    data = path.read_bytes()
+    path.write_bytes(b"\x00" * 64 + data)
+    j2 = _journal(tmp_path, lock=ProfileLock(tmp_path / "p2.lock"))
+    assert j2.corrupt
+    with pytest.raises(ArmRefused) as refused:
+        j2.arm("other|/2", "https://other/2")
+    assert refused.value.reason == JOURNAL_CORRUPT
+
+
 def test_a_bad_record_before_the_last_stops_submitting(tmp_path: Path) -> None:
     j = _journal(tmp_path)
     a = j.arm(KEY, URL)
