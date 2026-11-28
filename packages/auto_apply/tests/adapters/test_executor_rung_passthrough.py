@@ -27,7 +27,7 @@ class _FakeTool:
     def __init__(self, result):
         self._result = result
 
-    def click(self, element, irreversible=False):
+    def click(self, element, irreversible=False, expect=None):
         return self._result
 
 

@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect as durable_connect
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class HarvestBaselineRepository:
 
     @contextmanager
     def _get_connection(self):
-        conn = sqlite3.connect(str(self._db_path), timeout=10.0)
+        conn = durable_connect(self._db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
             yield conn

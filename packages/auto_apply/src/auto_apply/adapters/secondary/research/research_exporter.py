@@ -80,6 +80,7 @@ from auto_apply.adapters.secondary.security.data_protection import (
     read_public_key_fingerprint,
 )
 from auto_apply.domain.constants import RESEARCH_SCHEMA_VERSION
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -440,7 +441,7 @@ class ResearchExporter:
         # Read-only: export can never mutate the research database, and a
         # missing database file fails here at connect instead of exporting
         # as a plausible empty bundle (R4).
-        conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+        conn = connect_readonly(self._db_path)
         conn.row_factory = sqlite3.Row
         try:
             user_version = conn.execute("PRAGMA user_version").fetchone()[0]

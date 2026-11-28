@@ -199,6 +199,10 @@ def _set_text(selector: str, value: str, root: str = "document") -> str:
     )
 
 
+#: Pre-write review prompts the last run approved (never asserted on values).
+REVIEWED: list[str] = []
+
+
 def _run(stack: Stack, profile: UserProfile, url: str,
          person: Callable[[str, str], str]) -> tuple[FormRunResult, list[str]]:
     stack.adapter.get(url)
@@ -206,6 +210,12 @@ def _run(stack: Stack, profile: UserProfile, url: str,
     asked: list[str] = []
 
     def gate(question: str, options: list[str], *, checkpoint: str = "", **kw: Any) -> str:
+        if checkpoint == "ANSWER_REVIEW" and "approve" in options:
+            # Phase 0 (P0-5): answers that need the person are shown before
+            # they are written; these tests approve them and are about the
+            # rest of the run.
+            REVIEWED.append(question)
+            return "approve"
         asked.append(checkpoint)
         return person(checkpoint, question)
 
@@ -458,7 +468,14 @@ def test_the_workflow_submits_only_through_the_gate(stack: Stack, profile: UserP
     workflow._research_observer = observer
     asked: list[tuple[str, str]] = []
 
+    reviewed: list[str] = []
+
     def gate(question: str, options: list[str], *, checkpoint: str = "", **kw: Any) -> str:
+        if checkpoint == "ANSWER_REVIEW":
+            # P0-5: shown with their values, privately, before anything is typed.
+            assert kw.get("private") is True
+            reviewed.append(question)
+            return "approve"
         asked.append((checkpoint, question))
         if checkpoint == "FORM_NEEDS_ANSWERS":
             stack.js(_set_text("#why", "Because I like robots."))

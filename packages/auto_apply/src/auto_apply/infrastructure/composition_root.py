@@ -27,6 +27,7 @@ from auto_apply.domain.config import (
     FOOTPRINT_LEDGER_PATH,
     INSTANCES_DIR,
     IS_FROZEN,
+    JOURNALS_DIR,
     PAGE_COPIES_DIR,
     PROVENANCE_KEY_PATH,
     REPORTS_DIR,
@@ -86,6 +87,9 @@ if TYPE_CHECKING:
     from auto_apply.application.services.session_controller import SessionController
     from auto_apply.domain.ports.profile_repository_port import ProfileRepositoryPort
     from auto_apply.application.services.instance_registry import InstanceRegistry
+    from auto_apply.application.services.data_processing.submit_intent_journal import (
+        SubmitIntentJournal,
+    )
     from auto_apply.adapters.secondary.research.research_exporter import (
         ExportResult,
     )
@@ -566,10 +570,64 @@ def run_replay(corpus_dir: Path, out_dir: Path | None = None) -> "ReplayReport":
 # MAIN WIRING FUNCTION
 # --------------------------------------------------------------------------
 
+def _profile_slug(name: str) -> str:
+    """A file-name-safe form of a profile name (journal and lock files)."""
+    import re  # noqa: PLC0415
+
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name or "")).strip("._")[:64]
+    return slug or "default"
+
+
+def build_submit_journal(profile_name: str, effective_config: Any) -> "SubmitIntentJournal":
+    """The profile's submission journal and lock (Phase 0, P0-3).
+
+    One journal per profile in ``JOURNALS_DIR``. When AA's data folder lies in
+    a documented sync root (OneDrive, Dropbox, Google Drive), the journal
+    refuses to arm — so nothing is submitted — unless the person opted in
+    (``storage.allow_synced_profile: true`` or ``AA_ALLOW_SYNCED_PROFILE=1``);
+    a warning is logged either way. Startup, discovery and vetting are never
+    blocked by it.
+    """
+    from auto_apply.application.services.data_processing.submit_intent_journal import (  # noqa: PLC0415
+        SubmitIntentJournal,
+    )
+    from auto_apply.application.services.profile_lock import (  # noqa: PLC0415
+        ProfileLock,
+        detect_sync_root,
+        synced_override,
+    )
+
+    slug = _profile_slug(profile_name)
+    storage = effective_config.get("storage") if isinstance(effective_config, dict) else None
+    synced = detect_sync_root(JOURNALS_DIR)
+    refusal = None
+    if synced:
+        if synced_override(storage):
+            logger.warning(
+                "build_submit_journal: AA's data folder is inside a synced folder (%s); "
+                "submitting is allowed because the person opted in. Two machines on "
+                "one synced profile can still submit twice.", synced,
+            )
+        else:
+            refusal = synced
+            logger.warning(
+                "build_submit_journal: AA's data folder is inside a synced folder (%s); "
+                "AA will not submit from it (storage.allow_synced_profile or "
+                "AA_ALLOW_SYNCED_PROFILE=1 allows it).", synced,
+            )
+    return SubmitIntentJournal(
+        JOURNALS_DIR / f"{slug}.journal",
+        str(profile_name or ""),
+        ProfileLock(JOURNALS_DIR / f"{slug}.lock"),
+        synced_root=refusal,
+    )
+
+
 def build_orchestrator(  # noqa: PLR0914
     registry: CapabilitiesRegistry,
     driver: "BrowserInterface | None" = ...,  # type: ignore[assignment]
     research_consent: "ResearchConsentManager | None" = None,
+    submit_journal: "SubmitIntentJournal | None" = None,
 ) -> "AgentOrchestrator":
     """Assembles and returns a fully wired AgentOrchestrator.
 
@@ -630,6 +688,15 @@ def build_orchestrator(  # noqa: PLR0914
     # Build BehaviorParameters early so we can seed randomness for providers
     # and adapters — must happen before any browser instance is created.
     _effective_config = registry.get_all_effective_config()
+    # Every database's durability for its medium (Phase 0): storage.medium.
+    from auto_apply.adapters.secondary.persistence.durable_sqlite import (  # noqa: PLC0415
+        configure_durability,
+    )
+
+    _storage_cfg = _effective_config.get("storage")
+    configure_durability(
+        _storage_cfg.get("medium", "auto") if isinstance(_storage_cfg, dict) else "auto"
+    )
     behavior_params = BehaviorParameters.from_config(_effective_config)
 
     _cascade_skipped = driver is not ...
@@ -1499,6 +1566,7 @@ def build_orchestrator(  # noqa: PLR0914
     # in-place answers this session) unless they turn on generated drafts.
     # applications.form_engine: legacy keeps the pre-2026-11 page loop.
     _form_engine = None
+    _form_engine_build_error = ""
     _apps_cfg = _effective_config.get("applications")
     _apps_cfg = _apps_cfg if isinstance(_apps_cfg, dict) else {}
     if (
@@ -1572,9 +1640,14 @@ def build_orchestrator(  # noqa: PLR0914
                 ", ".join(getattr(x, "name", "?") for x in _sources),
             )
         except Exception as _exc:
-            logger.warning(
+            # Fail closed (Phase 0, P0-4): the old form filler skips the
+            # pre-write review, so it never stands in silently. It runs only
+            # when applications.legacy_fallback is on.
+            _form_engine_build_error = type(_exc).__name__
+            logger.error(
                 "build_orchestrator: the application step engine could not be "
-                "built (%s) — the previous form filler runs this session", _exc,
+                "built (%s) — applications will not be filled this session "
+                "unless applications.legacy_fallback is on", _exc,
             )
             _form_engine = None
 
@@ -1606,6 +1679,11 @@ def build_orchestrator(  # noqa: PLR0914
         page_analysis_router=page_analysis_router,  # <<< NEW
         plan=plan,
         form_engine=_form_engine,
+        submit_journal=(
+            submit_journal if submit_journal is not None
+            else build_submit_journal(getattr(profile, "profile_name", ""), _effective_config)
+        ),
+        form_engine_build_error=_form_engine_build_error,
     )
 
     # ── 6. Orchestrator — all dependencies injected ───────────────────────────
@@ -1972,7 +2050,14 @@ def build_session_controller(
     # observer (FORK 3). The pre-session surfaces use the same builder with
     # no registry.
     research_consent = build_research_consent(registry)
-    orchestrator = build_orchestrator(registry, research_consent=research_consent)
+    # The profile's submission journal (Phase 0): the SAME instance reaches
+    # the workflow (arming every submit) and the controller (startup recovery).
+    submit_journal = build_submit_journal(
+        getattr(profile, "profile_name", ""), registry.get_all_effective_config()
+    )
+    orchestrator = build_orchestrator(
+        registry, research_consent=research_consent, submit_journal=submit_journal
+    )
 
     # The query builder serves the user-facing surfaces; it reads the
     # profile only as one-click defaults and never writes to it.
@@ -2006,6 +2091,7 @@ def build_session_controller(
             research_consent=research_consent,
             query_builder=query_builder,
             plan_previewer=_plan_previewer,
+            submit_journal=submit_journal,
         )
     except Exception:
         orchestrator.shutdown()

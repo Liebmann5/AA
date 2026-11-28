@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 #: (D9). Panes carry a wheel origin whose elementFromPoint belongs to
 #: that pane and not to a deeper scroller (D4), on both axes (D9).
 #: arguments[0] = element; arguments[1] = challenge marker substrings.
+#: ``identity`` is what the control is (tag, type, name, id, value, and the
+#: form it would submit): the submit token's target, re-checked by the click
+#: ladder on this same read, immediately after it resolves the element
+#: (AA_ENGINE_MATH.md §3a; Phase 0 decision 7).
 PROBE_SCRIPT = """
 var elem = arguments[0];
 var markers = arguments[1] || [];
@@ -83,6 +87,21 @@ var result = {
     scrollY: window.scrollY,
     dpr: window.devicePixelRatio || 1,
     panes: []
+};
+var form = elem.form || null;
+function attr(el, n) { return (el && el.getAttribute) ? (el.getAttribute(n) || '') : ''; }
+var tagU = (elem.tagName || '').toUpperCase();
+result.identity = {
+    tag: result.tag,
+    type: result.input_type,
+    name: attr(elem, 'name'),
+    id: elem.id || '',
+    value: (tagU === 'INPUT' || tagU === 'BUTTON') ? attr(elem, 'value') : '',
+    formaction: attr(elem, 'formaction'),
+    formmethod: attr(elem, 'formmethod').toLowerCase(),
+    formtarget: attr(elem, 'formtarget'),
+    form_action: attr(form, 'action'),
+    form_method: attr(form, 'method').toLowerCase()
 };
 var cx = box.left + box.width / 2;
 var cy = box.top + box.height / 2;

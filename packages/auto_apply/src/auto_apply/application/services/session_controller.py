@@ -143,6 +143,9 @@ from auto_apply.application.services.autonomy import (
     apply_autonomy,
     autonomy_enabled_for_profile,
 )
+from auto_apply.application.services.data_processing.submit_intent_journal import (
+    ArmRefused,
+)
 from auto_apply.application.services.search_preview import plan_updates_for_request
 from auto_apply.domain.config import USER_DATA_DIR
 from auto_apply.domain.events import Event
@@ -190,6 +193,9 @@ from auto_apply.domain.ports.registry_port import RegistryPort
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
 
 if TYPE_CHECKING:
+    from auto_apply.application.services.data_processing.submit_intent_journal import (
+        SubmitIntentJournal,
+    )
     from auto_apply.application.services.query_builder import QueryBuilderService
     from auto_apply.application.services.research_consent import ResearchConsentManager
 
@@ -521,6 +527,7 @@ class SessionController:
         research_consent: "ResearchConsentManager | None" = None,
         query_builder: "QueryBuilderService | None" = None,
         plan_previewer=None,
+        submit_journal: "SubmitIntentJournal | None" = None,
     ) -> None:
         """Stores pre-built dependencies and starts the event-fed projections.
 
@@ -550,6 +557,8 @@ class SessionController:
         self._research_consent = research_consent
         self._query_builder = query_builder
         self._plan_previewer = plan_previewer
+        #: The profile's submission journal (Phase 0); reconciled at startup.
+        self._submit_journal = submit_journal
         # Automation outcome accumulators (event-fed; read by summary()).
         self._blocked_engines: list[BlockedEngine] = []
         self._discovery_outcome_counts = {
@@ -2313,16 +2322,20 @@ class SessionController:
                 "SessionController: could not publish HITL event | %s", exc
             )
 
+        # A private question carries the person's answers (the pre-write
+        # review shows the values it would type): the feed shows only its
+        # first line, which never holds a value, and the log none of it.
+        shown = str(question).split("\n", 1)[0] if private else str(question)
         self._record_stream(
             _EVENT_KIND_MAP[Event.HUMAN_APPROVAL_REQUESTED],
-            f"Waiting for you: {str(question)[:80]}",
+            f"Waiting for you: {shown[:80]}",
         )
 
         logger.info(
             "SessionController: HITL gate open | context_id=%s question=%r "
             "subscribers=%s",
             context_id,
-            question,
+            "<private>" if private else question,
             self.orchestrator.event_bus.subscriber_count(
                 Event.HUMAN_APPROVAL_REQUESTED
             ),
@@ -2559,6 +2572,8 @@ class SessionController:
                 exc_info=True,
             )
 
+        self._reconcile_submit_journal()
+
         try:
             discarded = self.db.discard_stale_reactive_tasks()
             if discarded > 0:
@@ -2574,6 +2589,65 @@ class SessionController:
                 "proceeding anyway",
                 exc,
                 exc_info=True,
+            )
+
+    def _reconcile_submit_journal(self) -> None:
+        """Settle every submission a previous session left unfinished
+        (AA_ENGINE_MATH.md §2, R1–R4), before any new attempt, and tell the
+        person in plain words. Never blocks startup: a damaged journal, a
+        profile another AA holds, or a synced data folder only stops
+        *submitting*, and the feed says why."""
+        journal = getattr(self, "_submit_journal", None)
+        if journal is None:
+            return
+        try:
+            if journal.torn_note:
+                self._record_stream(
+                    ActivityKind.INFO,
+                    "AA's submission journal ended in a half-written record (a power cut or "
+                    "a pulled drive); it was set aside. Nothing was sent from it.",
+                )
+            if journal.corrupt:
+                logger.error("Submission journal is damaged (%s) — submitting is off",
+                             journal.corrupt)
+                self._record_stream(
+                    ActivityKind.REFUSED,
+                    f"AA's submission journal is damaged ({journal.path.name}); AA will not "
+                    "submit any application until it is looked at. Finding and checking "
+                    "jobs still works.",
+                )
+                return
+            if journal.synced_root:
+                self._record_stream(
+                    ActivityKind.REFUSED,
+                    "AA's data folder is inside a synced folder "
+                    f"({journal.synced_root}); AA will not submit from it. Set "
+                    "storage.allow_synced_profile (or AA_ALLOW_SYNCED_PROFILE=1) to allow it.",
+                )
+            settled = journal.reconcile(self.db.record_attempt_outcome)
+        except ArmRefused as refused:
+            logger.warning("Submission journal not reconciled (%s)", refused.reason)
+            self._record_stream(
+                ActivityKind.REFUSED,
+                "Another AA window is using this profile, so this one will not submit "
+                "applications. Finding and checking jobs still works.",
+            )
+            return
+        except Exception as exc:
+            logger.error("Submission journal reconciliation failed | %s — submitting "
+                         "stays blocked for the jobs it holds", type(exc).__name__)
+            return
+        if settled:
+            unknown = sum(1 for a in settled if a.outcome != "SUBMITTED"
+                          and a.outcome != "PROBABLY_SUBMITTED")
+            logger.warning("Submission journal: settled %d unfinished attempt(s) from a "
+                           "previous session (%d unknown)", len(settled), unknown)
+            self._record_stream(
+                ActivityKind.INFO,
+                f"{len(settled)} application(s) from a previous session were interrupted "
+                "while being sent; AA cannot tell whether the site received "
+                f"{'them' if unknown != 1 else 'it'} and will not apply to "
+                f"{'those jobs' if len(settled) != 1 else 'that job'} again on its own.",
             )
 
     # =========================================================================

@@ -62,6 +62,7 @@ from auto_apply.domain.services.signal_detectors import (
 )
 from auto_apply.domain.services.posting_context import posting_detection_context
 from auto_apply.domain.services.url_evidence import redact_rendered_urls
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect as durable_connect
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,6 @@ class _DetectorExamination:
 
 # ── SQLite schema (version 2 + provenance columns) ───────────────────────────
 _SCHEMA_SQL = """
-PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS research_signals (
@@ -602,7 +602,7 @@ class ResearchSignalAggregator(ResearchObserverPort):
 
     @contextmanager
     def _get_connection(self):
-        conn = sqlite3.connect(str(self._db_path), timeout=10.0)
+        conn = durable_connect(self._db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
             yield conn

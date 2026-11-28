@@ -28,6 +28,7 @@ from auto_apply.application.services.page_action.state import PageActionContext
 from auto_apply.domain.models.motion import MotionKind, MotionPlan
 from auto_apply.domain.services import motion_model
 from auto_apply.domain.ports.browser_port import ElementInterface
+from auto_apply.domain.services.submit_token import ControlIdentity
 from auto_apply.domain.types import Keys
 
 logger = logging.getLogger(__name__)
@@ -54,18 +55,25 @@ class Clicker:
         self._pacing = pacing
         self._scroller = scroller
 
-    def click(self, element: ElementInterface, *, irreversible: bool = False) -> ActionResult:
+    def click(self, element: ElementInterface, *, irreversible: bool = False,
+              expect: ControlIdentity | None = None) -> ActionResult:
         """Performs a click through the ladder, recording the outcome rung.
 
         Every click — landed or refused — is counted in the session tally
         exactly once (here, at the ladder's single exit), so the
         SessionReport can show how AA actually clicked.
+
+        ``expect`` is the submit token's target (Phase 0, P0-4). An
+        irreversible click requires it: the ladder re-verifies the control's
+        identity on its own probe, immediately after resolving the element and
+        before any rung can fire, and refuses on any difference.
         """
-        result = self._click_ladder(element, irreversible=irreversible)
+        result = self._click_ladder(element, irreversible=irreversible, expect=expect)
         self._state.tally.record_click(result.rung, result.success)
         return result
 
-    def _click_ladder(self, element: ElementInterface, *, irreversible: bool = False) -> ActionResult:
+    def _click_ladder(self, element: ElementInterface, *, irreversible: bool = False,
+                      expect: ControlIdentity | None = None) -> ActionResult:
         """The ladder itself. Returns the ActionResult; the public ``click``
         records it.
 
@@ -137,6 +145,15 @@ class Clicker:
                 return ActionResult(
                     False, reason=f"click target not reachable: {detail}", rung="probe"
                 )
+
+        # ── The submit token's target, re-verified (P0-4, §3a) ──
+        # On the probe this ladder just made — the last read before any rung
+        # can act. Everything below may dispatch; nothing above did.
+        if irreversible:
+            refusal = self._token_refusal(probe, expect)
+            if refusal:
+                logger.warning("irreversible click refused: %s", refusal)
+                return ActionResult(False, reason=refusal, rung="probe")
 
         # ── Rung 1: trusted pointer click at a sampled, off-centre point ──
         caps = self._probe.capabilities()
@@ -276,6 +293,18 @@ class Clicker:
             except Exception as exc:
                 return ActionResult(False, reason=str(exc), rung="js")
         return ActionResult(False, reason="all click rungs exhausted", rung="none")
+
+    @staticmethod
+    def _token_refusal(probe: dict | None, expect: ControlIdentity | None) -> str:
+        """Why an irreversible click may not proceed, or "" when it may."""
+        if expect is None or not expect.readable:
+            return "irreversible click without a submit token"
+        if not isinstance(probe, dict) or not isinstance(probe.get("identity"), dict):
+            return "token-target-unverified: the control could not be read"
+        field = expect.mismatch(ControlIdentity.from_mapping(probe["identity"]))
+        if field:
+            return f"token-target-mismatch: {field}"
+        return ""
 
     def click_by(self, by: str, selector: str) -> ActionResult:
         """Convenience: finds an element and clicks it in one call."""

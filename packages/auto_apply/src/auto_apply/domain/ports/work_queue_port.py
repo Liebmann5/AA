@@ -100,9 +100,37 @@ class WorkQueuePort(ABC):
     @abstractmethod
     def record_application_permanently(
         self, job_url: str, company: str, outcome: str, session_id: str,
-        job_key: str | None = None,
+        job_key: str | None = None, attempt_id: str | None = None,
     ) -> None:
-        """Persists an application to the permanent cross-session log."""
+        """Persists an application to the permanent cross-session log. A
+        blocking row is never weakened (see DatabaseManager)."""
+
+    # ── The day-one research record (Phase 0, P0-6). Optional: a store that
+    # keeps none ignores the calls. Never given a value or page text.
+    def log_field_review(
+        self, *, session_id: str, attempt_id: str, question_key: str, field_kind: str,
+        ats_family: str, form_language: str, trust_level: str, decision: str,
+        source: str, confidence_bucket: int, step_index: int,
+    ) -> None:
+        """One answer decision (see DatabaseManager.log_field_review)."""
+
+    def log_outcome_channel(self, *, attempt_id: str, channel: str,
+                            first_firing_ms: int) -> None:
+        """One outcome channel's first firing after a submit click."""
+
+    def log_validation_event(self, *, attempt_id: str, question_key: str,
+                             page_index: int, message_present: bool) -> None:
+        """One validation flag the page showed."""
+
+    def record_attempt_outcome(
+        self, job_url: str, job_key: str, outcome: str, attempt_id: str
+    ) -> None:
+        """Settle one submission attempt's outcome durably (the submission
+        journal's writer). Raises on failure."""
+        self.record_application_permanently(
+            job_url=job_url, company="", outcome=outcome, session_id="journal",
+            job_key=job_key or None, attempt_id=attempt_id or None,
+        )
 
     @abstractmethod
     def has_applied_previously(self, job_url: str, job_key: str | None = None) -> bool:

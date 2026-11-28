@@ -1,9 +1,10 @@
 """Provides a robust, transactional interface for SQLite storage.
 
 This module implements the Repository pattern for the application's core data.
-It enforces Write-Ahead Logging (WAL) mode to ensure data integrity during
-power failures or crashes, adhering to the project's "Flash Drive" portability
-requirement.
+Every connection comes from ``durable_sqlite``, which puts the database in the
+mode its medium needs (Phase 0): WAL on a fixed disk; a DELETE journal with
+``synchronous=EXTRA`` on a removable one or one AA cannot identify — the
+"Flash Drive" portability requirement.
 
 Orchestrator Integration Contract:
     The AgentOrchestrator calls these methods on DatabaseManager:
@@ -36,7 +37,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from auto_apply.domain.config import DB_PATH, IS_FROZEN
+from auto_apply.domain.config import DB_PATH
 from auto_apply.domain.models.application_evidence import (
     BLOCKING_HISTORY_STATUSES,
     BLOCKING_OUTCOMES,
@@ -44,6 +45,7 @@ from auto_apply.domain.models.application_evidence import (
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.work_unit import TaskType, WorkUnit
 from auto_apply.domain.ports.work_queue_port import WorkQueuePort
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect as durable_connect
 
 if TYPE_CHECKING:
     from auto_apply.domain.models.capability_profile import ResolvedCapabilityProfile
@@ -135,7 +137,7 @@ class DatabaseManager(WorkQueuePort):
         Raises:
             sqlite3.Error: If a database error occurs (after rollback).
         """
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn = durable_connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
@@ -152,11 +154,8 @@ class DatabaseManager(WorkQueuePort):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         with self.get_connection() as conn:
-            # Dynamically set journal mode. WAL for desktop speed, DELETE for USB safety.
-            journal_mode = "DELETE" if IS_FROZEN else "WAL"
-            # Critical pragma settings for performance and safety.
-            conn.execute(f"PRAGMA journal_mode={journal_mode};")
-            conn.execute("PRAGMA synchronous=NORMAL;")
+            # Journal mode and synchronous are set per connection by
+            # durable_sqlite, for the medium this database is on (Phase 0).
 
             # 1. Work Queue — the orchestrator's priority queue.
             conn.execute("""
@@ -222,6 +221,7 @@ class DatabaseManager(WorkQueuePort):
                     outcome     TEXT,
                     session_id  TEXT,
                     job_key     TEXT,
+                    attempt_id  TEXT,
                     applied_at  TEXT    NOT NULL
                 )
             """)
@@ -245,6 +245,60 @@ class DatabaseManager(WorkQueuePort):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_applied_jobs_key ON applied_jobs(job_key)"
             )
+
+            # ── Migration: attempt_id on applied_jobs (Phase 0, P0-3) ──────
+            # After the CREATE above, like job_key: the column names the
+            # submission attempt a row settles, for the journal's recovery.
+            try:
+                conn.execute("SELECT attempt_id FROM applied_jobs LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE applied_jobs ADD COLUMN attempt_id TEXT")
+                logger.info("DatabaseManager: added attempt_id column to applied_jobs")
+
+            # 3b. The day-one research record (Phase 0, P0-6;
+            # AA_ENGINE_MATH.md §12). Local tables in the main database —
+            # outside the research database, so nothing here is ever
+            # exported without research consent. No answer value, no label
+            # and no page text: question keys are stored hashed.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS field_review_log (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schema_version    INTEGER NOT NULL,
+                    session_id        TEXT,
+                    attempt_id        TEXT,
+                    question_key_hash TEXT,
+                    field_kind        TEXT,
+                    ats_family        TEXT,
+                    form_language     TEXT,
+                    trust_level       TEXT,
+                    decision          TEXT,
+                    source            TEXT,
+                    confidence_bucket INTEGER,
+                    step_index        INTEGER,
+                    created_at        TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS outcome_channel_log (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schema_version   INTEGER NOT NULL,
+                    attempt_id       TEXT,
+                    channel          TEXT,
+                    first_firing_ms  INTEGER,
+                    created_at       TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS validation_event_log (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schema_version    INTEGER NOT NULL,
+                    attempt_id        TEXT,
+                    question_key_hash TEXT,
+                    page_index        INTEGER,
+                    message_present   INTEGER,
+                    created_at        TEXT NOT NULL
+                )
+            """)
 
             # 4. Company History — per-company cooldown periods and mandates.
             conn.execute("""
@@ -654,36 +708,111 @@ class DatabaseManager(WorkQueuePort):
         outcome: str,
         session_id: str,
         job_key: str | None = None,
+        attempt_id: str | None = None,
     ) -> None:
         """Persist an application to the permanent applied_jobs log.
 
-        This table is the cross-session deduplication record.  It is NEVER
-        cleared between sessions (unlike work_queue).  Uses INSERT OR REPLACE
-        on the UNIQUE job_url column so re-submissions are idempotent.
+        This table is the cross-session deduplication record. It is NEVER
+        cleared between sessions (unlike work_queue). One row per job URL.
+
+        **A blocking row is never weakened** (Phase 0, P0-3). When the row for
+        this URL already holds a blocking outcome (one AA cannot rule out as
+        received — ``BLOCKING_OUTCOMES``), it is replaced only by a stronger
+        claim of receipt (UNKNOWN or AMBIGUOUS by PROBABLY_SUBMITTED or
+        SUBMITTED; PROBABLY_SUBMITTED by SUBMITTED) or rewritten with the same
+        outcome. Anything else leaves it as it is: a later failure can never
+        clear an earlier "may have been sent". Writing the same attempt twice
+        is idempotent — startup recovery relies on that.
 
         Args:
             job_url: The job posting URL that was applied to.
             company: Company name for reporting.
             outcome: The ApplicationEvidence outcome string.
             session_id: Current session identifier.
+            job_key: The derived posting identity, when known.
+            attempt_id: The submission attempt this outcome settles, when the
+                run reached a control that may send the application.
         """
         with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT outcome, attempt_id, job_key FROM applied_jobs WHERE job_url = ?",
+                (job_url,),
+            ).fetchone()
+            if row is not None and not _may_replace(str(row["outcome"] or ""), outcome):
+                logger.info(
+                    "Applied jobs log kept a blocking outcome | url=%.60s kept=%s "
+                    "offered=%s", job_url, row["outcome"], outcome,
+                )
+                return
+            if row is not None:
+                # A later write of the same attempt without its ids (the
+                # orchestrator's log after the workflow settled it) keeps them.
+                attempt_id = attempt_id or row["attempt_id"]
+                job_key = job_key or row["job_key"]
             conn.execute(
                 """INSERT OR REPLACE INTO applied_jobs
-                   (job_url, company, outcome, session_id, job_key, applied_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (job_url, company, outcome, session_id, job_key, attempt_id,
+                    applied_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     job_url,
                     company,
                     outcome,
                     session_id,
                     job_key,
+                    attempt_id,
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
         logger.debug(
             "Applied jobs log updated | url=%.60s outcome=%s", job_url, outcome,
         )
+
+    # ── The day-one research record (Phase 0, P0-6) ─────────────────────
+    def log_field_review(
+        self, *, session_id: str, attempt_id: str, question_key: str, field_kind: str,
+        ats_family: str, form_language: str, trust_level: str, decision: str,
+        source: str, confidence_bucket: int, step_index: int,
+    ) -> None:
+        """One answer decision: §5's label when approved/edited. No value."""
+        with self.get_connection() as conn:
+            conn.execute(
+                """INSERT INTO field_review_log
+                   (schema_version, session_id, attempt_id, question_key_hash, field_kind,
+                    ats_family, form_language, trust_level, decision, source,
+                    confidence_bucket, step_index, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (DAY_ONE_SCHEMA_VERSION, session_id, attempt_id, _key_hash(question_key),
+                 field_kind[:40], ats_family[:80], form_language[:20], trust_level[:20],
+                 decision[:20], source[:40], int(confidence_bucket), int(step_index),
+                 datetime.now(timezone.utc).isoformat()),
+            )
+
+    def log_outcome_channel(self, *, attempt_id: str, channel: str,
+                            first_firing_ms: int) -> None:
+        """When one outcome channel first fired after a submit click."""
+        with self.get_connection() as conn:
+            conn.execute(
+                """INSERT INTO outcome_channel_log
+                   (schema_version, attempt_id, channel, first_firing_ms, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (DAY_ONE_SCHEMA_VERSION, attempt_id, channel[:40], int(first_firing_ms),
+                 datetime.now(timezone.utc).isoformat()),
+            )
+
+    def log_validation_event(self, *, attempt_id: str, question_key: str,
+                             page_index: int, message_present: bool) -> None:
+        """The page flagged a question: a flag, never the message."""
+        with self.get_connection() as conn:
+            conn.execute(
+                """INSERT INTO validation_event_log
+                   (schema_version, attempt_id, question_key_hash, page_index,
+                    message_present, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (DAY_ONE_SCHEMA_VERSION, attempt_id, _key_hash(question_key),
+                 int(page_index), 1 if message_present else 0,
+                 datetime.now(timezone.utc).isoformat()),
+            )
 
     def count_applied_since(self, since_iso: str) -> int:
         """Counts successful submissions recorded at or after *since_iso*.
@@ -934,3 +1063,35 @@ class DatabaseManager(WorkQueuePort):
                 metadata=metadata,
             ))
         return jobs
+
+
+#: How strongly an outcome claims the site received the application. A
+#: blocking row is only ever replaced by an equal or stronger claim.
+_RECEIPT_RANK: dict[str, int] = {
+    "SUBMITTED": 3,
+    "PROBABLY_SUBMITTED": 2,
+    "AMBIGUOUS": 1,
+    "UNKNOWN": 1,
+}
+
+
+def _may_replace(existing: str, offered: str) -> bool:
+    """May ``offered`` replace the row's ``existing`` outcome?"""
+    if existing not in BLOCKING_OUTCOMES:
+        return True
+    if offered == existing:
+        return True
+    return _RECEIPT_RANK.get(offered, 0) > _RECEIPT_RANK.get(existing, 0)
+
+
+#: Version of the day-one record's rows (field_review_log,
+#: outcome_channel_log, validation_event_log). Bump on any change of meaning.
+DAY_ONE_SCHEMA_VERSION = 1
+
+
+def _key_hash(question_key: str) -> str:
+    """A question key as stored: SHA-256, first 16 hex digits. Keys can hold
+    label text, which the day-one record never stores; the hash still joins
+    one question's rows across runs. Not an identity of a person, a company
+    or a posting."""
+    return hashlib.sha256(str(question_key).encode("utf-8")).hexdigest()[:16]

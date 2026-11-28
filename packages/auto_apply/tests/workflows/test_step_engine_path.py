@@ -209,8 +209,11 @@ def test_the_gate_decides_and_the_engines_submit_control_is_clicked() -> None:
     assert "AA filled 1 question(s) over 1 page(s)" in question
     assert options == ["submit", "skip"]
     engine.actuator.locate.assert_called_once_with(_SUBMIT.control)
-    wf._interaction_port.click.assert_called_once_with(
-        engine.actuator.locate.return_value, irreversible=True)
+    # Phase 0 (P0-4): the submit click carries its token's target.
+    wf._interaction_port.click.assert_called_once()
+    args, kwargs = wf._interaction_port.click.call_args
+    assert args == (engine.actuator.locate.return_value,)
+    assert kwargs["irreversible"] is True and "expect" in kwargs
     assert evidence.submit_clicked is True
     assert evidence.submit_button_text == "Submit application"
 

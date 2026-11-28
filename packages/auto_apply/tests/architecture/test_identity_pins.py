@@ -563,6 +563,10 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     "adapters/secondary/research/signal_aggregator.py": ["hashlib.sha256", "hmac.new"],
     "adapters/secondary/security/data_protection.py": ["hashlib.sha256"],
     "application/services/data_processing/deduplication_manager.py": ["hashlib.md5"],
+    # Submission journal (Phase 0, P0-3): the per-frame SHA-256 checksum that
+    # tells a torn or corrupt record from a whole one. An integrity digest of
+    # AA's own records; it mints no identity.
+    "application/services/data_processing/submit_intent_journal.py": ["hashlib.sha256"],
     # The uv archive checksum for the installer — a FILE integrity digest,
     # never an identity (declared deliberately, D11).
     "application/services/install/bootstrap_pins.py": ["hashlib.sha256"],
@@ -571,6 +575,10 @@ EXPECTED_DIGEST_MODULES: dict[str, list[str]] = {
     # never joined to research rows, so it is not a posting identity.
     "application/services/labelling.py": ["hashlib.sha256"],
     "domain/models/math_dom.py": ["hashlib.md5"],
+    # Submit-token values digest (Phase 0, P0-1; AA_ENGINE_MATH.md §3): binds
+    # the answers a person approved to the one click that may send them. In
+    # memory for one attempt only — never a row, a log line or an identity.
+    "domain/services/comparators.py": ["hashlib.sha256"],
     # Page copies (item 6): the plain digest of a cleaned copy's bytes (local
     # file name and WARC payload digest, never in a row), the nonce
     # commitment research rows carry, and the nonce itself — HMAC under the

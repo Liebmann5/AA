@@ -19,6 +19,8 @@ from typing import Any
 import pytest
 
 from auto_apply.application.services.form_actuator import ControlActuator
+from auto_apply.application.services.hitl_gate import gate_keywords
+from auto_apply.domain.services.submit_token import ControlIdentity, TokenBook
 from auto_apply.application.services.form_engine import (
     ACCOUNT_REQUIRED,
     BLOCKED,
@@ -194,7 +196,7 @@ class FakeTool:
     def __init__(self, form: Form) -> None:
         self.form = form
 
-    def click(self, element: Any, *, irreversible: bool = False) -> bool:
+    def click(self, element: Any, *, irreversible: bool = False, expect: Any = None) -> bool:
         live = self.form.state(element.ref)
         self.form.log.append(f"click:{element.ref.name}")
         target = live.label_for
@@ -205,6 +207,9 @@ class FakeTool:
         elif live.checked is not None:
             live.checked = not live.checked
         return True
+
+    def control_identity(self, element: Any) -> ControlIdentity:
+        return ControlIdentity(tag="button", type="submit", name=element.ref.name)
 
     def type_text(self, element: Any, text: str) -> bool:
         self.form.log.append(f"type:{element.ref.name}")
@@ -323,6 +328,29 @@ def _ctx(gate: Callable[..., Any] | None = None, *, assist: bool = False,
     )
 
 
+def approving(inner: Callable[..., Any] | None = None) -> Callable[..., Any]:
+    """A gate that approves the pre-write review (Phase 0, P0-5) and passes
+    every other question to ``inner`` (none: "skip"). For tests about
+    something else than the review itself."""
+    def gate(question: str, options: list[str], *, checkpoint: str,
+             timeout: float | None = None, **kw: Any) -> str:
+        if checkpoint == "ANSWER_REVIEW" and "approve" in options:
+            return "approve"
+        if inner is None:
+            return "skip"
+        accepted = gate_keywords(inner)
+        extra = {k: v for k, v in {"checkpoint": checkpoint, "timeout": timeout, **kw}.items()
+                 if k in accepted}
+        return inner(question, options, **extra)
+    return gate
+
+
+def _token_for(identity: ControlIdentity, fingerprint: str) -> Any:
+    """What the workflow hands the engine for a confirmed click (P0-4)."""
+    return TokenBook.mint(attempt_id="test-attempt", values=[], control=identity,
+                          step_fingerprint=fingerprint, auth_source="person")
+
+
 def _one_page(form: Form, *extra: FormQuestion) -> FormButton:
     submit = _button(form, "Submit application", "submit", final=True)
     questions = [
@@ -364,7 +392,7 @@ def test_answer_sources_see_the_languages_the_form_may_be_in() -> None:
 def test_a_one_page_form_is_filled_and_left_ready_to_submit() -> None:
     form = Form()
     submit = _one_page(form)
-    result = _engine(form).run(_ctx())
+    result = _engine(form).run(_ctx(approving()))
 
     assert result.status == READY_TO_SUBMIT
     assert result.submit_button == submit
@@ -377,7 +405,7 @@ def test_a_one_page_form_is_filled_and_left_ready_to_submit() -> None:
 def test_traps_and_optional_boxes_are_never_touched() -> None:
     form = Form()
     _one_page(form)
-    _engine(form).run(_ctx())
+    _engine(form).run(_ctx(approving()))
 
     questions = form.steps[0][0]
     trap, alerts, certify = questions[3], questions[4], questions[5]
@@ -407,7 +435,7 @@ def test_values_already_in_the_form_are_kept() -> None:
 def test_the_counters_carry_no_values() -> None:
     form = Form()
     _one_page(form)
-    result = _engine(form).run(_ctx())
+    result = _engine(form).run(_ctx(approving()))
     flat = repr(result.counters()) + repr(result.review_items())
     assert "Ada" not in flat and "example.org" not in flat
     c = result.counters()
@@ -434,7 +462,7 @@ def test_a_required_question_without_an_answer_blocks_when_asking_is_off() -> No
         asked.append("x")
         return "done"
 
-    result = _engine(form).run(_ctx(gate=gate, assist=False))
+    result = _engine(form).run(_ctx(gate=approving(gate), assist=False))
 
     assert result.status == BLOCKED
     assert asked == [], "with asking off, the person is never prompted"
@@ -452,7 +480,7 @@ def test_the_person_answers_in_place_and_the_answer_is_remembered() -> None:
         return "done"
 
     engine = _engine(form)
-    result = engine.run(_ctx(gate, assist=True))
+    result = engine.run(_ctx(approving(gate), assist=True))
     assert result.status == READY_TO_SUBMIT
     assert asked == ["FORM_NEEDS_ANSWERS"]
     assert result.counters()["human"] == 1
@@ -466,7 +494,7 @@ def test_the_person_answers_in_place_and_the_answer_is_remembered() -> None:
                                                 upload_quiet_min_s=0.0),
                              memory=engine.memory, clock=itertools.count().__next__)
     asked.clear()
-    result2 = engine2.run(_ctx(gate, assist=True))
+    result2 = engine2.run(_ctx(approving(gate), assist=True))
     assert result2.status == READY_TO_SUBMIT and asked == []
     assert form2.state(form2.steps[0][0][-1].primary).value == "A friend"
 
@@ -563,7 +591,7 @@ def test_a_wizard_advances_only_on_proven_progress_and_records_each_step() -> No
     form = Form()
     _wizard(form)
     records: list[StepRecord] = []
-    result = _wizard_engine(form).run(_ctx(records=records))
+    result = _wizard_engine(form).run(_ctx(approving(), records=records))
 
     assert result.status == READY_TO_SUBMIT
     assert [r.index for r in records] == [0, 1], "one research record per step"
@@ -607,7 +635,7 @@ def test_the_person_fixes_a_rejected_step_and_the_friction_is_recorded() -> None
         return "done"
 
     records: list[StepRecord] = []
-    result = _wizard_engine(form).run(_ctx(gate, assist=True, records=records))
+    result = _wizard_engine(form).run(_ctx(approving(gate), assist=True, records=records))
 
     assert result.status == READY_TO_SUBMIT
     assert records[0].errors == ("Years of experience (Please enter a whole number.)",)
@@ -623,9 +651,9 @@ class _ClickingTool(FakeTool):
         super().__init__(form)
         self.name, self.how, self.calls = name, how, 0
 
-    def click(self, element: Any, *, irreversible: bool = False) -> bool:
+    def click(self, element: Any, *, irreversible: bool = False, expect: Any = None) -> bool:
         if element.ref.name != self.name:
-            return super().click(element, irreversible=irreversible)
+            return super().click(element, irreversible=irreversible, expect=expect)
         self.calls += 1
         self.form.log.append(f"click:{element.ref.name}")
         if self.how == "raise":
@@ -777,7 +805,7 @@ def test_the_person_signs_in_and_the_run_continues() -> None:
         form.state(pw).visible = False
         return "signed in"
 
-    assert _engine(form).run(_ctx(gate, assist=True)).status == READY_TO_SUBMIT
+    assert _engine(form).run(_ctx(approving(gate), assist=True)).status == READY_TO_SUBMIT
 
 
 def test_a_page_without_an_application_form_is_no_form() -> None:
@@ -883,6 +911,7 @@ def test_the_person_decides_a_risky_click(verdict: str, status: str) -> None:
     records: list[StepRecord] = []
     ctx = _ctx(records=records)
     ctx.confirm_risky = lambda text: verdict
+    ctx.authorize_dispatch = _token_for
     result = _wizard_engine(form).run(ctx)
 
     assert result.status == status
@@ -898,7 +927,11 @@ def test_the_actuator_itself_refuses_a_button_that_may_submit() -> None:
     actuator = ControlActuator(FakePage(form), FakeTool(form))
     assert actuator.click_button(submit) == (False, "refused-may-submit")
     assert form.log == []
-    ok, _ = actuator.click_button(submit, confirmed=True)
+    # A confirmed click is a dispatch: no token, no click (P0-4).
+    assert actuator.click_button(submit, confirmed=True) == (False, "refused-no-token")
+    assert form.log == []
+    ok, _ = actuator.click_button(submit, confirmed=True,
+                                  authorize=lambda ident: _token_for(ident, "fp"))
     assert ok and form.log == [f"click:{submit.control.name}"]
 
 
@@ -1234,7 +1267,7 @@ def test_a_choice_question_is_answered_in_aa_s_window_and_checked() -> None:
         calls.append({"options": options, **kw})
         return "No"
 
-    result = _engine(form, answer_in_aa=True).run(_ctx(gate, assist=True))
+    result = _engine(form, answer_in_aa=True).run(_ctx(approving(gate), assist=True))
     assert result.status == READY_TO_SUBMIT
     assert form.state(q.options[1].control).checked is True  # type: ignore[arg-type]
     assert calls[0]["options"] == ["Yes", "No", "answer in the browser", "skip"]
@@ -1253,7 +1286,7 @@ def test_a_free_text_question_is_typed_in_aa_s_window() -> None:
         assert kind == "text" and private and options == ["skip"]
         return "A former colleague"
 
-    result = _engine(form, answer_in_aa=True).run(_ctx(gate, assist=True))
+    result = _engine(form, answer_in_aa=True).run(_ctx(approving(gate), assist=True))
     assert result.status == READY_TO_SUBMIT
     assert form.state(q.primary).value == "A former colleague"
 
@@ -1270,7 +1303,7 @@ def test_answering_in_the_browser_instead_moves_the_focus_there() -> None:
         form.state(q.options[0].control).checked = True  # type: ignore[arg-type]
         return "done"
 
-    result = _engine(form, answer_in_aa=True).run(_ctx(gate, assist=True))
+    result = _engine(form, answer_in_aa=True).run(_ctx(approving(gate), assist=True))
     assert result.status == READY_TO_SUBMIT and len(asked) == 2
     first = q.options[0].control.name  # type: ignore[union-attr]
     assert f"scroll:{first}" in form.log and f"focus:{first}" in form.log

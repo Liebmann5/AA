@@ -83,12 +83,19 @@ from auto_apply.application.services.company_batch_scheduler import (
 )
 from auto_apply.application.services.hitl_gate import ask_gate
 from auto_apply.application.services.i18n import get_text
+from auto_apply.application.services.data_processing.submit_intent_journal import (
+    JOURNAL_UNAVAILABLE,
+    ArmRefused,
+    IntentJournalError,
+    SubmitIntentJournal,
+)
 from auto_apply.application.services.form_engine import (
     ACCOUNT_REQUIRED,
     ASSESSMENT,
     BLOCKED,
     NO_ADVANCE,
     NO_FORM,
+    NOT_CLICKED,
     READY_TO_SUBMIT,
     USER_SKIPPED,
     FormRunContext,
@@ -107,10 +114,26 @@ from auto_apply.domain.applications.form_model import (
     QuestionKind,
 )
 from auto_apply.domain.events import Event
+from auto_apply.domain.applications.review_log import (
+    ReviewEvent,
+    ValidationEvent,
+    confidence_bucket,
+)
 from auto_apply.domain.models.application_evidence import (
+    BLOCKING_OUTCOMES,
     ApplicationEvidence,
     history_status_for,
     outcome_for_click_failure,
+)
+from auto_apply.domain.models.job_key import compute_job_key
+from auto_apply.domain.models.submission_attempt import AttemptState
+from auto_apply.domain.services.submit_token import (
+    AUTH_PERSON,
+    AUTH_POLICY,
+    ControlIdentity,
+    TokenAlreadyUsed,
+    TokenBook,
+    values_changed,
 )
 from auto_apply.domain.models.job import Job
 from auto_apply.domain.models.session_plan import SessionPlan
@@ -191,6 +214,53 @@ _DEGREE_LEVEL_MAP = {
 # is why a posting titled "Registered Nurse" is no longer a login wall.
 
 
+def _no_submit_journal() -> SubmitIntentJournal | None:
+    """The production default when no journal was injected: none — and with
+    no journal, nothing is ever submitted (fail closed)."""
+    return None
+
+
+#: Where a workflow built without an explicit journal gets one. Production
+#: never relies on it (the composition root always passes the profile's
+#: journal); the test suite points it at a temporary journal.
+_default_submit_journal: Callable[[], SubmitIntentJournal | None] = _no_submit_journal
+
+#: ``_authorize_submission``'s detail when the person chose autonomous
+#: submission: the token's authorisation source is then the policy.
+_AUTONOMOUS_DETAIL = "no pre-submit review configured"
+
+#: What the person is told when arming is refused, by the journal's reason.
+_ARM_REFUSALS: dict[str, str] = {
+    "journal-corrupt": "AA's submission journal is damaged, so AA cannot rule out an "
+                       "earlier submission; nothing is sent until it is looked at",
+    "journal-unavailable": "AA's submission journal is not available, so nothing is sent",
+    "journal-write-failed": "AA could not record the submission safely before sending it, "
+                            "so it did not send it",
+    "profile-locked": "another AA window is using this profile, so this one does not submit",
+    "synced-folder": "AA's data folder is inside a synced folder, so AA does not submit "
+                     "from it (set storage.allow_synced_profile, or "
+                     "AA_ALLOW_SYNCED_PROFILE=1, to allow it)",
+    "unresolved-attempt": "an earlier attempt at this job may have reached the site; AA "
+                          "will not apply again on its own",
+}
+
+
+@dataclasses.dataclass
+class _SubmitAttempt:
+    """One application run's submission attempt (AA_ENGINE_MATH.md §2)."""
+
+    job_key: str
+    url: str
+    company: str = ""
+    #: The journal's id once armed ("" until a control that may send the
+    #: application is about to be clicked).
+    journal_id: str = ""
+    #: A click that may have sent the application happened (or may have).
+    dispatched: bool = False
+    settled: bool = False
+    settled_evidence: ApplicationEvidence | None = None
+
+
 class ApplicationsWorkflow:
     """Orchestrates the full Applications pipeline for a single job."""
 
@@ -236,8 +306,15 @@ class ApplicationsWorkflow:
         *,
         plan: SessionPlan,
         form_engine: FormStepEngine | None = None,
+        submit_journal: SubmitIntentJournal | None = None,
+        form_engine_build_error: str = "",
     ) -> None:
         """Initialize with all dependencies injected.
+
+        ``submit_journal`` is the profile's submission journal (Phase 0):
+        without one nothing is submitted. ``form_engine_build_error`` is set
+        by the composition root when the step engine failed to build; the old
+        form filler then runs only if ``applications.legacy_fallback`` is on.
 
         Args:
             profile: Active user profile.
@@ -305,6 +382,14 @@ class ApplicationsWorkflow:
         # not silently run as if non-deterministic.
         self._plan = plan
         self._form_engine = form_engine
+        self._submit_journal: SubmitIntentJournal | None = (
+            submit_journal if submit_journal is not None else _default_submit_journal()
+        )
+        self._form_engine_build_error = str(form_engine_build_error or "")
+        self._tokens = TokenBook()
+        self._submit_attempt: _SubmitAttempt | None = None
+        #: Who authorised the confirmed "may submit" click of this run.
+        self._risky_auth: str = AUTH_PERSON
         # Feedback-loop capture: the tier the router chose and the page it chose
         # it for, remembered between form analysis and the recorded outcome.
         self._last_analysis_tier: PageAnalysisTier | None = None
@@ -2353,9 +2438,18 @@ class ApplicationsWorkflow:
         submit_text: str = "",
         summary: str = "",
         needs_person: str = "",
+        final_step: FormStep | None = None,
     ) -> ApplicationEvidence:
         """Perform pre-submit HITL check, find submit button, click, and scan
         confirmation.
+
+        **Phase 0 write order (AA_ENGINE_MATH.md §2–§3a).** After the gate:
+        read what the final step holds (the values the person just approved);
+        arm the attempt in the journal (flushed and read back) — refused, the
+        click never happens; mint the one-use token binding those values, the
+        submit control's identity and who authorised it; re-read the values
+        and refuse if the page changed any; consume the token; click — the
+        ladder re-verifies the control before any rung can fire.
 
         Uses the ONE page verdict: a confirmation is SUCCESS_PAGE, decided by
         a strong phrase in VISIBLE text or a confirmation URL marker, and the
@@ -2403,6 +2497,9 @@ class ApplicationsWorkflow:
             job.title,
             gate_detail,
         )
+        auth_source = AUTH_POLICY if gate_detail == _AUTONOMOUS_DETAIL else AUTH_PERSON
+        # What the person approved, as the page holds it at this moment.
+        approved = self._current_values(final_step)
 
         # ── Find the submit button ────────────────────────────────────────
         submit_button = submit_element
@@ -2442,9 +2539,64 @@ class ApplicationsWorkflow:
         # redirect link, which every page differs from (live run 2026-11-26:
         # two Workable submissions read as "probably submitted" on that alone).
         pre_submit_url = self._current_url(default="")
+
+        # ── Arm, mint, re-check, consume (Phase 0) ────────────────────────
+        refusal = self._arm(job)
+        if refusal:
+            return evidence.model_copy(update={
+                "submit_clicked": False,
+                "outcome": "SUBMISSION_GATE_BLOCKED",
+                "error_message": _ARM_REFUSALS.get(refusal, refusal)[:200],
+                "confidence": 1.0,
+                **self._run_statistics(),
+            })
+        identity = self._control_identity(submit_button)
+        try:
+            token = self._token_book().mint(
+                attempt_id=self._submit_attempt.journal_id if self._submit_attempt else "",
+                values=self._token_values(approved),
+                control=identity,
+                step_fingerprint=final_step.fingerprint if final_step is not None else "",
+                auth_source=auth_source,
+            )
+        except ValueError as exc:
+            return evidence.model_copy(update={
+                "submit_clicked": False,
+                "outcome": "ERROR",
+                "error_message": f"the submit token could not be made: {exc}"[:200],
+                "confidence": 1.0,
+                **self._run_statistics(),
+            })
+        changed = values_changed(approved, self._current_values(final_step)) if approved else ()
+        if changed:
+            logger.warning(
+                "ApplicationsWorkflow: %d approved value(s) changed on the page before the "
+                "click; not submitted | job=%s", len(changed), job.title,
+            )
+            return evidence.model_copy(update={
+                "submit_clicked": False,
+                "outcome": "ERROR",
+                "error_message": (
+                    "the page changed an answer after it was approved, so AA did not send "
+                    "the application"
+                ),
+                "confidence": 1.0,
+                **self._run_statistics(),
+            })
+        try:
+            self._token_book().consume(token)
+        except TokenAlreadyUsed:
+            return evidence.model_copy(update={
+                "submit_clicked": False,
+                "outcome": "ERROR",
+                "error_message": "a submit token was presented twice; not sent",
+                "confidence": 1.0,
+                **self._run_statistics(),
+            })
+        self._journal_mark(AttemptState.DISPATCHING)
         try:
             submit_result = self._interaction_port.click(
-                submit_button, irreversible=True
+                submit_button, irreversible=True, expect=token.control
             )
         except Exception as exc:
             # An exception during an irreversible click is UNKNOWN when the
@@ -2455,6 +2607,8 @@ class ApplicationsWorkflow:
             outcome = outcome_for_click_failure(
                 raised=True, rung=getattr(exc, "click_rung", None) or None
             )
+            if outcome != "ERROR" and self._submit_attempt is not None:
+                self._submit_attempt.dispatched = True
             return evidence.model_copy(update={
                 "submit_clicked": False,
                 "outcome": outcome,
@@ -2475,6 +2629,8 @@ class ApplicationsWorkflow:
             outcome = outcome_for_click_failure(
                 raised=False, rung=getattr(submit_result, "rung", None) or None
             )
+            if outcome != "ERROR" and self._submit_attempt is not None:
+                self._submit_attempt.dispatched = True
             return evidence.model_copy(update={
                 "submit_clicked": False,
                 "outcome": outcome,
@@ -2483,22 +2639,21 @@ class ApplicationsWorkflow:
                 **self._run_statistics(),
             })
 
+        if self._submit_attempt is not None:
+            self._submit_attempt.dispatched = True
         evidence = evidence.model_copy(update={
             "submit_clicked": True,
             "submit_rung": str(getattr(submit_result, "rung", "") or ""),
             "submit_effect": str(getattr(submit_result, "effect", "") or ""),
         })
 
-        # ── Wait for post-submit page to settle ───────────────────────────
-        try:
-            if self._dom_observer is not None:
-                # FOLLOW-UP: this 15.0 and DOM_STABILIZATION_TIMEOUT_S (8.0)
-                # are page-transition budgets, still literals. Collapsing
-                # them onto config is a separate single-source change —
-                # doing it here would silently shorten live waits.
-                self._dom_observer.wait_for_dom_stable(timeout=15.0)
-        except Exception:
-            pass
+        # ── Wait for post-submit page to settle, watching each channel ────
+        # The same budget and the same "settled" stop as before; on the way,
+        # the first moment each outcome channel fires is noted for the
+        # day-one record (AA_ENGINE_MATH.md §6, §12). The verdict below is
+        # still made from the final read, exactly as before.
+        watch_start = time.monotonic()
+        fired = self._watch_outcome_channels(pre_submit_url, watch_start)
 
         # ── Collect post-submit state ─────────────────────────────────────
         post_url = ""
@@ -2526,6 +2681,7 @@ class ApplicationsWorkflow:
         # outcome ladder is unchanged; only the source of "was a
         # confirmation seen?" changes.
         page_kind = "unknown"
+        post_page = None
         try:
             post_page = assess_page(url=post_url, title=post_title, html=page_source)
             page_kind = str(getattr(post_page.kind, "value", post_page.kind))
@@ -2548,6 +2704,14 @@ class ApplicationsWorkflow:
             url_changed, page_kind,
             ",".join(found_phrases) or "none",
         )
+
+        # The final read is a sample too: channels first seen here fire now.
+        final_ms = int((time.monotonic() - watch_start) * 1000)
+        if post_page is not None:
+            for channel in _channels_of(pre_submit_url, post_url, page_source,
+                                        post_page.signals, post_page.kind):
+                fired.setdefault(channel, final_ms)
+        self._log_outcome_channels(fired)
 
         # ── Classify the outcome ──────────────────────────────────────────
         if confirmation_seen and url_changed:
@@ -2631,6 +2795,261 @@ class ApplicationsWorkflow:
         )
         return evidence
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Phase 0 — the submission attempt: arm, token, settle (AA_ENGINE_MATH §2–§3a)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _token_book(self) -> TokenBook:
+        book = getattr(self, "_tokens", None)
+        if book is None:
+            book = self._tokens = TokenBook()
+        return book
+
+    @property
+    def submit_journal(self) -> SubmitIntentJournal | None:
+        """The profile's submission journal (None: nothing is submitted)."""
+        return getattr(self, "_submit_journal", None)
+
+    def _arm(self, job: Job | None = None) -> str:
+        """Arm this run's attempt (once). "" when armed; else the journal's
+        refusal reason — and then nothing may be clicked."""
+        attempt = getattr(self, "_submit_attempt", None)
+        if attempt is None:
+            job = job or self._current_job
+            if job is None:
+                return JOURNAL_UNAVAILABLE
+            attempt = self._submit_attempt = _SubmitAttempt(
+                job_key=compute_job_key(job).as_string, url=job.url,
+                company=job.company or "",
+            )
+        if attempt.journal_id:
+            return ""
+        journal = getattr(self, "_submit_journal", None)
+        if journal is None:
+            logger.warning("ApplicationsWorkflow: no submission journal; nothing is submitted")
+            return JOURNAL_UNAVAILABLE
+        try:
+            attempt.journal_id = journal.arm(attempt.job_key, attempt.url)
+        except ArmRefused as refused:
+            logger.warning("ApplicationsWorkflow: submission not armed (%s)", refused.reason)
+            return refused.reason
+        return ""
+
+    def _journal_mark(self, state: AttemptState, outcome: str = "") -> bool:
+        attempt = getattr(self, "_submit_attempt", None)
+        journal = getattr(self, "_submit_journal", None)
+        if attempt is None or not attempt.journal_id or journal is None:
+            return False
+        try:
+            journal.mark(attempt.journal_id, state, outcome)
+        except IntentJournalError as exc:
+            logger.error("ApplicationsWorkflow: journal %s record failed (%s)",
+                         state.value, type(exc).__name__)
+            return False
+        return True
+
+    def _control_identity(self, element: Any) -> ControlIdentity:
+        """The submit control's identity, from the click tool's own probe."""
+        probe = getattr(self._navigation, "control_identity", None)
+        if probe is None:
+            return ControlIdentity()
+        try:
+            identity = probe(element)
+        except Exception as exc:
+            logger.debug("ApplicationsWorkflow: control identity failed: %s",
+                         type(exc).__name__)
+            return ControlIdentity()
+        return identity if isinstance(identity, ControlIdentity) else ControlIdentity()
+
+    def _current_values(self, step: FormStep | None) -> list[tuple[str, str, str]]:
+        """What ``step``'s controls hold now (never logged); [] without the
+        step engine."""
+        engine = self._form_engine
+        if engine is None or step is None:
+            return []
+        try:
+            return list(engine.current_values(step))
+        except Exception as exc:
+            logger.debug("ApplicationsWorkflow: value read-back failed: %s",
+                         type(exc).__name__)
+            return []
+
+    def _token_values(self, approved: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+        """Every answer the run wrote, with the final step as approved
+        overriding its own entries: what the token's digest binds."""
+        merged: dict[str, tuple[str, str, str]] = {}
+        engine = self._form_engine
+        if engine is not None:
+            try:
+                for key, kind, value in engine.written_values():
+                    merged[key] = (key, kind, value)
+            except Exception:
+                pass
+        for key, kind, value in approved:
+            merged[key] = (key, kind, value)
+        return list(merged.values())
+
+    def _authorize_dispatch(self, identity: ControlIdentity, step_fingerprint: str):
+        """The engine's confirmed "may submit" click: arm the attempt and mint
+        a consumed one-use token for this control — or refuse (None)."""
+        if self._arm():
+            return None
+        attempt = self._submit_attempt
+        try:
+            token = self._token_book().mint(
+                attempt_id=attempt.journal_id if attempt else "",
+                values=self._token_values([]),
+                control=identity if isinstance(identity, ControlIdentity) else ControlIdentity(),
+                step_fingerprint=step_fingerprint,
+                auth_source=getattr(self, "_risky_auth", AUTH_PERSON),
+            )
+            self._token_book().consume(token)
+        except (ValueError, TokenAlreadyUsed) as exc:
+            logger.warning("ApplicationsWorkflow: no token for the click (%s)",
+                           type(exc).__name__)
+            return None
+        self._journal_mark(AttemptState.DISPATCHING)
+        return token
+
+    def _settle_submit_attempt(self, evidence: ApplicationEvidence) -> ApplicationEvidence:
+        """Settle this run's attempt once: the outcome in the journal, then
+        durably in the database, then DONE (spec §2 step 3). After a click
+        that may have sent the application, anything short of a seen
+        submission is recorded UNKNOWN — never a plain failure."""
+        attempt = getattr(self, "_submit_attempt", None)
+        if attempt is None:
+            return evidence
+        if attempt.settled:
+            return attempt.settled_evidence or evidence
+        attempt.settled = True
+        if not attempt.journal_id:
+            attempt.settled_evidence = evidence
+            return evidence
+        outcome = evidence.outcome
+        if attempt.dispatched:
+            if outcome not in BLOCKING_OUTCOMES:
+                evidence = evidence.model_copy(update={
+                    "outcome": "UNKNOWN",
+                    "confidence": min(evidence.confidence, 0.5),
+                    "error_message": (
+                        f"{outcome}: after a click that may have sent the application, "
+                        "AA cannot rule out that the site received it"
+                    )[:200],
+                    **self._run_statistics(),
+                })
+                outcome = "UNKNOWN"
+            state = (AttemptState.ACKED if outcome in ("SUBMITTED", "PROBABLY_SUBMITTED")
+                     else AttemptState.UNKNOWN)
+        else:
+            state = AttemptState.NOT_SENT
+        attempt.settled_evidence = evidence
+        if not self._journal_mark(state, outcome):
+            return evidence  # left unresolved: it keeps blocking; recovery settles it
+        if state is AttemptState.NOT_SENT:
+            return evidence
+        try:
+            self._task_queue.record_application_permanently(
+                job_url=attempt.url,
+                company=attempt.company,
+                outcome=outcome,
+                session_id=self._session_id or "",
+                job_key=attempt.job_key,
+                attempt_id=attempt.journal_id,
+            )
+        except Exception as exc:
+            logger.error("ApplicationsWorkflow: the outcome could not be recorded (%s); "
+                         "the journal keeps the attempt blocking", type(exc).__name__)
+            return evidence
+        self._journal_mark(AttemptState.DONE, outcome)
+        return evidence
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Phase 0 — the day-one record (AA_ENGINE_MATH §12): no values, no page text
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _day_one(self, method: str, **row: Any) -> None:
+        writer = getattr(self._task_queue, method, None)
+        if writer is None:
+            return
+        try:
+            writer(**row)
+        except Exception as exc:
+            logger.debug("ApplicationsWorkflow: %s failed: %s", method, type(exc).__name__)
+
+    def _stratum(self) -> str:
+        job = self._current_job
+        ats = ""
+        if job is not None and isinstance(getattr(job, "metadata", None), dict):
+            ats = str(job.metadata.get("ats") or "")
+        if not ats:
+            attempt = getattr(self, "_submit_attempt", None)
+            ats = attempt.job_key.split("|", 1)[0] if attempt is not None else ""
+        return ats[:80]
+
+    def _log_review(self, event: ReviewEvent) -> None:
+        self._day_one(
+            "log_field_review",
+            session_id=self._session_id or "", attempt_id=self._attempt_id,
+            question_key=event.question_key, field_kind=event.field_kind,
+            ats_family=self._stratum(), form_language=event.form_language,
+            trust_level=event.trust_level, decision=event.decision, source=event.source,
+            confidence_bucket=confidence_bucket(event.confidence),
+            step_index=event.step_index,
+        )
+
+    def _log_validation(self, event: ValidationEvent) -> None:
+        self._day_one(
+            "log_validation_event",
+            attempt_id=self._attempt_id, question_key=event.question_key,
+            page_index=event.step_index, message_present=event.message_present,
+        )
+
+    def _log_outcome_channels(self, fired: dict[str, int]) -> None:
+        for channel, ms in sorted(fired.items()):
+            self._day_one("log_outcome_channel", attempt_id=self._attempt_id,
+                          channel=channel, first_firing_ms=int(ms))
+
+    def _watch_outcome_channels(self, pre_url: str, start: float) -> dict[str, int]:
+        """Wait for the page to settle after the click — the budget and stop
+        rule of the former single wait — noting when each channel first
+        fires: cheap reads (address) every poll, the page itself every fifth."""
+        budget = float(self._cfg("applications.outcome_watch_s", 15.0))
+        try:
+            interval = max(0.1, float(self._cfg("applications.outcome_poll_ms", 500)) / 1000.0)
+        except (TypeError, ValueError):
+            interval = 0.5
+        fired: dict[str, int] = {}
+        tick = 0
+        while True:
+            ms = int((time.monotonic() - start) * 1000)
+            try:
+                url = getattr(self._browser, "current_url", "") or ""
+                url = url if isinstance(url, str) else ""
+                if _left_the_form(pre_url, url):
+                    fired.setdefault("url_change", ms)
+                if tick % 5 == 0:
+                    html = getattr(self._browser, "page_source", "") or ""
+                    title = getattr(self._browser, "title", "") or ""
+                    if isinstance(html, str) and isinstance(title, str):
+                        page = assess_page(url=url, title=title, html=html)
+                        for channel in _channels_of(pre_url, url, html, page.signals, page.kind):
+                            fired.setdefault(channel, ms)
+            except Exception:
+                pass
+            tick += 1
+            if self._dom_observer is None:
+                return fired
+            remaining = budget - (time.monotonic() - start)
+            if remaining <= 0:
+                return fired
+            try:
+                settled = bool(self._dom_observer.wait_for_dom_stable(
+                    timeout=min(interval, remaining)))
+            except Exception:
+                return fired
+            if settled:
+                return fired
+
     def _record_application_outcome(self, evidence: ApplicationEvidence) -> None:
         """Persist result and publish the final application event.
 
@@ -2640,6 +3059,10 @@ class ApplicationsWorkflow:
         job = self._current_job
         if job is None:
             return
+        # The attempt is settled before anything is recorded, so every store
+        # gets the same outcome (a click that may have sent the application
+        # is never recorded as a plain failure).
+        evidence = self._settle_submit_attempt(evidence)
 
         # ── Close the page-analysis feedback loop ────────────────────
         # The router chose a tier for this page; now we know whether the
@@ -2808,12 +3231,34 @@ class ApplicationsWorkflow:
             page_title_before=job.title,
         )
 
+        # ── The submission journal (Phase 0) ─────────────────────────────────
+        # One attempt per run, armed only when a control that may send the
+        # application is about to be clicked. An earlier attempt at this job
+        # that may have reached the site blocks this one before any work.
+        self._submit_attempt = _SubmitAttempt(
+            job_key=compute_job_key(job).as_string, url=job.url, company=job.company or "",
+        )
+        self._risky_auth = AUTH_PERSON
+        journal = getattr(self, "_submit_journal", None)
+        if journal is not None and journal.blocks(self._submit_attempt.job_key, job.url):
+            logger.warning(
+                "ApplicationsWorkflow: the submission journal holds an earlier attempt "
+                "at this job | job=%s", job.title,
+            )
+            return evidence.model_copy(update={
+                "outcome": "SUBMISSION_GATE_BLOCKED",
+                "error_message": _ARM_REFUSALS["unresolved-attempt"],
+                "confidence": 1.0,
+                **self._run_statistics(),
+            })
+
         # ── Concurrency safety ───────────────────────────────────────────────
         if self._browser_lease:
             with self._browser_lease.acquire():
-                return self._apply_single(job, evidence)
+                result = self._apply_single(job, evidence)
         else:
-            return self._apply_single(job, evidence)
+            result = self._apply_single(job, evidence)
+        return self._settle_submit_attempt(result)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Private core of run() — same logic, extracted for lease wrapping
@@ -2823,6 +3268,23 @@ class ApplicationsWorkflow:
         self, job: Job, evidence: ApplicationEvidence
     ) -> ApplicationEvidence:
         """Core of a single application attempt; called under lease when provided."""
+        build_error = getattr(self, "_form_engine_build_error", "")
+        if build_error and self._cfg("applications.legacy_fallback", False) is not True:
+            # Fail closed (Phase 0): the step engine was meant to fill this
+            # form and could not be built. The old form filler bypasses the
+            # pre-write review, so it never stands in silently.
+            evidence = evidence.model_copy(update={
+                "outcome": "ERROR",
+                "confidence": 1.0,
+                "error_message": (
+                    "the application step engine could not be built this session ("
+                    + build_error[:80] + "); AA does not fall back to "
+                    "the old form filler unless applications.legacy_fallback is on"
+                ),
+                **self._run_statistics(),
+            })
+            self._record_application_outcome(evidence)
+            return evidence
         evidence = self._navigate_to_application(job, evidence)
         if (
             evidence.outcome == "ACCOUNT_REQUIRED"
@@ -3052,6 +3514,7 @@ class ApplicationsWorkflow:
                            type(exc).__name__)
             return "blocked"
         if not pause:
+            self._risky_auth = AUTH_POLICY
             return "click"
         if self._approval_gate is None:
             return "blocked"
@@ -3061,6 +3524,7 @@ class ApplicationsWorkflow:
             ["click it", "skip"],
             "BEFORE_FORM_SUBMIT",
         )
+        self._risky_auth = AUTH_PERSON
         return "click" if choice == "click it" else "skip"
 
     def _sign_in_in_place(self, job: Job) -> bool:
@@ -3139,6 +3603,9 @@ class ApplicationsWorkflow:
             assist_allowed=self._assist_allowed(job),
             on_step=lambda record: self._observe_step(record, job),
             confirm_risky=lambda text: self._confirm_risky_click(job, text),
+            authorize_dispatch=self._authorize_dispatch,
+            on_review=self._log_review,
+            on_validation=self._log_validation,
         )
         result: FormRunResult | None = None
         try:
@@ -3210,6 +3677,7 @@ class ApplicationsWorkflow:
                 submit_text=(result.submit_button.text if result.submit_button else ""),
                 summary=self._submit_summary(job, result),
                 needs_person=self._needs_person(result),
+                final_step=result.final_step,
             )
         elif status == NO_FORM and result.steps and result.steps[-1].advanced_by:
             # The form went away after AA moved it on. The site may have taken
@@ -3379,6 +3847,11 @@ class ApplicationsWorkflow:
 
     def _observe_step(self, record: StepRecord, job: Job) -> None:
         """One research record per step, built from the engine's reading."""
+        attempt = getattr(self, "_submit_attempt", None)
+        if record.confirmed_click and record.click != NOT_CLICKED and attempt is not None:
+            # A confirmed "may submit" click happened (or may have): from
+            # here on this attempt cannot be ruled out as sent.
+            attempt.dispatched = True
         self._observe_form_structure(
             self._structure_of(record.step), job, page_index=record.index
         )
@@ -3647,6 +4120,26 @@ def _url_shape(url: str) -> str:
     except ValueError:
         return "?"
     return f"{parts.hostname or ''}{parts.path or ''}"[:120] or "?"
+
+
+def _channels_of(pre_url: str, url: str, html: str, signals: Any, kind: Any) -> list[str]:
+    """The outcome channels (AA_ENGINE_MATH.md §6) one page sample shows.
+    Measurement only — the verdict never reads this."""
+    out: list[str] = []
+    sigs = [str(x) for x in (signals or ())]
+    if any(x.startswith("confirmation-phrase:") for x in sigs):
+        out.append("confirmation_phrase")
+    if any(x.startswith("confirmation-url:") for x in sigs):
+        out.append("url_marker")
+    if _left_the_form(pre_url, url):
+        out.append("url_change")
+    if kind is PageType.SUCCESS_PAGE:
+        out.append("success_page")
+    if "fillable-form" not in sigs:
+        out.append("form_gone")
+    elif isinstance(html, str) and ('aria-invalid="true"' in html or 'role="alert"' in html):
+        out.append("error_banner")
+    return out
 
 
 def _left_the_form(before: str, after: str) -> bool:

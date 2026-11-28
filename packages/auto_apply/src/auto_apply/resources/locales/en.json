@@ -395,6 +395,10 @@
     "not_accepted": "The page did not accept this step. It reports a problem with:\n{problems}\nPlease correct them in the browser window, then choose “done” so AA tries again, or choose “skip” to leave this application.",
     "review_answers": "AA filled {count} answer(s) on {where} of {application} that you asked to check before they are sent:",
     "review_answers_instructions": "Look at them in the browser window and change anything that is not right there. Then choose “done” to let AA go on, or “skip” to leave this application.",
+    "propose_answers": "AA would write {count} answer(s) on {where} of {application} that you asked to check first. Nothing is typed until you approve:",
+    "propose_answers_instructions": "Choose “approve” to let AA write them, “answer myself” to type them into the form yourself, or “skip” to leave this application.",
+    "tick": "tick it",
+    "untick": "leave it unticked",
     "review_step_check": "Please check these answers in particular: {items}.",
     "test_page": "This page of {application} is a test or assessment (a timer or a code editor is showing). AA never takes tests for you. If you want to go on, take it yourself in the browser window until the application form shows again, then choose “done”. Choose “skip” to leave this application."
   },

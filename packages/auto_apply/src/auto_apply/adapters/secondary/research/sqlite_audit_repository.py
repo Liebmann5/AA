@@ -2,7 +2,8 @@
 SqliteAuditRepository — persistence backend for AuditCoordinator.
 
 Implements AuditRepositoryPort from domain/ports/audit_port.py.
-Stores paired-submission records in SQLite with WAL mode.
+Stores paired-submission records in SQLite, made durable for its medium by
+durable_sqlite (Phase 0).
 
 All data is fully anonymized — company identifiers are already hashed and
 profile labels are "A" / "B" only.  No PII is ever stored in this database.
@@ -14,6 +15,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect as durable_connect
 from auto_apply.domain.ports.audit_port import (
     AuditRepositoryPort,
     AuditSubmissionRecord,
@@ -22,7 +24,6 @@ from auto_apply.domain.ports.audit_port import (
 logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
-PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS audit_submissions (
     pair_id                   TEXT NOT NULL,
@@ -62,7 +63,7 @@ class SqliteAuditRepository:
 
     @contextmanager
     def _get_connection(self):
-        conn = sqlite3.connect(str(self._db_path), timeout=10.0)
+        conn = durable_connect(self._db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
             yield conn

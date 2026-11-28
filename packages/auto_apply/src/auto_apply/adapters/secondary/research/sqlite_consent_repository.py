@@ -18,11 +18,11 @@ from pathlib import Path
 
 from auto_apply.domain.models.consent import ConsentRecord
 from auto_apply.domain.ports.consent_repository_port import ConsentRepositoryPort
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect as durable_connect
 
 logger = logging.getLogger(__name__)
 
 _CONSENT_SCHEMA_SQL = """
-PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS research_consent (
     id              INTEGER PRIMARY KEY CHECK (id = 1),  -- single row
@@ -91,7 +91,7 @@ class SqliteConsentRepository(ConsentRepositoryPort):
 
     @contextmanager
     def _get_connection(self, path: Path):
-        conn = sqlite3.connect(str(path), timeout=10.0)
+        conn = durable_connect(path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
@@ -254,7 +254,7 @@ class SqliteConsentRepository(ConsentRepositoryPort):
             )
             return
         try:
-            vacuum_conn = sqlite3.connect(str(self._research_db_path), timeout=10.0)
+            vacuum_conn = durable_connect(self._research_db_path, timeout=10.0)
             vacuum_conn.isolation_level = None  # autocommit mode required for VACUUM
             try:
                 vacuum_conn.execute("VACUUM")

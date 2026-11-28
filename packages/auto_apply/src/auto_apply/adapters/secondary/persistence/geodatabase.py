@@ -6,6 +6,7 @@ from pathlib import Path
 
 from auto_apply.domain.models.location import Coordinate
 from auto_apply.domain.ports.location_port import LocationRepositoryPort
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,8 @@ class GeoDatabaseRepository(LocationRepositoryPort):
         city = parts[0]
         region_or_country = parts[1] if len(parts) > 1 else None
 
-        uri = f"file:{self.db_path}?mode=ro"
         try:
-            with sqlite3.connect(uri, uri=True) as conn:
+            with connect_readonly(self.db_path) as conn:
                 if region_or_country:
                     # Scenario A: We have City + State/Country (e.g., "Austin, TX")
                     # We check admin1_code (State) or country_code.

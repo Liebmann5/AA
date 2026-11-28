@@ -87,9 +87,24 @@ def test_when_the_send_is_asked_about_the_answers_are_not_asked_twice() -> None:
 
 
 def test_the_submit_prompt_names_a_held_back_answer_once() -> None:
+    """The summary formatter, for any answer written without the person's
+    OK. Since Phase 0 (P0-5) the engine never writes such an answer — it
+    asks before writing — so the result is built directly here."""
+    from dataclasses import replace
+
+    from auto_apply.application.services.form_engine import (
+        READY_TO_SUBMIT,
+        FormRunResult,
+        StepRecord,
+    )
+
     form = Form()
     _open_page(form)
-    result = _engine(form, sources=[_saved_template()]).run(_ctx())
+    approved = _engine(form, sources=[_saved_template()]).run(
+        _ctx(lambda q, o, **k: "approve"))
+    step = approved.steps[0]
+    held = tuple(replace(o, reviewed=False) if o.needs_review else o for o in step.outcomes)
+    result = FormRunResult(READY_TO_SUBMIT, steps=(StepRecord(step.index, step.step, held),))
     assert result.pending_reviews() == ["Why this role? *"]
     text = ApplicationsWorkflow._submit_summary(MagicMock(), _JOB, result)
     assert text.count("Why this role?") == 1, text

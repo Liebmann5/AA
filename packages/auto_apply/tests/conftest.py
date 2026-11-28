@@ -160,8 +160,10 @@ def _no_real_research_secrets(monkeypatch, tmp_path):
 
     real_salt = domain_config.RESEARCH_SALT_PATH
     real_key = domain_config.PROVENANCE_KEY_PATH
+    real_journals = domain_config.JOURNALS_DIR
     salt_existed = real_salt.exists()
     key_existed = real_key.exists()
+    journals_existed = real_journals.exists()
 
     # The domain's salt-file reader defaults to no-file; reset it so a test
     # that wires one cannot leak it to the next test.
@@ -190,6 +192,25 @@ def _no_real_research_secrets(monkeypatch, tmp_path):
         "PAGE_COPIES_DIR",
         tmp_path / "research" / "page_copies",
     )
+    # Submission journals and profile locks (Phase 0) live in the test's own
+    # tree. A workflow a test builds without an explicit journal gets a fresh
+    # temporary one; production's default stays "no journal, no submission".
+    monkeypatch.setattr(composition_root, "JOURNALS_DIR", tmp_path / "journals")
+    from auto_apply.application.services.data_processing.submit_intent_journal import (
+        SubmitIntentJournal,
+    )
+    from auto_apply.application.services.profile_lock import ProfileLock
+    from auto_apply.application.workflows import applications_workflow
+
+    journal_seq = iter(range(1_000_000))
+
+    def _test_journal() -> SubmitIntentJournal:
+        n = next(journal_seq)
+        base = tmp_path / "journals"
+        return SubmitIntentJournal(base / f"test-{n}.journal", "test",
+                                   ProfileLock(base / f"test-{n}.lock"))
+
+    monkeypatch.setattr(applications_workflow, "_default_submit_journal", _test_journal)
 
     yield
 
@@ -199,6 +220,10 @@ def _no_real_research_secrets(monkeypatch, tmp_path):
         changed.append(f"{real_salt} (existed={salt_existed})")
     if real_key.exists() != key_existed:
         changed.append(f"{real_key} (existed={key_existed})")
+    if real_journals.exists() != journals_existed:
+        # A real submission journal is the person's record of what may have
+        # been sent: a test must never create (or remove) it.
+        changed.append(f"{real_journals} (existed={journals_existed})")
     assert not changed, (
         "a test created or deleted REAL research secrets: "
         + ", ".join(changed)

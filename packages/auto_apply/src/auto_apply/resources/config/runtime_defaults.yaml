@@ -229,6 +229,14 @@ applications:
   dom_stabilization_poll_interval_s: 0.25
   # Token budget for GPT4All custom-question answers.
   custom_answer_max_tokens: 150
+  #! Phase 0: when the step engine fails to build, the old form filler
+  #! (which skips the pre-write review) runs only if this is true.
+  legacy_fallback: false
+  #! Phase 0 day-one record: after a submit click, how often AA looks at the
+  #! page (ms) and for how long at most (s), noting when each outcome channel
+  #! first fires. The verdict is still made from the final read.
+  outcome_poll_ms: 500
+  outcome_watch_s: 15.0
 
   # ── The application step engine (read, decide, act, verify, advance) ──
   # "steps": the step engine fills every step of the form (default).
@@ -322,6 +330,18 @@ applications:
 # ─────────────────────────────────────────────────────────────────────────────
 # GPT4All local LLM settings
 # ─────────────────────────────────────────────────────────────────────────────
+# ─── Storage (Phase 0) ───────────────────────────────────────────────────────
+storage:
+  #! Submit from a data folder inside a synced folder (OneDrive, Dropbox,
+  #! Google Drive). Off: a synced profile can be written from two machines
+  #! and send the same application twice. AA_ALLOW_SYNCED_PROFILE=1 also
+  #! allows it (a development checkout).
+  allow_synced_profile: false
+  #! auto | removable | fixed. The database's durability on its medium:
+  #! fixed → WAL; removable or anything AA cannot tell → DELETE journal with
+  #! synchronous=EXTRA (survives a pulled stick or a power cut).
+  medium: auto
+
 gpt4all:
   # GGUF model filename — auto-downloaded to ~/.cache/gpt4all/ on first use.
   model: "Meta-Llama-3-8B-Instruct.Q4_0.gguf"

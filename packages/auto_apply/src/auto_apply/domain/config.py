@@ -208,6 +208,11 @@ GPT4ALL_MODELS_DIR: Path = Path(
 # lazily by its writer, so the uninstall path recreates nothing.
 FOOTPRINT_LEDGER_PATH: Path = USER_DATA_DIR / "footprint_ledger.jsonl"
 INSTANCES_DIR: Path = USER_DATA_DIR / "instances"
+# Submission journals and profile locks (Phase 0, P0-3): one append-only
+# journal per profile, so a crash between "about to submit" and "recorded"
+# can never be forgotten. Created lazily by the journal's first write — never
+# at import (the AA_NO_CREATE_DIRS discipline above).
+JOURNALS_DIR: Path = USER_DATA_DIR / "journals"
 RESEARCH_HOLD_PATH: Path = USER_DATA_DIR / "research_retention.json"
 
 # ═════════════════════════════════════════════════════════════════════════════

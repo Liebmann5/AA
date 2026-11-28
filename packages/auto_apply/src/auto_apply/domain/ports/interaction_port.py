@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 
 from auto_apply.domain.models.ui import InteractionPlan
 from auto_apply.domain.ports.browser_port import ElementInterface
+from auto_apply.domain.services.submit_token import ControlIdentity
 
 
 class InteractionPort(ABC):
@@ -21,7 +22,8 @@ class InteractionPort(ABC):
     """
 
     @abstractmethod
-    def click(self, element: ElementInterface, *, irreversible: bool = False) -> None:
+    def click(self, element: ElementInterface, *, irreversible: bool = False,
+              expect: ControlIdentity | None = None) -> None:
         """Clicks a UI element.
 
         The adapter may apply human-like cursor movement or a random pre-click
@@ -33,6 +35,10 @@ class InteractionPort(ABC):
                 undone (a form submission). Irreversible clicks are
                 fail-closed: no silent retry of a rung that raised after it
                 may have acted, and never a synthetic-JS last resort.
+            expect: The submit token's target (Phase 0, P0-4). Required for an
+                irreversible click: the click ladder re-verifies the control's
+                identity immediately after resolving it and refuses — before
+                anything can dispatch — on any difference or when it is absent.
 
         Raises:
             ApplicationError: When the click did not complete. Implementations

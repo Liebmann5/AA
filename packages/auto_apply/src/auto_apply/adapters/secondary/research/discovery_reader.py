@@ -16,6 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect_readonly
 
 __all__ = ["DiscoveryRows", "read_discovery_rows"]
 
@@ -50,7 +51,7 @@ def read_discovery_rows(db_path: Path) -> DiscoveryRows:
         raise FileNotFoundError(db_path)
     # Same read-only URI form as ResearchExporter.export, the precedent for
     # reading this database without the power to change it.
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn = connect_readonly(db_path)
     conn.row_factory = sqlite3.Row
     try:
         present = {

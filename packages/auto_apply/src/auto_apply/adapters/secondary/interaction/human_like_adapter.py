@@ -36,6 +36,7 @@ from auto_apply.domain.exceptions import ApplicationError
 from auto_apply.domain.models.ui import InteractionPlan, InteractionType, PlannedAction
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 from auto_apply.domain.ports.interaction_port import InteractionPort
+from auto_apply.domain.services.submit_token import ControlIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +209,8 @@ class InteractionExecutor(InteractionPort):
     # Public API — entry point used by ApplicationsWorkflow
     # ------------------------------------------------------------------
 
-    def click(self, element: ElementInterface, *, irreversible: bool = False) -> None:
+    def click(self, element: ElementInterface, *, irreversible: bool = False,
+              expect: ControlIdentity | None = None) -> None:
         """Clicks an element through the shared PageActionService tool.
 
         This method deliberately contains no mechanics. The tool owns the
@@ -237,7 +239,7 @@ class InteractionExecutor(InteractionPort):
                 rung="none",
             )
 
-        result = self._page_action.click(element, irreversible=irreversible)
+        result = self._page_action.click(element, irreversible=irreversible, expect=expect)
         if not result:
             reason = getattr(result, "reason", "unknown")
             # Carry the ladder rung so the caller can classify the failure: a

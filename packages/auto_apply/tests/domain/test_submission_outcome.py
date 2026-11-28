@@ -1,8 +1,8 @@
 """Pins for the one outcome vocabulary (P0-2).
 
-These fail today: the Literal has no UNKNOWN, the vocabulary table does not
-exist, and the click-failure classifier does not exist. The totality pin is
-the one that cannot silently rot.
+TEETH when written: the Literal had no UNKNOWN, and neither the vocabulary
+table nor the click-failure classifier existed. Now regression guards; the
+totality pin is the one that cannot silently rot.
 """
 
 from __future__ import annotations

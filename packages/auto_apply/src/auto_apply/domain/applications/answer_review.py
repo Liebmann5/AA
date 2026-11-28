@@ -38,6 +38,13 @@ answers still need the person and no one can be asked, the application is
 not sent.
 
 Pure and deterministic: no imports beyond the answer model.
+
+**Phase 0 (P0-5): the review is before the write.** An answer that needs the
+person is shown to them with its value and written only once they approve;
+"answer myself" leaves it for them to type into the form, and with no one to
+ask it is not written at all. ``each`` shows one answer at a time; ``page``
+and ``end`` show one batch per step — a step never moves on with an answer
+unwritten, so ``end`` cannot defer past a step.
 """
 
 from __future__ import annotations
@@ -102,7 +109,33 @@ def needs_review(answer: Answer, trust: object = DEFAULT_TRUST,
     return bool(answer.review or answer.sensitive) or cls in ("matched", "draft")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# The pre-write gate's vocabulary (Phase 0, P0-5) and the day-one record of it
+# (P0-6). AA_ENGINE_MATH.md §4–§5: until AA has earned the right to fill
+# without asking, every answer that needs the person is shown to them — with
+# its value — BEFORE it is written; their approval or edit is the label §5
+# learns from. Nothing here carries a value or any page text.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: The person's verdict on proposed answers.
+APPROVE = "approve"
+ANSWER_MYSELF = "answer myself"
+
+#: What happened to one proposed answer, as the research log records it.
+#: ``approved`` (a right answer) and ``edited`` (a wrong one) are §5's labels;
+#: the rest carry no label.
+DECISION_UNREVIEWED = "unreviewed"   # the trust level let it through: written, no label
+DECISION_APPROVED = "approved"       # shown, approved, then written
+DECISION_EDITED = "edited"           # shown; the person answered it themselves
+DECISION_NO_GATE = "no_gate"         # needed the person, no one could be asked: not written
+DECISION_SKIPPED = "skipped"         # shown; the person left the application
+DECISIONS: tuple[str, ...] = (DECISION_UNREVIEWED, DECISION_APPROVED, DECISION_EDITED,
+                              DECISION_NO_GATE, DECISION_SKIPPED)
+
+
 __all__ = [
+    "ANSWER_MYSELF", "APPROVE", "DECISIONS", "DECISION_APPROVED", "DECISION_EDITED",
+    "DECISION_NO_GATE", "DECISION_SKIPPED", "DECISION_UNREVIEWED",
     "DEFAULT_FLOOR", "DEFAULT_TIMING", "DEFAULT_TRUST", "REVIEW_TIMINGS", "TRUST_LEVELS",
     "answer_class", "needs_review", "normal_timing", "normal_trust",
 ]

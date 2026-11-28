@@ -83,13 +83,60 @@ def _open_page(form: Form) -> None:
 # ── answer review: trust ────────────────────────────────────────────────────
 
 
-def test_by_default_a_saved_answer_is_held_for_review_and_a_name_is_not() -> None:
+def _open_text_state(form: Form) -> Any:
+    q = next(q for q in form.steps[0][0] if q.key == "Why this role? *")
+    return form.state(q.primary)
+
+
+def test_by_default_a_saved_answer_is_shown_before_it_is_written_and_a_name_is_not() -> None:
+    """Phase 0 (P0-5), the pre-write gate: an answer that needs the person
+    is shown with its value BEFORE anything is typed; a plain profile fact
+    is not. TEETH: fails while the engine fills first and asks afterwards."""
+    form = Form()
+    _open_page(form)
+    asked: list[tuple[str, str, bool]] = []
+
+    def gate(question: str, options: list[str], *, checkpoint: str,
+             private: bool = False, **kw: Any) -> str:
+        # Nothing has been typed into the field when the person is asked.
+        asked.append((checkpoint, _open_text_state(form).value, private))
+        assert "I like the mission." in question, "the value is shown for approval"
+        return "approve"
+
+    result = _engine(form, sources=[_saved_template()]).run(_ctx(gate))
+    assert result.status == READY_TO_SUBMIT
+    assert asked == [("ANSWER_REVIEW", "", True)], "asked once, before the write, privately"
+    assert _open_text_state(form).value == "I like the mission."
+    assert result.pending_reviews() == []
+    assert result.counters()["needs_review"] == 1 and result.counters()["reviewed"] == 1
+
+
+def test_with_no_one_to_ask_an_answer_that_needs_the_person_is_never_written() -> None:
+    """TEETH: fails while the engine writes the answer and holds it back."""
     form = Form()
     _open_page(form)
     result = _engine(form, sources=[_saved_template()]).run(_ctx())
+    assert _open_text_state(form).value == "", "nothing the person has not seen is typed"
+    assert result.status != READY_TO_SUBMIT
+    outcome = next(o for s in result.steps for o in s.outcomes if o.key == "Why this role? *")
+    assert (outcome.action, outcome.reason) == ("asked", "needs-review-no-gate")
+
+
+def test_answer_myself_leaves_the_field_for_the_person() -> None:
+    form = Form()
+    _open_page(form)
+
+    def gate(question: str, options: list[str], *, checkpoint: str, **kw: Any) -> str:
+        if checkpoint == "ANSWER_REVIEW":
+            return "answer myself"
+        _open_text_state(form).value = "My own words"   # typed in the browser
+        return "done"
+
+    result = _engine(form, sources=[_saved_template()]).run(_ctx(gate, assist=True))
     assert result.status == READY_TO_SUBMIT
-    assert result.pending_reviews() == ["Why this role? *"]
-    assert result.counters()["needs_review"] == 1
+    assert _open_text_state(form).value == "My own words"
+    outcome = next(o for s in result.steps for o in s.outcomes if o.key == "Why this role? *")
+    assert outcome.action == "human"
 
 
 def test_own_words_trust_sends_a_saved_answer_without_review() -> None:
@@ -105,8 +152,10 @@ def test_an_unsure_answer_is_reviewed_at_every_trust_level() -> None:
     unsure = Answers(open_text=Answer(text="Maybe", source="saved", confidence=0.78),
                      first_name=Answer(text="Ada", source="profile:first_name",
                                        confidence=0.95))
-    result = _engine(form, sources=[unsure], answer_trust="drafts").run(_ctx())
-    assert result.pending_reviews() == ["Why this role? *"]
+    asked: list[str] = []
+    result = _engine(form, sources=[unsure], answer_trust="drafts").run(_ctx(_gate(asked)))
+    assert asked == ["ANSWER_REVIEW"], "below the confidence floor: shown at every trust level"
+    assert result.pending_reviews() == []
 
 
 # ── answer review: timing ───────────────────────────────────────────────────
@@ -145,13 +194,14 @@ def test_a_person_who_skips_at_the_review_skips_the_application() -> None:
     assert result.status == USER_SKIPPED
 
 
-def test_with_no_one_to_ask_reviews_wait_for_the_end() -> None:
-    """each/page cannot ask without a gate: the answers stay pending, and
-    the workflow decides before sending (never sent unseen)."""
-    form = Form()
-    _open_page(form)
-    result = _engine(form, sources=[_saved_template()], review_timing="each").run(_ctx())
-    assert result.pending_reviews() == ["Why this role? *"]
+def test_with_no_one_to_ask_no_timing_writes_an_unseen_answer() -> None:
+    """each/page/end cannot ask without a gate: the answer is not written
+    at all (Phase 0 — before, it was written and held for the end)."""
+    for timing in ("each", "page", "end"):
+        form = Form()
+        _open_page(form)
+        _engine(form, sources=[_saved_template()], review_timing=timing).run(_ctx())
+        assert _open_text_state(form).value == "", timing
 
 
 # ── tests and external steps ────────────────────────────────────────────────

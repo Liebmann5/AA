@@ -37,7 +37,16 @@ def _probe(verdict="ok", box=None, tag="button", role="", input_type="", panes="
             if panes == "default"
             else panes
         ),
+        "identity": {"tag": tag, "type": input_type, "name": "apply", "id": "submit-1"},
     }
+
+
+#: The submit token's target for the probes above (Phase 0, P0-4): an
+#: irreversible click needs it, and the ladder re-verifies it.
+from auto_apply.domain.services.submit_token import ControlIdentity  # noqa: E402
+
+def _expect(tag="button", input_type=""):
+    return ControlIdentity(tag=tag, type=input_type, name="apply", id="submit-1")
 
 
 def _tool(probes, *, cfg=None, caps=CAPS, probe_raises=False, checked=()):
@@ -217,7 +226,7 @@ def test_an_irreversible_click_stops_when_a_rung_raises():
     tool._browser.execute_motion.side_effect = RuntimeError("driver blew up")
     element = MagicMock()
 
-    result = tool.click(element, irreversible=True)
+    result = tool.click(element, irreversible=True, expect=_expect())
 
     assert bool(result) is False
     assert result.rung == "pointer"
@@ -229,7 +238,7 @@ def test_the_js_rung_is_never_offered_to_an_irreversible_click():
     element = MagicMock()
     element.click.side_effect = RuntimeError("native failed")
 
-    result = tool.click(element, irreversible=True)
+    result = tool.click(element, irreversible=True, expect=_expect(tag="div"))
 
     assert bool(result) is False
     scripts = [c.args[0] for c in tool._browser.execute_script.call_args_list]

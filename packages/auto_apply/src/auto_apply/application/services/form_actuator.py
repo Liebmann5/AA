@@ -58,6 +58,7 @@ from auto_apply.domain.applications.option_matching import (
 )
 from auto_apply.domain.ports.browser_port import ElementInterface
 from auto_apply.domain.ports.form_page_port import FormPagePort
+from auto_apply.domain.services.submit_token import ControlIdentity, SubmitAuthorization
 from auto_apply.domain.types import Keys
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,10 @@ _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 class FormTool(Protocol):
     """The interaction-tool verbs the actuator uses (``PageActionService``)."""
 
-    def click(self, element: ElementInterface, *, irreversible: bool = False) -> Any: ...
+    def click(self, element: ElementInterface, *, irreversible: bool = False,
+              expect: ControlIdentity | None = None) -> Any: ...
+
+    def control_identity(self, element: ElementInterface) -> ControlIdentity: ...
 
     def type_text(self, element: ElementInterface, text: str) -> Any: ...
 
@@ -178,8 +182,10 @@ class ControlActuator:
             logger.debug("actuator: focus failed: %s", type(exc).__name__)
             return False
 
-    def click_button(self, button: FormButton, *,
-                     confirmed: bool = False) -> tuple[bool | None, Any]:
+    def click_button(
+        self, button: FormButton, *, confirmed: bool = False,
+        authorize: Callable[[ControlIdentity], SubmitAuthorization | None] | None = None,
+    ) -> tuple[bool | None, Any]:
         """Click a control that moves the form on (Next/Continue).
 
         The one place the engine clicks a button, so the one place the
@@ -188,10 +194,17 @@ class ControlActuator:
         autonomous-submission setting) confirmed this click. The final submit
         is never clicked here; the workflow clicks it after its gate.
 
+        A confirmed click is a dispatch path (AA_ENGINE_MATH.md §2): it is
+        irreversible and needs a one-use submit token from ``authorize`` —
+        the workflow arms the attempt in its journal and mints the token for
+        this control's identity. No token, no click. The click ladder then
+        re-verifies the token's target before any rung can fire.
+
         Returns ``(ok, detail)``: ``ok`` True — the tool clicked; False — no
-        click happened (refused, not found, or the tool said it did not
-        click); None — the tool raised mid-click, so the click may or may not
-        have reached the page.
+        click happened (refused, not found, no token, or the ladder refused
+        before any rung could act); None — the click may or may not have
+        reached the page (the tool raised, or an irreversible rung failed
+        after it began).
         """
         if button.may_submit and not confirmed:
             logger.warning("actuator: refused to click %r: it may submit the application",
@@ -200,12 +213,36 @@ class ControlActuator:
         el = self._page.locate(button.control)
         if el is None:
             return False, "not-found"
+        if not confirmed:
+            try:
+                result = self._tool.click(el)
+            except Exception as exc:
+                logger.warning("actuator: the click on %r raised %s; it may have happened",
+                               button.text[:40], type(exc).__name__)
+                return None, "click-raised"
+            return _ok(result), result
+        if authorize is None:
+            logger.warning("actuator: refused to click %r: no submit token", button.text[:40])
+            return False, "refused-no-token"
         try:
-            result = self._tool.click(el)
+            identity = self._tool.control_identity(el)
+            token = authorize(identity)
+        except Exception as exc:
+            logger.warning("actuator: authorising %r failed (%s)", button.text[:40],
+                           type(exc).__name__)
+            return False, "refused-no-token"
+        if token is None:
+            return False, "refused-no-token"
+        try:
+            result = self._tool.click(el, irreversible=True, expect=token.control)
         except Exception as exc:
             logger.warning("actuator: the click on %r raised %s; it may have happened",
                            button.text[:40], type(exc).__name__)
             return None, "click-raised"
+        if result is not None and not result and \
+                str(getattr(result, "rung", "") or "") not in ("probe", "none"):
+            # An irreversible rung failed after it began: it may have acted.
+            return None, result
         return _ok(result), result
 
     def locate(self, ref: ControlRef) -> ElementInterface | None:

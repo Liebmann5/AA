@@ -467,7 +467,11 @@ def test_submit_input_element_is_found_as_submit_control(
 
     assert result.submit_button_found is True
     assert result.submit_button_text == "Submit application"
-    mock_interaction_port.click.assert_called_once_with(submit_input, irreversible=True)
+    # Phase 0 (P0-4): the submit click carries its token's target.
+    mock_interaction_port.click.assert_called_once()
+    args, kwargs = mock_interaction_port.click.call_args
+    assert args == (submit_input,) and kwargs["irreversible"] is True
+    assert "expect" in kwargs
 
 
 def test_next_anchor_is_found_by_multi_page_walk(

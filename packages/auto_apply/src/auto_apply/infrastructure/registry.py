@@ -195,6 +195,9 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "dom_stabilization_timeout_s": 3.0,
         "dom_stabilization_poll_interval_s": 0.25,
         "custom_answer_max_tokens": 150,
+        "legacy_fallback": False,
+        "outcome_poll_ms": 500,
+        "outcome_watch_s": 15.0,
         "form_engine": "steps",
         "assist_mode": "auto",
         "assist_timeout_s": 900,
@@ -228,6 +231,10 @@ _RUNTIME_DEFAULTS_FALLBACK: dict[str, Any] = {
         "thinking_pause_probability": 0.05,
         "thinking_pause_min": 0.2,
         "thinking_pause_max": 0.6,
+    },
+    "storage": {
+        "allow_synced_profile": False,
+        "medium": "auto",
     },
     "gpt4all": {
         "model": "Meta-Llama-3-8B-Instruct.Q4_0.gguf",

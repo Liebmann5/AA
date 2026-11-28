@@ -65,6 +65,7 @@ from auto_apply.application.services.page_action.text_input import Typer
 from auto_apply.domain.ports.browser_port import BrowserInterface, ElementInterface
 from auto_apply.domain.ports.interaction_primitives_port import DomReadinessPort
 from auto_apply.domain.ports.registry_port import RegistryPort
+from auto_apply.domain.services.submit_token import ControlIdentity
 
 __all__ = ["ActionResult", "PageActionService"]
 
@@ -315,10 +316,19 @@ class PageActionService:
     # CLICK / HOVER — delegated to the clicker
     # =========================================================================
 
-    def click(self, element: ElementInterface, *, irreversible: bool = False) -> ActionResult:
+    def click(self, element: ElementInterface, *, irreversible: bool = False,
+              expect: ControlIdentity | None = None) -> ActionResult:
         """Clicks through the ladder (probe → pointer → keyboard → native →
-        config-gated JS). Irreversible clicks are fail-closed."""
-        return self._clicker.click(element, irreversible=irreversible)
+        config-gated JS). Irreversible clicks are fail-closed, and need the
+        submit token's target (``expect``), re-verified inside the ladder."""
+        return self._clicker.click(element, irreversible=irreversible, expect=expect)
+
+    def control_identity(self, element: ElementInterface) -> ControlIdentity:
+        """What ``element`` is, from the ladder's own probe (empty when the
+        probe could not read it): the target a submit token binds."""
+        probe = self._probe.run(element)
+        data = probe.get("identity") if isinstance(probe, dict) else None
+        return ControlIdentity.from_mapping(data if isinstance(data, dict) else None)
 
     def click_by(self, by: str, selector: str) -> ActionResult:
         """Convenience: finds an element and clicks it in one call."""

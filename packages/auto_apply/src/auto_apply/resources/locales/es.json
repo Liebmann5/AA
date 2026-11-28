@@ -351,6 +351,10 @@
     "not_accepted": "La página no aceptó este paso. Indica un problema con:\n{problems}\nCorrígelos en la ventana del navegador y luego elige “listo” para que AA lo intente de nuevo, u “omitir” para dejar esta solicitud.",
     "review_answers": "AA rellenó {count} respuesta(s) en {where} de {application} que pediste revisar antes de enviarlas:",
     "review_answers_instructions": "Revísalas en la ventana del navegador y cambia allí lo que no esté bien. Luego elige “done” para que AA continúe, o “skip” para dejar esta solicitud.",
+    "propose_answers": "AA escribiría {count} respuesta(s) en {where} de {application} que pediste revisar primero. No se escribe nada hasta que lo apruebes:",
+    "propose_answers_instructions": "Elige “approve” para que AA las escriba, “answer myself” para escribirlas tú en el formulario, o “skip” para dejar esta solicitud.",
+    "tick": "marcarla",
+    "untick": "dejarla sin marcar",
     "review_step_check": "Revisa en especial estas respuestas: {items}.",
     "test_page": "Esta página de {application} es una prueba o evaluación (se muestra un temporizador o un editor de código). AA nunca hace pruebas por ti. Si quieres continuar, hazla tú en la ventana del navegador hasta que vuelva a aparecer el formulario y elige “done”. Elige “skip” para dejar esta solicitud."
   },

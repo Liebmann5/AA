@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from auto_apply.domain.ports.feedback_repository_port import FeedbackRepositoryPort
+from auto_apply.adapters.secondary.persistence.durable_sqlite import connect as durable_connect
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class PageFeedbackRepository:
     @contextmanager
     def _get_connection(self):
         """Yield a managed SQLite connection with auto‑commit/rollback."""
-        conn = sqlite3.connect(str(self._db_path), timeout=10.0)
+        conn = durable_connect(self._db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
             yield conn

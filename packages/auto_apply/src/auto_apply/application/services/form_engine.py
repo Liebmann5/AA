@@ -93,6 +93,13 @@ from auto_apply.application.services.i18n import (
     language_name,
 )
 from auto_apply.domain.applications.answer_review import (
+    ANSWER_MYSELF,
+    APPROVE,
+    DECISION_APPROVED,
+    DECISION_EDITED,
+    DECISION_NO_GATE,
+    DECISION_SKIPPED,
+    DECISION_UNREVIEWED,
     DEFAULT_FLOOR,
     needs_review,
     normal_timing,
@@ -130,7 +137,17 @@ from auto_apply.domain.applications.form_model import (
     says_submit,
 )
 from auto_apply.domain.applications.option_matching import is_placeholder
+from auto_apply.domain.applications.review_log import ReviewEvent, ValidationEvent
 from auto_apply.domain.ports.form_page_port import AnswerSourcePort, FormPagePort
+from auto_apply.domain.services.comparators import (
+    KIND_DATE,
+    KIND_DIGITS,
+    KIND_EMAIL,
+    KIND_FILE,
+    KIND_IDENTITY,
+    KIND_TEXT_LONG,
+)
+from auto_apply.domain.services.submit_token import ControlIdentity, SubmitAuthorization
 from auto_apply.domain.ports.text_generation_port import TextGenerationPort
 
 logger = logging.getLogger(__name__)
@@ -441,6 +458,15 @@ class FormRunContext:
     #: on ("Submit and continue"). Answers ``"click"``, ``"skip"`` (the
     #: person declined) or ``"blocked"``. None: never clicked.
     confirm_risky: Callable[[str], str] | None = None
+    #: Arms the submission attempt and mints the one-use token for a
+    #: confirmed click that may send the application (Phase 0, P0-4):
+    #: ``(control identity, step fingerprint) -> token``; None refuses the
+    #: click. Without it a confirmed click is never made.
+    authorize_dispatch: Callable[[ControlIdentity, str], SubmitAuthorization | None] | None = None
+    #: The day-one research record (P0-6): one call per answer decision and
+    #: per validation message the page shows. Never receives a value.
+    on_review: Callable[[ReviewEvent], None] | None = None
+    on_validation: Callable[[ValidationEvent], None] | None = None
 
 
 class GeneratedAnswerSource:
@@ -515,6 +541,10 @@ class FormStepEngine:
         self._clock = clock
         self._actuator = ControlActuator(page, tool, self._settings.actuator, wait_ready)
         self._last_described = ""
+        #: What this run wrote and verified, per question: (comparator kind,
+        #: the read-back). In memory for one run only — never logged, never
+        #: persisted; the submit token's values digest binds it (P0-4).
+        self._written: dict[str, tuple[str, str]] = {}
 
     @property
     def memory(self) -> SessionAnswerMemory:
@@ -531,8 +561,42 @@ class FormStepEngine:
     # ------------------------------------------------------------------
     def run(self, ctx: FormRunContext) -> FormRunResult:
         externals: list[ExternalStep] = []
+        self._written = {}
         result = self._run(ctx, externals)
         return replace(result, external_steps=tuple(externals))
+
+    # -- what the submit token binds (P0-4) ------------------------------
+    def written_values(self) -> list[tuple[str, str, str]]:
+        """``(question key, comparator kind, value)`` for every answer this
+        run wrote and verified. For the token digest only: never logged."""
+        return [(key, kind, value) for key, (kind, value) in self._written.items()]
+
+    def current_values(self, step: FormStep) -> list[tuple[str, str, str]]:
+        """``(question key, comparator kind, value)`` for every control on
+        ``step`` that holds something now — read from the page, never logged.
+        Taken at approval and again just before the click: a difference means
+        the page changed what the person approved (AA_ENGINE_MATH.md §3a)."""
+        out: list[tuple[str, str, str]] = []
+        states = self._states(step)
+        for q in step.questions:
+            st = states.get(q.key)
+            if st is None or not st.present or q.kind == QuestionKind.PASSWORD:
+                continue
+            out.append((q.key, _cmp_kind(q), _state_text(q, st)))
+        return out
+
+    def _note_written(self, q: FormQuestion, answer: Answer, result: FillOutcome) -> None:
+        if q.kind == QuestionKind.PASSWORD:
+            return
+        if q.kind == QuestionKind.FILE:
+            value = answer.file_path.replace("\\", "/").rsplit("/", 1)[-1]
+        elif result.observed:
+            value = result.observed
+        elif q.kind in QuestionKind.CHOICE:
+            value = result.chosen or answer.text or "|".join(answer.many) or str(answer.checked)
+        else:
+            value = answer.text
+        self._written[q.key] = (_cmp_kind(q), str(value))
 
     def _run(self, ctx: FormRunContext, externals: list[ExternalStep]) -> FormRunResult:
         records: list[StepRecord] = []
@@ -645,7 +709,8 @@ class FormStepEngine:
                                          "application, and no one confirmed it",
                                          final_step=step, steps=tuple(records))
 
-            advanced, new_step, errors, click = self._advance(step, nxt, ctx, confirmed=risky)
+            advanced, new_step, errors, click = self._advance(step, nxt, ctx, confirmed=risky,
+                                                              index=index)
             if new_step is not None:
                 self._collect_external(new_step, externals)
             record = StepRecord(index, step, outcome.outcomes,
@@ -818,6 +883,9 @@ class FormStepEngine:
         outcomes: dict[str, QuestionOutcome] = {}
         to_ask: dict[str, FormQuestion] = {}
         off_step: set[str] = set()
+        #: Answers that need the person, held unwritten until they approve
+        #: (``page``/``end`` timing): one batch per step, before it moves on.
+        held: dict[str, tuple[FormQuestion, Answer, str]] = {}
 
         def record(q: FormQuestion, action: str, reason: str, *, source: str = "",
                    rung: str = "", review: bool = False, needs: bool = False,
@@ -841,22 +909,41 @@ class FormStepEngine:
                 return None
             d = decide(q, state, answer, self._settings.fill)
             if d.action == FILL_ACTION and d.answer is not None:
-                self._think(q)
-                result = self._actuator.fill(q, d.answer)
-                if result.ok:
-                    needs = needs_review(d.answer, self._settings.answer_trust,
-                                         self._settings.review_below_confidence)
-                    record(q, "filled", d.reason, source=d.answer.source, rung=result.rung,
-                           review=d.answer.review, needs=needs)
-                    if needs and self._settings.review_timing == "each" and self._can_ask(ctx):
-                        if not self._review_now([q], step, ctx):
-                            raise _PersonSkipped
-                        outcomes[q.key] = replace(outcomes[q.key], reviewed=True)
-                else:
-                    record(q, "failed", result.reason, source=d.answer.source, rung=result.rung)
-                    if q.is_required:
+                # ── The pre-write gate (P0-5) ──────────────────────────────
+                # Decided BEFORE anything is typed: an answer that needs the
+                # person is shown to them with its value and written only on
+                # their approval. No one to ask: not written at all.
+                needs = needs_review(d.answer, self._settings.answer_trust,
+                                     self._settings.review_below_confidence)
+                if needs:
+                    if ctx.gate is None:
+                        # No one can be asked (the review reaches the person
+                        # through the gate whatever assist_mode says, as the
+                        # submit-time review always did): not written.
+                        self._log_review(ctx, q, d.answer, DECISION_NO_GATE, index, step)
+                        record(q, "asked" if q.is_required else "left",
+                               "needs-review-no-gate", source=d.answer.source, needs=True)
+                        if q.is_required:
+                            to_ask[q.key] = q
+                        return None
+                    if self._settings.review_timing != "each":
+                        held[q.key] = (q, d.answer, d.reason)
+                        record(q, "left", "held-for-review", source=d.answer.source, needs=True)
+                        return None
+                    verdict = self._approve(ctx, step, [(q, d.answer)])
+                    if verdict == SKIP:
+                        self._log_review(ctx, q, d.answer, DECISION_SKIPPED, index, step)
+                        raise _PersonSkipped
+                    if verdict == ANSWER_MYSELF:
+                        self._log_review(ctx, q, d.answer, DECISION_EDITED, index, step)
+                        record(q, "asked", "person-will-answer", source=d.answer.source,
+                               needs=True)
                         to_ask[q.key] = q
-                return result
+                        return None
+                    self._log_review(ctx, q, d.answer, DECISION_APPROVED, index, step)
+                else:
+                    self._log_review(ctx, q, d.answer, DECISION_UNREVIEWED, index, step)
+                return write(q, d.answer, d.reason, needs=needs, reviewed=needs)
             if d.action == ASK:
                 record(q, "asked", d.reason)
                 to_ask[q.key] = q
@@ -866,6 +953,45 @@ class FormStepEngine:
             elif q.key not in outcomes:
                 record(q, "left", d.reason)
             return None
+
+        def write(q: FormQuestion, answer: Answer, reason: str, *, needs: bool,
+                  reviewed: bool) -> FillOutcome:
+            self._think(q)
+            result = self._actuator.fill(q, answer)
+            if result.ok:
+                self._note_written(q, answer, result)
+                record(q, "filled", reason, source=answer.source, rung=result.rung,
+                       review=answer.review, needs=needs, reviewed=reviewed)
+            else:
+                record(q, "failed", result.reason, source=answer.source, rung=result.rung)
+                if q.is_required:
+                    to_ask[q.key] = q
+            return result
+
+        def review_held() -> bool:
+            """Show the answers held for the person (``page``/``end``) as one
+            batch, then write the approved ones. True when anything was
+            written (the caller re-reads the step: a choice may reveal more)."""
+            if not held:
+                return False
+            items = list(held.values())
+            held.clear()
+            verdict = self._approve(ctx, step, [(q, a) for q, a, _r in items])
+            if verdict == SKIP:
+                for q, a, _r in items:
+                    self._log_review(ctx, q, a, DECISION_SKIPPED, index, step)
+                raise _PersonSkipped
+            wrote = False
+            for q, a, reason in items:
+                if verdict == APPROVE:
+                    self._log_review(ctx, q, a, DECISION_APPROVED, index, step)
+                    res = write(q, a, reason, needs=True, reviewed=True)
+                    wrote = wrote or res.ok
+                else:
+                    self._log_review(ctx, q, a, DECISION_EDITED, index, step)
+                    record(q, "asked", "person-will-answer", source=a.source, needs=True)
+                    to_ask[q.key] = q
+            return wrote
 
         # Uploads first: the ATS may parse the résumé and pre-fill the form.
         states = self._states(step)
@@ -952,6 +1078,18 @@ class FormStepEngine:
         for _round in range(self._settings.max_assists_per_step + 2):
             try:
                 work_questions()
+                for _batch in range(self._settings.max_assists_per_step + 2):
+                    if not review_held():
+                        break
+                    # Approved answers were written now; a choice among them
+                    # may have revealed questions: read the step, work them.
+                    now = self._page.control_census()
+                    if now != census:
+                        census = now
+                        fresh = self._read()
+                        if fresh is not None and fresh.has_form:
+                            step = fresh
+                        work_questions()
             except _PersonSkipped:
                 return _StepOutcome(USER_SKIPPED, step, tuple(outcomes.values()),
                                     reason="the person chose to skip this application")
@@ -1032,6 +1170,41 @@ class FormStepEngine:
         if q.choose_min and n < q.choose_min:
             return False
         return not (q.choose_max and n > q.choose_max)
+
+    def _approve(self, ctx: FormRunContext, step: FormStep,
+                 items: Sequence[tuple[FormQuestion, Answer]]) -> str:
+        """Show the person answers AA would write — with their values —
+        before anything is typed (P0-5). ``approve`` | ``answer myself`` |
+        ``skip``. The question carries values, so it is asked privately: the
+        gate neither logs nor records it."""
+        lines = "\n".join(f"  - {(q.label or q.field_type)[:100]}: {_preview(q, a)}"
+                          for q, a in items[:8])
+        more = ("\n" + get_text("form_engine.more", count=len(items) - 8)
+                if len(items) > 8 else "")
+        text = "\n".join([
+            get_text("form_engine.propose_answers", count=len(items),
+                     where=self._where(step), application=self._application(ctx)),
+            lines + more,
+            get_text("form_engine.propose_answers_instructions"),
+        ])
+        return self._ask(ctx, text, [APPROVE, ANSWER_MYSELF, SKIP], "ANSWER_REVIEW",
+                         private=True)
+
+    def _log_review(self, ctx: FormRunContext, q: FormQuestion, answer: Answer,
+                    decision: str, index: int, step: FormStep) -> None:
+        """One day-one record (P0-6). Never a value; never raises."""
+        if ctx.on_review is None:
+            return
+        try:
+            ctx.on_review(ReviewEvent(
+                question_key=q.key, field_kind=str(q.kind), decision=decision,
+                source=answer.source.split(":", 1)[0] if answer.source else "",
+                confidence=float(answer.confidence), step_index=int(index),
+                trust_level=self._settings.answer_trust,
+                form_language=str(step.language or ""),
+            ))
+        except Exception as exc:
+            logger.debug("form engine: review log failed: %s", type(exc).__name__)
 
     def _review_now(self, questions: Sequence[FormQuestion], step: FormStep,
                     ctx: FormRunContext) -> bool:
@@ -1357,7 +1530,7 @@ class FormStepEngine:
         return best
 
     def _advance(self, step: FormStep, button: FormButton, ctx: FormRunContext, *,
-                 confirmed: bool = False
+                 confirmed: bool = False, index: int = -1,
                  ) -> tuple[bool | None, FormStep | None, tuple[str, ...], str]:
         """Click Next; progress only when the page proves it.
 
@@ -1375,7 +1548,14 @@ class FormStepEngine:
         before_url = step.url.split("#", 1)[0]
         seen: list[str] = []
         for attempt in range(2):
-            ok, _detail = self._actuator.click_button(button, confirmed=confirmed)
+            authorize = None
+            if confirmed and ctx.authorize_dispatch is not None:
+                fp = step.fingerprint
+                authorize = (lambda identity, _fp=fp:  # noqa: E731
+                             ctx.authorize_dispatch(identity, _fp)
+                             if ctx.authorize_dispatch is not None else None)
+            ok, _detail = self._actuator.click_button(button, confirmed=confirmed,
+                                                      authorize=authorize)
             if ok is False:
                 return False, self._read(), tuple(seen), NOT_CLICKED
             click = CLICKED if ok else CLICK_UNCERTAIN
@@ -1387,7 +1567,7 @@ class FormStepEngine:
                 return True, new, tuple(seen), click
             if self._visible_fingerprint(new) != before_fp:
                 return True, new, tuple(seen), click
-            errors = self._errors(new)
+            errors = self._errors(new, ctx=ctx, index=index)
             seen.extend(e for e in errors if e not in seen)
             if click == CLICK_UNCERTAIN:
                 return False, new, tuple(seen) or ("the page did not move on",), click
@@ -1405,7 +1585,8 @@ class FormStepEngine:
             button = self._same_button(new, button) or button
         return False, step, tuple(seen), CLICKED
 
-    def _errors(self, step: FormStep) -> list[str]:
+    def _errors(self, step: FormStep, *, ctx: FormRunContext | None = None,
+                index: int = -1) -> list[str]:
         states = self._states(step)
         out = []
         for q in step.questions:
@@ -1415,6 +1596,12 @@ class FormStepEngine:
             if st.invalid or (q.is_required and not st.filled):
                 msg = f" ({st.message[:80]})" if st.message else ""
                 out.append(f"{(q.label or q.field_type)[:100]}{msg}")
+                if ctx is not None and ctx.on_validation is not None:
+                    try:  # a flag only, never the message (P0-6)
+                        ctx.on_validation(ValidationEvent(q.key, index, bool(st.message)))
+                    except Exception as exc:
+                        logger.debug("form engine: validation log failed: %s",
+                                     type(exc).__name__)
         return out
 
     @staticmethod
@@ -1448,3 +1635,43 @@ def _merge_states(q: FormQuestion, states: Sequence[ControlState]) -> ControlSta
         value_missing=any(bool(s.value_missing) for s in states),
         message=next((s.message for s in states if s.message), ""),
     )
+
+
+def _cmp_kind(q: FormQuestion) -> str:
+    """The §8 comparator kind a question's value is compared and digested by."""
+    if q.kind == QuestionKind.TEXTAREA:
+        return KIND_TEXT_LONG
+    if q.kind == QuestionKind.DATE:
+        return KIND_DATE
+    if q.kind == QuestionKind.FILE:
+        return KIND_FILE
+    if q.kind == QuestionKind.TEXT:
+        ft = (q.field_type or "").lower()
+        if ft == "email":
+            return KIND_EMAIL
+        if ft in ("tel", "phone"):
+            return KIND_DIGITS
+    return KIND_IDENTITY
+
+
+def _state_text(q: FormQuestion, st: ControlState) -> str:
+    """A control's state as comparable text (never logged)."""
+    if q.kind == QuestionKind.FILE:
+        return f"files={st.files}"
+    if q.kind in (QuestionKind.CHECKBOX, QuestionKind.RADIO, QuestionKind.CHECKBOX_GROUP):
+        return f"{st.value}|{st.checked}"
+    return st.value
+
+
+def _preview(q: FormQuestion, answer: Answer) -> str:
+    """The value shown to the person for approval (never logged)."""
+    if q.kind == QuestionKind.FILE or answer.file_path:
+        return answer.file_path.replace("\\", "/").rsplit("/", 1)[-1] or "(a file)"
+    if answer.many:
+        text = ", ".join(answer.many)
+    elif answer.checked is not None and not answer.text:
+        text = get_text("form_engine.tick") if answer.checked else get_text("form_engine.untick")
+    else:
+        text = answer.text
+    flat = " / ".join(part.strip() for part in text.splitlines() if part.strip())
+    return (flat[:200] + "…") if len(flat) > 200 else (flat or "—")
